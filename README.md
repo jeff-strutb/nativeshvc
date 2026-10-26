@@ -9,31 +9,51 @@ the same pace, with no emulated processor and no ROM image of the code.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)
 
 nativeshvc was created by Jeffrey Wilbur. It began as the machine layer of the native
-[Stunt Race FX](https://github.com/jeff-strutb/stuntracefx) port, and is being lifted out of
-it so that every Super Nintendo decompilation can share one console instead of building its
-own.
+[Stunt Race FX](https://github.com/jeff-strutb/stuntracefx) port, and was lifted out of it so
+that every Super Nintendo decompilation can share one console instead of building its own.
 
 ## Status
 
-Version 0.1.0. **The library is not yet usable on its own.** What is not done:
+Version 0.1.0.
 
-- **No build.** The tree has no Makefile or CMake project yet; it does not compile by itself.
-- **The public API is declared, not implemented.** [`include/nshvc/nshvc.h`](include/nshvc/nshvc.h)
-  sets out the cartridge description and the calls (`nshvc_main`, `nshvc_power`,
-  `nshvc_run_frame` and the rest), but none of them is defined in `src/` yet.
-- **Still shaped by Stunt Race FX.** The console code comes from that port and still includes
-  its generated headers (`cart.h`, `routines.h`, `dispatch.h`, `ppu.h`, the render's
-  `fill_src.h`, Windows' `game_rc.h`), which are not in this tree. `src/front/main.c` is
-  still Stunt Race FX's front end, and `src/render/check/check.sh` still uses the port's
-  paths.
-- **One cartridge kind so far.** The bus (`src/console/bus.c`) answers only the Super FX's
-  LoROM layout, NTSC, SlowROM timing. LoROM, HiROM, ExLoROM, ExHiROM and PAL, all named in
-  `nshvc.h`, are still to be written.
+**What is not done:**
 
-What is in the tree and was proven in the Stunt Race FX port: the S-CPU's bus and clock, DMA
-and HDMA, the Super FX and its clock, the sound unit and its boot ROM protocol, the PPU's
-reference drawing and the GPU compositor, the mixer and resampler, the renderer backends
-and the OS hosts.
+- **ExLoROM** is implemented but not yet checked against the reference.
+- **PAL** is implemented (312 lines, its own clock) but not yet checked.
+- **Interlace** sets only the field flag; interlaced pictures are not drawn at 448 or 478
+  lines.
+- **Mid-line writes to Mode 7's matrix** are not modelled: each line uses the matrix as it
+  stood when the line began.
+- **The sound unit and DSP** are checked only through Stunt Race FX's plays (its pacing and
+  RAM), not on their own against the reference's samples. The mixer has an open difference
+  of 1 to 2 levels on one channel from sample 126,206 of Stunt Race FX's attract mode,
+  carried over from that port.
+- **28 test ROMs** are tracked as a known residual: when WAI wakes for an IRQ, the
+  handler's mid-line effects land 1 to 2 pixels off.
+- **The Windows build** is cross-built with MinGW but has never been run.
+
+**What is done and checked.** Every check below is against bsnes as the reference, with its
+options pinned for accuracy and display gamma off. The full list of checks, and how to run
+each one, is in [tests/README.md](tests/README.md).
+
+- **Cartridges:** LoROM, HiROM, ExHiROM and Super FX mappings, including mirroring for ROM
+  sizes that are not a power of two, and cartridge RAM.
+- **Picture:** modes 0 to 7, 16x16 tiles, offset-per-tile (modes 2, 4, 6), direct colour,
+  Mode 7 and EXTBG, hires and pseudo-hires (512 wide), overscan (239 lines), mosaic,
+  sprites in every size (with the vertical flip of tall sprites), their line limits and
+  priority rotation, windows, colour maths, brightness, HDMA, the read side and open bus.
+- **Timing:** mid-line register writes timed by register class, CGRAM writes during display
+  landing on the entry being looked up, VRAM writes blocked during display, H and V IRQs
+  with long dots, WAI.
+- **Test ROMs:** 308 match the reference exactly.
+- **A real decompilation:** Stunt Race FX (S-CPU, Super FX and SPC700), both its unchanged
+  decomp and its converted port cartridge (assets only, no ROM image), matches its own
+  port's reference over 21 plays: every screenshot, work RAM and Super FX RAM dump and
+  pacing record, byte for byte.
+- **Renderers:** software, Metal, OpenGL and Vulkan each present the frames and draw
+  overlays, matching the CPU reference.
+- **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
+  touch, buttons, the frame hook).
 
 ## Project Purpose
 
@@ -44,8 +64,8 @@ a television's frame rate. Each native port has had to rebuild all of that aroun
 
 nativeshvc builds it once. Its purpose is the equivalent of putting a cartridge in the
 console and switching it on: a decompilation describes its cartridge, hands over its C, and
-gets a native program that plays on macOS, Windows, Linux and iOS, drawn on the GPU at any
-window size, with sound, controllers and saves, at the console's own pace.
+gets a native program that plays on macOS, Windows, Linux and iOS, presented on the GPU at
+any window size, with sound, controllers and saves, at the console's own pace.
 
 It holds to the standard of the decompilations it serves. It runs no emulated CPU, does no
 high-level emulation of the game, and has no per-game fixes. The game's own C makes every
@@ -54,7 +74,14 @@ between them; nativeshvc answers each access as the hardware does, at the hardwa
 A game whose C is cycle exact therefore runs on nativeshvc frame for frame as it ran on the
 console.
 
+Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
+console's numbers are its baseline, and a port may opt out of them (see
+[Extensions](#extensions)).
+
 ## How it works
+
+The full reference for the interface, the cartridge description, the hooks and the
+extensions is [docs/nativeshvc.md](docs/nativeshvc.md).
 
 ### The split: processors in the game, everything else in the console
 
@@ -66,7 +93,7 @@ The processors are the game's C. Everything that is not a processor is nativeshv
 | The Super FX's (GSU) programs, as C | The Super FX's registers, RAM, bus, code cache and pixel caches, and its clock |
 | The SPC700's sound driver, as C | The sound unit: 64 KB of APU RAM, its ports and timers, the boot ROM protocol, the S-DSP |
 | The ROM's data (or the whole ROM) | The cartridge's mapping, ROM and battery RAM |
-| | DMA and HDMA, the PPU, the window, the GPU renderer, sound output, controllers, the save, the frame's pace |
+| | DMA and HDMA, the PPU, the window, the GPU presentation, sound output, controllers, the save, the frame's pace |
 
 The C is written against the machine model in three headers, the same model the
 decompilations' verification harnesses provide. Inside a harness these calls reach an
@@ -93,13 +120,12 @@ native console.
 ### Time
 
 Time is the console's master clock (21.477 MHz NTSC). Each S-CPU access moves it by what
-that access takes on the bus (8 clocks for SlowROM and work RAM, 6 for most registers, 12
-for the joypads' serial ports), and `cyc` moves it by the time the original spends between
-accesses. As the clock passes each line's horizontal blank, that line is recorded for the
-picture and HDMA runs; at line 225 the vertical blank starts (the NMI, the joypads'
-automatic read, the frame's end). Interrupts are taken only where the S-CPU's C touches the
-bus, never between the two bytes of one word, as an instruction boundary is the only place
-the hardware takes them.
+that access takes on the bus, and `cyc` moves it by the time the original spends between
+accesses. As the clock passes each line's horizontal blank, that line is drawn and HDMA
+runs; at the vertical blank's start come the NMI, the joypads' automatic read and the
+frame's end. Interrupts are taken only where the S-CPU's C touches the bus, never between
+the two bytes of one word, as an instruction boundary is the only place the hardware takes
+them.
 
 ### Three processors, one thread
 
@@ -131,31 +157,23 @@ fatal error (`nshvc_fatal`, exit status 70), never a silent fallback.
 
 ### Picture
 
-[`src/ppu/ppu.c`](src/ppu/ppu.c) records each line's screen state, palette, tiles and
-sprite table as the line's horizontal blank comes, and draws the reference picture from that
-record: modes 0 to 7 (2, 4 and 8 bits a pixel, 8x8 and 16x16 tiles, mosaic,
-offset-per-tile, direct colour, Mode 7 with its wrap modes and EXTBG, hires modes 5 and 6),
-sprites with the 32-sprite and 34-tile line limits and priority rotation, windows on main
-and sub screens, colour maths, brightness and forced blank.
+The PPU ([`src/ppu/ppu.c`](src/ppu/ppu.c)) makes the picture in C, a line at a time as the
+clock passes each line: every background mode, sprites, windows, colour maths, brightness,
+the read side and open bus, with register writes landing mid-line at their own times.
 
-The GPU composes the same picture from the same record, one pixel at a time
-([`src/render/compose/core.glsl`](src/render/compose/core.glsl), one source for GLSL and
-Metal, SPIR-V for Vulkan), step for step with `ppu.c`, so the two agree on every pixel.
-The renderer backends (Metal, OpenGL, Vulkan, software, null; [`rr.h`](src/render/rr.h))
-then scale it to the window with sharp bilinear filtering: whole pixels at any size,
-blended only across the one target pixel each pixel edge falls in. The software backend is
-the reference the GPU backends are checked against ([`src/render/check/`](src/render/check/)).
+The GPU only presents it. The renderer backends (Metal, OpenGL, Vulkan and software;
+[`rr.h`](src/render/rr.h)) scale the frame to the window with sharp bilinear filtering:
+whole pixels at any size, blended only across the one target pixel each pixel edge falls in.
+They also draw a port's overlays. Each backend's output is checked against the CPU
+reference.
 
 ### Sound
 
-The DSP's output (stereo, 16-bit, 32,040 frames a second) is resampled to the device's rate
-by a 32-tap Kaiser-windowed sinc ([`resample.c`](src/dsp/resample.c)), its ratio trimmed by
-up to 0.5% to keep 50 ms buffered, so the sound follows the game's pace without drifting or
-clicking. [`tests/dsp/resample_check.c`](tests/dsp/resample_check.c) holds its error 70 dB
-below the signal. A native mixer ([`mixer.c`](src/dsp/mixer.c): BRR decoding, Gaussian
-interpolation, envelopes, noise, pitch modulation, echo), held sample for sample to a
-reference DSP's output by [`tests/dsp/mix_replay.c`](tests/dsp/mix_replay.c), is the path for
-drivers that talk to the mixer directly.
+The S-DSP ([`mixer.c`](src/dsp/mixer.c): BRR decoding, Gaussian interpolation, envelopes,
+noise, pitch modulation, echo) makes stereo, 16-bit samples at 32,040 a second as the
+SPC700's clock runs. They are resampled to the device's rate by a 32-tap Kaiser-windowed
+sinc ([`resample.c`](src/dsp/resample.c)), its ratio trimmed by a fraction of a percent to
+keep a steady buffer, so the sound follows the game's pace without drifting or clicking.
 
 ### The host
 
@@ -164,31 +182,47 @@ time, files and the save folder, a window, input, audio.
 
 | Host | Provides |
 |---|---|
-| `host/posix` | time and files on macOS, Linux and iOS |
-| `host/win32` | time and files on Windows |
-| `host/macos` | Cocoa window, keyboard and game controllers, Core Audio |
-| `host/windows` | Win32 window, keyboard, XInput controllers, WASAPI |
-| `host/ios` | full-screen view, touch controls, keyboard and game controllers, RemoteIO |
-| `host/null` | no window, input or audio, for tests and headless comparisons |
-
-An app that brings its own host (a builder, a libretro core) links none of the window hosts
-and supplies these functions itself.
+| `null` | no window, input or audio, for tests and headless comparisons |
+| `macos` | Cocoa window, keyboard and game controllers, Core Audio |
+| `windows` | Win32 window, keyboard, XInput controllers, WASAPI |
+| `ios` | full-screen view, touch controls, keyboard and game controllers, RemoteIO |
+| `none` | nothing: the app (a builder, a libretro core) supplies `host.h` itself |
 
 ### What a player gets
 
 - A frame each 1/60.0988 s (NTSC), paced against the wall clock.
 - Two controller ports: the keyboard on port 1, game controllers on ports 1 and 2, mapped
-  to the SNES layout (B below, A right).
+  to the SNES layout (B below, A right); touch controls on iOS.
 - The battery save in the host's save folder, written when it changes.
 - A headless mode with no window and no pacing that runs a script of inputs from power on
   and writes screenshots and memory dumps, for tests and for comparison with the original.
 
+### Extensions
+
+The console's numbers are baselines a port may raise, each off until the port asks for it:
+any screen size up to 1024x480, sprite X and Y extension bits, sprite line limits off, VRAM
+up to 256 KB in pages, a Super FX screen up to 1024x512 and its RAM up to 896 KB, an
+untimed mode with a vertical blank wait, and held interrupts. The front end adds key, touch
+and frame hooks, overlays, buttons the game holds itself, the safe area and the window's
+size. They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions).
+
 ## Using nativeshvc in a decompilation
 
-This is the interface `nshvc.h` declares. As the Status section says, it is not
-implemented yet; this is the contract a decompilation builds to.
+### 1. Build it
 
-### 1. Write the C against the machine model
+CMake, C11, no dependencies for the core:
+
+```bash
+cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --build build/macos
+```
+
+`NSHVC_HOST` picks the host (`null`, the default, `macos`, `windows`, `ios` or `none`) and
+`NSHVC_RENDER` the renderer (`soft`, `metal`, `gl` or `vulkan`). `NSHVC_TESTS` and
+`NSHVC_EXAMPLES` build the tests and the examples. For iOS, add
+`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
+-DNSHVC_HOST=ios`.
+
+### 2. Write the C against the machine model
 
 Write each routine's C against `machine.h`, `gsu.h` and `spc.h`: every bus access through
 `rd8`/`wr8` (`gsu_rd8`/`gsu_wr8`, `spc_rd`/`spc_wr`) in the original's order, and the
@@ -198,64 +232,28 @@ that is entered from an address (a vector, a computed call, a Super FX program, 
 routine) gets an `abi_` wrapper that takes its inputs from the register file and leaves its
 outputs there.
 
-### 2. Describe the cartridge
+### 3. Describe the cartridge and switch it on
+
+A cartridge is an `nshvc_cart`: its title and save name, its mapping (`NSHVC_LOROM`,
+`NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, `NSHVC_SUPERFX`) and region, its ROM (a
+whole image, or only the data pages with a reader for the rest, so no copy of the code
+ships), its RAM and battery, and the tables of routines with C by address, which a
+decompilation's tags already generate. The game's main hands it to the console:
 
 ```c
-#include "nshvc/nshvc.h"
-
-extern const nshvc_routine game_routines[];        /* sorted by address */
-extern const int game_routine_count;
-extern const nshvc_spc_routine game_spc_routines[];   /* sorted by APU address */
-extern const int game_spc_routine_count;
-extern const uint8_t game_rom[];                   /* the ROM, or see rom_pages below */
-
-static const nshvc_cart cart = {
-    .title       = "Stunt Race FX",
-    .save_name   = "stuntracefx",
-    .map         = NSHVC_SUPERFX,
-    .region      = NSHVC_NTSC,
-    .rom         = game_rom,
-    .rom_size    = 0x100000,
-    .sram_size   = 0x10000,     /* the Super FX's RAM */
-    .battery     = 1,
-    .routines          = game_routines,
-    .routine_count     = 0,     /* set from game_routine_count */
-    .spc_routines      = game_spc_routines,
-    .spc_routine_count = 0,     /* set from game_spc_routine_count */
-};
-```
-
-- `map` and `region` say how the cartridge answers addresses (LoROM, HiROM, ExLoROM,
-  ExHiROM, Super FX) and whether it is NTSC or PAL.
-- `rom`/`rom_size` give the whole ROM image. A build that ships only the game's data (its
-  code is the C) gives `rom_pages` instead, the 256-byte pages one data block holds whole,
-  and `rom_read` for the rest; the reader is told who is reading (`NSHVC_ROM_CPU`, `_DMA`,
-  `_GSU`, `_PEEK`).
-- `sram_size` and `battery` give the cartridge's RAM and whether it is kept between runs;
-  `save_from`/`save_size` narrow what is written.
-- `routines` lists every S-CPU routine reached by address (the reset and interrupt vectors,
-  every computed call's and jump's target) and every Super FX program, each with its `abi_`
-  entry. `NSHVC_RT_GSU_CACHE_FIRST` marks a Super FX program whose first instruction is
-  CACHE.
-- `spc_routines` lists the SPC700 routines; `uses` tells which ROM bytes each stands for,
-  so the right one runs when two sound programs put code at one address.
-- `spc_run` and `gsu_run` optionally replace the lookup with the game's own entry.
-
-The routine tables are what a decompilation's tags already generate; they are not written
-by hand.
-
-### 3. Switch it on
-
-```c
-int main(int argc, char **argv)
+NSHVC_MAIN(argc, argv)
 {
     return nshvc_main(&cart, argc, argv);
 }
 ```
 
-`nshvc_main` is the console as an application: it opens the window, renderer, sound and
-controllers, loads the save, powers on, runs the reset vector's C and plays until the window
-closes. The same program runs headless:
+`NSHVC_MAIN` is `main` everywhere but iOS, where the host keeps the process's own main and
+runs the game's on a thread. `nshvc_main` opens the window, renderer, sound and controllers,
+loads the save, powers on, runs the reset vector's C and plays until the window closes.
+[examples/hello/hello.c](examples/hello/hello.c) is a whole cartridge in one file, and
+[docs/nativeshvc.md](docs/nativeshvc.md#plugging-a-game-in) describes every field.
+
+The same program runs headless, for tests and comparisons:
 
 ```bash
 game --headless --frames 600 --script steps.txt --out shots --sound out.raw
@@ -267,27 +265,11 @@ The script's steps are `wait N`, `hold B+B N`, `press B`, `shot NAME`, `dump NAM
 
 ### 4. Or bring your own loop
 
-An app with its own loop (a libretro core, an engine, a builder) uses the lower calls:
-
-```c
-nshvc_power(&cart);
-for (;;) {
-    nshvc_set_joypad(0, buttons);          /* NSHVC_B, NSHVC_A, NSHVC_START ... */
-    nshvc_run_frame();                     /* runs to the next vertical blank */
-
-    int w, h;
-    const uint32_t *px = nshvc_picture(&w, &h);   /* 0xFFRRGGBB, 256 or 512 by 224 or 239 */
-    int16_t lr[2 * 1024];
-    int n = nshvc_audio_take(lr, 1024);    /* stereo at NSHVC_DSP_RATE (32,040 Hz) */
-    /* show px, play n frames of lr */
-}
-```
-
-The S-CPU's C runs on a coroutine of its own; `nshvc_run_frame` returns between two of its
-accesses, at the vertical blank's start. For checks and saves an app can read the machine's
-memory (`nshvc_wram`, `nshvc_sram`, `nshvc_aram`, `nshvc_vram`, `nshvc_cgram`, `nshvc_oam`),
-peek at the bus with no side effects (`nshvc_peek`), and hook each frame and each S-CPU
-write (`nshvc_set_frame_hook`, `nshvc_set_write_hook`).
+An app with its own loop (a libretro core, an engine, a builder) calls `nshvc_power` once,
+then `nshvc_run_frame` each frame, and takes the picture (`nshvc_picture`) and the sound
+(`nshvc_audio_take`) itself, setting the buttons with `nshvc_set_joypad`. It can read the
+machine's memory, peek at the bus with no side effects, and hook each frame and each S-CPU
+write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
 
 ### What the decompilation does not have to do
 

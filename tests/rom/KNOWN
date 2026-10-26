@@ -1,0 +1,39 @@
+# Tests that differ from the reference for a reason measured and not yet
+# closed. tests/rom/run.py reports each as KNOWN, never as ok; a known test
+# that starts passing is reported too, so this list is kept true.
+#
+# The residual: an IRQ that wakes the CPU from WAI starts its handler on a
+# 6-clock grid whose phase differs from the reference's by 2-4 master
+# clocks (measured: probe_scroll_00_*, probe_cgcol_*, irq_latch_*; no
+# single wake cost fits all three; tests/README.md notes the evidence).
+# Mid-line effects from such an IRQ land one to two pixels (or palette
+# entries) off; the CPU-visible timing (the counters it latches) matches on
+# 36 of 38 dots.
+irq_dot_40_140        WAI wake phase: a mid-line scroll split on the next tile
+irq_dot_40_339        WAI wake phase: an end-of-line IRQ's split, 8 pixels
+irq_latch_40_0        WAI wake phase: latched dot 2 off (IRQ at H 0)
+irq_latch_60_138      WAI wake phase: latched dot 2 off, beside the refresh
+irq_latch_60_336      WAI wake phase: latched dot 1 off
+probe_scroll_00_14_07 WAI wake phase: brightness split 1 pixel off
+probe_scroll_00_35_07 WAI wake phase: brightness split 1 pixel off
+probe_scroll_00_56_07 WAI wake phase: brightness split 1 pixel off
+probe_scroll_00_77_07 WAI wake phase: brightness split 1 pixel off
+probe_scroll_00_98_07 WAI wake phase: brightness split 1 pixel off
+probe_scroll_00_119_07 WAI wake phase: brightness split 1 pixel off
+irq_reg_00_0          WAI wake phase: brightness split 1 pixel off
+irq_reg_2c_0          WAI wake phase: main-screen split 1 pixel off
+irq_reg_00_100        WAI wake phase: brightness split 1 pixel off
+probe_cgram_80_10_m1  WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgram_120_10_m1 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgram_160_10_m1 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgram_240_10_m1 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgram_280_10_m1 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_79_01_00_00  WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_118_01_00_00 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_131_01_00_00 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_170_01_00_00 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_209_01_00_00 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_248_01_00_00 WAI wake phase: mid-line colour lands 1-2 entries off
+probe_cgcol_287_01_00_00 WAI wake phase: mid-line colour lands 1-2 entries off
+irq_v                 WAI wake phase: mid-line colour and split, 1-2 off
+irq_hv_200            WAI wake phase: mid-line colours land 1-2 entries off
