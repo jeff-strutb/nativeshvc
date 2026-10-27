@@ -18,7 +18,8 @@ Version 0.1.0.
 
 **What is not done:**
 
-- **Stunt Race FX does not yet match its cartridge.** All 21 of its plays still differ from
+- **Stunt Race FX does not yet match its cartridge.** All 21 plays the check compares (its
+  23 recorded plays, less 2 that poke memory) still differ from
   the original cartridge on the reference. Every difference traced so far is in the game's
   C (timing it states in lumps that a DMA or HDMA can fall inside, being converted to
   cycle-by-cycle time), not in the console.
@@ -71,8 +72,8 @@ each one, is in [tests/README.md](tests/README.md).
   nativeshvc matches every SPC700 access (time, address, value: the timers' counts and the
   ports' values), every sample and every S-CPU port read (8 seeds, a minute each). Given
   Stunt Race FX's own sound driver's writes, the DSP matches the cartridge's sound over all
-  23 plays (172 million samples); the game's own sound on nativeshvc still differs where
-  its S-CPU's timing does (above).
+  23 of its recorded plays (172 million samples); the game's own sound on nativeshvc still
+  differs where its S-CPU's timing does (above).
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the frames and draw
   overlays; they matched the CPU reference when last checked, before the latest console
   changes.
@@ -213,9 +214,11 @@ The S-DSP ([`mixer.c`](src/dsp/mixer.c): BRR decoding, Gaussian interpolation, e
 noise, pitch modulation, echo) makes stereo, 16-bit samples at 32,040 a second as the
 SPC700's clock runs. It works as the chip does, a clock at a time: each voice reads its
 registers and the sample data at its own clocks of the sample, and the echo its delay line,
-so a change the driver makes partway through a sample reaches exactly the voices it would. They are resampled to the device's rate by a 32-tap Kaiser-windowed
-sinc ([`resample.c`](src/dsp/resample.c)), its ratio trimmed by a fraction of a percent to
-keep a steady buffer, so the sound follows the game's pace without drifting or clicking.
+so a change the driver makes partway through a sample reaches exactly the voices it would.
+
+The samples are resampled to the device's rate by a 32-tap Kaiser-windowed sinc
+([`resample.c`](src/dsp/resample.c)), its ratio trimmed by a fraction of a percent to keep
+a steady buffer, so the sound follows the game's pace without drifting or clicking.
 
 ### The host
 
