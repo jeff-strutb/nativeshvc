@@ -12,6 +12,156 @@ nativeshvc was created by Jeffrey Wilbur. It began as the machine layer of the n
 [Stunt Race FX](https://github.com/jeff-strutb/stuntracefx) port, and was lifted out of it so
 that every Super Nintendo decompilation can share one console instead of building its own.
 
+## Project Purpose
+
+A decompilation that is byte exact and cycle exact recovers the game's code, but code alone
+does not play. On the console it sat in a machine: a bus that answers its addresses, a
+picture unit drawing what it wrote, a sound chip, DMA, interrupts, a controller, a battery,
+a television's frame rate. Each native port has had to rebuild all of that around its game.
+
+nativeshvc builds it once. Its purpose is the equivalent of putting a cartridge in the
+console and switching it on: a decompilation describes its cartridge, hands over its C, and
+gets a native program that plays on any platform with a host (macOS and iOS now; Windows
+and Linux to come), presented on the GPU at any window size, with sound, controllers and
+saves, at the console's own pace.
+
+It holds to the standard of the decompilations it serves. It runs no emulated CPU, does no
+high-level emulation of the game, and has no per-game fixes. The game's own C makes every
+access the original makes, in the original's order, and states the time the original spends
+between them; nativeshvc answers each access as the hardware does, at the hardware's time.
+A game whose C is cycle exact therefore runs on nativeshvc frame for frame as it ran on the
+console.
+
+Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
+console's numbers are its baseline, and a port may opt out of them (see
+[Extensions](#extensions)).
+
+## Using nativeshvc in a decompilation
+
+### 1. Build it
+
+CMake, C11, no dependencies for the core:
+
+```bash
+cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --build build/macos
+```
+
+`NSHVC_HOST` picks the host (`null`, the default, `macos`, `windows`, `ios` or `none`) and
+`NSHVC_RENDER` the renderer (`soft`, `metal`, `gl` or `vulkan`). `NSHVC_TESTS` and
+`NSHVC_EXAMPLES` build the tests and the examples. For iOS, add
+`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
+-DNSHVC_HOST=ios`.
+
+### 2. Write the C against the machine model
+
+The rules are [the game contract](docs/contract.md). Write each routine's C against
+`machine.h` and `spc.h`: every bus access through `rd8`/`wr8` (`spc_rd`/`spc_wr`) in the
+original's order, and the original's time between them through `cyc` (`spc_cyc`), cycle by
+cycle with `cycs` wherever a DMA or HDMA starts. Mark no instruction's end: the C is
+structured, not a trace. A cartridge chip's processor has the game's own machine model,
+with its chip. This is the same C the decompilation's verification harness checks against
+the original, unchanged. Each routine that is entered from an address (a vector, a
+computed call, a chip's program, an SPC700 routine) gets an `abi_` wrapper that takes its
+inputs from the register file and leaves its outputs there.
+
+### 3. Describe the cartridge and switch it on
+
+A cartridge is an `nshvc_cart`: its title and save name, its mapping (`NSHVC_LOROM`,
+`NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, or `NSHVC_CHIP` for a board its chip
+decodes) and region, its ROM (a
+whole image, or only the data pages with a reader for the rest, so no copy of the code
+ships), its RAM and battery, its expansion chip if it has one, and the tables of routines
+with C by address, which a decompilation's tags already generate.
+
+A cartridge's expansion chip is the game's, as it is the cartridge's on the console: the game
+implements it, or brings an implementation it owns, as an `nshvc_chip`
+([`cart.h`](include/nshvc/cart.h)), and nativeshvc gives it what the connector gives a chip
+(the S-CPU's accesses to the addresses it decodes, the master clock, the IRQ line, the ROM,
+the cartridge's RAM if the chip owns it). nativeshvc implements no chip and has no list of
+chips it supports: any chip a game brings plugs in the same way. A Super FX cartridge, for
+one, brings its Super FX as its `nshvc_chip` and uses `NSHVC_CHIP` with the chip's
+`rom_at` for the board's ROM. The game's main hands the cartridge to the console:
+
+```c
+NSHVC_MAIN(argc, argv)
+{
+    return nshvc_main(&cart, argc, argv);
+}
+```
+
+A game that uses other controllers than two joypads says so in `ports` (or plugs them in
+with `nshvc_plug` as it runs). It names its controls from `nshvc_player_source` and
+`nshvc_player_label`, and `nshvc_hooks.input` tells it when a player picks up another
+device.
+
+`NSHVC_MAIN` is `main` everywhere but iOS, where the host keeps the process's own main and
+runs the game's on a thread. `nshvc_main` opens the window, renderer, sound and controllers,
+loads the save, powers on, runs the reset vector's C and plays until the window closes.
+[examples/hello/hello.c](examples/hello/hello.c) is a whole cartridge in one file, and
+[docs/nativeshvc.md](docs/nativeshvc.md#plugging-a-game-in) describes every field.
+
+The same program runs headless, for tests and comparisons:
+
+```bash
+game --headless --frames 600 --script steps.txt --out shots --sound out.raw
+```
+
+A script plays the controllers and records what happens: `wait N`, `hold B+B N`,
+`press B`, `shot NAME` (the frame, as `DIR/NAME.ppm`), `dump NAME` (work RAM, the
+cartridge's RAM, the PPU's memories and a chip's RAM) and `repeat N ... end`; `--sound`
+writes the DSP's raw output.
+
+It also takes the steps of a decompilation's own test harness, so the same tests run on the
+reference and on the native build:
+
+- `poke` and `set` put bytes into work RAM, now or when the next call starts.
+- `call` runs one routine once, with the registers and frames it names, entered as the
+  reference's harness enters it: the console writes the harness's stub into work RAM (it
+  stays there, as on the reference) and does what that stub does itself (its pushes, its
+  time) before the routine's C; afterwards the machine is as it was, unless `keep` says the
+  game goes on from there.
+- `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
+  marks a safe point (`spc_at`, in [`tooling.h`](include/nshvc/tooling.h): not part of
+  the game contract).
+- `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
+  of the machine and cannot be copied, so the run forks instead: one process holds the
+  state while another goes on. A state that no process holds is rebuilt by replaying, from
+  power on, the steps that saved it (the script's own, or a play in `NSHVC_STATES`).
+  Without `fork` (Windows), every state is rebuilt that way: the run goes on in a new copy
+  of the program that replays what made the machine wanted (the same steps make the same
+  machine), and ends with its status. `NSHVC_SCRIPT_NOFORK=1` takes that path anywhere.
+
+Every step is listed in [`src/front/script.h`](src/front/script.h).
+
+### 4. Or bring your own loop
+
+An app with its own loop (a libretro core, an engine, a builder) calls `nshvc_power` once,
+then `nshvc_run_frame` each frame, and takes the picture (`nshvc_picture`) and the sound
+(`nshvc_audio_take`) itself, setting what the players hold with `nshvc_set_joypad`,
+`nshvc_set_mouse` and `nshvc_set_gun`. It can read the
+machine's memory, peek at the bus with no side effects, and hook each frame and each S-CPU
+write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
+
+### 5. Check its timing
+
+Two options show where a port's stated time and the console disagree, on any headless run:
+`NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
+needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
+against the original's cycles. The C can drop markers into that record with `nshvc_mark`
+([`tooling.h`](include/nshvc/tooling.h), outside the game contract), which takes no time,
+to line it up with the code that made it.
+
+### What the decompilation does not have to do
+
+It does not write a renderer, a mixer, a resampler, a window, controller handling (any of
+the console's controllers, from any native device), a save
+system, frame pacing, DMA, HDMA, interrupt delivery or a sound-unit boot. It does not ship
+the ROM's code: only its C, and the ROM's data or the player's own copy.
+
+What it does bring, besides its C, is its cartridge's own hardware: an expansion chip is
+the cartridge's, so the game implements it (or brings an implementation it owns) and plugs
+it into the connector (`cart.h`).
+
 ## Status
 
 Version 1.0.0. **The standard is finished:** the game contract, what a game writes against
@@ -81,30 +231,6 @@ each one, is in [tests/README.md](tests/README.md).
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
   the iOS simulator, Windows) compiles with no warnings.
-
-## Project Purpose
-
-A decompilation that is byte exact and cycle exact recovers the game's code, but code alone
-does not play. On the console it sat in a machine: a bus that answers its addresses, a
-picture unit drawing what it wrote, a sound chip, DMA, interrupts, a controller, a battery,
-a television's frame rate. Each native port has had to rebuild all of that around its game.
-
-nativeshvc builds it once. Its purpose is the equivalent of putting a cartridge in the
-console and switching it on: a decompilation describes its cartridge, hands over its C, and
-gets a native program that plays on any platform with a host (macOS and iOS now; Windows
-and Linux to come), presented on the GPU at any window size, with sound, controllers and
-saves, at the console's own pace.
-
-It holds to the standard of the decompilations it serves. It runs no emulated CPU, does no
-high-level emulation of the game, and has no per-game fixes. The game's own C makes every
-access the original makes, in the original's order, and states the time the original spends
-between them; nativeshvc answers each access as the hardware does, at the hardware's time.
-A game whose C is cycle exact therefore runs on nativeshvc frame for frame as it ran on the
-console.
-
-Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
-console's numbers are its baseline, and a port may opt out of them (see
-[Extensions](#extensions)).
 
 ## How it works
 
@@ -319,132 +445,6 @@ any screen size up to 1024x480, sprite X and Y extension bits, sprite line limit
 up to 256 KB in pages, an untimed mode with a vertical blank wait, and held interrupts. The front end adds key, touch
 and frame hooks, overlays, buttons the game holds itself, the safe area and the window's
 size. They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions).
-
-## Using nativeshvc in a decompilation
-
-### 1. Build it
-
-CMake, C11, no dependencies for the core:
-
-```bash
-cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --build build/macos
-```
-
-`NSHVC_HOST` picks the host (`null`, the default, `macos`, `windows`, `ios` or `none`) and
-`NSHVC_RENDER` the renderer (`soft`, `metal`, `gl` or `vulkan`). `NSHVC_TESTS` and
-`NSHVC_EXAMPLES` build the tests and the examples. For iOS, add
-`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
--DNSHVC_HOST=ios`.
-
-### 2. Write the C against the machine model
-
-The rules are [the game contract](docs/contract.md). Write each routine's C against
-`machine.h` and `spc.h`: every bus access through `rd8`/`wr8` (`spc_rd`/`spc_wr`) in the
-original's order, and the original's time between them through `cyc` (`spc_cyc`), cycle by
-cycle with `cycs` wherever a DMA or HDMA starts. Mark no instruction's end: the C is
-structured, not a trace. A cartridge chip's processor has the game's own machine model,
-with its chip. This is the same C the decompilation's verification harness checks against
-the original, unchanged. Each routine that is entered from an address (a vector, a
-computed call, a chip's program, an SPC700 routine) gets an `abi_` wrapper that takes its
-inputs from the register file and leaves its outputs there.
-
-### 3. Describe the cartridge and switch it on
-
-A cartridge is an `nshvc_cart`: its title and save name, its mapping (`NSHVC_LOROM`,
-`NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, or `NSHVC_CHIP` for a board its chip
-decodes) and region, its ROM (a
-whole image, or only the data pages with a reader for the rest, so no copy of the code
-ships), its RAM and battery, its expansion chip if it has one, and the tables of routines
-with C by address, which a decompilation's tags already generate.
-
-A cartridge's expansion chip is the game's, as it is the cartridge's on the console: the game
-implements it, or brings an implementation it owns, as an `nshvc_chip`
-([`cart.h`](include/nshvc/cart.h)), and nativeshvc gives it what the connector gives a chip
-(the S-CPU's accesses to the addresses it decodes, the master clock, the IRQ line, the ROM,
-the cartridge's RAM if the chip owns it). nativeshvc implements no chip and has no list of
-chips it supports: any chip a game brings plugs in the same way. A Super FX cartridge, for
-one, brings its Super FX as its `nshvc_chip` and uses `NSHVC_CHIP` with the chip's
-`rom_at` for the board's ROM. The game's main hands the cartridge to the console:
-
-```c
-NSHVC_MAIN(argc, argv)
-{
-    return nshvc_main(&cart, argc, argv);
-}
-```
-
-A game that uses other controllers than two joypads says so in `ports` (or plugs them in
-with `nshvc_plug` as it runs). It names its controls from `nshvc_player_source` and
-`nshvc_player_label`, and `nshvc_hooks.input` tells it when a player picks up another
-device.
-
-`NSHVC_MAIN` is `main` everywhere but iOS, where the host keeps the process's own main and
-runs the game's on a thread. `nshvc_main` opens the window, renderer, sound and controllers,
-loads the save, powers on, runs the reset vector's C and plays until the window closes.
-[examples/hello/hello.c](examples/hello/hello.c) is a whole cartridge in one file, and
-[docs/nativeshvc.md](docs/nativeshvc.md#plugging-a-game-in) describes every field.
-
-The same program runs headless, for tests and comparisons:
-
-```bash
-game --headless --frames 600 --script steps.txt --out shots --sound out.raw
-```
-
-A script plays the controllers and records what happens: `wait N`, `hold B+B N`,
-`press B`, `shot NAME` (the frame, as `DIR/NAME.ppm`), `dump NAME` (work RAM, the
-cartridge's RAM, the PPU's memories and a chip's RAM) and `repeat N ... end`; `--sound`
-writes the DSP's raw output.
-
-It also takes the steps of a decompilation's own test harness, so the same tests run on the
-reference and on the native build:
-
-- `poke` and `set` put bytes into work RAM, now or when the next call starts.
-- `call` runs one routine once, with the registers and frames it names, entered as the
-  reference's harness enters it: the console writes the harness's stub into work RAM (it
-  stays there, as on the reference) and does what that stub does itself (its pushes, its
-  time) before the routine's C; afterwards the machine is as it was, unless `keep` says the
-  game goes on from there.
-- `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
-  marks a safe point (`spc_at`, in [`tooling.h`](include/nshvc/tooling.h): not part of
-  the game contract).
-- `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
-  of the machine and cannot be copied, so the run forks instead: one process holds the
-  state while another goes on. A state that no process holds is rebuilt by replaying, from
-  power on, the steps that saved it (the script's own, or a play in `NSHVC_STATES`).
-  Without `fork` (Windows), every state is rebuilt that way: the run goes on in a new copy
-  of the program that replays what made the machine wanted (the same steps make the same
-  machine), and ends with its status. `NSHVC_SCRIPT_NOFORK=1` takes that path anywhere.
-
-Every step is listed in [`src/front/script.h`](src/front/script.h).
-
-### 4. Or bring your own loop
-
-An app with its own loop (a libretro core, an engine, a builder) calls `nshvc_power` once,
-then `nshvc_run_frame` each frame, and takes the picture (`nshvc_picture`) and the sound
-(`nshvc_audio_take`) itself, setting what the players hold with `nshvc_set_joypad`,
-`nshvc_set_mouse` and `nshvc_set_gun`. It can read the
-machine's memory, peek at the bus with no side effects, and hook each frame and each S-CPU
-write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
-
-### 5. Check its timing
-
-Two options show where a port's stated time and the console disagree, on any headless run:
-`NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
-needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
-against the original's cycles. The C can drop markers into that record with `nshvc_mark`
-([`tooling.h`](include/nshvc/tooling.h), outside the game contract), which takes no time,
-to line it up with the code that made it.
-
-### What the decompilation does not have to do
-
-It does not write a renderer, a mixer, a resampler, a window, controller handling (any of
-the console's controllers, from any native device), a save
-system, frame pacing, DMA, HDMA, interrupt delivery or a sound-unit boot. It does not ship
-the ROM's code: only its C, and the ROM's data or the player's own copy.
-
-What it does bring, besides its C, is its cartridge's own hardware: an expansion chip is
-the cartridge's, so the game implements it (or brings an implementation it owns) and plugs
-it into the connector (`cart.h`).
 
 ## Licence
 
