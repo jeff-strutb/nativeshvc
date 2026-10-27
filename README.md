@@ -163,9 +163,10 @@ accesses. Where a DMA or HDMA can fall inside that time, the C states it cycle b
 instead (`cycs`, each hex digit one cycle's clocks), so the transfer lands on the right
 cycle edge. As the clock passes each line's horizontal blank, that line is drawn and HDMA
 runs; at the vertical blank's start come the NMI, the joypads' automatic read and the
-frame's end. Interrupts are taken only where the S-CPU's C touches the bus, never between
-the two bytes of one word, as an instruction boundary is the only place the hardware takes
-them.
+frame's end. Interrupts are taken only at the instruction boundaries the S-CPU's C states
+(`cpu_boundary`), as the hardware takes them only between instructions: the one the CPU
+decided on as the instruction's last cycle began. The bus never infers a boundary from the
+accesses.
 
 ### Three processors, one thread
 

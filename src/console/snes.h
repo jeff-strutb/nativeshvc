@@ -112,22 +112,21 @@ void snes_fatal(const char *fmt, ...);
 uint8_t snes_peek(uint32_t addr);
 /* the clocks one S-CPU access to addr takes on the bus */
 unsigned snes_access_clocks(uint32_t addr);
-/* the place between two instructions where an interrupt may be taken */
-void snes_cpu_interrupts(void);
-/* an instruction boundary the C marks (machine.h's cpu_boundary): an
-   interrupt due is taken here, and from the first no longer at accesses */
+/* an instruction's end (machine.h's cpu_boundary, or one of an
+   instruction the console runs): the only place an interrupt is taken, the
+   one the CPU decided on as the instruction's last cycle began */
 void snes_cpu_boundary(void);
-/* a byte the interrupt sequence pushes: a write where no interrupt is taken */
+/* a byte the interrupt sequence pushes (NSHVC_CYCLOG's P line) */
 void snes_interrupt_push(uint32_t addr, uint8_t value);
-/* a read or write inside an instruction the console runs (a pull, a
-   store): no interrupt is taken there */
+/* a read or write of an instruction the console runs (a pull, a store):
+   not audited */
 uint8_t snes_cpu_read_within(uint32_t addr);
 void snes_cpu_write_within(uint32_t addr, uint8_t value);
 /* whether an interrupt is due: the NMI, or the IRQ line (masked or not) */
 int snes_interrupt_due(void);
 /* an interrupt would be taken now (due, and the IRQ not masked) */
 int snes_interrupt_taken_now(void);
-/* clocks with no access (a delay loop), interrupts taken along the way */
+/* clocks with no access and no instruction end (cpu_idle) */
 void snes_cpu_wait(uint32_t clocks);
 /* time the S-CPU spends between two of its accesses: the decomp's cyc() */
 void snes_cpu_clocks(uint32_t clocks);

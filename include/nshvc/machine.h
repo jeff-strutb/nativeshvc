@@ -34,6 +34,15 @@ static inline void wr16(uint32_t addr, uint16_t value)
     wr8((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8));
 }
 
+/* A 16-bit read-modify-write instruction's write (ASL, LSR, ROL, ROR, INC,
+   DEC, TSB, TRB on memory): the high byte first, then the low, as the CPU
+   makes them. */
+static inline void wr16_rmw(uint32_t addr, uint16_t value)
+{
+    wr8((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8));
+    wr8(addr, (uint8_t)value);
+}
+
 static inline uint32_t rd24(uint32_t addr)
 {
     return rd16(addr) | (uint32_t)rd8((addr + 2) & 0xFFFFFF) << 16;
@@ -111,16 +120,15 @@ void cpu_restart(uint32_t at, void (*entry)(void));
    nativeshvc's, for code the original runs WAI in.) */
 void cpu_wai(uint32_t at);
 /* An instruction boundary: the original's next instruction starts here.
-   The CPU takes an interrupt only between instructions; a C that marks
-   each boundary gets its interrupts exactly there, and from its first
-   mark no longer at its accesses. Without marks, an interrupt is taken at
-   the next access the C makes (never between the two bytes of a word, nor
-   between a read and its write back). (An extension of the decomp
+   The CPU takes an interrupt only between instructions, so these are the
+   only places the C's interrupts are taken (besides the instructions the
+   console runs for it: cpu_wai and cpu_loop_forever); a C that marks
+   none takes none. (An extension of the decomp
    machine model: nativeshvc's.) */
 void cpu_boundary(void);
 /* The CPU decides on an interrupt as an instruction's last cycle begins,
-   with the I flag as it is then: a C that marks its boundaries states
-   each instruction's last cycle on its own (the access that ends it, or a
+   with the I flag as it is then: the C states each instruction's last
+   cycle on its own (the access that ends it, or a
    cyc of that one cycle, or cpu_implied). */
 /* The internal cycle that ends a two-cycle implied instruction at `at`
    (INX, TAX, CLC, NOP, XCE...): 6 clocks, or, with an interrupt to be
@@ -130,7 +138,9 @@ void cpu_implied(uint32_t at);
 /* Time the original spends with no access the C makes: a delay loop's
    turns (its fetches and internal cycles), `clocks` master clocks (21.477
    MHz). The rest of the machine runs meanwhile, so the time matters: the
-   sound CPU acting on a command before the next one arrives. */
+   sound CPU acting on a command before the next one arrives. No
+   interrupt is taken in it: a loop the original takes interrupts in
+   states each turn's instructions (cpu_boundary at each). */
 void cpu_idle(uint32_t clocks);
 /* The time the original spends here between two bus accesses, besides
    their own: its instruction fetches and internal cycles, `clocks` master

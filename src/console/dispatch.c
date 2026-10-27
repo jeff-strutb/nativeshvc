@@ -118,7 +118,7 @@ void cpu_loop_forever(uint32_t at)
     for (;;) {
         /* BRA to itself: its opcode and operand fetched, an internal cycle */
         cpu_cycle(fetch(at)); cpu_cycle(fetch(at + 1)); cpu_cycle(6);
-        snes_cpu_interrupts();
+        snes_cpu_boundary();
     }
 }
 
@@ -133,7 +133,7 @@ void cpu_wai(uint32_t at)
     while (!snes_interrupt_due())
         cpu_cycle(6);
     cpu_cycle(6); cpu_cycle(6);
-    snes_cpu_interrupts();
+    snes_cpu_boundary();
 }
 void cyc(uint32_t clocks) { snes_cpu_stated(clocks, __builtin_return_address(0)); }
 void nshvc_mark(uint32_t id) { snes_cyclog_mark(id); }
@@ -431,7 +431,7 @@ static void unit_run(uint32_t at)
         uint8_t op = snes_peek(at);
         int call = 0, word = !(cpu.p & P_M);
         cpu.pc = at;
-        snes_cpu_interrupts();
+        snes_cpu_boundary();
 #define F(k) cpu_cycle(fetch(pb | (uint16_t)(at + (k))))
 #define B(k) snes_peek(pb | (uint16_t)(at + (k)))
 #define NEXT(n) (at = pb | (uint16_t)(at + (n)))
@@ -635,7 +635,7 @@ void snes_unit_start(void)
     cpu.pc = unit_loop;
     for (;;) {
         cpu_cycle(fetch(unit_loop)); cpu_cycle(fetch(unit_loop + 1)); cpu_cycle(6);
-        snes_cpu_interrupts();
+        snes_cpu_boundary();
     }
 }
 
