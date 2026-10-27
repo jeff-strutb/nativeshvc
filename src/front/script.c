@@ -170,74 +170,6 @@ static uint32_t parse_addr(const char *t)
     return (uint32_t)strtoul(ab, NULL, 16);
 }
 
-/* fx BANK:ADDR stop=ADDR [rN=VALUE...] [frames=N] [keep]: a stub at
-   $7F:F000 that does what the game's GsuRun does (the registers named,
-   the program bank, the screen mode $0374 | $18, SFR cleared, R15 = the
-   routine, which starts it, GO polled until it stops, the screen mode put
-   back), staged as a set and run as a call */
-static void fx(List *l, const char *line, int lineno, const char *path)
-{
-    char w[24][1024], set[1024], call[256];
-    uint8_t b[160];
-    long reg[16], stop = -1;
-    uint32_t addr;
-    int n = words(line, w, 24), m = 0, i, o;
-    if (n < 3)
-        nshvc_fatal("%s:%d: fx BANK:ADDR stop=ADDR [rN=VALUE...] [frames=N] [keep]", path, lineno);
-    addr = parse_addr(w[1]);
-    snprintf(call, sizeof call, "call 7F:F000 p=30 db=00 d=0000");
-    for (i = 0; i < 16; i++)
-        reg[i] = -1;
-    for (i = 2; i < n; i++) {
-        const char *eq = strchr(w[i], '=');
-        unsigned long v = eq ? strtoul(eq + 1, NULL, 16) : 0;
-        if (!strcmp(w[i], "keep") || !strncmp(w[i], "frames=", 7)) {
-            strncat(call, " ", sizeof call - strlen(call) - 1);
-            strncat(call, w[i], sizeof call - strlen(call) - 1);
-        } else if (eq && !strncmp(w[i], "stop=", 5)) {
-            stop = (long)(v & 0xFFFF);
-        } else if (eq && w[i][0] == 'r') {
-            int k = atoi(w[i] + 1);
-            if (k < 0 || k > 14)
-                nshvc_fatal("%s:%d: fx: no register %s", path, lineno, w[i]);
-            reg[k] = (long)(v & 0xFFFF);
-        } else {
-            nshvc_fatal("%s:%d: fx: bad option %s", path, lineno, w[i]);
-        }
-    }
-    if (stop < 0)
-        nshvc_fatal("%s:%d: fx: stop=ADDR is needed (R11, where the routine returns)", path, lineno);
-    reg[11] = stop;
-    b[m++] = 0xC2; b[m++] = 0x30;                                   /* REP #$30 */
-    for (i = 0; i < 15; i++)
-        if (reg[i] >= 0) {
-            b[m++] = 0xA9; b[m++] = (uint8_t)reg[i]; b[m++] = (uint8_t)(reg[i] >> 8);    /* LDA #v */
-            b[m++] = 0x8D; b[m++] = (uint8_t)(2 * i); b[m++] = 0x30;    /* STA $30nn */
-        }
-    b[m++] = 0xE2; b[m++] = 0x20;                                   /* SEP #$20 */
-    b[m++] = 0xA9; b[m++] = (uint8_t)(addr >> 16);                  /* LDA #bank */
-    b[m++] = 0x8D; b[m++] = 0x34; b[m++] = 0x30;                    /* STA $3034 (PBR) */
-    b[m++] = 0xAD; b[m++] = 0x74; b[m++] = 0x03;                    /* LDA $0374 */
-    b[m++] = 0x09; b[m++] = 0x18;                                   /* ORA #$18 */
-    b[m++] = 0x8D; b[m++] = 0x3A; b[m++] = 0x30;                    /* STA $303A (SCMR) */
-    b[m++] = 0x9C; b[m++] = 0x30; b[m++] = 0x30;                    /* STZ $3030 (SFR) */
-    b[m++] = 0xC2; b[m++] = 0x20;                                   /* REP #$20 */
-    b[m++] = 0xA9; b[m++] = (uint8_t)addr; b[m++] = (uint8_t)(addr >> 8);           /* LDA #routine */
-    b[m++] = 0x8D; b[m++] = 0x1E; b[m++] = 0x30;                    /* STA $301E: R15, starts it */
-    b[m++] = 0xE2; b[m++] = 0x20;                                   /* SEP #$20 */
-    b[m++] = 0xAD; b[m++] = 0x30; b[m++] = 0x30;                    /* poll: LDA $3030 */
-    b[m++] = 0x29; b[m++] = 0x20;                                   /* AND #$20 */
-    b[m++] = 0xD0; b[m++] = 0xF9;                                   /* BNE poll */
-    b[m++] = 0xAD; b[m++] = 0x74; b[m++] = 0x03;                    /* LDA $0374 */
-    b[m++] = 0x8D; b[m++] = 0x3A; b[m++] = 0x30;                    /* STA $303A */
-    b[m++] = 0x60;                                                  /* RTS */
-    o = snprintf(set, sizeof set, "set 7FF000 ");
-    for (i = 0; i < m; i++)
-        o += snprintf(set + o, sizeof set - (size_t)o, i ? ",%02X" : "%02X", b[i]);
-    add_text(l, S_SET, set, lineno);
-    add_text(l, S_CALL, call, lineno);
-}
-
 /* lines [lo, hi) of the script, expanded */
 static void script_range(List *l, char **lines, int lo, int hi, const char *path)
 {
@@ -271,8 +203,6 @@ static void script_range(List *l, char **lines, int lo, int hi, const char *path
             if (n < 2)
                 nshvc_fatal("%s:%d: %s ADDR [options]", path, i + 1, cmd);
             add_text(l, cmd[0] == 'c' ? S_CALL : S_SPCCALL, lines[i], i + 1);
-        } else if (!strcmp(cmd, "fx")) {
-            fx(l, lines[i], i + 1, path);
         } else if (!strcmp(cmd, "repeat")) {
             int depth = 0, j, k = atoi(a);
             for (j = i + 1; j < hi; j++) {
@@ -375,7 +305,7 @@ static void shot(const char *name)
     fclose(f);
 }
 
-/* the cartridge's chip's own RAM (the Super FX's), or NULL */
+/* the cartridge's chip's own RAM (nshvc_chip.ram), or NULL */
 static uint8_t *chip_ram(uint32_t *n)
 {
     *n = 0;
@@ -391,7 +321,7 @@ static void dump(const char *name)
     write_file(name, ".wram", snes_wram(), 0x20000);
     write_file(name, ".sram", nshvc_sram(), nshvc_sram() ? n : 0);
     if (gr)
-        write_file(name, ".gsuram", gr, g);
+        write_file(name, ".chipram", gr, g);
     write_file(name, ".vram", nshvc_vram(), 0x10000 * PPU_VRAM_PAGES);
     write_file(name, ".cgram", nshvc_cgram(), 0x200);
     write_file(name, ".oam", nshvc_oam(), 544);
@@ -399,8 +329,7 @@ static void dump(const char *name)
 
 /* poke/set ADDR BYTE[,BYTE...] (the bytes split by commas or spaces): from
    S-CPU address ADDR into work RAM ($7E-$7F, or the low 8 KB mirror in
-   banks $00-$3F) or the chip's RAM ($70-$71), as the reference's harness
-   writes them */
+   banks $00-$3F), as the reference's harness writes them */
 /* plug PORT DEVICE (joypad, none, mouse, multitap, superscope, justifier,
    justifiers); pad N BITS (joypad N's buttons from now, hex; 0 and 1 are
    hold's); mouse PORT DX DY BUTTONS (motion for its next report); gun G X
@@ -445,13 +374,8 @@ static void poke(const Step *s)
         p = snes_wram_rw();
         size = 0x20000;
         at = (bank - 0x7E) << 16 | off;
-    } else if (bank == 0x70 || bank == 0x71) {
-        p = chip_ram(&size);
-        at = (bank - 0x70) << 16 | off;
-        if (!p)
-            nshvc_fatal("%s:%d: %s: the cartridge has no chip RAM at $%06X", path, s->line, w[0], (unsigned)a);
     } else {
-        nshvc_fatal("%s:%d: %s: $%06X is neither work RAM nor the chip's RAM", path, s->line, w[0], (unsigned)a);
+        nshvc_fatal("%s:%d: %s: $%06X is not work RAM", path, s->line, w[0], (unsigned)a);
         return;
     }
     for (i = 2; i < n; i++) {

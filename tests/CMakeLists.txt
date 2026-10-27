@@ -27,9 +27,9 @@ target_include_directories(overlay_check PRIVATE ${PROJECT_SOURCE_DIR}/src/rende
 target_link_libraries(overlay_check PRIVATE nshvc)
 set_target_properties(overlay_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
-add_executable(gsu_ext unit/gsu_ext.c)
-target_link_libraries(gsu_ext PRIVATE nshvc_superfx)
-set_target_properties(gsu_ext PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(chip unit/chip.c)
+target_link_libraries(chip PRIVATE nshvc)
+set_target_properties(chip PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
 # the sound chip held to the reference's (tests/dsp/fuzz.py, and any run's
 # oracle --spclog), and the resampler to the exact signal

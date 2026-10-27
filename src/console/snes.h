@@ -2,7 +2,7 @@
  * snes.h: what the console's parts share (src/console, src/ppu, src/dsp,
  * src/front): the machine's time, its hooks and the calls between parts.
  * Not for games: a game sees nshvc.h and the machine model (machine.h,
- * gsu.h, spc.h).
+ * spc.h).
  *
  * Time. Each access the S-CPU's C makes takes the time that access takes on
  * the bus, and between two accesses the clock moves on by the time the C

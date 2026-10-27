@@ -36,7 +36,6 @@ void wr8(uint32_t addr, uint8_t value);
 nshvc_cart snes_cart;
 uint64_t snes_clock;
 uint8_t snes_mdr;
-int nshvc_rom_unheld;
 
 void (*snes_interrupt_hook)(int nmi);
 int (*snes_irq_masked)(void);
@@ -321,7 +320,11 @@ static void chip_sync(void)
 }
 
 /* the cartridge's RAM: the chip's when it owns it */
-uint8_t *snes_sram(void) { return chip && chip->ram ? chip->ram(NULL) : sram; }
+uint8_t *snes_sram(void)
+{
+    uint32_t n;
+    return chip && chip->ram ? chip->ram(&n) : sram;
+}
 uint32_t snes_sram_size(void)
 {
     uint32_t n = 0;
@@ -983,19 +986,12 @@ static int cart_decode(uint8_t bank, uint16_t off, uint32_t *at)
         *at = snes_rom_mirror(hi | (uint32_t)(b & 0x3F) << 16 | off);
         return CART_ROM;
     }
-    case NSHVC_SUPERFX:
-        if (b < 0x40) {
-            if (off >= 0x8000) {
-                *at = snes_rom_mirror((uint32_t)(b & 0x3F) << 15 | (off & 0x7FFF));
-                return CART_ROM;
-            }
-            return CART_NONE;
-        }
-        if (b < 0x60) {
-            *at = snes_rom_mirror((uint32_t)(b & 0x1F) << 16 | off);
+    case NSHVC_CHIP:
+        /* the board the chip is on decodes it (cart.h rom_at) */
+        if (chip && chip->rom_at && chip->rom_at((uint32_t)bank << 16 | off, at)) {
+            *at = snes_rom_mirror(*at);
             return CART_ROM;
         }
-        /* its registers and RAM: the chip's (nshvc_cart.chip) */
         return CART_NONE;
     }
     return CART_NONE;

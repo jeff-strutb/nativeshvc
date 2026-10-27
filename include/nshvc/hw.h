@@ -21,7 +21,6 @@
 #define A1T0L 0x004302u    /* DMA channel 0: A-bus address */
 #define A1B0 0x004304u     /* DMA channel 0: A-bus bank */
 #define DAS0L 0x004305u    /* DMA channel 0: byte count */
-#define GSU_SCMR 0x00303Au /* Super FX screen mode: who owns ROM (bit 4) and RAM (bit 3) */
 #define INIDISP 0x002100u   /* screen brightness and forced blank */
 #define OAMDATA 0x002104u   /* OAM data write */
 #define BG2HOFS 0x00210Fu   /* BG2 horizontal scroll (written twice) */
@@ -40,9 +39,6 @@
 #define MPYM 0x002135u      /* multiplier result, middle byte (then high at $2136) */
 #define JOY1L 0x004218u     /* joypad 1 auto-read result */
 #define JOY2L 0x00421Au     /* joypad 2 auto-read result */
-#define GSU_R15 0x00301Eu   /* Super FX program counter; writing it starts the Super FX */
-#define GSU_SFR 0x003030u   /* Super FX status (bit 5: running) */
-#define GSU_PBR 0x003034u   /* Super FX program bank */
 
 /* The rest of the register set, by its standard names. */
 /* PPU registers */
@@ -206,29 +202,5 @@
 #define A2A7L 0x004378u
 #define A2A7H 0x004379u
 #define NTRL7 0x00437Au
-/* Super FX registers */
-#define GSU_R0 0x003000u
-#define GSU_R1 0x003002u
-#define GSU_R2 0x003004u
-#define GSU_R3 0x003006u
-#define GSU_R4 0x003008u
-#define GSU_R5 0x00300Au
-#define GSU_R6 0x00300Cu
-#define GSU_R7 0x00300Eu
-#define GSU_R8 0x003010u
-#define GSU_R9 0x003012u
-#define GSU_R10 0x003014u
-#define GSU_R11 0x003016u
-#define GSU_R12 0x003018u
-#define GSU_R13 0x00301Au
-#define GSU_R14 0x00301Cu
-#define GSU_BRAMR 0x003033u
-#define GSU_ROMBR 0x003036u
-#define GSU_CFGR 0x003037u
-#define GSU_SCBR 0x003038u
-#define GSU_CLSR 0x003039u
-#define GSU_VCR 0x00303Bu
-#define GSU_RAMBR 0x00303Cu
-#define GSU_CBR 0x00303Eu
 
 #endif

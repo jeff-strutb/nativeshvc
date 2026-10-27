@@ -13,7 +13,7 @@
  *
  * And the steps of Stunt Race FX's harness (sfxbox), as it runs them:
  *   poke ADDR BYTE[,BYTE...]   bytes into work RAM ($7E-$7F, the low 8 KB in
- *                        banks $00-$3F) or the chip's RAM ($70-$71), now
+ *                        banks $00-$3F), now
  *   set ADDR BYTE[,BYTE...]    the same, written when the next call starts
  *   call ADDR [long] [keep] [noreturn] [a= x= y= p= db= d=] [frames=N]
  *        [press=B@F] [frame=PPDD] [php] [phb] [rti=PP] [vblank]
@@ -23,9 +23,6 @@
  *                        on from where it was, the call's changes kept;
  *                        noreturn: one that does not return in its frames
  *                        is left running)
- *   fx BANK:ADDR stop=ADDR [rN=V...] [frames=N] [keep]
- *                        a Super FX program started as the game starts one
- *                        (a stub at $7F:F000, run as a call)
  *   save NAME            the machine as it is, for a load
  *   load PATH            the machine as state NAME (PATH's file name less
  *                        .state) left it: saved by this run, else replayed
@@ -42,7 +39,7 @@
  *   mouse PORT DX DY B   the mouse's motion and buttons the next frame
  *   gun G X Y B          light gun G points at dot X, line Y, with buttons
  *                        B (nshvc.h NSHVC_GUN_*), from now
- *   dump NAME also writes the chip's own RAM as DIR/NAME.gsuram.
+ *   dump NAME also writes the cartridge chip's own RAM as DIR/NAME.chipram.
  * save, load and a call without keep fork (script.c).
  *
  * Buttons: B Y SELECT START UP DOWN LEFT RIGHT A X L R, player 1; 2. before

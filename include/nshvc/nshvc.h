@@ -6,13 +6,13 @@
  * clock, work RAM, the cartridge's ROM and RAM in its mapping, the CPU's
  * registers (interrupts, timers, multiplier and divider, joypads), DMA and
  * HDMA, the PPU, the sound unit (its RAM, ports, timers, boot ROM protocol)
- * and the S-DSP, the Super FX's registers, RAM, bus and pixel caches; and
- * the machine's surroundings: a window, a GPU renderer, sound out, the
+ * and the S-DSP; the cartridge connector (cart.h), into which a cartridge's
+ * own chip plugs (the chip is the game's: nativeshvc has none); and the
+ * machine's surroundings: a window, a GPU renderer, sound out, the
  * controllers, the battery save, the frame's pace. The processors are the
  * game's own C, written against the machine model in machine.h (the
- * S-CPU), gsu.h (the Super FX) and spc.h (the SPC700): every access the
- * original makes, through rd8/wr8, gsu_rd8/gsu_wr8/gsu_plot and spc_rd/
- * spc_wr, and the time between them (cyc, gsu_code, spc_cyc).
+ * S-CPU) and spc.h (the SPC700): every access the original makes, through
+ * rd8/wr8 and spc_rd/spc_wr, and the time between them (cyc, spc_cyc).
  *
  * A game describes its cartridge (nshvc_cart: its ROM and mapping, its RAM,
  * the routines with C by address) and calls nshvc_main, which runs it as
@@ -45,28 +45,25 @@ typedef enum {
     NSHVC_HIROM,       /* ROM in 64 KB banks at $40-$7D, $C0-$FF (and $00-$3F:8000); RAM at $20-$3F:6000-$7FFF */
     NSHVC_EXLOROM,     /* LoROM past 4 MB: $80-$FF the first 4 MB, $00-$7D the rest */
     NSHVC_EXHIROM,     /* HiROM past 4 MB: $C0-$FF the first 4 MB, $40-$7D the rest; RAM as HiROM's */
-    NSHVC_SUPERFX      /* the Super FX's board: LoROM at $00-$3F:8000, all of ROM at $40-$5F; the rest (its
-                          registers, its RAM) the chip's (nshvc_cart.chip: nshvc/superfx.h) */
+    NSHVC_CHIP         /* the cartridge's chip decodes all of it: its ROM where the chip says
+                          (nshvc_chip.rom_at), the rest the chip's own answers (cart.h) */
 } nshvc_map;
 
 typedef enum { NSHVC_NTSC = 0, NSHVC_PAL = 1 } nshvc_region;
 
 /* Who reads a byte of ROM (for a cartridge that answers reads itself,
-   nshvc_cart.rom_read). */
+   nshvc_cart.rom_read): the S-CPU, DMA, a look with no effect, or the
+   cartridge's chip (cart.h nshvc_cart_rom), which may add bits of its own
+   from NSHVC_ROM_CHIP_OWN up; the console passes them on as given. */
 enum {
-    NSHVC_ROM_CPU = 1, NSHVC_ROM_DMA = 2, NSHVC_ROM_PEEK = 4, NSHVC_ROM_GSU = 8,
-    /* with NSHVC_ROM_GSU: the ROM buffer's fill, a byte the program may
-       never use: a byte the cartridge does not hold reads 0, and sets
-       nshvc_rom_unheld (gsu.h's romdr_unheld) */
-    NSHVC_ROM_FETCH = 16
+    NSHVC_ROM_CPU = 1, NSHVC_ROM_DMA = 2, NSHVC_ROM_PEEK = 4, NSHVC_ROM_CHIP = 8,
+    NSHVC_ROM_CHIP_OWN = 0x100
 };
-extern int nshvc_rom_unheld;
 
 /* A routine with C, at the 24-bit address its code starts at: abi is its
-   entry (machine.h's register file in, its results there). For a Super FX
-   program (an address its R15 starts at, PBR:R15), flags says whether its
-   first instruction is CACHE. */
-enum { NSHVC_RT_GSU_CACHE_FIRST = 1 };
+   entry (machine.h's register file in, its results there). flags: the
+   cartridge's own (its chip's, for the programs it runs); the console
+   reads none. */
 typedef struct {
     uint32_t addr;
     void (*abi)(void);
@@ -110,7 +107,7 @@ typedef struct nshvc_cart {
     uint8_t (*rom_read)(uint32_t off, int who);
 
     /* The cartridge's RAM: sram_size bytes (0 none); a chip that owns the
-       RAM (its ram member: the Super FX's) takes its size from here.
+       RAM (its ram member) takes its size from here.
        battery: kept in the save folder between runs. */
     uint32_t sram_size;
     int battery;
@@ -120,22 +117,19 @@ typedef struct nshvc_cart {
 
     /* The routines with C (sorted by address): the reset and interrupt
        vectors' code, every computed call's and jump's target (machine.h's
-       call_routine, jump_routine), every Super FX program. */
+       call_routine, jump_routine), and any its chip runs by address. */
     const nshvc_routine *routines;
     int routine_count;
     const nshvc_spc_routine *spc_routines;   /* sorted by APU address */
     int spc_routine_count;
 
     /* Optional: where the SPC700 starts at APU address addr after the boot
-       ROM (default: spc_routines); where a Super FX program starts
-       (default: routines). Neither returns until that code ends (the
-       SPC700's never does; a Super FX program's at its STOP). */
+       ROM (default: spc_routines). It never returns. */
     void (*spc_run)(uint16_t addr);
-    void (*gsu_run)(uint8_t bank, uint16_t addr);
 
     /* The cartridge's expansion chip (cart.h), or NULL: the cartridge's
        own hardware, which the console's bus gives the addresses it decodes
-       (the game's: it brings its chip, as nshvc/superfx.h's nshvc_superfx). */
+       (the game's: it brings its chip). */
     const nshvc_chip *chip;
 
     /* What is plugged into the controller ports at power on
@@ -275,12 +269,11 @@ void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 /* Untimed: the S-CPU's code runs without spending the console's time (its
    accesses and stated cycles take none), so a stretch of the game's work
    takes no frames at all; interrupt handlers stay timed, but for code run
-   in one with interrupts held (nshvc_hold_interrupts: from the frame hook). A Super FX
-   program started meanwhile runs to its STOP at once (the S-CPU's next
-   look at it). A restart (machine.h cpu_restart: the stack reset, every
+   in one with interrupts held (nshvc_hold_interrupts: from the frame hook).
+   The master clock stands still meanwhile (nshvc_cart_clock), for the
+   cartridge's chip as for the console. A restart (machine.h cpu_restart: the stack reset, every
    call dropped) ends it. Waiting on time while untimed is a fatal error:
-   20,000,000 reads with no write between, the Super FX waiting for its
-   bus, a loop for ever. Off (the default), the console is exact. */
+   20,000,000 reads with no write between, a loop for ever. Off (the default), the console is exact. */
 void nshvc_set_untimed(int on);
 int nshvc_untimed(void);   /* untimed as it stands now */
 /* The clock run on, timed, to the next vertical blank's start (the NMI,
@@ -333,8 +326,8 @@ void nshvc_ext_layer_page(int layer, int page);
    the hold ends. For code an app runs in the game's machine outside the
    game's own flow (from the frame hook: an in-between frame drawn, the
    machine put back after), which the game's handlers must not see. The
-   Super FX's interrupt (SFR's IRQ bit, the cartridge's IRQ line) is put
-   back as the hold ends to what it was as the hold began. */
+   cartridge's chip is told (nshvc_chip.hold), so it can put its own
+   interrupt back as the hold ends to what it was as the hold began. */
 void nshvc_hold_interrupts(int on);
 
 /* ---- the front end's hooks, for the game's own additions ------------------------- */

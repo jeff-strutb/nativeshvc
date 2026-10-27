@@ -18,13 +18,6 @@ Version 0.1.0.
 
 **What is not done:**
 
-- **Stunt Race FX does not yet match its cartridge.** All 21 plays the check compares (its
-  23 recorded plays, less 2 that poke memory) still differ from
-  the original cartridge on the reference. Every difference traced so far is in the game's
-  C (timing it states in lumps that a DMA or HDMA can fall inside, being converted to
-  cycle-by-cycle time), not in the console.
-- **Stunt Race FX's unit tests can't match yet.** Its 325 unit scripts all start from
-  saved states past frame 70, where the plain play already differs from the cartridge.
 - **The Windows build** is cross-built with MinGW but has never been run, and saving and
   loading states, and calls that put the machine back, need `fork`, so they don't work on
   Windows.
@@ -39,9 +32,9 @@ each one, is in [tests/README.md](tests/README.md).
 - **Test cartridges:** 1,060 of the 1,164 console test cartridges match the reference.
   The other 104 measure interrupt latency and differ by it alone: the one exception to
   cycle exactness (see Time), each listed in `tests/rom/KNOWN`.
-- **Cartridges:** LoROM, HiROM, ExLoROM, ExHiROM and Super FX mappings, including
-  mirroring for ROM sizes that are not a power of two, and cartridge RAM; NTSC and PAL
-  frame lengths.
+- **Cartridges:** LoROM, HiROM, ExLoROM and ExHiROM mappings, including mirroring for ROM
+  sizes that are not a power of two, and cartridge RAM; a board its own chip decodes,
+  through the cartridge connector; NTSC and PAL frame lengths.
 - **Picture:** modes 0 to 7, 16x16 tiles, offset-per-tile (modes 2, 4, 6), direct colour,
   Mode 7 and EXTBG, hires and pseudo-hires (512 wide), overscan (239 lines), interlace (its
   fields woven, hires and OBJ interlace), mosaic, sprites in every size (with the vertical
@@ -62,16 +55,9 @@ each one, is in [tests/README.md](tests/README.md).
   each button's own name where the controller gives one), the mouse and touches drive
   whatever is plugged in, and the game can ask which device each player is using and what
   each control is called on it.
-- **A real decompilation runs on it:** Stunt Race FX (S-CPU, Super FX and SPC700) runs
-  unchanged on nativeshvc. A check compares its 21 plays with the original cartridge on
-  the reference, byte for byte (every screenshot, work RAM and Super FX RAM dump and pacing
-  record), and another finds the frame and the instruction where a play first differs.
-  They do not all match yet (see above).
 - **Unit tests from a game state:** a script can run one routine's C once, from any point
   the game reached, with its registers and inputs, and return the machine to where it was;
-  it can also save and load states. Two hand-written Stunt Race FX scripts (six calls with
-  staged bytes and a kept call; saving and loading across several states) match the
-  reference exactly, frame by frame.
+  it can also save and load states.
 - **Sound unit and DSP, on their own:** a test cartridge's SPC700 program writes every DSP
   register at random on every clock of the chip's frame, plays random sample data, runs the
   timers and the ports. The DSP matches the reference's chip sample for sample, with every
@@ -79,8 +65,7 @@ each one, is in [tests/README.md](tests/README.md).
   nativeshvc matches every SPC700 access (time, address, value: the timers' counts and the
   ports' values), every sample and every S-CPU port read (8 seeds, a minute each). Given
   Stunt Race FX's own sound driver's writes, the DSP matches the cartridge's sound over all
-  23 of its recorded plays (172 million samples); the game's own sound on nativeshvc still
-  differs where its S-CPU's timing does (above).
+  23 of its recorded plays (172 million samples).
 - **Renderers:** software, Metal, OpenGL and Vulkan each present every test cartridge's
   frames (one to one and scaled) and draw overlays as the CPU reference does: 1,105
   cartridges each, none differing.
@@ -122,12 +107,12 @@ The processors are the game's C. Everything that is not a processor is nativeshv
 | The game supplies | nativeshvc supplies |
 |---|---|
 | The S-CPU's (65816) code, as C | The S-CPU's bus and clock, work RAM, the CPU's registers (interrupts, timers, multiplier and divider, joypads) |
-| Its cartridge's expansion chip, if it has one (the Super FX, the SA-1, a DSP...): the chip itself and its programs | The cartridge connector a chip plugs into, and nothing of any chip |
+| Its cartridge's expansion chip, if it has one (the Super FX, the SA-1, a DSP...): the chip itself, its registers, RAM and board, and its programs | The cartridge connector a chip plugs into, and nothing of any chip |
 | The SPC700's sound driver, as C | The sound unit: 64 KB of APU RAM, its ports and timers, the boot ROM protocol, the S-DSP |
 | The ROM's data (or the whole ROM) | The cartridge's mapping, ROM and battery RAM |
 | | DMA and HDMA, the PPU, the window, the GPU presentation, sound output, controllers, the save, the frame's pace |
 
-The C is written against the machine model in three headers, the same model the
+The C is written against the machine model in two headers, the same model the
 decompilations' verification harnesses provide. Inside a harness these calls reach an
 emulated machine and are checked against the original; under nativeshvc they reach the
 native console.
@@ -139,11 +124,6 @@ native console.
   file `cpu` for routines entered through `abi_` wrappers; `call_routine` and
   `jump_routine` for calls and jumps through computed addresses; `cpu_loop_forever`,
   `cpu_restart` and `cpu_idle` for the code no C returns from.
-- [`gsu.h`](include/nshvc/gsu.h), the Super FX: the register file `gsu`; `gsu_rd8`,
-  `gsu_wr8`, `gsu_plot` and `gsu_rpix` for its bus and its plotting; `gsu_code` naming the
-  original code bytes each piece of C stands for, so their fetches are priced through the
-  code cache as the GSU prices them; helpers for its loads, stores, ROM buffer, arithmetic
-  and flags.
 - [`spc.h`](include/nshvc/spc.h), the SPC700: the register file `spc`; `spc_rd`/`spc_wr`
   for every APU RAM and I/O access; `spc_cyc` for the original's cycles; `spc_call` and
   `spc_ret` for its calls.
@@ -157,12 +137,13 @@ hardware (the Super FX, the SA-1, a DSP) is the cartridge's, as on the console, 
 through the connector in [`cart.h`](include/nshvc/cart.h): the chip powers on with the
 console, answers the S-CPU's accesses to the addresses it decodes, is brought up to the
 console's clock before those accesses and once a line, drives the IRQ line, and may own the
-cartridge's RAM. A cartridge with a chip names it in its description.
+cartridge's RAM. A board the chip decodes (`NSHVC_CHIP`) tells the console where its ROM
+is (`rom_at`), and the console reads that ROM as it reads a mapping's. A cartridge with a
+chip names it in its description.
 
-The chip is the game's to bring. The Super FX library in this repository
-([`src/chips/superfx/`](src/chips/superfx/), header [`superfx.h`](include/nshvc/superfx.h))
-is Stunt Race FX's chip, kept here for now; it plugs in through the same connector as any
-chip a game brings, and nothing in the console depends on it.
+The chip is the game's to bring, with its own machine model for its processor if it has
+one (the Super FX's bus, its plotting, its clock). nativeshvc has no chip, no chip's
+registers or board, and no list of chips it supports.
 
 ### Time
 
@@ -239,21 +220,16 @@ its controls is called there (`nshvc_player_label`: "Z", "Cross", "A", "Left but
 controller's own name for a button first), and hears each change (`nshvc_hooks.input`), so
 it can show the player the controls they are actually holding.
 
-### Three processors, one thread
+### Processors, one thread
 
-The Super FX's and the SPC700's C run on coroutines of their own
+The SPC700's C, and a cartridge chip's that has a processor, run on coroutines of their own
 ([`src/console/coro.c`](src/console/coro.c), a few instructions of assembly on arm64 and
-x86-64, fibers on Windows), each with its own clock. Whenever the S-CPU could see what one
-of them does (its registers, its RAM, the sound ports) and once a line, the S-CPU brings it
-up to its own time, and it hands back when it gets there. One runs at a time, on a
-deterministic schedule, with no threads: the same input gives the same run on every host.
+x86-64, fibers on Windows; a chip's through `cart.h`), each with its own clock. Whenever
+the S-CPU could see what one of them does (its registers, its RAM, the sound ports) and
+once a line, the S-CPU brings it up to its own time, and it hands back when it gets there.
+One runs at a time, on a deterministic schedule, with no threads: the same input gives the
+same run on every host.
 
-- **Super FX** ([`superfx.c`](src/chips/superfx/superfx.c), [`gsu_clock.c`](src/chips/superfx/gsu_clock.c)).
-  A program starts when the S-CPU writes R15; its C, found by its address (PBR:R15), runs
-  until its STOP, then GO clears and the IRQ rises. Its clock follows the GSU-1's: the code
-  cache and its fills, ROM and RAM buffer waits, multiplier times, pixel-cache flushes, and
-  waits for the bus while the S-CPU holds it. PLOT and RPIX go through the two pixel caches
-  as on the cartridge.
 - **Sound unit** ([`apu.c`](src/console/apu.c)). At power on, the boot ROM's work is done
   instruction for instruction (not from the ROM's bytes), so the S-CPU's upload sees the
   same replies at the same pace. Code the S-CPU uploads and starts is the game's SPC700 C,
@@ -264,7 +240,8 @@ deterministic schedule, with no threads: the same input gives the same run on ev
 ### Dispatch
 
 [`dispatch.c`](src/console/dispatch.c) connects addresses to C: the routine with C that
-starts at an address a call, a jump, an interrupt vector or a Super FX R15 reaches; the
+starts at an address a call, a jump or an interrupt vector reaches (and, for a chip, any
+address it asks for: `nshvc_cart_routine`); the
 SPC700 routine whose code the APU RAM holds. A game that reaches an address with no C is a
 fatal error (`nshvc_fatal`, exit status 70), never a silent fallback.
 
@@ -320,8 +297,7 @@ time, files and the save folder, a window, input, audio.
 
 The console's numbers are baselines a port may raise, each off until the port asks for it:
 any screen size up to 1024x480, sprite X and Y extension bits, sprite line limits off, VRAM
-up to 256 KB in pages, a Super FX screen up to 1024x512 and its RAM up to 896 KB, an
-untimed mode with a vertical blank wait, and held interrupts. The front end adds key, touch
+up to 256 KB in pages, an untimed mode with a vertical blank wait, and held interrupts. The front end adds key, touch
 and frame hooks, overlays, buttons the game holds itself, the safe area and the window's
 size. They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions).
 
@@ -343,18 +319,19 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 
 ### 2. Write the C against the machine model
 
-Write each routine's C against `machine.h`, `gsu.h` and `spc.h`: every bus access through
-`rd8`/`wr8` (`gsu_rd8`/`gsu_wr8`, `spc_rd`/`spc_wr`) in the original's order, and the
-original's time between them through `cyc` (`gsu_code`, `spc_cyc`). This is the same C the
-decompilation's verification harness checks against the original, unchanged. Each routine
-that is entered from an address (a vector, a computed call, a Super FX program, an SPC700
-routine) gets an `abi_` wrapper that takes its inputs from the register file and leaves its
+Write each routine's C against `machine.h` and `spc.h`: every bus access through
+`rd8`/`wr8` (`spc_rd`/`spc_wr`) in the original's order, and the original's time between
+them through `cyc` (`spc_cyc`). A cartridge chip's processor (the Super FX) has the game's
+own machine model, with its chip. This is the same C the decompilation's verification
+harness checks against the original, unchanged. Each routine that is entered from an
+address (a vector, a computed call, a chip's program, an SPC700 routine) gets an `abi_` wrapper that takes its inputs from the register file and leaves its
 outputs there.
 
 ### 3. Describe the cartridge and switch it on
 
 A cartridge is an `nshvc_cart`: its title and save name, its mapping (`NSHVC_LOROM`,
-`NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, `NSHVC_SUPERFX`) and region, its ROM (a
+`NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, or `NSHVC_CHIP` for a board its chip
+decodes) and region, its ROM (a
 whole image, or only the data pages with a reader for the rest, so no copy of the code
 ships), its RAM and battery, its expansion chip if it has one, and the tables of routines
 with C by address, which a decompilation's tags already generate.
@@ -364,9 +341,9 @@ implements it, or brings an implementation it owns, as an `nshvc_chip`
 ([`cart.h`](include/nshvc/cart.h)), and nativeshvc gives it what the connector gives a chip
 (the S-CPU's accesses to the addresses it decodes, the master clock, the IRQ line, the ROM,
 the cartridge's RAM if the chip owns it). nativeshvc implements no chip and has no list of
-chips it supports: any chip a game brings plugs in the same way. A Super FX cartridge uses
-the `NSHVC_SUPERFX` mapping, sets its chip to `nshvc_superfx` and links the
-`nshvc_superfx` library. The game's main hands the cartridge to the console:
+chips it supports: any chip a game brings plugs in the same way. A Super FX cartridge, for
+one, brings its Super FX as its `nshvc_chip` and uses `NSHVC_CHIP` with the chip's
+`rom_at` for the board's ROM. The game's main hands the cartridge to the console:
 
 ```c
 NSHVC_MAIN(argc, argv)
@@ -400,11 +377,10 @@ writes the DSP's raw output.
 It also takes the steps of a decompilation's own test harness, so the same tests run on the
 reference and on the native build:
 
-- `poke` and `set` put bytes into work RAM or the chip's RAM, now or when the next call
-  starts.
+- `poke` and `set` put bytes into work RAM, now or when the next call starts.
 - `call` runs one routine once, from a stub in work RAM that the console runs cycle by
   cycle, with the registers and frames it names; afterwards the machine is as it was, unless
-  `keep` says the game goes on from there. `fx` does the same for a Super FX program.
+  `keep` says the game goes on from there.
 - `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
   marks a safe point (`spc_at`).
 - `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
@@ -429,8 +405,7 @@ Two options show where a port's stated time and the console disagree, on any hea
 `NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
 needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
 against the original's cycles. The C can drop markers into that record with `nshvc_mark`,
-which takes no time, to line it up with the code that made it. Stunt Race FX's own check, which finds where a play first
-differs from the cartridge, is described in [tests/README.md](tests/README.md).
+which takes no time, to line it up with the code that made it.
 
 ### What the decompilation does not have to do
 

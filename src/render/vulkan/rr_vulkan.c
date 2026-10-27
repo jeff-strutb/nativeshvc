@@ -268,7 +268,7 @@ static int make_instance(int window)
         if (has_ext(ext, n, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME))
             want[nw++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
     }
-    app.pApplicationName = "Stunt Race FX";
+    app.pApplicationName = "nativeshvc";
     app.apiVersion = VK_API_VERSION_1_0;
     ci.pApplicationInfo = &app;
     ci.enabledExtensionCount = nw;

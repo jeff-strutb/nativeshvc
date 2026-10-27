@@ -6,7 +6,7 @@
  *
  *   oracle --core DYLIB --rom ROM --frames N --out DIR [--shot F,F...]
  *          [--sound FILE] [--wram FILE] [--overscan]
- *   oracle --core DYLIB --rom ROM --script FILE --out DIR [--pacing FILE]
+ *   oracle --core DYLIB --rom ROM --script FILE --out DIR
  *
  * Shots are DIR/frame_F.ppm (F counted from 1, the frames the core has
  * run), each pixel's 15-bit colour widened as nativeshvc widens it (c << 3
@@ -28,17 +28,13 @@
  * block and byte, as the core's DSP holds them (40 32-bit values).
  *
  * --script: a play as nativeshvc's front end runs one (src/front/script.c:
- * wait, hold, press, repeat ... end, shot, dump; poke, set, call, fx, save,
+ * wait, hold, press, repeat ... end, shot, dump; poke, set, call, save,
  * load, spcset, spccall as Stunt Race FX's harness runs them on the
  * pinned core's hooks, load replaying the play in NSHVC_STATES that saves
  * the state, as there), the buttons of each frame
  * set before the core runs it, a step's shots and dumps (DIR/NAME.ppm,
- * .wram, and .sram the cartridge's RAM, the Super FX's) taken at the end of
- * the frame before it, the first frame's buttons taken before power-on (as
- * there, they reach no joypad read). --pacing: Stunt Race FX's pacing
- * record, as tests/srfx/srfx_cart.c writes it (the pinned core's write
- * hook). --hashes: at each frame's end, the frame and hashes of work RAM
- * (the stack, $0100-$02FF, left out) and the Super FX's RAM. --watch
+ * .wram) taken at the end of the frame before it, the first frame's
+ * buttons taken before power-on (as there, they reach no joypad read). --watch
  * F-T:A,A...: each write to work RAM offsets A (hex) in frames F to T
  * (the frame being run counted from 1), to stderr with the S-CPU's
  * instruction that made it (a DMA's: the last instruction before it).
@@ -353,7 +349,7 @@ static void shot(const char *dir, long n)
     shot_to(path);
 }
 
-/* ---- --script and --pacing ---- */
+/* ---- --script ---- */
 static void *core;
 static long runs;                      /* frames the core has run */
 
@@ -380,10 +376,9 @@ static void write_mem(const char *dir, const char *name, const char *ext, const 
 
 /* The script's steps (src/front/script.c's, which says what each does),
    run on the core the way the Stunt Race FX project's harness (sfxbox)
-   runs them: poke and set into the core's work RAM and Super FX RAM; call
-   and fx through its CPU hooks (a stub in work RAM, entered at the first
-   instruction the Super FX is stopped and the vertical blank is not under
-   way); spcset and spccall through its SPC700 hooks. Where the machine is
+   runs them: poke and set into the core's work RAM; call through its CPU
+   hooks (a stub in work RAM, entered at the first instruction the
+   vertical blank is not under way); spcset and spccall through its SPC700 hooks. Where the machine is
    put back (a load; a call without keep) the run forks as nativeshvc's
    does, so the two make the same frames in the same order. */
 enum {
@@ -488,67 +483,6 @@ static uint32_t parse_addr(const char *t)
     return (uint32_t)strtoul(ab, NULL, 16);
 }
 
-/* fx: the stub sfxbox's fx stages, as a set, and its call */
-static void fx(List *l, const char *line)
-{
-    char w[24][1024], set[1024], call[256];
-    uint8_t b[160];
-    long reg[16], stop = -1;
-    uint32_t addr;
-    int n = words(line, w, 24), m = 0, i, o;
-    if (n < 3)
-        die("fx BANK:ADDR stop=ADDR [rN=VALUE...] [frames=N] [keep]: ", line);
-    addr = parse_addr(w[1]);
-    snprintf(call, sizeof call, "call 7F:F000 p=30 db=00 d=0000");
-    for (i = 0; i < 16; i++)
-        reg[i] = -1;
-    for (i = 2; i < n; i++) {
-        const char *eq = strchr(w[i], '=');
-        unsigned long v = eq ? strtoul(eq + 1, NULL, 16) : 0;
-        if (!strcmp(w[i], "keep") || !strncmp(w[i], "frames=", 7)) {
-            strncat(call, " ", sizeof call - strlen(call) - 1);
-            strncat(call, w[i], sizeof call - strlen(call) - 1);
-        } else if (eq && !strncmp(w[i], "stop=", 5)) {
-            stop = (long)(v & 0xFFFF);
-        } else if (eq && w[i][0] == 'r' && atoi(w[i] + 1) >= 0 && atoi(w[i] + 1) <= 14) {
-            reg[atoi(w[i] + 1)] = (long)(v & 0xFFFF);
-        } else {
-            die("fx: bad option ", w[i]);
-        }
-    }
-    if (stop < 0)
-        die("fx: stop=ADDR is needed: ", line);
-    reg[11] = stop;
-    b[m++] = 0xC2; b[m++] = 0x30;
-    for (i = 0; i < 15; i++)
-        if (reg[i] >= 0) {
-            b[m++] = 0xA9; b[m++] = (uint8_t)reg[i]; b[m++] = (uint8_t)(reg[i] >> 8);
-            b[m++] = 0x8D; b[m++] = (uint8_t)(2 * i); b[m++] = 0x30;
-        }
-    b[m++] = 0xE2; b[m++] = 0x20;
-    b[m++] = 0xA9; b[m++] = (uint8_t)(addr >> 16);
-    b[m++] = 0x8D; b[m++] = 0x34; b[m++] = 0x30;
-    b[m++] = 0xAD; b[m++] = 0x74; b[m++] = 0x03;
-    b[m++] = 0x09; b[m++] = 0x18;
-    b[m++] = 0x8D; b[m++] = 0x3A; b[m++] = 0x30;
-    b[m++] = 0x9C; b[m++] = 0x30; b[m++] = 0x30;
-    b[m++] = 0xC2; b[m++] = 0x20;
-    b[m++] = 0xA9; b[m++] = (uint8_t)addr; b[m++] = (uint8_t)(addr >> 8);
-    b[m++] = 0x8D; b[m++] = 0x1E; b[m++] = 0x30;
-    b[m++] = 0xE2; b[m++] = 0x20;
-    b[m++] = 0xAD; b[m++] = 0x30; b[m++] = 0x30;
-    b[m++] = 0x29; b[m++] = 0x20;
-    b[m++] = 0xD0; b[m++] = 0xF9;
-    b[m++] = 0xAD; b[m++] = 0x74; b[m++] = 0x03;
-    b[m++] = 0x8D; b[m++] = 0x3A; b[m++] = 0x30;
-    b[m++] = 0x60;
-    o = snprintf(set, sizeof set, "set 7FF000 ");
-    for (i = 0; i < m; i++)
-        o += snprintf(set + o, sizeof set - (size_t)o, i ? ",%02X" : "%02X", b[i]);
-    add_text(l, S_SET, set);
-    add_text(l, S_CALL, call);
-}
-
 static void script_range(List *l, char **lines, int lo, int hi)
 {
     int i;
@@ -578,8 +512,6 @@ static void script_range(List *l, char **lines, int lo, int hi)
             add_text(l, cmd[0] == 'c' ? S_CALL : S_SPCCALL, lines[i]);
         } else if (!strcmp(cmd, "plug") || !strcmp(cmd, "pad") || !strcmp(cmd, "mouse") || !strcmp(cmd, "gun")) {
             add_text(l, S_INPUT, lines[i]);
-        } else if (!strcmp(cmd, "fx")) {
-            fx(l, lines[i]);
         } else if (!strcmp(cmd, "repeat")) {
             int depth = 0, j, k = atoi(a);
             for (j = i + 1; j < hi; j++) {
@@ -645,7 +577,7 @@ static void need(void **p, const char *name)
         die("the core has no ", name);
 }
 
-/* poke ADDR BYTE[,BYTE...] into work RAM or Super FX RAM, as sfxbox */
+/* poke ADDR BYTE[,BYTE...] into work RAM, as sfxbox */
 static void poke(const char *line)
 {
     char w[64][1024];
@@ -656,8 +588,7 @@ static void poke(const char *line)
     uint8_t *p;
     if (bank == 0x7E || bank == 0x7F) { view = "wram"; base = (size_t)(bank - 0x7E) << 16 | off; }
     else if (bank <= 0x3F && off < 0x2000) { view = "wram"; base = off; }
-    else if (bank == 0x70 || bank == 0x71) { view = "gsuram"; base = (size_t)(bank - 0x70) << 16 | off; }
-    else die("poke: neither work RAM nor Super FX RAM: ", line);
+    else die("poke: not work RAM: ", line);
     if (!(p = memory(view, &size)))
         die("the core has no memory ", view);
     for (i = 2; i < n; i++) {
@@ -1078,8 +1009,6 @@ static void takes(const char *dir)
             break;
         case S_DUMP:
             write_mem(dir, st->name, ".wram", "wram");
-            write_mem(dir, st->name, ".sram", "gsuram");
-            write_mem(dir, st->name, ".gsuram", "gsuram");
             break;
         case S_SAVE:
             hold(st->name, step_at + 1);
@@ -1191,16 +1120,6 @@ static int script_frame(const char *dir)
     }
 }
 
-static FILE *pacing_f, *hashes_f;
-static uint8_t *pacing_wram, *pacing_gsuram;
-
-static uint32_t fnv(const uint8_t *p, size_t n, uint32_t h)
-{
-    while (n--)
-        h = (h ^ *p++) * 16777619u;
-    return h;
-}
-
 static long watch_from = -1, watch_to;
 static uint8_t *watch_set;             /* work RAM offsets watched, a byte each */
 static uint32_t last_pc;
@@ -1219,8 +1138,6 @@ static long wram_offset(uint32_t addr)
     return -1;
 }
 
-/* the core's write hook (its harness's, before the write lands): an
-   S-CPU write (kind 0) to $06D4 */
 /* --spclog: an S-CPU write to a port ($2140-$2143), kind 2, at the
    SPC700's time when the core reports it */
 static void spclog_cpu_write(uint32_t addr, uint8_t value)
@@ -1233,7 +1150,8 @@ static void spclog_cpu_write(uint32_t addr, uint8_t value)
     }
 }
 
-static void pacing_write(uint32_t addr, uint8_t value, int kind)
+/* the core's write hook (its harness's, before the write lands) */
+static void core_write(uint32_t addr, uint8_t value, int kind)
 {
     if (kind == 0)
         spclog_cpu_write(addr, value);
@@ -1242,15 +1160,6 @@ static void pacing_write(uint32_t addr, uint8_t value, int kind)
         if (o >= 0 && watch_set[o])
             fprintf(stderr, "frame %ld pc %06X %s $%05lX <- %02X\n", runs + 1, last_pc, kind ? "dma" : "cpu", o, value);
     }
-    if (!pacing_f)
-        return;
-    uint8_t bank = (uint8_t)(addr >> 16);
-    const uint8_t *w = pacing_wram;
-    (void)value;
-    if (kind != 0 || (addr & 0xFFFF) != 0x06D4 || !(bank == 0x7E || (bank & 0x7F) < 0x40))
-        return;
-    fprintf(pacing_f, "%ld %06X %u %08x %08x\n", runs, 0u, w[0x306],
-            fnv(w + 0x300, 0x20000 - 0x300, fnv(w, 0x100, 2166136261u)), fnv(pacing_gsuram, 0x10000, 2166136261u));
 }
 
 struct sfxbox_callbacks {
@@ -1265,8 +1174,7 @@ struct sfxbox_callbacks {
 
 int main(int argc, char **argv)
 {
-    const char *corepath = NULL, *rom = NULL, *out = ".", *shots = "", *wram_path = NULL, *script = NULL,
-               *pacing = NULL;
+    const char *corepath = NULL, *rom = NULL, *out = ".", *shots = "", *wram_path = NULL, *script = NULL;
     long frames = 0, n;
     FILE *f;
     static uint8_t romdata[16 << 20];
@@ -1280,7 +1188,6 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shots = argv[++i];
         else if (!strcmp(argv[i], "--overscan")) overscan = 1;
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
-        else if (!strcmp(argv[i], "--pacing") && i + 1 < argc) pacing = argv[++i];
         else if (!strcmp(argv[i], "--watch") && i + 1 < argc) {
             char *p = argv[++i], *e;
             watch_from = strtol(p, &e, 10);
@@ -1293,10 +1200,6 @@ int main(int argc, char **argv)
                 if (a < 0x20000)
                     watch_set[a] = 1;
             }
-        }
-        else if (!strcmp(argv[i], "--hashes") && i + 1 < argc) {
-            if (!(hashes_f = fopen(argv[++i], "w")))
-                die("cannot write ", argv[i]);
         }
         else if (!strcmp(argv[i], "--wram") && i + 1 < argc) wram_path = argv[++i];
         else if (!strcmp(argv[i], "--sound") && i + 1 < argc) {
@@ -1369,25 +1272,13 @@ int main(int argc, char **argv)
     fclose(f);
     if (!p_load_game(&gi))
         die("the core did not load ", rom);
-    if (hashes_f) {
-        size_t n;
-        if (!(pacing_wram = memory("wram", &n)) || n < 0x20000 || !(pacing_gsuram = memory("gsuram", &n)) ||
-            n < 0x10000)
-            die("the core has no memories for --hashes", NULL);
-    }
-    if (pacing || watch_set || spclog_f) {
-        size_t n;
+    if (watch_set || spclog_f) {
         static struct sfxbox_callbacks cb;
         void (*set)(const struct sfxbox_callbacks *) =
             (void (*)(const struct sfxbox_callbacks *))dlsym(core, "sfxbox_set_callbacks");
-        if (!set || ((pacing || watch_set) && (!(pacing_wram = memory("wram", &n)) || n < 0x20000 ||
-                                               !(pacing_gsuram = memory("gsuram", &n)) || n < 0x10000)))
-            die("the core has no write hook or memories for --pacing", NULL);
-        if (pacing && !(pacing_f = fopen(pacing, "w")))
-            die("cannot write ", pacing);
-        if (pacing_f)
-            setvbuf(pacing_f, NULL, _IOLBF, 0);
-        cb.write = pacing_write;
+        if (!set)
+            die("the core has no write hook", NULL);
+        cb.write = core_write;
         if (watch_set)
             cb.insn = watch_insn;
         set(&cb);
@@ -1401,17 +1292,9 @@ int main(int argc, char **argv)
                 runs++;
                 /* a mouse's motion is the frame's */
                 mouse_m[0][0] = mouse_m[0][1] = mouse_m[1][0] = mouse_m[1][1] = 0;
-                if (hashes_f)
-                    fprintf(hashes_f, "%ld %08x %08x\n", runs,
-                            fnv(pacing_wram + 0x300, 0x20000 - 0x300, fnv(pacing_wram, 0x100, 2166136261u)),
-                            fnv(pacing_gsuram, 0x10000, 2166136261u));
                 if (!script_frame(out))
                     break;
             }
-        if (pacing_f)
-            fclose(pacing_f);
-        if (hashes_f)
-            fclose(hashes_f);
         return 0;
     }
     for (n = 1; n <= frames; n++) {

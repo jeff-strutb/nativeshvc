@@ -131,17 +131,6 @@ if(NOT WIN32)
   target_link_libraries(nshvc PUBLIC m)
 endif()
 
-# The cartridge's own hardware, as libraries a cartridge links (nshvc/cart.h):
-# none of it is the console's.
-add_library(nshvc_superfx STATIC
-  src/chips/superfx/superfx.c
-  src/chips/superfx/gsu_clock.c)
-target_include_directories(nshvc_superfx PRIVATE src/chips/superfx)
-target_link_libraries(nshvc_superfx PUBLIC nshvc)
-if(NOT MSVC)
-  target_compile_options(nshvc_superfx PRIVATE -Wall -fno-strict-aliasing -ffp-contract=off)
-endif()
-
 if(NSHVC_TESTS)
   add_subdirectory(tests)
 endif()

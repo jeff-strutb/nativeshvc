@@ -4,7 +4,8 @@
 
 A decompiled game is the cartridge; nativeshvc is the console. The
 processors are the game's own C, written against the machine model
-(`include/nshvc/machine.h`, `gsu.h`, `spc.h`). Everything else is
+(`include/nshvc/machine.h`, `spc.h`; a cartridge chip's processor, the
+game's own model with its chip). Everything else is
 nativeshvc: the S-CPU's bus and clock, work RAM, the cartridge's mapping,
 ROM and RAM, the CPU's registers (interrupts, timers, multiplier, divider,
 joypads), DMA and HDMA, the PPU, the sound unit (RAM, ports, timers, boot
@@ -56,13 +57,13 @@ sharp bilinear filtering, and draw the game's overlays over it.
 
 | field | |
 |---|---|
-| `map` | `NSHVC_LOROM`, `HIROM`, `EXLOROM`, `EXHIROM`, `SUPERFX` |
+| `map` | `NSHVC_LOROM`, `HIROM`, `EXLOROM`, `EXHIROM`; `NSHVC_CHIP` for a board its chip decodes (the chip's `rom_at` says where its ROM is) |
 | `region` | `NSHVC_NTSC`, `NSHVC_PAL` |
 | `rom`, `rom_size` | the ROM image; or `rom_pages` and `rom_read` for a build that holds only the game's data (the code is the C) |
-| `sram_size`, `battery` | the cartridge's RAM (a chip's that owns it: the Super FX's), kept in the save folder; `save_from`, `save_size` narrow what is written |
-| `routines` | every S-CPU routine reached by address (vectors, computed calls and jumps) and every Super FX program, sorted by address |
+| `sram_size`, `battery` | the cartridge's RAM (a chip's, when the chip owns it), kept in the save folder; `save_from`, `save_size` narrow what is written |
+| `routines` | every S-CPU routine reached by address (vectors, computed calls and jumps) and any a chip runs by address, sorted by address |
 | `spc_routines` | the SPC700 routines by APU address, with the ROM bytes each stands for (`uses`) |
-| `spc_run`, `gsu_run` | optional: the game's own entry in place of the lookup |
+| `spc_run` | optional: the game's own entry in place of the lookup |
 | `chip` | the cartridge's expansion chip, or none: the cartridge's own hardware, which the game brings and owns, on the connector (`nshvc/cart.h`). nativeshvc implements no chip |
 | `ports` | what is plugged into the controller ports at power on (`NSHVC_PORT_*`; a joypad when 0) |
 
@@ -105,7 +106,6 @@ Each is off by default; off, the console is exact.
 | `nshvc_ext_sprite_x`, `_y` | sprites past the 9-bit X (+512) and the 256-row Y (+256) |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
-| `nshvc_ext_gsu_screen(w, h)`, `gsu_plot_at`, `gsu_rpix_at` (`nshvc/superfx.h`, the chip's) | the Super FX's screen to 1024 x 512, at 16-bit coordinates, in its own character layout; its RAM to 896 KB (`sram_size`) at $70-$7D |
 | `nshvc_set_untimed`, `nshvc_wait_vblank` | the S-CPU's work taking no time (a frame's work at once); interrupt handlers stay timed, but for code run in one with interrupts held; a wait on time untimed is a fatal error |
 | `nshvc_hold_interrupts` | no interrupt taken while held (an app's own work in the game's machine, from the frame hook) |
 | `cpu_wai` (machine.h) | WAI |
@@ -120,7 +120,7 @@ The master clock is the console's (21.477 MHz NTSC). Each access takes the
 bus's time for it (8 clocks for SlowROM and work RAM, 6 for FastROM and
 most registers, 12 for $4000-$41FF), a read taking its value 4 clocks
 before its end and a write landing at its end; the C states the time
-between (`cyc`, `gsu_code`, `spc_cyc`). The beam's lines are 1,364 clocks,
+between (`cyc`, `spc_cyc`). The beam's lines are 1,364 clocks,
 dots 323 and 327 6 clocks each (NTSC's line 240 in field 1 1,360 when not
 interlaced; an interlaced frame's field 0 a line longer); the work RAM's
 refresh stops the CPU 40 clocks a line. The DMA unit takes work up at the
@@ -143,8 +143,7 @@ original is in (README.md, Time).
 The sound unit runs
 from power on with the console's clock (the S-CPU starts after its reset);
 each side sees an access of the other's made at or before its own time, a
-port read taking its value half an SPC700 cycle before its cycle ends. A
-Super FX store reaches its RAM as the RAM buffer drains.
+port read taking its value half an SPC700 cycle before its cycle ends.
 
 ## The picture
 

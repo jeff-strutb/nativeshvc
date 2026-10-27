@@ -5,8 +5,8 @@
  * connector gives one (the S-CPU's accesses to the addresses the chip
  * decodes, the master clock, the IRQ line, the ROM) and the chip gives the
  * console its answers. A cartridge with one puts it in nshvc_cart.chip: the
- * game brings the chip and owns it (Stunt Race FX's Super FX is the
- * library nshvc/superfx.h describes, kept with nativeshvc for now).
+ * game brings the chip, its registers, its RAM, its board's decoding (with
+ * nshvc_cart.map NSHVC_CHIP) and its programs, and owns them.
  */
 #ifndef NSHVC_CART_H
 #define NSHVC_CART_H
@@ -31,6 +31,12 @@ struct nshvc_chip {
     int (*read)(uint32_t addr, uint8_t *v);
     int (*write)(uint32_t addr, uint8_t v);
     int (*peek)(uint32_t addr, uint8_t *v);
+    /* With nshvc_cart.map NSHVC_CHIP, the board's ROM decoding: 1 when the
+       S-CPU's address (bank:offset, 24 bits) reaches the cartridge's ROM,
+       *off its file offset; 0 otherwise. The console then reads the ROM
+       there itself (nshvc_cart.rom, rom_pages or rom_read), for the S-CPU,
+       DMA and a look alike, as it does a mapping's. */
+    int (*rom_at)(uint32_t addr, uint32_t *off);
     /* the chip brought up to the console's clock (nshvc_cart_clock): made
        before the S-CPU's accesses to it and once a line */
     void (*sync)(void);
