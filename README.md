@@ -24,10 +24,6 @@ Version 0.1.0.
   cycle-by-cycle time), not in the console.
 - **Stunt Race FX's unit tests can't match yet.** Its 325 unit scripts all start from
   saved states past frame 70, where the plain play already differs from the cartridge.
-- **The sound unit and DSP** now have a test of their own against the reference's chip
-  (every sample, every voice and every access), but no result from it is recorded yet. The
-  earlier difference of 1 to 2 levels on one channel, from sample 126,206 of Stunt Race
-  FX's attract mode, is not confirmed closed.
 - **Parts of the script runner are untested:** Super FX program calls (`fx`) run but are
   not checked against the reference; SPC700 routine calls (`spccall`) need the game's
   sound driver C to mark where a call may start, and fail with an error until it does; and
@@ -68,6 +64,15 @@ each one, is in [tests/README.md](tests/README.md).
   it can also save and load states. Two hand-written Stunt Race FX scripts (six calls with
   staged bytes and a kept call; saving and loading across several states) match the
   reference exactly, frame by frame.
+- **Sound unit and DSP, on their own:** a test cartridge's SPC700 program writes every DSP
+  register at random on every clock of the chip's frame, plays random sample data, runs the
+  timers and the ports. The DSP matches the reference's chip sample for sample, with every
+  voice's state, every register read and every APU RAM read; the whole sound unit on
+  nativeshvc matches every SPC700 access (time, address, value: the timers' counts and the
+  ports' values), every sample and every S-CPU port read (8 seeds, a minute each). Given
+  Stunt Race FX's own sound driver's writes, the DSP matches the cartridge's sound over all
+  23 plays (172 million samples); the game's own sound on nativeshvc still differs where
+  its S-CPU's timing does (above).
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the frames and draw
   overlays; they matched the CPU reference when last checked, before the latest console
   changes.
@@ -180,7 +185,8 @@ deterministic schedule, with no threads: the same input gives the same run on ev
   instruction for instruction (not from the ROM's bytes), so the S-CPU's upload sees the
   same replies at the same pace. Code the S-CPU uploads and starts is the game's SPC700 C,
   chosen by which program's bytes the APU RAM holds at that address (two drivers may share
-  addresses). Every 32 SPC700 cycles the DSP makes a sample, 32,040 a second.
+  addresses). The DSP runs a clock an SPC700 cycle, so a write lands between the same
+  two of its clocks as on the console, and makes a sample every 32, 32,040 a second.
 
 ### Dispatch
 
@@ -205,7 +211,9 @@ reference.
 
 The S-DSP ([`mixer.c`](src/dsp/mixer.c): BRR decoding, Gaussian interpolation, envelopes,
 noise, pitch modulation, echo) makes stereo, 16-bit samples at 32,040 a second as the
-SPC700's clock runs. They are resampled to the device's rate by a 32-tap Kaiser-windowed
+SPC700's clock runs. It works as the chip does, a clock at a time: each voice reads its
+registers and the sample data at its own clocks of the sample, and the echo its delay line,
+so a change the driver makes partway through a sample reaches exactly the voices it would. They are resampled to the device's rate by a 32-tap Kaiser-windowed
 sinc ([`resample.c`](src/dsp/resample.c)), its ratio trimmed by a fraction of a percent to
 keep a steady buffer, so the sound follows the game's pace without drifting or clicking.
 

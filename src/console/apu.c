@@ -153,7 +153,9 @@ void apu_sync(void)
 {
     uint64_t c = apu_clock();
     {
-        uint64_t m = snes_pal() ? 21281370u : 21477273u;
+        /* the master clock's rate: NTSC's 315/88 x 6 MHz whole (the
+           reference's, against which the two processors' ports are timed) */
+        uint64_t m = snes_pal() ? 21281370u : 21477272u;
         spc_target = c / m * SPC_HZ + c % m * SPC_HZ / m;
     }
     if (spc_cycles <= spc_target) {
@@ -190,13 +192,20 @@ void apu_port_write(uint8_t port, uint8_t v)
     port_prev[port] = port_in[port];
     port_at[port] = apu_clock();
     port_in[port] = v;
+    if (spclog) {                 /* kind 2: the S-CPU's, at its time in SPC700 half cycles */
+        uint64_t m = snes_pal() ? 21281370u : 21477272u;
+        uint32_t t = (uint32_t)((unsigned __int128)port_at[port] * (2u * SPC_HZ) / m);
+        uint8_t rec[8] = { (uint8_t)t, (uint8_t)(t >> 8), (uint8_t)(t >> 16), (uint8_t)(t >> 24), 2,
+                           (uint8_t)(0xF4 + port), 0, v };
+        fwrite(rec, 1, 8, spclog);
+    }
 }
 
 /* port n as a read now sees it: its value before the S-CPU's last write if
    the read's half-cycle point, spc_cycles - 1/2, comes before that write */
 static uint8_t port_read(int n)
 {
-    uint64_t m = snes_pal() ? 21281370u : 21477273u;
+    uint64_t m = snes_pal() ? 21281370u : 21477272u;
     if (spc_cycles && (unsigned __int128)(2 * spc_cycles - 1) * m < (unsigned __int128)port_at[n] * (2u * SPC_HZ))
         return port_prev[n];
     return port_in[n];
@@ -264,8 +273,11 @@ void spc_wr(uint16_t addr, uint8_t v)
     switch (addr) {
     case 0xF1: {
         int n;
+        /* a timer is restarted as its enable goes from 0 to 1; timer 2 on
+           every write that does not do that (the reference's, measured by
+           tests/dsp/fuzz.py) */
         for (n = 0; n < 3; n++)
-            if (!(control & (1u << n)) && (v & (1u << n))) {
+            if ((n == 2) != (!(control & (1u << n)) && (v & (1u << n)))) {
                 t_stage[n] = 0;
                 t_count[n] = 0;
             }

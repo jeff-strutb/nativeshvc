@@ -290,8 +290,8 @@ def native(t, d):
     if r.returncode:
         return False, ["nativeshvc exit %d: %s" % (r.returncode, r.stderr.strip()[-300:])]
     ok, notes = True, []
-    ref = [x for x in records(os.path.join(d, "spc.log")) if x[1] or 0xF0 <= x[2] <= 0xFF]
-    nat = records(os.path.join(nd, "spc.log"))
+    ref = [x for x in records(os.path.join(d, "spc.log")) if x[1] == 1 or (not x[1] and 0xF0 <= x[2] <= 0xFF)]
+    nat = [x for x in records(os.path.join(nd, "spc.log")) if x[1] != 2]
     n = min(len(ref), len(nat))
     port = lambda x: not x[1] and 0xF4 <= x[2] <= 0xF7
     k = next((i for i in range(n) if (ref[i][0] + port(ref[i]),) + ref[i][1:] != nat[i]), None)

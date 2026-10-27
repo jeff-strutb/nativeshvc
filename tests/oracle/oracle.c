@@ -19,7 +19,9 @@
  * DSP hook; a core without it, what libretro is given). --spclog: each
  * SPC700 write, and each read of its registers ($F0-$FF), 8 bytes: its
  * time in half cycles from power-on (32 bits), 1 for a write or 0 for a
- * read, the address and the value, little-endian (the DSP's clock is the
+ * read (2: an S-CPU write to a port, $F4-$F7 its address, at the SPC700's
+ * time when the core reports it, which may be behind the S-CPU's), the
+ * address and the value, little-endian (the DSP's clock is the
  * SPC700's cycle: tests/dsp/mix_replay; and to pair with nativeshvc's
  * NSHVC_SPCLOG); --spcreads: every data read too. --voices: at
  * each sample, each voice's envelope level, its stage, pitch counter, BRR
@@ -1146,8 +1148,22 @@ static long wram_offset(uint32_t addr)
 
 /* the core's write hook (its harness's, before the write lands): an
    S-CPU write (kind 0) to $06D4 */
+/* --spclog: an S-CPU write to a port ($2140-$2143), kind 2, at the
+   SPC700's time when the core reports it */
+static void spclog_cpu_write(uint32_t addr, uint8_t value)
+{
+    uint8_t bank = (uint8_t)(addr >> 16);
+    if (spclog_f && (addr & 0xFFFC) == 0x2140 && (bank & 0x7F) < 0x40) {
+        uint8_t rec[8] = { (uint8_t)smp_halves, (uint8_t)(smp_halves >> 8), (uint8_t)(smp_halves >> 16),
+                           (uint8_t)(smp_halves >> 24), 2, (uint8_t)(0xF4 + (addr & 3)), 0, value };
+        fwrite(rec, 1, 8, spclog_f);
+    }
+}
+
 static void pacing_write(uint32_t addr, uint8_t value, int kind)
 {
+    if (kind == 0)
+        spclog_cpu_write(addr, value);
     if (watch_set && runs + 1 >= watch_from && runs + 1 <= watch_to) {
         long o = wram_offset(addr);
         if (o >= 0 && watch_set[o])
@@ -1285,13 +1301,13 @@ int main(int argc, char **argv)
             n < 0x10000)
             die("the core has no memories for --hashes", NULL);
     }
-    if (pacing || watch_set) {
+    if (pacing || watch_set || spclog_f) {
         size_t n;
         static struct sfxbox_callbacks cb;
         void (*set)(const struct sfxbox_callbacks *) =
             (void (*)(const struct sfxbox_callbacks *))dlsym(core, "sfxbox_set_callbacks");
-        if (!set || !(pacing_wram = memory("wram", &n)) || n < 0x20000 || !(pacing_gsuram = memory("gsuram", &n)) ||
-            n < 0x10000)
+        if (!set || ((pacing || watch_set) && (!(pacing_wram = memory("wram", &n)) || n < 0x20000 ||
+                                               !(pacing_gsuram = memory("gsuram", &n)) || n < 0x10000)))
             die("the core has no write hook or memories for --pacing", NULL);
         if (pacing && !(pacing_f = fopen(pacing, "w")))
             die("cannot write ", pacing);

@@ -59,7 +59,8 @@ int main(int argc, char **argv)
             if ((t + 1) / 2 > clocks)
                 break;
             a = (uint16_t)(rec[5] | rec[6] << 8);
-            if (!rec[4]) {
+            if (rec[4] == 2) {            /* the S-CPU's port write: not the SPC700's */
+            } else if (!rec[4]) {
                 if ((a < 0xF0 || a > 0xFF) && a < 0xFFC0) {
                     mreads++;
                     if (ram[a] != rec[7] && !mbad++)
