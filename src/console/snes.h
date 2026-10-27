@@ -111,10 +111,13 @@ void snes_fatal(const char *fmt, ...);
 uint8_t snes_peek(uint32_t addr);
 /* the clocks one S-CPU access to addr takes on the bus */
 unsigned snes_access_clocks(uint32_t addr);
-/* an instruction's end (machine.h's cpu_boundary, or one of an
-   instruction the console runs): the only place an interrupt is taken, the
-   one the CPU decided on as the instruction's last cycle began */
+/* the end of an instruction the console runs (WAI, a branch to itself, a
+   unit call's stub): the interrupt the CPU decided on as its last cycle
+   began */
 void snes_cpu_boundary(void);
+/* a point between two of the C's operations: the interrupt due by now
+   (bus.c, the C's operations) */
+void snes_c_between(void);
 /* a byte the interrupt sequence pushes (NSHVC_CYCLOG's P line) */
 void snes_interrupt_push(uint32_t addr, uint8_t value);
 /* a read or write of an instruction the console runs (a pull, a store):
@@ -125,12 +128,15 @@ void snes_cpu_write_within(uint32_t addr, uint8_t value);
 int snes_interrupt_due(void);
 /* an interrupt would be taken now (due, and the IRQ not masked) */
 int snes_interrupt_taken_now(void);
-/* clocks with no access and no instruction end (cpu_idle) */
+/* clocks with no access: the console's own wait, no interrupt taken in
+   it (snes_cpu_wait); the C's (cpu_idle), each taken as it comes due */
 void snes_cpu_wait(uint32_t clocks);
+void snes_cpu_idle(uint32_t clocks);
 /* time the S-CPU spends between two of its accesses: the decomp's cyc() */
 void snes_cpu_clocks(uint32_t clocks);
 void snes_cpu_stated(uint32_t clocks, void *site);   /* cyc from the C's `site` (NSHVC_AUDIT) */
-void snes_cpu_cycle(unsigned cc);                     /* one S-CPU cycle of cc clocks (cycs) */
+void snes_cpu_cycle(unsigned cc);                     /* one S-CPU cycle of cc clocks */
+void snes_cpu_cycle_c(unsigned cc);                   /* one of the C's (cycs), an interrupt after it */
 void snes_cyclog_cycs(void *site, uint64_t lengths);  /* NSHVC_CYCLOG's cycs line */
 void snes_cyclog_mark(uint32_t id);                   /* NSHVC_CYCLOG's M line (nshvc_mark) */
 extern int snes_cyclog_quiet;                         /* NSHVC_CYCLOG writes nothing while set */

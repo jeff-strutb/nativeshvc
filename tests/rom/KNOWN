@@ -1,6 +1,117 @@
-# Tests that differ from the reference for a reason measured and not yet
-# closed, one a line: the test's name, then the reason. tests/rom/run.py
-# reports each as KNOWN, never as ok; a known test that starts passing is
-# reported too, so this list is kept true.
+# Tests that differ from the reference, one a line: the test's name, then
+# the reason. tests/rom/run.py reports each as KNOWN, never as ok; a known
+# test that starts passing is reported too, so this list is kept true.
 #
-# None differs.
+# Every one below is interrupt latency (README.md, Time): the test latches
+# the counters from an interrupt's handler while the main code runs fixed
+# work (irq_fixed), polls (irq_entry) or waits in a loop past the frame's
+# end (frame_clock), with no WAI, so what it reads is when the handler
+# started. The 65816 starts it at the end of the instruction in progress;
+# nativeshvc's C marks no instruction ends, so the handler starts at the
+# clock the interrupt comes due (or the end of the access in progress):
+# earlier, here by 1 to 20 dots. Before the C stopped marking instruction
+# ends, every one of these matched to the dot.
+irq_fixed_40_0 interrupt latency: the handler starts 20 dots earlier
+irq_fixed_40_7 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_14 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_21 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_28 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_35 interrupt latency: the handler starts 8 dots earlier
+irq_fixed_40_42 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_49 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_56 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_63 interrupt latency: the handler starts 6 dots earlier
+irq_fixed_40_70 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_77 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_84 interrupt latency: the handler starts 2 dots earlier
+irq_fixed_40_91 interrupt latency: the handler starts 12 dots earlier
+irq_fixed_40_98 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_105 interrupt latency: the handler starts 6 dots earlier
+irq_fixed_40_112 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_119 interrupt latency: the handler starts 7 dots earlier
+irq_fixed_40_126 interrupt latency: the handler starts 10 dots earlier
+irq_fixed_40_133 interrupt latency: the handler starts 6 dots earlier
+irq_fixed_40_140 interrupt latency: the handler starts 6 dots earlier
+irq_fixed_40_147 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_154 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_161 interrupt latency: the handler starts 11 dots earlier
+irq_fixed_40_168 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_175 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_182 interrupt latency: the handler starts 7 dots earlier
+irq_fixed_40_189 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_196 interrupt latency: the handler starts 10 dots earlier
+irq_fixed_40_203 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_210 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_217 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_224 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_231 interrupt latency: the handler starts 8 dots earlier
+irq_fixed_40_238 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_245 interrupt latency: the handler starts 4 dots earlier
+irq_fixed_40_252 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_259 interrupt latency: the handler starts 6 dots earlier
+irq_fixed_40_266 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_273 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_280 interrupt latency: the handler starts 2 dots earlier
+irq_fixed_40_287 interrupt latency: the handler starts 12 dots earlier
+irq_fixed_40_294 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_301 interrupt latency: the handler starts 6 dots earlier
+irq_fixed_40_308 interrupt latency: the handler starts 5 dots earlier
+irq_fixed_40_315 interrupt latency: the handler starts 7 dots earlier
+irq_fixed_40_322 interrupt latency: the handler starts 10 dots earlier
+irq_fixed_40_329 interrupt latency: the handler starts 2 dots earlier
+irq_fixed_40_336 interrupt latency: the handler starts 3 dots earlier
+irq_entry_40_0 interrupt latency: the handler starts 16 dots earlier
+irq_entry_40_11 interrupt latency: the handler starts 8 dots earlier
+irq_entry_40_22 interrupt latency: the handler starts 2 dots earlier
+irq_entry_40_33 interrupt latency: the handler starts 4 dots earlier
+irq_entry_40_44 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_55 interrupt latency: the handler starts 3 dots earlier
+irq_entry_40_66 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_77 interrupt latency: the handler starts 7 dots earlier
+irq_entry_40_88 interrupt latency: the handler starts 1 dot earlier
+irq_entry_40_99 interrupt latency: the handler starts 3 dots earlier
+irq_entry_40_110 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_121 interrupt latency: the handler starts 2 dots earlier
+irq_entry_40_132 interrupt latency: the handler starts 7 dots earlier
+irq_entry_40_143 interrupt latency: the handler starts 3 dots earlier
+irq_entry_40_154 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_165 interrupt latency: the handler starts 7 dots earlier
+irq_entry_40_176 interrupt latency: the handler starts 1 dot earlier
+irq_entry_40_187 interrupt latency: the handler starts 3 dots earlier
+irq_entry_40_198 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_209 interrupt latency: the handler starts 2 dots earlier
+irq_entry_40_220 interrupt latency: the handler starts 4 dots earlier
+irq_entry_40_231 interrupt latency: the handler starts 6 dots earlier
+irq_entry_40_242 interrupt latency: the handler starts 8 dots earlier
+irq_entry_40_253 interrupt latency: the handler starts 2 dots earlier
+irq_entry_40_264 interrupt latency: the handler starts 4 dots earlier
+irq_entry_40_275 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_286 interrupt latency: the handler starts 3 dots earlier
+irq_entry_40_297 interrupt latency: the handler starts 5 dots earlier
+irq_entry_40_308 interrupt latency: the handler starts 7 dots earlier
+irq_entry_40_319 interrupt latency: the handler starts 1 dot earlier
+irq_entry_40_330 interrupt latency: the handler starts 3 dots earlier
+frame_clock_00_1 interrupt latency: the handler starts 8 dots earlier
+frame_clock_00_1_pal interrupt latency: the handler starts 6 dots earlier
+frame_clock_00_1_20 interrupt latency: the handler starts 8 dots earlier
+frame_clock_00_1_40 interrupt latency: the handler starts 8 dots earlier
+frame_clock_00_1_80 interrupt latency: the handler starts 8 dots earlier
+frame_clock_00_1_200 interrupt latency: the handler starts 8 dots earlier
+frame_clock_00_2 interrupt latency: the handler starts 1 dot earlier
+frame_clock_00_2_pal interrupt latency: the handler starts 5 dots earlier
+frame_clock_00_2_20 interrupt latency: the handler starts 2 dots earlier
+frame_clock_00_2_40 interrupt latency: the handler starts 2 dots earlier
+frame_clock_00_2_80 interrupt latency: the handler starts 2 dots earlier
+frame_clock_00_2_200 interrupt latency: the handler starts 2 dots earlier
+frame_clock_01_1 interrupt latency: the handler starts 8 dots earlier
+frame_clock_01_1_pal interrupt latency: the handler starts 6 dots earlier
+frame_clock_01_1_20 interrupt latency: the handler starts 8 dots earlier
+frame_clock_01_1_40 interrupt latency: the handler starts 8 dots earlier
+frame_clock_01_1_80 interrupt latency: the handler starts 8 dots earlier
+frame_clock_01_1_200 interrupt latency: the handler starts 8 dots earlier
+frame_clock_01_2 interrupt latency: the handler starts 1 dot earlier
+frame_clock_01_2_pal interrupt latency: the handler starts 5 dots earlier
+frame_clock_01_2_20 interrupt latency: the handler starts 2 dots earlier
+frame_clock_01_2_40 interrupt latency: the handler starts 2 dots earlier
+frame_clock_01_2_80 interrupt latency: the handler starts 2 dots earlier
+frame_clock_01_2_200 interrupt latency: the handler starts 2 dots earlier

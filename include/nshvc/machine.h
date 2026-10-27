@@ -20,33 +20,30 @@ void wr8(uint32_t addr, uint8_t value);
 
 /* Multi-byte accesses are little-endian and linear in the 24-bit space,
    the low byte first, as the CPU makes them (lockstep places each access
-   on the original's, so the order is part of the behaviour). */
-static inline uint16_t rd16(uint32_t addr)
-{
-    uint8_t lo = rd8(addr);
+   on the original's, so the order is part of the behaviour). Each call is
+   one operation: no interrupt comes between its bytes. */
+uint16_t rd16(uint32_t addr);
+void wr16(uint32_t addr, uint16_t value);
+uint32_t rd24(uint32_t addr);
 
-    return (uint16_t)(lo | rd8((addr + 1) & 0xFFFFFF) << 8);
-}
+/* A read-modify-write instruction (ASL, LSR, ROL, ROR, INC, DEC, TSB, TRB
+   on memory): its read, then its write, one operation, no interrupt
+   between them: rd8_rmw then wr8, or rd16_rmw then wr16_rmw, whose write
+   is the high byte first, then the low, as the CPU makes them. The C may
+   state time between the two (cyc); a read before the write is a fatal
+   error. */
+uint8_t rd8_rmw(uint32_t addr);
+uint16_t rd16_rmw(uint32_t addr);
+void wr16_rmw(uint32_t addr, uint16_t value);
 
-static inline void wr16(uint32_t addr, uint16_t value)
-{
-    wr8(addr, (uint8_t)value);
-    wr8((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8));
-}
-
-/* A 16-bit read-modify-write instruction's write (ASL, LSR, ROL, ROR, INC,
-   DEC, TSB, TRB on memory): the high byte first, then the low, as the CPU
-   makes them. */
-static inline void wr16_rmw(uint32_t addr, uint16_t value)
-{
-    wr8((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8));
-    wr8(addr, (uint8_t)value);
-}
-
-static inline uint32_t rd24(uint32_t addr)
-{
-    return rd16(addr) | (uint32_t)rd8((addr + 2) & 0xFFFFFF) << 16;
-}
+/* Interrupts: the CPU takes one between two of its operations, never in
+   one. The console takes it at the first point between two of the C's
+   operations (an access, a word, a read-modify-write, a stretch of time)
+   at or after the time it comes due, the IRQ unless the I flag in `cpu`
+   masks it: at an operation's end, or, in a stretch of time (cyc, cycs,
+   cpu_idle), at the clock it comes due. The C marks no instruction's end:
+   the original takes the interrupt at its instruction's end, later than
+   here by the rest of that instruction (README.md, Time). */
 
 /* The 65816 register file, for abi_ wrappers. */
 typedef struct {
@@ -119,17 +116,6 @@ void cpu_restart(uint32_t at, void (*entry)(void));
    begins with the interrupt due and one more. (An extension of the decomp machine model:
    nativeshvc's, for code the original runs WAI in.) */
 void cpu_wai(uint32_t at);
-/* An instruction boundary: the original's next instruction starts here.
-   The CPU takes an interrupt only between instructions, so these are the
-   only places the C's interrupts are taken (besides the instructions the
-   console runs for it: cpu_wai and cpu_loop_forever); a C that marks
-   none takes none. (An extension of the decomp
-   machine model: nativeshvc's.) */
-void cpu_boundary(void);
-/* The CPU decides on an interrupt as an instruction's last cycle begins,
-   with the I flag as it is then: the C states each instruction's last
-   cycle on its own (the access that ends it, or a
-   cyc of that one cycle, or cpu_implied). */
 /* The internal cycle that ends a two-cycle implied instruction at `at`
    (INX, TAX, CLC, NOP, XCE...): 6 clocks, or, with an interrupt to be
    taken after it, a read at the next opcode (at + 1) instead, as the CPU
@@ -138,9 +124,8 @@ void cpu_implied(uint32_t at);
 /* Time the original spends with no access the C makes: a delay loop's
    turns (its fetches and internal cycles), `clocks` master clocks (21.477
    MHz). The rest of the machine runs meanwhile, so the time matters: the
-   sound CPU acting on a command before the next one arrives. No
-   interrupt is taken in it: a loop the original takes interrupts in
-   states each turn's instructions (cpu_boundary at each). */
+   sound CPU acting on a command before the next one arrives. An interrupt
+   that comes due in it is taken at its time. */
 void cpu_idle(uint32_t clocks);
 /* The time the original spends here between two bus accesses, besides
    their own: its instruction fetches and internal cycles, `clocks` master

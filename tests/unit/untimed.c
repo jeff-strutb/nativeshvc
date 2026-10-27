@@ -86,7 +86,6 @@ static void abi_reset(void)
     wr8(0x004200, 0x80);
     nshvc_wait_vblank();
     for (i = 0; i < 100000 && !nmi_seen; i++) {
-        cpu_boundary();
         rd8(0x7E0000);
     }
     wr8(0x004200, 0x00);

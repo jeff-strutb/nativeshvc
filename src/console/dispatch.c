@@ -122,7 +122,7 @@ void cpu_loop_forever(uint32_t at)
     }
 }
 
-void cpu_idle(uint32_t clocks) { snes_cpu_wait(clocks); }
+void cpu_idle(uint32_t clocks) { snes_cpu_idle(clocks); }
 
 void cpu_wai(uint32_t at)
 {
@@ -149,7 +149,7 @@ void cycs(uint64_t lengths)
         if (c != 6 && c != 8 && c != 12)
             snes_fatal("cycs(0x%llx): a cycle of %u clocks (6, 8 or C for 12), from %p", (unsigned long long)lengths, c,
                        __builtin_return_address(0));
-        snes_cpu_cycle(c);
+        snes_cpu_cycle_c(c);
     }
 }
 void cpu_implied(uint32_t at)
@@ -157,8 +157,8 @@ void cpu_implied(uint32_t at)
     /* with an interrupt to be taken, the internal cycle is a read at the
        next opcode instead */
     cpu_cycle(snes_interrupt_taken_now() ? fetch(at + 1) : 6);
+    snes_c_between();
 }
-void cpu_boundary(void) { snes_cpu_boundary(); }
 
 void cpu_restart(uint32_t at, void (*entry)(void))
 {
@@ -181,7 +181,7 @@ static void push8(uint8_t v)
 static uint8_t pull8(void)
 {
     cpu.s = cpu.e ? (uint16_t)(0x0100 | ((cpu.s + 1) & 0xFF)) : (uint16_t)(cpu.s + 1);
-    return rd8((uint16_t)cpu.s);
+    return snes_cpu_read_within((uint16_t)cpu.s);
 }
 
 /* RTI: its fetch, two internal cycles, P and PC (and PB in native mode)

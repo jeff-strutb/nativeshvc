@@ -36,8 +36,9 @@ Version 0.1.0.
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
 each one, is in [tests/README.md](tests/README.md).
 
-- **Test cartridges:** all 1,164 console test cartridges match the reference, and none is
-  listed as a known difference.
+- **Test cartridges:** 1,060 of the 1,164 console test cartridges match the reference.
+  The other 104 measure interrupt latency and differ by it alone: the one exception to
+  cycle exactness (see Time), each listed in `tests/rom/KNOWN`.
 - **Cartridges:** LoROM, HiROM, ExLoROM, ExHiROM and Super FX mappings, including
   mirroring for ROM sizes that are not a power of two, and cartridge RAM; NTSC and PAL
   frame lengths.
@@ -132,7 +133,8 @@ emulated machine and are checked against the original; under nativeshvc they rea
 native console.
 
 - [`machine.h`](include/nshvc/machine.h), the S-CPU: `rd8`/`wr8` (and `rd16`, `wr16`,
-  `rd24`) for every access to the 24-bit address space; `cyc(clocks)` for the original's
+  `rd24`) for every access to the 24-bit address space, `rd8_rmw`/`rd16_rmw` for a
+  read-modify-write's read (its write ends it); `cyc(clocks)` for the original's
   fetches and internal cycles between two accesses, in master clocks; the 65816 register
   file `cpu` for routines entered through `abi_` wrappers; `call_routine` and
   `jump_routine` for calls and jumps through computed addresses; `cpu_loop_forever`,
@@ -170,10 +172,34 @@ accesses. Where a DMA or HDMA can fall inside that time, the C states it cycle b
 instead (`cycs`, each hex digit one cycle's clocks), so the transfer lands on the right
 cycle edge. As the clock passes each line's horizontal blank, that line is drawn and HDMA
 runs; at the vertical blank's start come the NMI, the joypads' automatic read and the
-frame's end. Interrupts are taken only at the instruction boundaries the S-CPU's C states
-(`cpu_boundary`), as the hardware takes them only between instructions: the one the CPU
-decided on as the instruction's last cycle began. The bus never infers a boundary from the
-accesses.
+frame's end.
+
+Interrupts are events in the console's time. The NMI, the H/V IRQ and a cartridge's IRQ
+come due at exactly the clock the hardware raises them, and the S-CPU's C takes each at the
+first point between two of its operations at or after that clock: the end of an access
+(`rd8`, `wr8`), a word (`rd16`, `wr16`, `rd24`) or a read-modify-write (`rd8_rmw`/`rd16_rmw`
+to its write), or, inside a stretch of time (`cyc`, `cycs`, `cpu_idle`), the clock itself.
+No operation is split, so a handler never sees half of a word or of a read-modify-write.
+The IRQ waits while the I flag masks it. The C marks no instruction boundaries and the bus
+infers none: the C is structured, not a trace of the original's instructions. WAI, a
+branch to itself and a unit call's stub are instructions the console runs, and take their
+interrupts exactly as the CPU does.
+
+**The one exception to cycle exactness: interrupt latency.** The 65816 decides on an
+interrupt as an instruction's last cycle begins and takes it when that instruction ends, so
+on the hardware the handler starts after the rest of the instruction in progress (and,
+when the interrupt comes due in its last cycle, after the next instruction as well): a
+delay of a few CPU cycles, by which instructions those are (1 to 20 dots, 4 to 80 master
+clocks, on the test cartridges that measure it). Which instruction is in
+progress is a fact of the original's machine code that structured C does not carry, so
+nativeshvc starts the handler at the operation's end or the clock it comes due instead.
+What the handler reads and writes, and in what order against the interrupted code's
+accesses, is the hardware's; only its start can differ, earlier here by that delay.
+Where the code waits for the interrupt (WAI, a loop polling a flag or a status register),
+the two are the same and the timing is exact. It shows only where a handler's writes are
+timed to the dot without such a wait (a mid-line split from an H-IRQ the code does not wait
+for) and in test cartridges that measure the latency itself: 104 of the 1,164, listed in
+`tests/rom/KNOWN`.
 
 ### Controllers
 

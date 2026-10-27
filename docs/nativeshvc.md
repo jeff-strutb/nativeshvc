@@ -133,11 +133,14 @@ start, 8 a channel and 8 a byte (read 4 clocks in, written at the end) and
 an HDMA table byte each line, and gives the bus back on the CPU's own
 cycle. So the unit lands at the right cycle, the C states the cycles a DMA
 or HDMA can fall in one by one (`cycs`: machine.h); `NSHVC_AUDIT=1` names
-each `cyc` stretch that one falls in. Interrupts are taken at the
-instruction boundaries the C marks (`cpu_boundary`), decided as the
-instruction's last cycle begins, with the I flag as it stood then: the C
-states that last cycle on its own (an access, a single `cyc`, or
-`cpu_implied` for a two-cycle implied instruction). The sound unit runs
+each `cyc` stretch that one falls in. Interrupts are taken at the first
+point between two of the C's operations at or after the clock they come
+due (an access's end, a word's, a read-modify-write's at its write, or the
+clock itself inside `cyc`, `cycs` or `cpu_idle`), the IRQ unless the I
+flag masks it; the C marks no instruction boundaries, so the handler can
+start earlier than the original's by the rest of the instruction the
+original is in (README.md, Time).
+The sound unit runs
 from power on with the console's clock (the S-CPU starts after its reset);
 each side sees an access of the other's made at or before its own time, a
 port read taking its value half an SPC700 cycle before its cycle ends. A

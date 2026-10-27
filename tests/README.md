@@ -5,7 +5,7 @@ Each was shown able to fail (a planted error caught) before it was relied on.
 
 | check | holds | run |
 |---|---|---|
-| `rom/run.py` | the console, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off): every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, the CPU's interrupt, DMA and HDMA timing (a DMA's own time at every phase, HDMA's, HDMA between a DMA's bytes, and both inside stretches the C states cycle by cycle), the multiplier's and divider's results as they work, the counters and frame lengths, interlace (its fields woven, hires and OBJ interlace), mid-line changes (each layer's tile fetch by mode) the sound unit's replies as the S-CPU sees them (the boot ROM's handshake, to 2 clocks), the joypads' automatic read (when it ends, at every phase of the CPU's counter) and every controller (joypads, multitap, mice and their speed, Super Scope, Justifiers, an empty port: the automatic read, a strobe and while latched, with the script's input each frame, the same on both). 1,164 test cartridges, every one matching; `rom/KNOWN` lists any that differ | `python3 tests/rom/run.py [--only NAME,...]` (about 3 minutes) |
+| `rom/run.py` | the console, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off): every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, the CPU's interrupt, DMA and HDMA timing (a DMA's own time at every phase, HDMA's, HDMA between a DMA's bytes, and both inside stretches the C states cycle by cycle), the multiplier's and divider's results as they work, the counters and frame lengths, interlace (its fields woven, hires and OBJ interlace), mid-line changes (each layer's tile fetch by mode) the sound unit's replies as the S-CPU sees them (the boot ROM's handshake, to 2 clocks), the joypads' automatic read (when it ends, at every phase of the CPU's counter) and every controller (joypads, multitap, mice and their speed, Super Scope, Justifiers, an empty port: the automatic read, a strobe and while latched, with the script's input each frame, the same on both). 1,164 test cartridges: 1,060 match, and the 104 that measure interrupt latency differ by it alone (README.md, Time), each listed in `rom/KNOWN` | `python3 tests/rom/run.py [--only NAME,...]` (about 3 minutes) |
 | `rom/ext_check.py` | the extensions: a larger screen's centre is exactly the console's picture, its extra columns the scene scrolled, VRAM pages the same as page 0 | `python3 tests/rom/ext_check.py` (about 1 minute) |
 | `srfx/same.py` | a real decompilation, unchanged, on nativeshvc: Stunt Race FX's 21 plays against the original cartridge on the reference (`oracle --script`), every shot, work RAM and Super FX RAM dump and the pacing record, byte for byte; where a play differs, the decompilation's C and the cartridge part (the console is held by `rom/run.py`) | `sh tests/srfx/build.sh && python3 tests/srfx/same.py` (about 5 minutes) |
 | `srfx/first.py` | where a play that differs first does: the first frame whose RAM differs from the cartridge's, the bytes, and the cartridge's instruction that wrote each (its routine): the decompilation's C or the console | `python3 tests/srfx/first.py [PLAY...]` (about 10 minutes) |
@@ -59,7 +59,10 @@ did at each pixel.
 
 ## The known residual (`rom/KNOWN`)
 
-None: every test matches the reference. A test that differs for a reason
-measured and not yet closed goes in `rom/KNOWN` with that reason;
+The 104 tests that measure interrupt latency (`irq_fixed`, `irq_entry`,
+`frame_clock`): the handler starts 1 to 20 dots earlier than the
+reference's, because the C marks no instruction ends (README.md, Time).
+Every other test matches. A test that differs goes in `rom/KNOWN` with
+the reason;
 `rom/run.py` reports it as KNOWN, never as passing, and reports any that
 start passing, so the list is kept true.

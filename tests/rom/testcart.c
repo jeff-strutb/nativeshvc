@@ -3,8 +3,10 @@
  * interpreter as the ROM's 65816 code, written against the machine model,
  * reading the same table of steps from the same ROM. Each access it makes
  * is one the assembly makes, in the same order; the time between them is
- * the assembly's, each instruction's start marked (cpu_boundary) where the CPU takes interrupts; the steps' waits poll the beam, so a test does
- * not depend on the exact time).
+ * the assembly's, and its read-modify-writes (DEC) are stated as such, so
+ * an interrupt is taken between its operations as the console takes one
+ * (machine.h); the steps' waits poll the beam, so a test does not depend
+ * on the exact time).
  *
  *   testcart --rom ROM [nshvc_main's options]
  */
@@ -15,15 +17,13 @@
 #include "nshvc/nshvc.h"
 #include "nshvc/machine.h"
 
-/* an instruction's time before its access: its start a boundary, where
-   the CPU takes an interrupt */
-#define I(clocks) (cpu_boundary(), cyc(clocks))
-/* the same, the instruction's last cycle (last clocks) in it: stated on
-   its own, as the CPU takes an interrupt by what it saw before it */
-#define L(clocks, last) (cpu_boundary(), cyc((clocks) - (last)), cyc(last))
+/* an instruction's time before its access */
+#define I(clocks) cyc(clocks)
+/* the same, the instruction's last cycle (last clocks) in it */
+#define L(clocks, last) ((void)(last), cyc(clocks))
 /* a two-cycle implied instruction (INX, TYX, CLI...): its opcode, then
    the internal cycle the CPU makes a read when an interrupt follows */
-#define IMP() (cpu_boundary(), cyc(OP), cpu_implied(0x008000))
+#define IMP() (cyc(OP), cpu_implied(0x008000))
 
 static uint16_t rd16_00(uint16_t a) { return rd16(a); }
 
@@ -169,7 +169,7 @@ static void abi_reset(void)
                     L(!(f & 0x80) ? 2 * OP + IO : 2 * OP, !(f & 0x80) ? IO : OP);
                 } while (!(f & 0x80));
                 I(2 * OP);                          /* DEC $06 */
-                n = rd8(0x000006);
+                n = rd8_rmw(0x000006);
                 cyc(IO);
                 n--;
                 wr8(0x000006, n);
@@ -286,7 +286,7 @@ static void abi_reset(void)
             L(!t ? 2 * OP + IO : 2 * OP, !t ? IO : OP);    /* BEQ .b */
             while (t) {                         /* .a: DEC $06; BNE .a */
                 I(2 * OP);
-                t = rd8(0x000006);
+                t = rd8_rmw(0x000006);
                 cyc(IO);
                 t--;
                 wr8(0x000006, t);
@@ -298,7 +298,7 @@ static void abi_reset(void)
             while (t) {                         /* .c: NOP; DEC $07; BNE .c */
                 IMP();
                 I(2 * OP);
-                t = rd8(0x000007);
+                t = rd8_rmw(0x000007);
                 cyc(IO);
                 t--;
                 wr8(0x000007, t);
@@ -322,14 +322,14 @@ static void abi_reset(void)
                 do {
                     cycs(0x86868686);               /* NOP x 4, a stretch of eight cycles */
                     cycs(0x88);                     /* DEC $06 */
-                    n = rd8(0x000006);
+                    n = rd8_rmw(0x000006);
                     cycs(0x6);
                     n--;
                     wr8(0x000006, n);
                     cycs(n ? 0x886 : 0x88);         /* BNE .l */
                 } while (n);
                 cycs(0x88);                         /* DEC $07 */
-                m = rd8(0x000007);
+                m = rd8_rmw(0x000007);
                 cycs(0x6);
                 m--;
                 wr8(0x000007, m);

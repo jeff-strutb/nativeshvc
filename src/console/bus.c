@@ -80,11 +80,11 @@ static void alu_edge(void)
 static uint16_t htime = 0x1FF, vtime = 0x1FF;
 static uint8_t rdnmi_flag, timeup_flag;
 /* When each interrupt became due, and when the CPU's latest cycle began
-   with the I flag as it stood then: the CPU decides on an interrupt at the
-   start of an instruction's last cycle (its pipeline), so a C that marks
-   its boundaries gets an interrupt due by then, unmasked then, at the next
-   boundary (measured against the reference: tests/rom/cases.py irq_fixed,
-   at every dot) */
+   with the I flag as it stood then: in an instruction the console runs
+   (WAI, a branch to itself, a unit call's stub), the CPU decides on an
+   interrupt at the start of its last cycle, so one due by then, unmasked
+   then, is taken at its end (measured against the reference:
+   tests/rom/cases.py irq_fixed, at every dot) */
 static uint64_t nmi_at, timeup_at, poll_clock;
 static int poll_masked;
 static int nmi_pending, cart_irq;
@@ -92,6 +92,7 @@ static int nmi_pending, cart_irq;
 static void latch_counters(void);
 static void joy_run(void);
 static void cpu_clocks(uint32_t clocks);
+static unsigned stretch_first(uint32_t clocks);
 static void alu_stretch(uint32_t clocks);
 static void *audit_at;   /* where the last audited access came from (NSHVC_AUDIT) */
 
@@ -653,7 +654,7 @@ static void check_interrupts_at(uint64_t by, int masked)
 }
 
 /* a cycle of the CPU's begins, `cc` clocks long: where the CPU decides on
-   an interrupt (cpu_boundary) and where the DMA unit takes the bus */
+   an interrupt (snes_cpu_boundary) and where the DMA unit takes the bus */
 static void cycle_begins(unsigned cc)
 {
     poll_clock = snes_clock;
@@ -1162,8 +1163,6 @@ static int rom_data(uint32_t addr)
     return cart_decode(bank, off, &at) == CART_ROM;
 }
 
-/* No interrupt is taken between the two bytes of one word: a read
-   straight after a read of the byte before it. */
 /* Untimed, a loop that waits for time (a status bit, a counter, the
    sound unit's reply) never ends; such a loop reads and does not write.
    20,000,000 reads with no write between them are taken for one. */
@@ -1200,13 +1199,129 @@ static uint8_t access_rd(uint32_t addr)
     return v;
 }
 
-uint8_t rd8(uint32_t addr)
+/* ---- the C's operations, and the interrupts between them ----
+   The CPU takes an interrupt between two of its operations, never inside
+   one. The C's operations are what it states: an access (rd8, wr8), a
+   word or long (rd16, wr16, rd24), a read-modify-write (rd8_rmw or
+   rd16_rmw to its write), a stretch of time (cyc, cycs, cpu_idle). An
+   interrupt is taken at the first point between them at or after the
+   time it comes due, the IRQ unless the I flag masks it: at an
+   operation's end, or inside a stretch of time at the clock it comes due.
+   No instruction's end is known or inferred: the original takes the
+   interrupt at its instruction's end, later than here by the rest of that
+   instruction (README.md, Time). */
+static int rmw_open;                     /* a read-modify-write's read made, its write to come */
+static uint32_t rmw_at;
+
+/* when an interrupt raised and not masked comes due: NEVER for none */
+static uint64_t interrupt_due_at(void)
 {
+    uint64_t t = NEVER;
+    if (interrupts_held || !snes_interrupt_hook)
+        return NEVER;
+    if (nmi_pending)
+        t = nmi_at;
+    if (!(snes_irq_masked && snes_irq_masked())) {
+        if (cart_irq)
+            return 0;
+        if (timeup_flag && timeup_at < t)
+            t = timeup_at;
+    }
+    return t;
+}
+
+/* a point between two of the C's operations: the interrupt due by now is
+   taken there (and a unit call the script waits on starts) */
+static void between(void)
+{
+    if (rmw_open)
+        return;
+    if (snes_unit_pending)
+        snes_unit_start();
+    check_interrupts_at(snes_clock, snes_irq_masked && snes_irq_masked());
+}
+
+void snes_c_between(void) { between(); }
+
+/* `clocks` of the C's time with no access in it, as the clock moves on:
+   each interrupt that comes due in it is taken at its time (the multiplier
+   brought up to that time first), the rest of the time after it */
+static void c_time(uint32_t clocks, uint32_t *alu_pending)
+{
+    while (clocks) {
+        uint32_t n = clocks;
+        uint64_t due = interrupt_due_at();
+        if (!rmw_open && !snes_untimed()) {
+            if (due > snes_clock && due - snes_clock < n)
+                n = (uint32_t)(due - snes_clock);
+            /* an event in it may raise one */
+            if (next_event > snes_clock && next_event - snes_clock < n)
+                n = (uint32_t)(next_event - snes_clock);
+        }
+        snes_tick(n);
+        clocks -= n;
+        *alu_pending += n;
+        if (!rmw_open && interrupt_due_at() <= snes_clock) {
+            alu_stretch(*alu_pending);
+            *alu_pending = 0;
+            between();
+        }
+    }
+}
+
+static uint8_t c_rd(uint32_t addr, void *site)
+{
+    if (rmw_open)
+        snes_fatal("rd8_rmw at $%06X: a read of $%06X before its write", (unsigned)rmw_at, (unsigned)(addr & 0xFFFFFF));
     if (audit_on() && bus_a_is_register(addr & 0xFFFFFF)) {
-        audit_at = __builtin_return_address(0);
+        audit_at = site;
         audit_site(addr & 0xFFFFFF, 0);
     }
     return access_rd(addr);
+}
+
+uint8_t rd8(uint32_t addr)
+{
+    uint8_t v = c_rd(addr, __builtin_return_address(0));
+    between();
+    return v;
+}
+
+uint16_t rd16(uint32_t addr)
+{
+    void *site = __builtin_return_address(0);
+    uint8_t lo = c_rd(addr, site);
+    uint16_t v = (uint16_t)(lo | c_rd((addr + 1) & 0xFFFFFF, site) << 8);
+    between();
+    return v;
+}
+
+uint32_t rd24(uint32_t addr)
+{
+    void *site = __builtin_return_address(0);
+    uint32_t v = c_rd(addr, site);
+    v |= (uint32_t)c_rd((addr + 1) & 0xFFFFFF, site) << 8;
+    v |= (uint32_t)c_rd((addr + 2) & 0xFFFFFF, site) << 16;
+    between();
+    return v;
+}
+
+uint8_t rd8_rmw(uint32_t addr)
+{
+    uint8_t v = c_rd(addr, __builtin_return_address(0));
+    rmw_open = 1;
+    rmw_at = addr & 0xFFFFFF;
+    return v;
+}
+
+uint16_t rd16_rmw(uint32_t addr)
+{
+    void *site = __builtin_return_address(0);
+    uint8_t lo = c_rd(addr, site);
+    uint16_t v = (uint16_t)(lo | c_rd((addr + 1) & 0xFFFFFF, site) << 8);
+    rmw_open = 1;
+    rmw_at = addr & 0xFFFFFF;
+    return v;
 }
 
 /* a write: `push`, one of the interrupt sequence's own (NSHVC_CYCLOG's P
@@ -1226,13 +1341,39 @@ static void access_wr(uint32_t addr, uint8_t value, int push)
     bus_write(addr, value, 0);
 }
 
-void wr8(uint32_t addr, uint8_t value)
+static void c_wr(uint32_t addr, uint8_t value, void *site)
 {
     if (audit_on() && bus_a_is_register(addr & 0xFFFFFF)) {
-        audit_at = __builtin_return_address(0);
+        audit_at = site;
         audit_site(addr & 0xFFFFFF, 1);
     }
     access_wr(addr, value, 0);
+}
+
+/* a write ends the read-modify-write whose read came before it */
+void wr8(uint32_t addr, uint8_t value)
+{
+    c_wr(addr, value, __builtin_return_address(0));
+    rmw_open = 0;
+    between();
+}
+
+void wr16(uint32_t addr, uint16_t value)
+{
+    void *site = __builtin_return_address(0);
+    c_wr(addr, (uint8_t)value, site);
+    c_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), site);
+    rmw_open = 0;
+    between();
+}
+
+void wr16_rmw(uint32_t addr, uint16_t value)
+{
+    void *site = __builtin_return_address(0);
+    c_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), site);
+    c_wr(addr, (uint8_t)value, site);
+    rmw_open = 0;
+    between();
 }
 
 void snes_interrupt_push(uint32_t addr, uint8_t value) { access_wr(addr, value, 1); }
@@ -1240,21 +1381,30 @@ uint8_t snes_cpu_read_within(uint32_t addr) { return access_rd(addr); }
 void snes_cpu_write_within(uint32_t addr, uint8_t value) { access_wr(addr, value, 0); }
 
 /* A stretch with no access (a delay loop): the clock moves on in short
-   steps, each a cycle's start where the DMA unit may take the bus. No
-   instruction ends in it that the C has not stated, so no interrupt is
-   taken in it */
-void snes_cpu_wait(uint32_t clocks)
+   steps, each a cycle's start where the DMA unit may take the bus. The
+   console's own wait (nshvc_wait_vblank) takes no interrupt in it; the C's
+   (cpu_idle, `c`) takes each as it comes due */
+static void cpu_wait(uint32_t clocks, int c)
 {
     if (cyclog_on())
         fprintf(cyclog, "D %u\n", (unsigned)clocks);
     while (clocks) {
         unsigned n = clocks > 36 ? 36 : (unsigned)clocks;
+        uint32_t alu = 0;
         cycle_begins(6);
-        snes_tick(n);
-        alu_stretch(n);
+        if (c)
+            c_time(n, &alu);
+        else
+            snes_tick(n), alu = n;
+        alu_stretch(alu);
         clocks -= n;
     }
+    if (c)
+        between();
 }
+
+void snes_cpu_wait(uint32_t clocks) { cpu_wait(clocks, 0); }
+void snes_cpu_idle(uint32_t clocks) { cpu_wait(clocks, 1); }
 /* Time the C states (machine.h cyc) from `site`. A DMA the last write
    started begins at the second cycle after it, an HDMA at the first cycle
    after its time, which a stretch of more than one cycle hides:
@@ -1280,7 +1430,14 @@ void snes_cpu_stated(uint32_t clocks, void *site)
     }
     if (cyclog_on())
         fprintf(cyclog, "C %p %u\n", site, (unsigned)clocks);
-    cpu_clocks(clocks);
+    {
+        uint32_t alu = 0;
+        if (clocks)
+            cycle_begins(stretch_first(clocks));
+        c_time(clocks, &alu);
+        alu_stretch(alu);
+    }
+    between();
 }
 
 /* one cycle of the S-CPU's, `cc` clocks (machine.h cycs) */
@@ -1289,6 +1446,14 @@ void snes_cpu_cycle(unsigned cc)
     cycle_begins(cc);
     snes_tick(cc);
     alu_edge();
+}
+
+/* one of the C's cycles (cycs): an interrupt that comes due in it is taken
+   at its end */
+void snes_cpu_cycle_c(unsigned cc)
+{
+    snes_cpu_cycle(cc);
+    between();
 }
 
 void snes_cpu_clocks(uint32_t clocks)
@@ -1319,12 +1484,14 @@ static void alu_stretch(uint32_t clocks)
         alu_edge();
 }
 
+/* a stretch's first cycle: an internal cycle when it is internal cycles
+   only, else a SlowROM fetch */
+static unsigned stretch_first(uint32_t clocks) { return clocks % 6 == 0 && clocks % 8 != 0 ? 6 : 8; }
+
 static void cpu_clocks(uint32_t clocks)
 {
-    /* a stretch's first cycle: an internal cycle when it is internal cycles
-       only, else a SlowROM fetch */
     if (clocks)
-        cycle_begins(clocks % 6 == 0 && clocks % 8 != 0 ? 6 : 8);
+        cycle_begins(stretch_first(clocks));
     snes_tick(clocks);
     alu_stretch(clocks);
 }
@@ -1335,8 +1502,8 @@ int snes_interrupt_taken_now(void)
     return !interrupts_held
         && ((nmi_pending && nmi_at <= snes_clock) || ((timeup_seen() || cart_irq) && !(snes_irq_masked && snes_irq_masked())));
 }
-/* an instruction's end: the interrupt the CPU decided on as its last cycle
-   began, with the I flag as it was then */
+/* the end of an instruction the console runs: the interrupt the CPU
+   decided on as its last cycle began, with the I flag as it was then */
 void snes_cpu_boundary(void)
 {
     if (snes_unit_pending)
