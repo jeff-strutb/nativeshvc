@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1196" viewBox="0 0 1200 1196" role="img" aria-label="nativeshvc architecture: the game's decompiled C as the cartridge, nativeshvc as the console, the host below">
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1f2328"/></marker></defs>
+<rect x="0.5" y="0.5" width="1199" height="1195" rx="14" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+<text x="50" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">nativeshvc: the console a decompiled game plugs into</text>
+<text x="50" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">The processors are the game's C. Everything that is not a processor is nativeshvc. No 65816 or SPC700 machine code is run.</text>
+<rect x="30" y="86" width="1140" height="164" rx="12" fill="#fff6e5" stroke="#c27c0e" stroke-width="1.5"/>
+<text x="46" y="108" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">THE CARTRIDGE  ·  the game's decompilation</text>
+<rect x="50" y="118" width="305" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
+<rect x="50" y="118" width="305" height="4" rx="2" fill="#c27c0e"/>
+<text x="62" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">The S-CPU's code (65816), as C</text>
+<text x="62" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">every bus access through rd8 / wr8,</text>
+<text x="62" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">in the original's order</text>
+<text x="62" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">cyc / cycs: the original's time between</text>
+<text x="62" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">abi_ wrappers for vectors and calls</text>
+<rect x="375" y="118" width="245" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
+<rect x="375" y="118" width="245" height="4" rx="2" fill="#c27c0e"/>
+<text x="387" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">Cartridge description</text>
+<text x="387" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">nshvc_cart: title, region, save</text>
+<text x="387" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">mapping: LoROM, HiROM, Ex…, CHIP</text>
+<text x="387" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">RAM and battery</text>
+<text x="387" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">ROM (data pages only, or whole)</text>
+<text x="387" y="226" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">tables: address → routine's C</text>
+<rect x="640" y="118" width="245" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
+<rect x="640" y="118" width="245" height="4" rx="2" fill="#c27c0e"/>
+<text x="652" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">Expansion chip (if any)</text>
+<text x="652" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">nshvc_chip: Super FX, SA-1, DSP…</text>
+<text x="652" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">the game's own implementation</text>
+<text x="652" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">its own processor model and clock</text>
+<rect x="905" y="118" width="245" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
+<rect x="905" y="118" width="245" height="4" rx="2" fill="#c27c0e"/>
+<text x="917" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">The SPC700's sound driver, as C</text>
+<text x="917" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">every access via spc_rd / spc_wr,</text>
+<text x="917" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">spc_cyc for the original's time</text>
+<text x="917" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">picked by what APU RAM holds</text>
+<rect x="30" y="262" width="1140" height="62" rx="12" fill="#f1ecff" stroke="#6f52c9" stroke-width="1.5"/>
+<text x="110" y="282" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">THE GAME CONTRACT 1.0  ·  docs/contract.md</text>
+<rect x="50" y="292" width="305" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
+<text x="108" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">machine.h  rd8 wr8 cyc cycs</text>
+<rect x="375" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
+<text x="497.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">nshvc_main(&amp;cart)</text>
+<rect x="640" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
+<text x="762.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">cart.h  nshvc_chip</text>
+<rect x="905" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
+<text x="1027.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">spc.h  spc_rd spc_wr spc_cyc</text>
+<rect x="30" y="336" width="1140" height="430" rx="12" fill="#eaf2ff" stroke="#2f6fdb" stroke-width="1.5"/>
+<text x="110" y="360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">THE CONSOLE  ·  nativeshvc: native C, one thread</text>
+<rect x="110" y="392" width="245" height="88" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="110" y="392" width="245" height="4" rx="2" fill="#2f6fdb"/>
+<text x="122" y="416" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">Dispatch · dispatch.c</text>
+<text x="122" y="436" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">address → the game's C</text>
+<text x="122" y="452" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">reset, NMI, IRQ vectors, calls</text>
+<text x="122" y="468" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">no C at an address: fatal (70)</text>
+<rect x="375" y="392" width="245" height="88" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="375" y="392" width="245" height="4" rx="2" fill="#2f6fdb"/>
+<text x="387" y="416" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">Cartridge slot · bus.c</text>
+<text x="387" y="436" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">ROM by mapping, with mirroring</text>
+<text x="387" y="452" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">cartridge RAM and battery</text>
+<text x="387" y="468" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">NTSC or PAL frame length</text>
+<rect x="640" y="392" width="245" height="88" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="640" y="392" width="245" height="4" rx="2" fill="#2f6fdb"/>
+<text x="652" y="416" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">Cartridge connector · cart.h</text>
+<text x="652" y="436" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">chip answers its own addresses</text>
+<text x="652" y="452" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">drives the IRQ line, may own RAM</text>
+<text x="652" y="468" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">chip's C on its own coroutine</text>
+<rect x="905" y="392" width="245" height="268" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="905" y="392" width="245" height="4" rx="2" fill="#2f6fdb"/>
+<text x="917" y="416" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">Sound unit · apu.c</text>
+<text x="917" y="436" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">64 KB APU RAM, three timers</text>
+<text x="917" y="452" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">4 ports ($2140–$2143) to the S-CPU</text>
+<text x="917" y="468" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">boot ROM handshake, done as</text>
+<text x="917" y="484" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">the boot ROM does it</text>
+<text x="917" y="500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">SPC700's C on its own coroutine,</text>
+<text x="917" y="516" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">brought up to the S-CPU's time</text>
+<line x1="917" y1="540" x2="1138" y2="540" stroke="#d0d7de"/>
+<text x="917" y="562" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">S-DSP · mixer.c</text>
+<text x="917" y="582" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">BRR, Gaussian interpolation,</text>
+<text x="917" y="598" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">envelopes, noise, echo</text>
+<text x="917" y="614" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">a clock each SPC700 cycle</text>
+<text x="917" y="630" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">32,040 stereo samples a second</text>
+<rect x="50" y="496" width="835" height="50" rx="6" fill="#1d4fa8" stroke="#1d4fa8" stroke-width="1.5"/>
+<text x="62" y="516" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="start">S-CPU BUS  ·  24-bit address space  ·  every access answered as the hardware answers it, at the hardware's time</text>
+<text x="62" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">MASTER CLOCK 21.477 MHz: each access and each cyc moves it</text>
+<circle cx="440" cy="532" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="440" y="536.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
+<text x="456" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">H-blank: line drawn, HDMA</text>
+<circle cx="622" cy="532" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="622" y="536.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">5</text>
+<text x="638" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">V-blank: NMI, joypad read, frame end</text>
+<rect x="885" y="512" width="20" height="18" fill="#1d4fa8"/>
+<line x1="232" y1="480" x2="232" y2="496" stroke="#1d4fa8" stroke-width="4"/>
+<line x1="497.5" y1="480" x2="497.5" y2="496" stroke="#1d4fa8" stroke-width="4"/>
+<line x1="762.5" y1="480" x2="762.5" y2="496" stroke="#1d4fa8" stroke-width="4"/>
+<rect x="50" y="562" width="195" height="98" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="50" y="562" width="195" height="4" rx="2" fill="#2f6fdb"/>
+<text x="62" y="586" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">CPU side · bus.c</text>
+<text x="62" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">128 KB work RAM, open bus</text>
+<text x="62" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">NMI, H/V IRQ, timers</text>
+<text x="62" y="638" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">multiply and divide</text>
+<text x="62" y="654" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">joypads' automatic read</text>
+<rect x="263" y="562" width="195" height="98" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="263" y="562" width="195" height="4" rx="2" fill="#2f6fdb"/>
+<text x="275" y="586" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">DMA / HDMA · dma.c</text>
+<text x="275" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">8 channels, either way</text>
+<text x="275" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">exact at each 2-clock phase</text>
+<text x="275" y="638" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">HDMA in each H-blank</text>
+<rect x="476" y="562" width="195" height="98" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="476" y="562" width="195" height="4" rx="2" fill="#2f6fdb"/>
+<text x="488" y="586" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">PPU · ppu.c</text>
+<text x="488" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">VRAM, CGRAM, OAM</text>
+<text x="488" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">modes 0–7, sprites, windows</text>
+<text x="488" y="638" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">colour maths, brightness</text>
+<text x="488" y="654" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">draws a line each H-blank</text>
+<rect x="689" y="562" width="195" height="98" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
+<rect x="689" y="562" width="195" height="4" rx="2" fill="#2f6fdb"/>
+<text x="701" y="586" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">Controller ports · ports.c</text>
+<text x="701" y="606" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">joypad, mouse, multitap</text>
+<text x="701" y="622" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">Super Scope, Justifiers</text>
+<text x="701" y="638" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">latch, clock, data, IOBit</text>
+<line x1="147.5" y1="546" x2="147.5" y2="562" stroke="#1d4fa8" stroke-width="4"/>
+<line x1="360.5" y1="546" x2="360.5" y2="562" stroke="#1d4fa8" stroke-width="4"/>
+<line x1="573.5" y1="546" x2="573.5" y2="562" stroke="#1d4fa8" stroke-width="4"/>
+<line x1="786.5" y1="546" x2="786.5" y2="562" stroke="#1d4fa8" stroke-width="4"/>
+<rect x="50" y="680" width="1100" height="68" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="62" y="701" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">Front end · src/front  (console.c, input.c, script.c)</text>
+<text x="62" y="720" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">nshvc_main: opens the host, loads the save, powers on, then runs frame after frame; takes the picture and the samples out,</text>
+<text x="62" y="737" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">brings the players' devices to the ports, writes the battery save. Headless: a script of inputs, screenshots and dumps.</text>
+<rect x="30" y="782" width="1140" height="168" rx="12" fill="#e8f6ee" stroke="#2e8b57" stroke-width="1.5"/>
+<rect x="50" y="818" width="195" height="84" rx="8" fill="#ffffff" stroke="#2e8b57" stroke-width="1.5"/>
+<rect x="50" y="818" width="195" height="4" rx="2" fill="#2e8b57"/>
+<text x="62" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Files · host.h</text>
+<text x="62" y="862" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">the save folder</text>
+<text x="62" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">battery save, on change</text>
+<rect x="263" y="818" width="195" height="84" rx="8" fill="#ffffff" stroke="#2e8b57" stroke-width="1.5"/>
+<rect x="263" y="818" width="195" height="4" rx="2" fill="#2e8b57"/>
+<text x="275" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Wall clock · host.h</text>
+<text x="275" y="862" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">a frame each 1/60.0988 s</text>
+<text x="275" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">(NTSC), steadily paced</text>
+<rect x="476" y="818" width="195" height="84" rx="8" fill="#ffffff" stroke="#2e8b57" stroke-width="1.5"/>
+<rect x="476" y="818" width="195" height="4" rx="2" fill="#2e8b57"/>
+<text x="488" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Renderer · rr.h</text>
+<text x="488" y="862" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">Metal, OpenGL, Vulkan, soft</text>
+<text x="488" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">sharp bilinear, any size</text>
+<rect x="689" y="818" width="195" height="84" rx="8" fill="#ffffff" stroke="#2e8b57" stroke-width="1.5"/>
+<rect x="689" y="818" width="195" height="4" rx="2" fill="#2e8b57"/>
+<text x="701" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Native input · input.c</text>
+<text x="701" y="862" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">keyboard, game controllers</text>
+<text x="701" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">mouse, pointer, touch</text>
+<rect x="905" y="818" width="245" height="84" rx="8" fill="#ffffff" stroke="#2e8b57" stroke-width="1.5"/>
+<rect x="905" y="818" width="245" height="4" rx="2" fill="#2e8b57"/>
+<text x="917" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Sound out · resample.c</text>
+<text x="917" y="862" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">32-tap Kaiser-windowed sinc</text>
+<text x="917" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">to the device's rate, no drift</text>
+<text x="46" y="934" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">THE HOST  ·  src/host/host.h</text>
+<text x="262" y="934" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">macOS  ·  iOS  ·  Windows  ·  null (headless)  ·  none (an app's own loop)</text>
+<line x1="497.5" y1="236" x2="497.5" y2="290" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="497.5" y1="318" x2="497.5" y2="390" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="762.5" y1="236" x2="762.5" y2="290" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="762.5" y1="318" x2="762.5" y2="390" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="1027.5" y1="236" x2="1027.5" y2="290" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="1027.5" y1="318" x2="1027.5" y2="390" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="64" y1="236" x2="64" y2="290" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="64" y1="318" x2="64" y2="494" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<path d="M110,416 H88 V320" fill="none" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="88" y1="290" x2="88" y2="238" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<circle cx="88" cy="372" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="88" y="376.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">2</text>
+<circle cx="64" cy="450" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="64" y="454.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">3</text>
+<circle cx="401" cy="304" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="401" y="308.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">1</text>
+<line x1="573.5" y1="660" x2="573.5" y2="678" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="573.5" y1="748" x2="573.5" y2="816" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<circle cx="573.5" cy="783" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="573.5" y="787.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">6</text>
+<line x1="1027.5" y1="660" x2="1027.5" y2="678" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="1027.5" y1="748" x2="1027.5" y2="816" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<circle cx="1027.5" cy="783" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="1027.5" y="787.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">6</text>
+<line x1="786.5" y1="818" x2="786.5" y2="750" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="786.5" y1="680" x2="786.5" y2="662" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<circle cx="786.5" cy="783" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="786.5" y="787.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">6</text>
+<line x1="147.5" y1="748" x2="147.5" y2="816" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<line x1="360.5" y1="818" x2="360.5" y2="750" stroke="#1f2328" stroke-width="2" marker-end="url(#arr)"/>
+<text x="50" y="986" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">How a game plays through it</text>
+<circle cx="61" cy="1008" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="61" y="1012.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">1</text>
+<text x="80" y="1012" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Switch on</text>
+<text x="80" y="1029" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">The game's main hands its cartridge to nshvc_main: the host opens the window,</text>
+<text x="80" y="1045" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">sound and controllers, the battery save is loaded and the console powers on.</text>
+<circle cx="61" cy="1068" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="61" y="1072.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">2</text>
+<text x="80" y="1072" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Reset</text>
+<text x="80" y="1089" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Dispatch finds the C for the reset vector's address and calls it. Every call, jump</text>
+<text x="80" y="1105" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">and interrupt vector is reached the same way; an address with no C is fatal.</text>
+<circle cx="61" cy="1128" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="61" y="1132.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">3</text>
+<text x="80" y="1132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">The game's C runs</text>
+<text x="80" y="1149" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Each of the original's accesses goes through rd8 / wr8, in its order, and cyc</text>
+<text x="80" y="1165" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">states the time between them; the bus answers each at the hardware's time.</text>
+<circle cx="621" cy="1008" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="621" y="1012.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
+<text x="640" y="1012" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Each line</text>
+<text x="640" y="1029" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">As the clock passes each H-blank the PPU draws that line and HDMA runs; the</text>
+<text x="640" y="1045" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">SPC700's and a chip's C are brought up to the same time on their coroutines.</text>
+<circle cx="621" cy="1068" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="621" y="1072.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">5</text>
+<text x="640" y="1072" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Each frame</text>
+<text x="640" y="1089" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">At V-blank the console raises the NMI, which Dispatch hands to the game's</text>
+<text x="640" y="1105" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">handler C, reads the joypads automatically and ends the frame.</text>
+<circle cx="621" cy="1128" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
+<text x="621" y="1132.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">6</text>
+<text x="640" y="1132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Out to the player</text>
+<text x="640" y="1149" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">The front end presents the picture on the GPU and resamples the sound, a frame</text>
+<text x="640" y="1165" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">each 1/60.0988 s, and brings the players' devices back into the ports.</text>
+</svg>

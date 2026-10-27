@@ -42,6 +42,8 @@ Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: t
 console's numbers are its baseline, and a port may opt out of them (see
 [Extensions](#extensions)).
 
+![nativeshvc's architecture: the game's decompilation is the cartridge, nativeshvc the console, the host below; numbered steps show how a game plays through it](docs/architecture.svg)
+
 ## Using nativeshvc in a decompilation
 
 ### 1. Build it
