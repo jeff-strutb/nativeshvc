@@ -22,12 +22,22 @@ Version 0.1.0.
   the original cartridge on the reference. Every difference traced so far is in the game's
   C (timing it states in lumps that a DMA or HDMA can fall inside, being converted to
   cycle-by-cycle time), not in the console.
-- **The sound unit and DSP** are checked only through Stunt Race FX's plays, not on their
-  own against the reference's samples, and one channel differs by 1 to 2 levels from
-  sample 126,206 of Stunt Race FX's attract mode.
+- **Stunt Race FX's unit tests can't match yet.** Its 325 unit scripts all start from
+  saved states past frame 70, where the plain play already differs from the cartridge.
+- **The sound unit and DSP** now have a test of their own against the reference's chip
+  (every sample, every voice and every access), but no result from it is recorded yet. The
+  earlier difference of 1 to 2 levels on one channel, from sample 126,206 of Stunt Race
+  FX's attract mode, is not confirmed closed.
+- **Parts of the script runner are untested:** Super FX program calls (`fx`) run but are
+  not checked against the reference; SPC700 routine calls (`spccall`) need the game's
+  sound driver C to mark where a call may start, and fail with an error until it does; and
+  several call entry options (`frame=`, `php`, `phb`, `rti`, `vblank`, `press=`) are
+  untested.
 - **The renderer checks** (presented frames and overlays) have not been rerun since the
   latest console changes.
-- **The Windows build** is cross-built with MinGW but has never been run.
+- **The Windows build** is cross-built with MinGW but has never been run, and saving and
+  loading states, and calls that put the machine back, need `fork`, so they don't work on
+  Windows.
 
 **What is done and checked.** Every check below is against bsnes as the reference, with its
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
@@ -53,6 +63,11 @@ each one, is in [tests/README.md](tests/README.md).
   the reference, byte for byte (every screenshot, work RAM and Super FX RAM dump and pacing
   record), and another finds the frame and the instruction where a play first differs.
   They do not all match yet (see above).
+- **Unit tests from a game state:** a script can run one routine's C once, from any point
+  the game reached, with its registers and inputs, and return the machine to where it was;
+  it can also save and load states. Two hand-written Stunt Race FX scripts (six calls with
+  staged bytes and a kept call; saving and loading across several states) match the
+  reference exactly, frame by frame.
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the frames and draw
   overlays; they matched the CPU reference when last checked, before the latest console
   changes.
@@ -280,9 +295,27 @@ The same program runs headless, for tests and comparisons:
 game --headless --frames 600 --script steps.txt --out shots --sound out.raw
 ```
 
-The script's steps are `wait N`, `hold B+B N`, `press B`, `shot NAME`, `dump NAME` and
-`repeat N ... end`; shots are written as `DIR/NAME.ppm`, dumps as `DIR/NAME.wram` and
-`DIR/NAME.sram`, and `--sound` writes the DSP's raw output.
+A script plays the controllers and records what happens: `wait N`, `hold B+B N`,
+`press B`, `shot NAME` (the frame, as `DIR/NAME.ppm`), `dump NAME` (work RAM, the
+cartridge's RAM, the PPU's memories and a chip's RAM) and `repeat N ... end`; `--sound`
+writes the DSP's raw output.
+
+It also takes the steps of a decompilation's own test harness, so the same tests run on the
+reference and on the native build:
+
+- `poke` and `set` put bytes into work RAM or the chip's RAM, now or when the next call
+  starts.
+- `call` runs one routine once, from a stub in work RAM that the console runs cycle by
+  cycle, with the registers and frames it names; afterwards the machine is as it was, unless
+  `keep` says the game goes on from there. `fx` does the same for a Super FX program.
+- `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
+  marks a safe point (`spc_at`).
+- `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
+  of the machine and cannot be copied, so the run forks instead: one process holds the
+  state while another goes on. A state that no process holds is rebuilt by replaying, from
+  power on, the steps that saved it (the script's own, or a play in `NSHVC_STATES`).
+
+Every step is listed in [`src/front/script.h`](src/front/script.h).
 
 ### 4. Or bring your own loop
 
@@ -297,7 +330,8 @@ write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
 Two options show where a port's stated time and the console disagree, on any headless run:
 `NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
 needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
-against the original's cycles. Stunt Race FX's own check, which finds where a play first
+against the original's cycles. The C can drop markers into that record with `nshvc_mark`,
+which takes no time, to line it up with the code that made it. Stunt Race FX's own check, which finds where a play first
 differs from the cartridge, is described in [tests/README.md](tests/README.md).
 
 ### What the decompilation does not have to do
