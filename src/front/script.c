@@ -21,6 +21,23 @@
  *
  * A child's end that is not one of these (the script's end, an error) ends
  * every process above it with the same status.
+ *
+ * Without fork (Windows; NSHVC_SCRIPT_NOFORK=1 elsewhere, to check it), no
+ * process holds a machine: where the script needs the machine as it was,
+ * the run starts a new copy of the program and ends with its status. The
+ * new one rebuilds that machine by replaying, from power-on, the steps that
+ * made it (the run is the same each time), and goes on from there:
+ *
+ *   history   what made the machine: the steps of the play that saves a
+ *             state (P:NAME, as above) and runs of the script's own steps
+ *             (M:A-B), each without its shots, dumps and saves; a call
+ *             that kept nothing only writes its stub, which stays (the
+ *             bytes set for it and its run gone with it)
+ *   save      NAME's history noted (passed on to each new copy)
+ *   load      a new copy rebuilds NAME, and goes on from the step after
+ *   call      (without keep) run here; when it returns, a new copy
+ *             rebuilds the machine as it was before it, and goes on from
+ *             the step after
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,9 +45,14 @@
 #ifndef _WIN32
 #include <dirent.h>
 #include <errno.h>
+#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+extern char **environ;
+#else
+#include <io.h>
+#include <windows.h>
 #endif
 
 #include "nshvc/nshvc.h"
@@ -44,6 +66,7 @@ enum {
     S_CALL,                 /* a unit call, over the frames it runs */
     S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_POKE, S_SET, S_SPCSET, S_SPCCALL,
     S_INPUT,                /* plug, pad, mouse, gun: the controller ports from now */
+    S_STUB,                 /* a replayed call that kept nothing: only its stub written, as it stays */
 };
 
 typedef struct {
@@ -482,65 +505,321 @@ static void begin_main(int at)
 static char replay_name[128];
 static int replay_resume;
 
-/* the play that saves state `name` (a .sfx in NSHVC_STATES with `save
-   NAME`), from power-on to that save, then the main script from `resume` */
-static void begin_replay(const char *name, int resume)
+/* the play in NSHVC_STATES (*.sfx) with `save NAME`: its path in found */
+static void find_play(const char *name, char *found, size_t size)
 {
-#ifndef _WIN32
     const char *dir = getenv("NSHVC_STATES");
-    char found[2048] = "", path[2048], line[512];
-    DIR *d;
-    struct dirent *e;
-    int i;
-    /* a state the script saves itself, before any load: its own steps to
-       that save */
-    for (i = 0; i < main_list.n && main_list.s[i].kind != S_LOAD; i++)
-        if (main_list.s[i].kind == S_SAVE && !strcmp(main_list.s[i].name, name)) {
-            replay_list = main_list;
-            snprintf(replay_name, sizeof replay_name, "%s", name);
-            replay_resume = resume;
-            cur = &replay_list;
-            step_at = 0;
-            step_left = 0;
-            snes_cyclog_quiet = 1;
-            return;
-        }
+    char path[2048], line[512];
+    found[0] = 0;
     if (!dir)
         nshvc_fatal("load %s: set NSHVC_STATES to the folder of the plays that save states", name);
-    if (!(d = opendir(dir)))
-        nshvc_fatal("NSHVC_STATES: cannot read %s", dir);
-    while ((e = readdir(d)) && !found[0]) {
-        size_t k = strlen(e->d_name);
-        FILE *f;
-        if (k < 4 || strcmp(e->d_name + k - 4, ".sfx"))
-            continue;
-        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-        if (!(f = fopen(path, "r")))
-            continue;
-        while (fgets(line, sizeof line, f)) {
-            char c[64] = "", a[256] = "";
-            if (sscanf(line, "%63s %255s", c, a) == 2 && !strcmp(c, "save") && !strcmp(a, name)) {
-                snprintf(found, sizeof found, "%s", path);
-                break;
+#ifndef _WIN32
+    {
+        DIR *d;
+        struct dirent *e;
+        if (!(d = opendir(dir)))
+            nshvc_fatal("NSHVC_STATES: cannot read %s", dir);
+        while ((e = readdir(d)) && !found[0]) {
+            size_t k = strlen(e->d_name);
+            FILE *f;
+            if (k < 4 || strcmp(e->d_name + k - 4, ".sfx"))
+                continue;
+            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            if (!(f = fopen(path, "r")))
+                continue;
+            while (fgets(line, sizeof line, f)) {
+                char c[64] = "", a[256] = "";
+                if (sscanf(line, "%63s %255s", c, a) == 2 && !strcmp(c, "save") && !strcmp(a, name)) {
+                    snprintf(found, size, "%s", path);
+                    break;
+                }
             }
+            fclose(f);
         }
-        fclose(f);
+        closedir(d);
     }
-    closedir(d);
+#else
+    {
+        struct _finddata_t fd;
+        intptr_t h;
+        snprintf(path, sizeof path, "%s/*.sfx", dir);
+        if ((h = _findfirst(path, &fd)) != -1) {
+            do {
+                FILE *f;
+                snprintf(path, sizeof path, "%s/%s", dir, fd.name);
+                if (!(f = fopen(path, "r")))
+                    continue;
+                while (fgets(line, sizeof line, f)) {
+                    char c[64] = "", a[256] = "";
+                    if (sscanf(line, "%63s %255s", c, a) == 2 && !strcmp(c, "save") && !strcmp(a, name)) {
+                        snprintf(found, size, "%s", path);
+                        break;
+                    }
+                }
+                fclose(f);
+            } while (!found[0] && _findnext(h, &fd) == 0);
+            _findclose(h);
+        }
+    }
+#endif
     if (!found[0])
         nshvc_fatal("load %s: no play in %s saves it", name, dir);
-    memset(&replay_list, 0, sizeof replay_list);
-    list_load(&replay_list, found);
+}
+
+/* the steps that save state `name`: the script's own up to its save, when
+   one comes before any load (1, `l` the main script), else the play that
+   saves it, loaded into `l` (0) */
+static int play_for(const char *name, List *l)
+{
+    char found[2048];
+    int i;
+    for (i = 0; i < main_list.n && main_list.s[i].kind != S_LOAD; i++)
+        if (main_list.s[i].kind == S_SAVE && !strcmp(main_list.s[i].name, name)) {
+            *l = main_list;
+            return 1;
+        }
+    find_play(name, found, sizeof found);
+    memset(l, 0, sizeof *l);
+    list_load(l, found);
+    return 0;
+}
+
+#ifndef _WIN32
+/* the play that saves state `name` (a .sfx in NSHVC_STATES with `save
+   NAME`), from power-on to that save, then the main script from `resume`
+   (with fork) */
+static void begin_replay(const char *name, int resume)
+{
+    play_for(name, &replay_list);
     snprintf(replay_name, sizeof replay_name, "%s", name);
     replay_resume = resume;
     cur = &replay_list;
     step_at = 0;
     step_left = 0;
     snes_cyclog_quiet = 1;
-#else
-    (void)name;
-    (void)resume;
+}
 #endif
+
+/* ---- without fork: the machine rebuilt by replay ---- */
+static int nofork = -1;
+static int plan_on, plan_resume;            /* replaying the plan, then the main script from plan_resume */
+static int main_from;                       /* the main script's step this process went on from */
+static char *history;                       /* what made the machine as this process began its own steps */
+static char *saved;                         /* NAME=HISTORY;... the states saved */
+static int self_argc;
+static char **self_argv;
+static Shared own_shared;
+
+static int no_fork(void)
+{
+    if (nofork < 0) {
+#ifdef _WIN32
+        nofork = 1;
+#else
+        nofork = getenv("NSHVC_SCRIPT_NOFORK") != NULL;
+#endif
+    }
+    return nofork;
+}
+
+void script_args(int argc, char **argv)
+{
+    self_argc = argc;
+    self_argv = argv;
+}
+
+int script_replaying(void) { return cur == &replay_list; }
+
+static char *str_cat(const char *a, const char *b)
+{
+    size_t n = strlen(a) + strlen(b) + 1;
+    char *r = (char *)malloc(n);
+    if (!r)
+        nshvc_fatal("no memory for the script");
+    snprintf(r, n, "%s%s", a, b);
+    return r;
+}
+
+/* the machine's history now, the main script's steps up to `upto` */
+static char *history_to(int upto)
+{
+    char seg[64];
+    snprintf(seg, sizeof seg, "%sM:%d-%d", history[0] ? "," : "", main_from, upto);
+    return str_cat(history, seg);
+}
+
+/* whether a call step keeps what it does */
+static int call_keeps(const Step *s)
+{
+    char w[24][1024];
+    int n = words(s->text, w, 24), i;
+    for (i = 2; i < n; i++)
+        if (!strcmp(w[i], "keep"))
+            return 1;
+    return 0;
+}
+
+/* steps [a, b) of `src` onto `dst`, as a history replays them */
+static void plan_add(List *dst, const List *src, int a, int b)
+{
+    int i;
+    for (i = a; i < b; i++) {
+        const Step *t = &src->s[i];
+        if (t->kind == S_SHOT || t->kind == S_DUMP || t->kind == S_SAVE)
+            continue;
+        if (t->kind == S_LOAD)
+            nshvc_fatal("%s:%d: a load in steps replayed for a state", src->path, t->line);
+        if (t->kind == S_CALL && !call_keeps(t)) {
+            /* nor the bytes set for it; but its stub, which stays */
+            while (dst->n && dst->s[dst->n - 1].kind == S_SET)
+                dst->n--;
+        }
+        dst->s = (Step *)realloc(dst->s, sizeof *dst->s * (size_t)(dst->n + 1));
+        if (!dst->s)
+            nshvc_fatal("no memory for the script");
+        dst->s[dst->n++] = *t;
+        if (t->kind == S_CALL && !call_keeps(t))
+            dst->s[dst->n - 1].kind = S_STUB;
+    }
+}
+
+/* the replay of a history, then the main script from `resume` */
+static void plan_begin(const char *plan, int resume)
+{
+    char *copy = str_cat(plan, ""), *seg, *next;
+    memset(&replay_list, 0, sizeof replay_list);
+    replay_list.path = main_list.path;
+    for (seg = copy; seg && *seg; seg = next) {
+        next = strchr(seg, ',');
+        if (next)
+            *next++ = 0;
+        if (!strncmp(seg, "P:", 2)) {
+            List l;
+            int i;
+            play_for(seg + 2, &l);
+            for (i = 0; i < l.n; i++)
+                if (l.s[i].kind == S_SAVE && !strcmp(l.s[i].name, seg + 2))
+                    break;
+            if (i == l.n)
+                nshvc_fatal("%s: the play ends before it saves %s", l.path, seg + 2);
+            plan_add(&replay_list, &l, 0, i);
+        } else if (!strncmp(seg, "M:", 2)) {
+            int a = 0, b = 0;
+            sscanf(seg + 2, "%d-%d", &a, &b);
+            plan_add(&replay_list, &main_list, a, b);
+        } else {
+            nshvc_fatal("NSHVC_SCRIPT_PLAN: '%s'", seg);
+        }
+    }
+    free(copy);
+    history = str_cat(plan, "");
+    plan_on = 1;
+    plan_resume = resume;
+    cur = &replay_list;
+    step_at = 0;
+    step_left = 0;
+    snes_cyclog_quiet = 1;
+}
+
+/* the replay done: the main script from where it goes on */
+static void plan_end(void)
+{
+    plan_on = 0;
+    main_from = plan_resume;
+    begin_main(plan_resume);
+}
+
+static void env_set(const char *k, const char *v)
+{
+#ifdef _WIN32
+    if (_putenv_s(k, v))
+#else
+    if (setenv(k, v, 1))
+#endif
+        nshvc_fatal("cannot set %s", k);
+}
+
+/* a new copy of the program, rebuilding the machine `plan` made and going
+   on from step `resume`; this process ends with its status */
+static void go_on_in_new_copy(const char *plan, int resume)
+{
+    char n[32];
+    int st;
+    if (!self_argv)
+        nshvc_fatal("save, load and calls without keep need the program's arguments (script_args)");
+    env_set("NSHVC_SCRIPT_PLAN", plan[0] ? plan : "M:0-0");
+    snprintf(n, sizeof n, "%d", resume);
+    env_set("NSHVC_SCRIPT_RESUME", n);
+    env_set("NSHVC_SCRIPT_SAVED", saved ? saved : "");
+    snprintf(n, sizeof n, "%u", (unsigned)shared->frames);
+    env_set("NSHVC_SCRIPT_FRAMES", n);
+    fflush(NULL);
+#ifndef _WIN32
+    {
+        pid_t p;
+        int err = posix_spawnp(&p, self_argv[0], NULL, NULL, self_argv, environ);
+        if (err)
+            nshvc_fatal("cannot start %s: %s", self_argv[0], strerror(err));
+        st = child_status(p);
+    }
+#else
+    {
+        char exe[MAX_PATH];
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        DWORD code = 1;
+        memset(&si, 0, sizeof si);
+        si.cb = sizeof si;
+        if (!GetModuleFileNameA(NULL, exe, sizeof exe) ||
+            !CreateProcessA(exe, GetCommandLineA(), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+            nshvc_fatal("cannot start a new copy of the program (%lu)", (unsigned long)GetLastError());
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        st = (int)code;
+    }
+#endif
+    fflush(NULL);
+    _exit(st);
+}
+
+/* save NAME: its history noted */
+static void plan_save(const char *name)
+{
+    char *h = history_to(step_at), *e = str_cat(name, "="), *entry = str_cat(e, h), *all;
+    all = str_cat(saved ? saved : "", saved && saved[0] ? ";" : "");
+    free(saved);
+    saved = str_cat(all, entry);
+    free(all);
+    free(entry);
+    free(e);
+    free(h);
+}
+
+/* load NAME: rebuilt in a new copy */
+static void plan_load(const char *name)
+{
+    const char *p = saved;
+    size_t k = strlen(name);
+    while (p && *p) {
+        const char *end = strchr(p, ';');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len > k && !strncmp(p, name, k) && p[k] == '=') {
+            char *plan = (char *)malloc(len - k);
+            if (!plan)
+                nshvc_fatal("no memory for the script");
+            memcpy(plan, p + k + 1, len - k - 1);
+            plan[len - k - 1] = 0;
+            go_on_in_new_copy(plan, step_at + 1);
+        }
+        p = end ? end + 1 : NULL;
+    }
+    {
+        char seg[160];
+        snprintf(seg, sizeof seg, "P:%s", name);
+        go_on_in_new_copy(seg, step_at + 1);
+    }
 }
 
 /* This process holds the machine as state `have` ("" power-on): children
@@ -593,6 +872,18 @@ static void start(void)
     if (started)
         return;
     started = 1;
+    if (no_fork()) {
+        const char *plan = getenv("NSHVC_SCRIPT_PLAN"), *f = getenv("NSHVC_SCRIPT_FRAMES"),
+                   *sv = getenv("NSHVC_SCRIPT_SAVED"), *r = getenv("NSHVC_SCRIPT_RESUME");
+        shared = &own_shared;
+        shared->frames = f ? (uint32_t)strtoul(f, NULL, 10) : 0;
+        snes_cyclog_frame = cyclog_frame;
+        saved = str_cat(sv ? sv : "", "");
+        history = str_cat("", "");
+        if (plan)
+            plan_begin(plan, r ? atoi(r) : 0);
+        return;
+    }
 #ifndef _WIN32
     {
         int i, need = 0;
@@ -626,6 +917,8 @@ static void load(const char *path)
     if (k > 6 && !strcmp(name + k - 6, ".state"))
         name[k - 6] = 0;
     spc_unrun();
+    if (no_fork())
+        plan_load(name);
 #ifndef _WIN32
     snprintf(shared->name, sizeof shared->name, "%s", name);
     shared->resume = step_at + 1;
@@ -633,6 +926,8 @@ static void load(const char *path)
     _exit(EXIT_WANT);
 #endif
 }
+
+static void call_parse(const Step *s, SnesUnit *u);
 
 /* the steps that are not frames' due now */
 static void takes(void)
@@ -658,6 +953,10 @@ static void takes(void)
         case S_SHOT: shot(s->name); break;
         case S_DUMP: dump(s->name); break;
         case S_SAVE:
+            if (no_fork()) {
+                plan_save(s->name);
+                break;
+            }
             hold(s->name, step_at + 1);
             continue;
         case S_LOAD: load(s->name); break;
@@ -670,6 +969,14 @@ static void takes(void)
         case S_SPCSET: spcset(s); break;
         case S_SPCCALL: spccall(s); break;
         case S_INPUT: input_step(s); break;
+        case S_STUB: {
+            SnesUnit u;
+            call_parse(s, &u);
+            snes_unit_call(&u);
+            snes_unit_cancel();
+            nstaged = 0;
+            break;
+        }
         }
         step_at++;
     }
@@ -746,7 +1053,7 @@ static int call_frame(Step *s, uint16_t *b0, uint16_t *b1)
         call_parse(s, &u);
         snes_unit_call(&u);
 #ifndef _WIN32
-        if (!u.keep) {
+        if (!u.keep && !no_fork()) {
             pid_t p = fork_run();
             if (p) {
                 int st = child_status(p);
@@ -757,9 +1064,6 @@ static int call_frame(Step *s, uint16_t *b0, uint16_t *b1)
                 return 0;
             }
         }
-#else
-        if (!u.keep)
-            nshvc_fatal("a call without keep needs fork, which this system has not");
 #endif
         call_f = 0;
     } else {
@@ -767,6 +1071,9 @@ static int call_frame(Step *s, uint16_t *b0, uint16_t *b1)
         if (st == 3) {
             if (!call_keep) {
                 spc_unrun();
+                /* the machine as it was before the call, from the step after */
+                if (no_fork() && !plan_on)
+                    go_on_in_new_copy(history_to(step_at + 1), step_at + 1);
                 fflush(NULL);
                 _exit(EXIT_CALLED);
             }
@@ -809,6 +1116,10 @@ int script_frame(uint16_t *b0, uint16_t *b1)
     for (;;) {
         Step *s;
         takes();
+        if (step_at >= cur->n && plan_on) {
+            plan_end();
+            continue;
+        }
         if (step_at >= cur->n) {
             if (cur == &replay_list)
                 nshvc_fatal("%s: the play ends before it saves %s", cur->path, replay_name);

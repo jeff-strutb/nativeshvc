@@ -17,8 +17,10 @@
  *   set ADDR BYTE[,BYTE...]    the same, written when the next call starts
  *   call ADDR [long] [keep] [noreturn] [a= x= y= p= db= d=] [frames=N]
  *        [press=B@F] [frame=PPDD] [php] [phb] [rti=PP] [vblank]
- *                        the routine run once from a stub in work RAM
- *                        (snes.h SnesUnit), over up to N frames (600); then
+ *                        the routine run once, entered as from the
+ *                        harness's stub in work RAM, which the console
+ *                        writes there and does itself (snes.h SnesUnit),
+ *                        over up to N frames (600); then
  *                        the machine as it was before (keep: the game goes
  *                        on from where it was, the call's changes kept;
  *                        noreturn: one that does not return in its frames
@@ -40,7 +42,8 @@
  *   gun G X Y B          light gun G points at dot X, line Y, with buttons
  *                        B (nshvc.h NSHVC_GUN_*), from now
  *   dump NAME also writes the cartridge chip's own RAM as DIR/NAME.chipram.
- * save, load and a call without keep fork (script.c).
+ * save, load and a call without keep fork, or, without fork, go on in a
+ * new copy of the program that replays to the machine wanted (script.c).
  *
  * Buttons: B Y SELECT START UP DOWN LEFT RIGHT A X L R, player 1; 2. before
  * one for player 2 (2.START). '#' starts a comment.
@@ -51,6 +54,11 @@
 #include <stdint.h>
 
 void script_load(const char *path, const char *out_dir);
+/* the program's arguments, for a run that goes on in a new copy of the
+   program (save, load and calls without keep, without fork) */
+void script_args(int argc, char **argv);
+/* replaying steps to rebuild a machine (nothing they make is written) */
+int script_replaying(void);
 /* the steps loaded (0: no script) */
 int script_steps(void);
 /* the shots and dumps due now, at the end of a frame */

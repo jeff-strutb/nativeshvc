@@ -127,7 +127,8 @@ static int cyclog_on(void)
     if (!init) {
         const char *p = getenv("NSHVC_CYCLOG"), *r = getenv("NSHVC_CYCLOG_FRAMES");
         init = 1;
-        if (p && !(cyclog = fopen(p, "w")))
+        /* a new copy of the program going on from a replay adds to it */
+        if (p && !(cyclog = fopen(p, getenv("NSHVC_SCRIPT_PLAN") ? "a" : "w")))
             snes_fatal("NSHVC_CYCLOG: cannot write %s", p);
         if (r && sscanf(r, "%u-%u", &cyclog_from, &cyclog_to) < 1)
             snes_fatal("NSHVC_CYCLOG_FRAMES: A-B");

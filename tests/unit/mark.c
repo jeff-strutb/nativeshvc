@@ -4,12 +4,14 @@
  * accesses around them; with or without it, no time passes.
  *
  *   mark              runs the checks; exit 0 when every one holds
+ *   mark --child [CYCLOG]   the cartridge alone (the checks run it so)
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/wait.h>
-#include <unistd.h>
+#endif
 
 #include "nshvc/nshvc.h"
 #include "nshvc/machine.h"
@@ -35,48 +37,60 @@ static void abi_reset(void)
 static const uint8_t rom[0x8000] = { [0x7FFC] = 0x00, [0x7FFD] = 0x80, [0x7FD5] = 0x20 };
 static const nshvc_routine routines[] = { { 0x008000, abi_reset, "reset", 0 } };
 
-/* the cartridge run in a child (its cyclog is written when it exits): its
-   exit status */
-static int run(const char *cyclog)
+/* the cartridge, alone: its cyclog is written when it exits */
+static void cartridge(const char *cyclog)
 {
-    int st;
-    pid_t p;
-    fflush(stdout);
-    p = fork();
-    if (p == 0) {
-        nshvc_cart cart;
-        if (cyclog)
-            setenv("NSHVC_CYCLOG", cyclog, 1);
-        else
-            unsetenv("NSHVC_CYCLOG");
-        memset(&cart, 0, sizeof cart);
-        cart.title = "mark";
-        cart.map = NSHVC_LOROM;
-        cart.rom = rom;
-        cart.rom_size = sizeof rom;
-        cart.routines = routines;
-        cart.routine_count = 1;
-        nshvc_power(&cart);
-        for (;;)
-            nshvc_run_frame();
+    nshvc_cart cart;
+    if (cyclog) {
+#ifdef _WIN32
+        _putenv_s("NSHVC_CYCLOG", cyclog);
+#else
+        setenv("NSHVC_CYCLOG", cyclog, 1);
+#endif
     }
-    if (p < 0 || waitpid(p, &st, 0) != p || !WIFEXITED(st))
-        return -1;
-    return WEXITSTATUS(st);
+    memset(&cart, 0, sizeof cart);
+    cart.title = "mark";
+    cart.map = NSHVC_LOROM;
+    cart.rom = rom;
+    cart.rom_size = sizeof rom;
+    cart.routines = routines;
+    cart.routine_count = 1;
+    nshvc_power(&cart);
+    for (;;)
+        nshvc_run_frame();
 }
 
-int main(void)
+/* the cartridge run as a program of its own (this one, --child): its exit
+   status */
+static int run(const char *self, const char *cyclog)
 {
-    char path[] = "/tmp/nshvc_markXXXXXX", line[256], got[1024] = "";
-    int fd = mkstemp(path), fails = 0, n;
+    char cmd[2048];
+    int st;
+    snprintf(cmd, sizeof cmd, "\"%s\" --child%s%s%s", self, cyclog ? " \"" : "", cyclog ? cyclog : "",
+             cyclog ? "\"" : "");
+    fflush(stdout);
+    st = system(cmd);
+#ifdef _WIN32
+    return st;
+#else
+    return st >= 0 && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+#endif
+}
+
+int main(int argc, char **argv)
+{
+    char path[1100], line[256], got[1024] = "";
+    int fails = 0, n;
     FILE *f;
-    if (fd < 0)
-        return 2;
-    close(fd);
-    n = run(NULL);
+    if (argc >= 2 && !strcmp(argv[1], "--child"))
+        cartridge(argc >= 3 ? argv[2] : NULL);
+    /* the cyclog beside the program */
+    snprintf(path, sizeof path, "%s.cyclog", argv[0]);
+    remove(path);
+    n = run(argv[0], NULL);
     printf("%s no cyclog: a mark takes no time (exit %d)\n", n == 0 ? "ok  " : "FAIL", n);
     fails += n != 0;
-    n = run(path);
+    n = run(argv[0], path);
     printf("%s cyclog: a mark takes no time (exit %d)\n", n == 0 ? "ok  " : "FAIL", n);
     fails += n != 0;
     /* the stream from the first write: W, M 7, M 4000000000, C, M 8, W */
@@ -96,7 +110,7 @@ int main(void)
     }
     if (f)
         fclose(f);
-    unlink(path);
+    remove(path);
     n = !strcmp(got, "W,M7,M4000000000,C,M8,W,");
     printf("%s cyclog: the marks in stream order (%s)\n", n ? "ok  " : "FAIL", got);
     fails += !n;

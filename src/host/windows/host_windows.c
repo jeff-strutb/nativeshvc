@@ -31,7 +31,7 @@
 
 #include "host.h"
 
-static char s_save[MAX_PATH];
+static char s_save[2 * MAX_PATH];
 static const char *s_app_dir = "Game", *s_app_title = "Game";
 
 void host_set_app_name(const char *dir, const char *title)
@@ -54,7 +54,7 @@ static void exe_dir(char *out, size_t n)
 
 static void log_open(void)
 {
-    char path[MAX_PATH + 16];
+    char path[2 * MAX_PATH + 16];
     const char *e = getenv("PORT_LOGFILE");
     if (e && e[0] == '0')
         return;

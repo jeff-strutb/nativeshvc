@@ -18,12 +18,12 @@ Version 0.1.0.
 
 **What is not done:**
 
-- **The Windows build** is cross-built with MinGW but has never been run, and saving and
-  loading states, and calls that put the machine back, need `fork`, so they don't work on
-  Windows.
-- **Light guns from the pointer and touches** are checked as far as the console's ports
-  and the pointer's place on the picture, each on its own, not in a windowed run with a
-  real mouse or touch screen.
+- **The Windows build** is cross-built with MinGW with no warnings but has never been run
+  on Windows. Its saving and loading of states, and calls that put the machine back, use
+  the replay that needs no `fork` (see step 3), which is checked on macOS to make exactly
+  what `fork` makes, not on Windows itself.
+- **Linux** has no windowed host. The headless host is plain POSIX, but it has not been
+  built or run on Linux.
 
 **What is done and checked.** Every check below is against bsnes as the reference, with its
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
@@ -51,6 +51,9 @@ each one, is in [tests/README.md](tests/README.md).
   the automatic read, a strobe and $4016/$4017, and while latched, with different input
   every frame, match the reference; port 2's light guns latch the counters where they
   point.
+- **Light guns, aimed for real:** in a window on macOS, AppKit's own mouse events at
+  known places on the picture; on the iOS simulator, touches: each latches the counters at
+  exactly the dot and line its place is, and none off the picture.
 - **Native input:** the keyboard, game controllers (Xbox, PlayStation, Nintendo, others;
   each button's own name where the controller gives one), the mouse and touches drive
   whatever is plugged in, and the game can ask which device each player is using and what
@@ -163,8 +166,8 @@ to its write), or, inside a stretch of time (`cyc`, `cycs`, `cpu_idle`), the clo
 No operation is split, so a handler never sees half of a word or of a read-modify-write.
 The IRQ waits while the I flag masks it. The C marks no instruction boundaries and the bus
 infers none: the C is structured, not a trace of the original's instructions. WAI, a
-branch to itself and a unit call's stub are instructions the console runs, and take their
-interrupts exactly as the CPU does.
+branch to itself and a unit call's stub are the console's own, and take their interrupts
+exactly as the CPU does.
 
 **The one exception to cycle exactness: interrupt latency.** The 65816 decides on an
 interrupt as an instruction's last cycle begins and takes it when that instruction ends, so
@@ -243,7 +246,9 @@ same run on every host.
 starts at an address a call, a jump or an interrupt vector reaches (and, for a chip, any
 address it asks for: `nshvc_cart_routine`); the
 SPC700 routine whose code the APU RAM holds. A game that reaches an address with no C is a
-fatal error (`nshvc_fatal`, exit status 70), never a silent fallback.
+fatal error (`nshvc_fatal`, exit status 70), never a silent fallback. That includes an
+interrupt vector: the code it points at, a stub in RAM included, is the game's and has C.
+nativeshvc runs no 65816 or SPC700 machine code at all.
 
 ### Picture
 
@@ -378,15 +383,20 @@ It also takes the steps of a decompilation's own test harness, so the same tests
 reference and on the native build:
 
 - `poke` and `set` put bytes into work RAM, now or when the next call starts.
-- `call` runs one routine once, from a stub in work RAM that the console runs cycle by
-  cycle, with the registers and frames it names; afterwards the machine is as it was, unless
-  `keep` says the game goes on from there.
+- `call` runs one routine once, with the registers and frames it names, entered as the
+  reference's harness enters it: the console writes the harness's stub into work RAM (it
+  stays there, as on the reference) and does what that stub does itself (its pushes, its
+  time) before the routine's C; afterwards the machine is as it was, unless `keep` says the
+  game goes on from there.
 - `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
   marks a safe point (`spc_at`).
 - `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
   of the machine and cannot be copied, so the run forks instead: one process holds the
   state while another goes on. A state that no process holds is rebuilt by replaying, from
   power on, the steps that saved it (the script's own, or a play in `NSHVC_STATES`).
+  Without `fork` (Windows), every state is rebuilt that way: the run goes on in a new copy
+  of the program that replays what made the machine wanted (the same steps make the same
+  machine), and ends with its status. `NSHVC_SCRIPT_NOFORK=1` takes that path anywhere.
 
 Every step is listed in [`src/front/script.h`](src/front/script.h).
 

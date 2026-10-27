@@ -68,8 +68,9 @@ sharp bilinear filtering, and draw the game's overlays over it.
 | `ports` | what is plugged into the controller ports at power on (`NSHVC_PORT_*`; a joypad when 0) |
 
 An interrupt vector's code is a routine with C (the console makes the
-interrupt's sequence and the RTI), or a short stub in RAM or ROM (NOPs, JMP,
-JML, JSL to a routine with C, RTI), which the console runs as the CPU does.
+interrupt's sequence and the RTI), wherever it is: a short stub in RAM or
+ROM (a JML to the handler) is code like any other, with C of its own.
+nativeshvc runs no machine code.
 
 ## Running it yourself
 

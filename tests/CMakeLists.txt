@@ -27,6 +27,10 @@ target_include_directories(overlay_check PRIVATE ${PROJECT_SOURCE_DIR}/src/rende
 target_link_libraries(overlay_check PRIVATE nshvc)
 set_target_properties(overlay_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
+add_executable(states unit/states.c)
+target_link_libraries(states PRIVATE nshvc)
+set_target_properties(states PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
 add_executable(chip unit/chip.c)
 target_link_libraries(chip PRIVATE nshvc)
 set_target_properties(chip PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
@@ -41,3 +45,11 @@ add_executable(resample_check dsp/resample_check.c ${PROJECT_SOURCE_DIR}/src/dsp
 target_include_directories(resample_check PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
 target_link_libraries(resample_check PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
 set_target_properties(resample_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
+# a light gun aimed with the real pointer in a window (macOS: AppKit's own
+# mouse events posted to the window)
+if(NSHVC_HOST STREQUAL "macos")
+  add_executable(pointer_macos unit/pointer_macos.m)
+  target_link_libraries(pointer_macos PRIVATE nshvc "-framework AppKit")
+  set_target_properties(pointer_macos PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+endif()

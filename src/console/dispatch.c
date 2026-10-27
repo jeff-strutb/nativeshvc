@@ -14,12 +14,9 @@
  *                                entry's C
  *   interrupts                   the interrupt's sequence (the frame it
  *                                pushes, the vector), then the vector's
- *                                code: a routine with C that starts there,
- *                                run as the handler and returned from by
- *                                RTI; or, where none starts, the code
- *                                there as the CPU runs it, for the short
- *                                stubs games keep in RAM or ROM (NOPs, a
- *                                JMP, JML or JSL to a routine with C, RTI)
+ *                                code: the routine with C that starts
+ *                                there, run as the handler and returned
+ *                                from by RTI; none is a fatal error
  *   SPC700                       the routine with C at the APU address
  *                                whose code the APU RAM holds
  *
@@ -208,7 +205,6 @@ static void take_interrupt(int nmi)
     uint32_t vector = cpu.e ? (nmi ? 0x00FFFA : 0x00FFFE) : (nmi ? 0x00FFEA : 0x00FFEE);
     uint32_t at = (uint16_t)(snes_peek(vector) | snes_peek(vector + 1) << 8);
     const nshvc_routine *r;
-    int steps;
     /* a read at the next opcode, an internal cycle */
     cpu_cycle(fetch(cpu.pc)); cpu_cycle(6);
     if (!cpu.e)
@@ -224,72 +220,13 @@ static void take_interrupt(int nmi)
     in_interrupt++;
     snes_in_interrupt++;
     r = find(at);
-    if (r) {
-        r->abi();
-        if (cpu.unwound)
-            snes_fatal("the interrupt handler at $00:%04X left through its caller's frame", (unsigned)at);
-        rti(at);
-        in_interrupt--;
-        snes_in_interrupt--;
-        cpu = saved;
-        return;
-    }
-    /* a stub: run as the CPU runs it */
-    for (steps = 0; steps < 64; steps++) {
-        uint8_t op = snes_peek(at);
-        if (op == 0xEA) {                       /* NOP: fetch, internal cycle */
-            cpu_cycle(fetch(at)); cpu_cycle(6);
-            at = (at & 0xFF0000) | (uint16_t)(at + 1);
-        } else if (op == 0x4C) {                /* JMP abs: in the same bank */
-            uint32_t t = (at & 0xFF0000) | snes_peek(at + 1) | snes_peek(at + 2) << 8;
-            cpu_cycle(fetch(at)); cpu_cycle(fetch(at + 1)); cpu_cycle(fetch(at + 2));
-            r = find(t);
-            if (r) {
-                r->abi();
-                if (cpu.unwound)
-                    snes_fatal("an interrupt handler left through its caller's frame");
-                rti(t);
-                break;
-            }
-            at = t;
-        } else if (op == 0x5C) {                /* JML long */
-            uint32_t t = snes_peek(at + 1) | snes_peek(at + 2) << 8 | (uint32_t)snes_peek(at + 3) << 16;
-            cpu_cycle(fetch(at)); cpu_cycle(fetch(at + 1)); cpu_cycle(fetch(at + 2)); cpu_cycle(fetch(at + 3));
-            r = find(t);
-            if (r) {
-                /* the handler's C states its own RTI and makes its pulls */
-                r->abi();
-                break;
-            }
-            at = t;
-        } else if (op == 0x22) {                /* JSL to the handler */
-            uint32_t t = snes_peek(at + 1) | snes_peek(at + 2) << 8 | (uint32_t)snes_peek(at + 3) << 16;
-            uint16_t ret = (uint16_t)(at + 3);
-            r = find(t);
-            if (!r)
-                runaway("takes an interrupt to", t);
-            /* JSL: opcode and address fetched, PB pushed, an internal cycle,
-               the bank fetched, PC pushed; the handler's C states its RTL */
-            cpu_cycle(fetch(at)); cpu_cycle(fetch(at + 1)); cpu_cycle(fetch(at + 2));
-            push8((uint8_t)(at >> 16));
-            cpu_cycle(6); cpu_cycle(fetch(at + 3));
-            push8((uint8_t)(ret >> 8));
-            push8((uint8_t)ret);
-            r->abi();
-            if (cpu.unwound)
-                snes_fatal("an interrupt handler left through its caller's frame");
-            pull8();
-            pull8();
-            pull8();
-            at = (at & 0xFF0000) | (uint16_t)(at + 4);
-        } else if (op == 0x40) {                /* RTI */
-            rti(at);
-            break;
-        } else {
-            snes_fatal("interrupt code at $%02X:%04X: opcode %02X, which nativeshvc does not run "
-                       "(give the routine there C)", (unsigned)(at >> 16), (unsigned)(at & 0xFFFF), op);
-        }
-    }
+    if (!r)
+        snes_fatal("interrupt vector $%04X: no routine with C starts at $00:%04X (the code there needs C, as any "
+                   "other code the CPU runs)", (unsigned)(vector & 0xFFFF), (unsigned)at);
+    r->abi();
+    if (cpu.unwound)
+        snes_fatal("the interrupt handler at $00:%04X left through its caller's frame", (unsigned)at);
+    rti(at);
     in_interrupt--;
     snes_in_interrupt--;
     cpu = saved;
@@ -297,7 +234,7 @@ static void take_interrupt(int nmi)
 
 static int irq_masked(void) { return (cpu.p & P_I) != 0; }
 
-/* ---- unit calls (snes.h SnesUnit; the script's call and fx) ---- */
+/* ---- unit calls (snes.h SnesUnit; the script's call) ---- */
 int snes_unit_pending;
 static SnesUnit unit;
 static int unit_state;
@@ -404,192 +341,103 @@ static uint8_t unit_pull(void)
     return snes_cpu_read_within((uint16_t)cpu.s);
 }
 
-static int in_wram(uint32_t a)
+/* the start of one of the stub's instructions (the console's own, at a
+   known address): where the CPU takes an interrupt */
+static void unit_insn(uint32_t at)
 {
-    uint8_t bank = (uint8_t)(a >> 16);
-    return bank == 0x7E || bank == 0x7F || ((bank & 0x7F) < 0x40 && (a & 0xFFFF) < 0x2000);
+    cpu.pc = at;
+    snes_cpu_boundary();
 }
 
-/* the console's run of the stub's code (and code it reaches in work RAM
-   that has no C: fx's program) from `at` to the stub's loop: each
-   instruction's cycles as the CPU makes them, its fetches (no effect but
-   their time), internal cycles and data accesses; a routine with C it
-   enters runs its C, whose return (RTS, RTL: its C states the time but for
-   the pulls, made here; RTI: its C makes all) lands on the call's next
-   instruction */
-static void unit_run(uint32_t at)
+/* the routine's C, entered from the stub; `pulls`, its return's (2 RTS, 3
+   RTL), made here (its C states the return's time but for them); 0 for
+   RTI, whose C makes all */
+static void unit_enter(uint32_t t, int pulls)
 {
-    struct { uint32_t next; int pulls; } fr[16];
-    int depth = 0;
+    const nshvc_routine *r = find(t);
+    int k;
+    if (!r)
+        runaway("calls", t);
+    cpu.pc = t;
+    r->abi();
+    if (cpu.unwound)
+        snes_fatal("unit call: the routine at $%06X left through its caller's frame", (unsigned)t);
+    for (k = 0; k < pulls; k++)
+        unit_pull();
+}
+
+/* What the stub snes_unit_call wrote does, from its start to its loop, as
+   the CPU does it: the stub is the console's own code, one of the few
+   forms snes_unit_call writes, so the console carries out that form (its
+   fetches' time, its internal cycles, its pushes, the routine's C) with
+   no look at its bytes. */
+static void unit_run(void)
+{
+    uint32_t at = unit_stub, pb = at & 0xFF0000, addr = unit.addr & 0xFFFFFF;
+    uint32_t t = pb | (uint16_t)(at + 6);
+    int tramp = unit.frame >= 0 || unit.php || unit.phb;
+    int jsl = (unit.frame >= 0 && unit.lng) || unit.phb || (unit.lng && !tramp);
+#define AT(k) (pb | (uint16_t)(at + (k)))
+#define F(a) cpu_cycle(fetch(a))
     if (unit.rti >= 0) {
-        fr[0].next = unit_loop;
-        fr[0].pulls = 0;
-        depth = 1;
+        uint16_t l = (uint16_t)(at + 10);
+        /* PEA, PEA: the frame an interrupt pushes, returning to the loop */
+        unit_insn(AT(0));
+        F(AT(0)); F(AT(1)); F(AT(2));
+        unit_push((uint8_t)(pb >> 16));
+        unit_push((uint8_t)(l >> 8));
+        unit_insn(AT(3));
+        F(AT(3)); F(AT(4)); F(AT(5));
+        unit_push((uint8_t)l);
+        unit_push((uint8_t)unit.rti);
+        /* JML to the routine, which returns by RTI */
+        unit_insn(AT(6));
+        F(AT(6)); F(AT(7)); F(AT(8)); F(AT(9));
+        unit_enter(addr, 0);
+        return;
     }
-    while (at != unit_loop) {
-        uint32_t pb = at & 0xFF0000, t = 0;
-        uint8_t op = snes_peek(at);
-        int call = 0, word = !(cpu.p & P_M);
-        cpu.pc = at;
-        snes_cpu_boundary();
-#define F(k) cpu_cycle(fetch(pb | (uint16_t)(at + (k))))
-#define B(k) snes_peek(pb | (uint16_t)(at + (k)))
-#define NEXT(n) (at = pb | (uint16_t)(at + (n)))
-        switch (op) {
-        case 0x20:                           /* JSR abs */
-            F(0); F(1); F(2); cpu_cycle(6);
-            unit_push((uint8_t)((at + 2) >> 8));
-            unit_push((uint8_t)(at + 2));
-            t = pb | B(1) | B(2) << 8;
-            call = 2;
-            break;
-        case 0x22:                           /* JSL long */
-            F(0); F(1); F(2);
-            unit_push((uint8_t)(at >> 16));
-            cpu_cycle(6); F(3);
-            unit_push((uint8_t)((at + 3) >> 8));
-            unit_push((uint8_t)(at + 3));
-            t = B(1) | B(2) << 8 | (uint32_t)B(3) << 16;
-            call = 3;
-            break;
-        case 0x4C:                           /* JMP abs */
-            F(0); F(1); F(2);
-            t = pb | B(1) | B(2) << 8;
-            call = 1;
-            break;
-        case 0x5C:                           /* JML long */
-            F(0); F(1); F(2); F(3);
-            t = B(1) | B(2) << 8 | (uint32_t)B(3) << 16;
-            call = 1;
-            break;
-        case 0xF4:                           /* PEA */
-            F(0); F(1); F(2);
-            unit_push(B(2));
-            unit_push(B(1));
-            NEXT(3);
-            break;
-        case 0x08: case 0x8B:                /* PHP, PHB */
-            F(0); cpu_cycle(6);
-            unit_push(op == 0x08 ? cpu.p : cpu.db);
-            NEXT(1);
-            break;
-        case 0xEA:                           /* NOP */
-            F(0); cpu_cycle(6);
-            NEXT(1);
-            break;
-        case 0x60: case 0x6B: {              /* RTS, RTL */
-            uint32_t r;
-            F(0); cpu_cycle(6); cpu_cycle(6);
-            r = unit_pull();
-            r |= (uint32_t)unit_pull() << 8;
-            if (op == 0x6B)
-                r |= (uint32_t)unit_pull() << 16;
-            else
-                cpu_cycle(6);
-            if (!depth || fr[depth - 1].pulls != (op == 0x60 ? 2 : 3))
-                snes_fatal("unit call: an %s at $%06X with no %s under way", op == 0x60 ? "RTS" : "RTL",
-                           (unsigned)at, op == 0x60 ? "JSR" : "JSL");
-            depth--;
-            at = (op == 0x6B ? (r & 0xFF0000) : pb) | (uint16_t)(r + 1);
-            break;
+    /* JSL or JSR to the routine, or to the trampoline at +6 */
+    unit_insn(AT(0));
+    if (jsl) {
+        F(AT(0)); F(AT(1)); F(AT(2));
+        unit_push((uint8_t)(pb >> 16));
+        cpu_cycle(6); F(AT(3));
+        unit_push((uint8_t)((at + 3) >> 8));
+        unit_push((uint8_t)(at + 3));
+    } else {
+        F(AT(0)); F(AT(1)); F(AT(2)); cpu_cycle(6);
+        unit_push((uint8_t)((at + 2) >> 8));
+        unit_push((uint8_t)(at + 2));
+    }
+    if (tramp) {
+        unit_insn(t);
+        if (unit.frame >= 0) {
+            /* PEA frame, then JML or JMP to the routine */
+            F(t); F(t + 1); F(t + 2);
+            unit_push((uint8_t)(unit.frame >> 8));
+            unit_push((uint8_t)unit.frame);
+            unit_insn(t + 3);
+            F(t + 3); F(t + 4); F(t + 5);
+            if (unit.lng)
+                F(t + 6);
+        } else {
+            /* PHB then JML, or PHP then JMP */
+            F(t); cpu_cycle(6);
+            unit_push(unit.phb ? cpu.db : cpu.p);
+            unit_insn(t + 1);
+            F(t + 1); F(t + 2); F(t + 3);
+            if (unit.phb)
+                F(t + 4);
         }
-        case 0xC2: case 0xE2:                /* REP, SEP # */
-            F(0); F(1); cpu_cycle(6);
-            cpu.p = op == 0xC2 ? (uint8_t)(cpu.p & ~B(1)) : (uint8_t)(cpu.p | B(1));
-            if (cpu.p & P_X) {
-                cpu.x &= 0xFF;
-                cpu.y &= 0xFF;
-            }
-            NEXT(2);
-            break;
-        case 0xA9: case 0x09: case 0x29: {   /* LDA, ORA, AND # */
-            uint16_t v = B(1);
-            F(0); F(1);
-            if (word) {
-                F(2);
-                v |= (uint16_t)(B(2) << 8);
-            }
-            if (op == 0x09)
-                v |= cpu.a;
-            else if (op == 0x29)
-                v &= cpu.a;
-            cpu.a = word ? v : (uint16_t)((cpu.a & 0xFF00) | (v & 0xFF));
-            cpu.p = word ? nz16(cpu.p, v) : nz8(cpu.p, (uint8_t)v);
-            NEXT(word ? 3 : 2);
-            break;
-        }
-        case 0xAD: {                         /* LDA abs */
-            uint32_t d = (uint32_t)cpu.db << 16 | B(1) | B(2) << 8;
-            uint16_t v;
-            F(0); F(1); F(2);
-            v = snes_cpu_read_within(d);
-            if (word)
-                v |= (uint16_t)(snes_cpu_read_within((d + 1) & 0xFFFFFF) << 8);
-            cpu.a = word ? v : (uint16_t)((cpu.a & 0xFF00) | v);
-            cpu.p = word ? nz16(cpu.p, v) : nz8(cpu.p, (uint8_t)v);
-            NEXT(3);
-            break;
-        }
-        case 0x8D: case 0x9C: {              /* STA, STZ abs */
-            uint32_t d = (uint32_t)cpu.db << 16 | B(1) | B(2) << 8;
-            uint16_t v = op == 0x8D ? cpu.a : 0;
-            F(0); F(1); F(2);
-            snes_cpu_write_within(d, (uint8_t)v);
-            if (word)
-                snes_cpu_write_within((d + 1) & 0xFFFFFF, (uint8_t)(v >> 8));
-            NEXT(3);
-            break;
-        }
-        case 0xD0:                           /* BNE */
-            F(0); F(1);
-            if (!(cpu.p & P_Z)) {
-                cpu_cycle(6);
-                NEXT(2 + (int8_t)B(1));
-            } else {
-                NEXT(2);
-            }
-            break;
-        default:
-            snes_fatal("unit call: opcode %02X at $%06X, which the console's stub runner does not run", op,
-                       (unsigned)at);
-        }
+    }
+    unit_enter(addr, jsl ? 3 : 2);
+    if (!jsl) {
+        /* the NOP after the JSR */
+        unit_insn(AT(3));
+        F(AT(3)); cpu_cycle(6);
+    }
+#undef AT
 #undef F
-#undef B
-#undef NEXT
-        if (!call)
-            continue;
-        if (call > 1) {
-            if (depth == 16)
-                snes_fatal("unit call: calls nested too deep");
-            fr[depth].next = (at & 0xFF0000) | (uint16_t)(at + (call == 2 ? 3 : 4));
-            fr[depth++].pulls = call;
-        }
-        {
-            const nshvc_routine *r = find(t);
-            if (!r) {
-                if (!in_wram(t))
-                    runaway("calls", t);
-                at = t;                      /* code in work RAM with no C: run here */
-                continue;
-            }
-            cpu.pc = t;
-            r->abi();
-            if (cpu.unwound)
-                snes_fatal("unit call: the routine at $%06X left through its caller's frame", (unsigned)t);
-            if (!depth)
-                snes_fatal("unit call: the routine at $%06X returned with no call under way", (unsigned)t);
-            depth--;
-            if (fr[depth].pulls == 3) {
-                unit_pull();
-                unit_pull();
-                unit_pull();
-            } else if (fr[depth].pulls == 2) {
-                unit_pull();
-                unit_pull();
-            }
-            at = fr[depth].next;
-        }
-    }
 }
 
 void snes_unit_start(void)
@@ -624,7 +472,7 @@ void snes_unit_start(void)
     }
     cpu.e = 0;
     cpu.unwound = 0;
-    unit_run(unit_stub);
+    unit_run();
     unit_state = 3;
     if (unit.keep) {
         cpu = from;                          /* the game goes on from where it was */

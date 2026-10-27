@@ -261,7 +261,8 @@ static void sound_drain(void)
     int16_t b[2048 * 2];
     int n;
     while ((n = snes_audio_take(b, 2048)) > 0)
-        fwrite(b, 4, (size_t)n, sound_f);
+        if (!script_replaying())
+            fwrite(b, 4, (size_t)n, sound_f);
 }
 
 /* ---- the picture on the window ---- */
@@ -485,7 +486,8 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc)
             max_frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "--sound") && i + 1 < argc) {
-            if (!(sound_f = fopen(argv[++i], "wb"))) {
+            /* a new copy of the program going on from a replay adds to it */
+            if (!(sound_f = fopen(argv[++i], getenv("NSHVC_SCRIPT_PLAN") ? "ab" : "wb"))) {
                 fprintf(stderr, "nativeshvc: cannot write %s\n", argv[i]);
                 return 2;
             }
@@ -493,6 +495,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     }
     host_set_app_name(cart->save_name ? cart->save_name : cart->title, cart->title ? cart->title : "nativeshvc");
     host_init(argc, argv);
+    script_args(argc, argv);
     if (script)
         script_load(script, out_dir);
     nshvc_power(cart);
