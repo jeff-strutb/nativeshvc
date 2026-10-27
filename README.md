@@ -1,6 +1,8 @@
 # nativeshvc: a native Super Famicom / Super Nintendo implementation
 
-**nativeshvc is not an emulator.** It is a native implementation of the Super Famicom /
+**nativeshvc is not an emulator.**
+
+It is a native implementation of the Super Famicom /
 Super Nintendo itself: the console's bus, picture unit, sound unit, DMA, interrupts and
 controller ports, built as native code for the host. Nothing in it interprets, translates or
 recompiles machine code: there is no emulated 65816 or SPC700, no instruction loop and no
