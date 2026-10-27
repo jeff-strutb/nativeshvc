@@ -39,6 +39,7 @@ set(CMAKE_C_EXTENSIONS ON)
 add_library(nshvc STATIC
   src/console/bus.c
   src/console/dma.c
+  src/console/ports.c
   src/console/apu.c
   src/console/coro.c
   src/console/dispatch.c
@@ -47,6 +48,7 @@ add_library(nshvc STATIC
   src/dsp/mixer_regs.c
   src/dsp/resample.c
   src/front/console.c
+  src/front/input.c
   src/front/script.c)
 
 target_include_directories(nshvc

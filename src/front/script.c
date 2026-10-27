@@ -43,6 +43,7 @@ enum {
     S_FRAMES,               /* buttons for frames */
     S_CALL,                 /* a unit call, over the frames it runs */
     S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_POKE, S_SET, S_SPCSET, S_SPCCALL,
+    S_INPUT,                /* plug, pad, mouse, gun: the controller ports from now */
 };
 
 typedef struct {
@@ -264,6 +265,8 @@ static void script_range(List *l, char **lines, int lo, int hi, const char *path
             if (n < 3)
                 nshvc_fatal("%s:%d: %s ADDR BYTE[,BYTE...]", path, i + 1, cmd);
             add_text(l, cmd[0] == 'p' ? S_POKE : cmd[1] == 'e' ? S_SET : S_SPCSET, lines[i], i + 1);
+        } else if (!strcmp(cmd, "plug") || !strcmp(cmd, "pad") || !strcmp(cmd, "mouse") || !strcmp(cmd, "gun")) {
+            add_text(l, S_INPUT, lines[i], i + 1);
         } else if (!strcmp(cmd, "call") || !strcmp(cmd, "spccall")) {
             if (n < 2)
                 nshvc_fatal("%s:%d: %s ADDR [options]", path, i + 1, cmd);
@@ -398,6 +401,35 @@ static void dump(const char *name)
    S-CPU address ADDR into work RAM ($7E-$7F, or the low 8 KB mirror in
    banks $00-$3F) or the chip's RAM ($70-$71), as the reference's harness
    writes them */
+/* plug PORT DEVICE (joypad, none, mouse, multitap, superscope, justifier,
+   justifiers); pad N BITS (joypad N's buttons from now, hex; 0 and 1 are
+   hold's); mouse PORT DX DY BUTTONS (motion for its next report); gun G X
+   Y BUTTONS (from now) */
+static void input_step(const Step *s)
+{
+    static const char *const dev[] = { "joypad", "none", "mouse", "multitap", "superscope", "justifier",
+                                       "justifiers" };
+    char w[8][1024];
+    int n = words(s->text, w, 8), i;
+    if (!strcmp(w[0], "plug") && n == 3) {
+        for (i = 0; i < 7; i++)
+            if (!strcmp(w[2], dev[i])) {
+                nshvc_plug(atoi(w[1]), i);
+                return;
+            }
+    } else if (!strcmp(w[0], "pad") && n == 3) {
+        nshvc_set_joypad(atoi(w[1]), (uint16_t)strtoul(w[2], NULL, 16));
+        return;
+    } else if (!strcmp(w[0], "mouse") && n == 5) {
+        nshvc_set_mouse(atoi(w[1]), atoi(w[2]), atoi(w[3]), atoi(w[4]));
+        return;
+    } else if (!strcmp(w[0], "gun") && n == 5) {
+        nshvc_set_gun(atoi(w[1]), atoi(w[2]), atoi(w[3]), (unsigned)atoi(w[4]));
+        return;
+    }
+    nshvc_fatal("%s:%d: '%s'", cur->path, s->line, s->text);
+}
+
 static void poke(const Step *s)
 {
     char w[64][1024];
@@ -713,6 +745,7 @@ static void takes(void)
             break;
         case S_SPCSET: spcset(s); break;
         case S_SPCCALL: spccall(s); break;
+        case S_INPUT: input_step(s); break;
         }
         step_at++;
     }

@@ -63,7 +63,8 @@ sharp bilinear filtering, and draw the game's overlays over it.
 | `routines` | every S-CPU routine reached by address (vectors, computed calls and jumps) and every Super FX program, sorted by address |
 | `spc_routines` | the SPC700 routines by APU address, with the ROM bytes each stands for (`uses`) |
 | `spc_run`, `gsu_run` | optional: the game's own entry in place of the lookup |
-| `chip` | the cartridge's expansion chip, or none: the cartridge's own hardware, on the connector (`nshvc/cart.h`). nativeshvc implements no chip in the console; its chips are libraries a cartridge links: the Super FX, `nshvc/superfx.h`'s `nshvc_superfx` (`libnshvc_superfx`), with `map` `NSHVC_SUPERFX` |
+| `chip` | the cartridge's expansion chip, or none: the cartridge's own hardware, which the game brings and owns, on the connector (`nshvc/cart.h`). nativeshvc implements no chip |
+| `ports` | what is plugged into the controller ports at power on (`NSHVC_PORT_*`; a joypad when 0) |
 
 An interrupt vector's code is a routine with C (the console makes the
 interrupt's sequence and the RTI), or a short stub in RAM or ROM (NOPs, JMP,
@@ -73,16 +74,24 @@ JML, JSL to a routine with C, RTI), which the console runs as the CPU does.
 
 `nshvc_power(&cart)`, then `nshvc_run_frame()` once a frame; the picture
 (`nshvc_picture`), the sound (`nshvc_audio_take`, 32,040 frames a second),
-the controllers (`nshvc_set_joypad`), the memories (`nshvc_wram`,
+the controllers (`nshvc_plug` and `nshvc_plugged` for what is in each port;
+`nshvc_set_joypad` for each player's joypad, `nshvc_set_mouse` for a mouse's
+motion this frame and its buttons, `nshvc_set_gun` for where a light gun points
+and its buttons), the memories (`nshvc_wram`,
 `nshvc_sram`, `nshvc_aram`, `nshvc_vram`, `nshvc_cgram`, `nshvc_oam`,
 `nshvc_peek`) and hooks (`nshvc_set_frame_hook`, `nshvc_set_write_hook`).
 
 ## The front end's hooks
 
 `nshvc_set_hooks` with a key callback (return 1 to keep a key from the
-console's controls), a touch callback (id, phase, window points) and a
-per-frame callback; `nshvc_save_dir`, `nshvc_safe_area`, `nshvc_window_size`;
-`nshvc_game_buttons` (buttons the game holds, joined with the controllers');
+console's controls), a touch callback (id, phase, window points), a
+per-frame callback and an input callback (a player's native device
+changed); `nshvc_player_source` (the device driving a player now: keyboard,
+game controller with its family and name, mouse, touch screen, script) and
+`nshvc_player_label` (what a control is called on it: "Z", "Cross", "A",
+"Left button"); `nshvc_save_dir`, `nshvc_safe_area`, `nshvc_window_size`;
+`nshvc_game_buttons` (buttons the game holds for a player, joined with the
+controllers');
 `nshvc_overlay_image` and `nshvc_overlay_place` (the game's pictures over the
 console's, turned, scaled and faded, on every renderer).
 

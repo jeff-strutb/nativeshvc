@@ -416,6 +416,7 @@ class Test:
         self.next_file = {"lorom": 0x8000, "exlorom": 0x8000}.get(mapping, self.code_offset() + 0x10000)
         self.rng = random.Random(seed if seed is not None else name)
         self.reads = 0
+        self.inputs = {}          # frame: the controllers' script steps before it
         self.irq_steps = bytearray()
         self.nmi_steps = bytearray()
         if prologue:

@@ -57,20 +57,34 @@ def run_one(t):
     od, nd = os.path.join(d, "oracle"), os.path.join(d, "native")
     os.makedirs(od, exist_ok=True)
     os.makedirs(nd, exist_ok=True)
-    cmd = [ORACLE, "--core", CORE, "--rom", rom, "--frames", str(t.frames), "--out", od,
-           "--shot", ",".join(map(str, t.shots)), "--wram", os.path.join(od, "end.wram")]
+    script = os.path.join(d, "script.txt")
+    with open(script, "w") as f:
+        if t.inputs:
+            # the controllers' steps before each frame, the same script on both
+            for n in range(1, t.frames + 1):
+                lines = t.inputs.get(n, ())
+                for line in lines:
+                    f.write(line + "\n")
+                if not any(line.startswith("hold") for line in lines):
+                    f.write("wait 1\n")
+                if n in t.shots:
+                    f.write("shot frame_%d\n" % n)
+        else:
+            at = 0
+            for s in t.shots:
+                f.write("wait %d\nshot frame_%d\n" % (s - at, s))
+                at = s
+            if t.frames > at:
+                f.write("wait %d\n" % (t.frames - at))
+        f.write("dump end\n")
+    if t.inputs:
+        cmd = [ORACLE, "--core", CORE, "--rom", rom, "--script", script, "--out", od]
+    else:
+        cmd = [ORACLE, "--core", CORE, "--rom", rom, "--frames", str(t.frames), "--out", od,
+               "--shot", ",".join(map(str, t.shots)), "--wram", os.path.join(od, "end.wram")]
     if getattr(t, "overscan", False):
         cmd.append("--overscan")
     subprocess.run(cmd, check=True, timeout=120)
-    script = os.path.join(d, "script.txt")
-    with open(script, "w") as f:
-        at = 0
-        for s in t.shots:
-            f.write("wait %d\nshot frame_%d\n" % (s - at, s))
-            at = s
-        if t.frames > at:
-            f.write("wait %d\n" % (t.frames - at))
-        f.write("dump end\n")
     r = subprocess.run([CART, "--rom", rom, "--headless", "--script", script, "--out", nd],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:

@@ -608,6 +608,116 @@ def alu_steps(kind, a, b):
     return t
 
 
+def joy_busy(f, n):
+    """the automatic joypad read's end: from line 226 (the read under
+       way), HVBJOY polled until it reads $82 (vertical blank, outside the
+       horizontal blank, the read done; $02 the open bus the poll's pointer
+       leaves), then the counters latched. f: the vertical blank it is in
+       (a frame moves the CPU counter's phase 8 clocks); n: work before
+       the poll, for the poll's own phase"""
+    t = Test("joy_busy_%d_%d" % (f, n), frames=f + 3, shots=(f + 3,), prologue=False)
+    t.w(0x4200, 0x01)
+    t.wait_frames(f)
+    t.wait_line(226)
+    for _ in range(n):
+        t.w(0x4202, 0)
+    t.poll(0x4212, 0x82)
+    for r in (0x2137, 0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    return t
+
+
+PAD_NAMES = ("B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "X", "L", "R")
+
+
+def port_test(name, ports, rounds, per_frame, manual=(16, 16), latched=0, iobits=(0xFF,), counters=False):
+    """what the controller ports read with devices plugged in (ports: port
+       1's and port 2's), over `rounds` frames whose inputs per_frame(n, rng)
+       gives (the script's steps before frame n): each frame, after the
+       automatic read, $4218-$421F; then $4201 set to each of iobits, the
+       latch set, `latched` reads of each port while it is, the latch let
+       go and manual[0] reads of $4016, manual[1] of $4017; with counters,
+       first (as the vertical blank starts) the counters' latch flag and
+       the counters a light gun latched"""
+    t = Test(name, frames=rounds + 3, shots=(), prologue=False)
+    rng = t.rng
+    t.inputs[1] = ["plug 0 %s" % ports[0], "plug 1 %s" % ports[1]]
+    for n in range(2, rounds + 3):
+        t.inputs[n] = per_frame(n, rng)
+    t.w(0x4201, 0xFF)
+    t.w(0x4200, 0x01)
+    t.wait_frames(1)
+    for _ in range(rounds):
+        t.wait_frames(1)
+        if counters:
+            # before the line wait, whose polls latch the counters themselves
+            for r in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+                t.read(r)
+        t.wait_line(232)
+        for r in range(0x4218, 0x4220):
+            t.read(r)
+        for io in iobits:
+            t.w(0x4201, io)
+            t.w(0x4016, 1)
+            for _ in range(latched):
+                t.read(0x4016)
+                t.read(0x4017)
+            t.w(0x4016, 0)
+            for _ in range(manual[0]):
+                t.read(0x4016)
+            for _ in range(manual[1]):
+                t.read(0x4017)
+        t.w(0x4201, 0xFF)
+    return t
+
+
+def rand_pad(rng):
+    """a joypad's buttons (its own bits), opposite directions included"""
+    return rng.getrandbits(12) << 4
+
+
+def hold_line(b0, b1):
+    names = [PAD_NAMES[k] for k in range(12) if b0 & 0x8000 >> k]
+    names += ["2." + PAD_NAMES[k] for k in range(12) if b1 & 0x8000 >> k]
+    return ("hold %s 1" % "+".join(names)) if names else "wait 1"
+
+
+def port_tests():
+    out = []
+
+    def pads(n, rng):
+        return [hold_line(rand_pad(rng), rand_pad(rng))]
+    out.append(port_test("port_joypads", ("joypad", "joypad"), 6, pads, manual=(20, 20), latched=2))
+
+    def tap(n, rng):
+        return ["pad %d %04X" % (k, rand_pad(rng)) for k in (2, 3, 4)] + [hold_line(rand_pad(rng), rand_pad(rng))]
+    out.append(port_test("port_multitap", ("joypad", "multitap"), 5, tap, manual=(17, 18), latched=2,
+                         iobits=(0xFF, 0x7F, 0xBF)))
+
+    def mice(n, rng):
+        return ["mouse %d %d %d %d" % (p, rng.randint(-160, 160), rng.randint(-160, 160), rng.randint(0, 3))
+                for p in (0, 1)]
+    out.append(port_test("port_mice", ("mouse", "mouse"), 6, mice, manual=(34, 34)))
+    out.append(port_test("port_mouse_speed", ("mouse", "joypad"), 6, mice, manual=(34, 17), latched=1))
+
+    def scope(n, rng):
+        x = rng.choice((rng.randint(0, 255), rng.randint(-16, -1), rng.randint(256, 270)))
+        y = rng.choice((rng.randint(0, 223), rng.randint(0, 223), rng.randint(225, 238)))
+        return ["gun 0 %d %d %d" % (x, y, rng.getrandbits(4))]
+    out.append(port_test("port_superscope", ("joypad", "superscope"), 10, scope, manual=(17, 10), counters=True))
+
+    def justifiers(n, rng, guns=(0, 1)):
+        return ["gun %d %d %d %d" % (g, rng.randint(-8, 263), rng.randint(0, 230), rng.choice((0, 1, 16, 17)))
+                for g in guns]
+    out.append(port_test("port_justifier", ("joypad", "justifier"), 8, lambda n, rng: justifiers(n, rng, (0,)),
+                         manual=(17, 34), counters=True))
+    out.append(port_test("port_justifiers", ("joypad", "justifiers"), 8, justifiers, manual=(17, 34),
+                         counters=True))
+
+    out.append(port_test("port_none", ("none", "none"), 3, lambda n, rng: [], manual=(17, 17), latched=1))
+    return out
+
+
 def dma_time_tests():
     out = []
     for n in (1, 2, 7, 100, 1000, 8448, 30000):
@@ -804,6 +914,10 @@ def all_tests():
     out.append(one_bg())
     out += interlace_tests()
     out += dma_time_tests()
+    out += port_tests()
+    for f in range(1, 33):
+        for n in range(3):
+            out.append(joy_busy(f, n))
     return [t for t in out if t is not None]
 
 

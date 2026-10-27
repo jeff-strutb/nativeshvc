@@ -138,6 +138,36 @@ static void key_event(WPARAM vk, int down)
 /* ---- the window ----------------------------------------------------------------- */
 static HWND s_win;
 
+/* the mouse: where the pointer is (points, from the client area's top
+   left), how far it moved since the last, the buttons held */
+static void pointer_event(HWND h, WPARAM wp, LPARAM lp)
+{
+    static int have;
+    static float lx, ly;
+    host_event e;
+    HDC dc;
+    int dpi = 96;
+    float s;
+    if ((dc = GetDC(h)) != NULL) {
+        dpi = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(h, dc);
+    }
+    s = 96.0f / (float)(dpi > 0 ? dpi : 96);
+    memset(&e, 0, sizeof e);
+    e.type = HOST_EV_MOUSE;
+    e.x = (float)(short)LOWORD(lp) * s;
+    e.y = (float)(short)HIWORD(lp) * s;
+    if (have) {
+        e.dx = e.x - lx;
+        e.dy = e.y - ly;
+    }
+    have = 1;
+    lx = e.x;
+    ly = e.y;
+    e.buttons = ((wp & MK_LBUTTON) ? 1 : 0) | ((wp & MK_RBUTTON) ? 2 : 0) | ((wp & MK_MBUTTON) ? 4 : 0);
+    qpush(&e);
+}
+
 static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
     host_event e;
@@ -171,6 +201,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         return 0;                     /* the game decides */
     case WM_ERASEBKGND:
         return 1;
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+    case WM_MBUTTONDOWN: case WM_MBUTTONUP:
+        pointer_event(h, wp, lp);
+        return 0;
     }
     return DefWindowProcA(h, m, wp, lp);
 }
@@ -451,6 +487,10 @@ int host_pad_read(int index, host_pad *o)
     if (i == XUSER_MAX_COUNT)
         return 0;
     g = &st.Gamepad;
+    /* XInput's controllers are Xbox controllers (their names: the front
+       end's, by the style) */
+    o->style = HOST_PAD_XBOX;
+    snprintf(o->name, sizeof o->name, "Xbox Controller");
     o->x = g->sThumbLX / 32767.0f;
     o->y = -g->sThumbLY / 32767.0f;
     if (o->x < -1) o->x = -1;

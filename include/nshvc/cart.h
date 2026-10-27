@@ -4,8 +4,9 @@
  * console: nativeshvc implements none of it. It gives a chip what the
  * connector gives one (the S-CPU's accesses to the addresses the chip
  * decodes, the master clock, the IRQ line, the ROM) and the chip gives the
- * console its answers. A cartridge with one puts it in nshvc_cart.chip;
- * nativeshvc's own chips are libraries a cartridge links (nshvc/superfx.h).
+ * console its answers. A cartridge with one puts it in nshvc_cart.chip: the
+ * game brings the chip and owns it (Stunt Race FX's Super FX is the
+ * library nshvc/superfx.h describes, kept with nativeshvc for now).
  */
 #ifndef NSHVC_CART_H
 #define NSHVC_CART_H

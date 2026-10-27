@@ -71,6 +71,7 @@ static void (*p_set_input_poll)(void (*)(void));
 static void (*p_set_input_state)(int16_t (*)(unsigned, unsigned, unsigned, unsigned));
 static bool (*p_load_game)(const struct retro_game_info *);
 static void (*p_run)(void);
+static void (*p_set_controller_port_device)(unsigned, unsigned);
 static void *(*p_get_memory_data)(unsigned);
 static size_t (*p_get_memory_size)(unsigned);
 
@@ -216,15 +217,84 @@ static void dsp_voices(const int32_t *st) { fwrite(st, 4, 40, voices_f); }
    UP, DOWN, LEFT, RIGHT, A, X, L, R: the joypad's own order) */
 static uint16_t pad[2];
 
+static int words(const char *line, char w[][1024], int max);
+
+/* the script's plug, pad, mouse and gun steps: joypads 2-7 (their own
+   bits, B 0x8000), each port's mouse motion for the next frame and its
+   buttons, and where each light gun points; the core's devices take the
+   guns' aim as motion, from where each starts */
+static uint16_t padx[8];
+static int mouse_m[2][3];
+static int gun_at[2][2], gun_b[2], gun_cur[3][2][2];
+static int16_t gun_input(unsigned kind, unsigned id)
+{
+    unsigned g = kind ? id / 4 : 0, k = kind ? id % 4 : id, b = gun_b[g];
+    int d;
+    if (k <= 1) {
+        d = gun_at[g][k] - gun_cur[kind][g][k];
+        gun_cur[kind][g][k] = gun_at[g][k];
+        return (int16_t)d;
+    }
+    if (kind)
+        return k == 2 ? (b & 1) != 0 : (b & 16) != 0;            /* trigger, start */
+    return (b >> (k - 2) & 1) != 0;                            /* trigger, cursor, turbo, pause */
+}
+
 static void poll(void) {}
 static int16_t input(unsigned port, unsigned dev, unsigned idx, unsigned id)
 {
-    (void)dev; (void)idx;
-    if (port > 1)
+    if (dev == 2)                                               /* RETRO_DEVICE_MOUSE */
+        return port < 2 && id < 4 ? (int16_t)(id < 2 ? mouse_m[port][id] : mouse_m[port][2] >> (id - 2) & 1) : 0;
+    if (dev == 4)                                               /* RETRO_DEVICE_LIGHTGUN */
+        return gun_input(idx, id);
+    if (port > 7)
         return 0;
+    if (port > 1)
+        return id < 12 ? (padx[port] & 0x8000 >> id) != 0 : 0;
     if (id == 256)
         return (int16_t)pad[port];
     return id < 12 ? (pad[port] >> id) & 1 : 0;
+}
+
+/* plug PORT DEVICE; pad N BITS; mouse PORT DX DY BUTTONS; gun G X Y BUTTONS */
+static void input_step(const char *line)
+{
+    static const char *const dev[] = { "joypad", "none", "mouse", "multitap", "superscope", "justifier",
+                                       "justifiers" };
+    static const unsigned id[] = { 1, 0, 2, 0x101, 0x104, 0x204, 0x304 };
+    char w[8][1024];
+    int n = words(line, w, 8), i;
+    if (!strcmp(w[0], "plug") && n == 3) {
+        for (i = 0; i < 7; i++)
+            if (!strcmp(w[2], dev[i])) {
+                p_set_controller_port_device((unsigned)atoi(w[1]), id[i]);
+                /* where the core's guns start: the screen's middle, two
+                   chained Justifiers 16 dots either side */
+                memset(gun_cur, 0, sizeof gun_cur);
+                gun_cur[0][0][0] = gun_cur[1][0][0] = 128;
+                gun_cur[2][0][0] = 112;
+                gun_cur[2][1][0] = 144;
+                gun_cur[0][0][1] = gun_cur[1][0][1] = gun_cur[2][0][1] = gun_cur[2][1][1] = 120;
+                /* aimed there until a gun step says otherwise */
+                if (i >= 4)
+                    memcpy(gun_at, gun_cur[i - 4], sizeof gun_at);
+                return;
+            }
+    } else if (!strcmp(w[0], "pad") && n == 3 && atoi(w[1]) >= 0 && atoi(w[1]) < 8) {
+        padx[atoi(w[1])] = (uint16_t)strtoul(w[2], NULL, 16);
+        return;
+    } else if (!strcmp(w[0], "mouse") && n == 5 && (atoi(w[1]) & ~1) == 0) {
+        mouse_m[atoi(w[1])][0] = atoi(w[2]);
+        mouse_m[atoi(w[1])][1] = atoi(w[3]);
+        mouse_m[atoi(w[1])][2] = atoi(w[4]);
+        return;
+    } else if (!strcmp(w[0], "gun") && n == 5 && (atoi(w[1]) & ~1) == 0) {
+        gun_at[atoi(w[1])][0] = atoi(w[2]);
+        gun_at[atoi(w[1])][1] = atoi(w[3]);
+        gun_b[atoi(w[1])] = atoi(w[4]);
+        return;
+    }
+    die("a controller step: ", line);
 }
 
 static void shot_to(const char *path)
@@ -317,7 +387,7 @@ static void write_mem(const char *dir, const char *name, const char *ext, const 
    put back (a load; a call without keep) the run forks as nativeshvc's
    does, so the two make the same frames in the same order. */
 enum {
-    S_FRAMES, S_CALL, S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_POKE, S_SET, S_SPCSET, S_SPCCALL,
+    S_FRAMES, S_CALL, S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_POKE, S_SET, S_SPCSET, S_SPCCALL, S_INPUT,
 };
 
 typedef struct {
@@ -506,6 +576,8 @@ static void script_range(List *l, char **lines, int lo, int hi)
             add_text(l, cmd[0] == 'p' ? S_POKE : cmd[1] == 'e' ? S_SET : S_SPCSET, lines[i]);
         } else if (!strcmp(cmd, "call") || !strcmp(cmd, "spccall")) {
             add_text(l, cmd[0] == 'c' ? S_CALL : S_SPCCALL, lines[i]);
+        } else if (!strcmp(cmd, "plug") || !strcmp(cmd, "pad") || !strcmp(cmd, "mouse") || !strcmp(cmd, "gun")) {
+            add_text(l, S_INPUT, lines[i]);
         } else if (!strcmp(cmd, "fx")) {
             fx(l, lines[i]);
         } else if (!strcmp(cmd, "repeat")) {
@@ -1032,6 +1104,7 @@ static void takes(const char *dir)
             break;
         case S_SPCSET: spcset(st->text); break;
         case S_SPCCALL: spccall(st->text); break;
+        case S_INPUT: input_step(st->text); break;
         }
         step_at++;
     }
@@ -1256,6 +1329,7 @@ int main(int argc, char **argv)
     LOAD(p_set_input_state, "retro_set_input_state");
     LOAD(p_load_game, "retro_load_game");
     LOAD(p_run, "retro_run");
+    LOAD(p_set_controller_port_device, "retro_set_controller_port_device");
     LOAD(p_get_memory_data, "retro_get_memory_data");
     LOAD(p_get_memory_size, "retro_get_memory_size");
     p_set_environment(env);
@@ -1325,6 +1399,8 @@ int main(int argc, char **argv)
             for (;;) {
                 p_run();
                 runs++;
+                /* a mouse's motion is the frame's */
+                mouse_m[0][0] = mouse_m[0][1] = mouse_m[1][0] = mouse_m[1][1] = 0;
                 if (hashes_f)
                     fprintf(hashes_f, "%ld %08x %08x\n", runs,
                             fnv(pacing_wram + 0x300, 0x20000 - 0x300, fnv(pacing_wram, 0x100, 2166136261u)),

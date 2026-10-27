@@ -135,8 +135,12 @@ typedef struct nshvc_cart {
 
     /* The cartridge's expansion chip (cart.h), or NULL: the cartridge's
        own hardware, which the console's bus gives the addresses it decodes
-       (nativeshvc's: nshvc/superfx.h's nshvc_superfx). */
+       (the game's: it brings its chip, as nshvc/superfx.h's nshvc_superfx). */
     const nshvc_chip *chip;
+
+    /* What is plugged into the controller ports at power on
+       (NSHVC_PORT_*; 0, a joypad, when not set). */
+    int ports[2];
 } nshvc_cart;
 
 /* ---- running it -------------------------------------------------------------- */
@@ -181,13 +185,64 @@ const uint32_t *nshvc_picture(int *width, int *height);
 /* frames finished since power on */
 uint32_t nshvc_frames(void);
 
-/* The controllers: the buttons held on port 0 or 1, the joypad's own bits. */
+/* The controller ports (0 and 1, the console's 1 and 2) and what is
+   plugged into each: a joypad in each unless the cartridge says otherwise
+   (nshvc_cart.ports), or nshvc_plug changes it. Each device answers the
+   ports' lines as the device does. */
+enum {
+    NSHVC_PORT_JOYPAD,          /* the standard controller */
+    NSHVC_PORT_NONE,            /* nothing: the data lines read 0 */
+    NSHVC_PORT_MOUSE,           /* the SNES mouse */
+    NSHVC_PORT_MULTITAP,        /* four joypads on one port */
+    NSHVC_PORT_SUPERSCOPE,      /* the Super Scope (its aim latches the counters on port 1) */
+    NSHVC_PORT_JUSTIFIER,       /* one Justifier (the same) */
+    NSHVC_PORT_JUSTIFIERS       /* two Justifiers, chained */
+};
+void nshvc_plug(int port, int device);
+int nshvc_plugged(int port);
+/* What a joypad's player holds, the joypad's own bits. The players are
+   the controllers in port order, each port's device one player (a
+   multitap four): port 0's first, so with a joypad in each, 0 and 1. */
 enum {
     NSHVC_B = 0x8000, NSHVC_Y = 0x4000, NSHVC_SELECT = 0x2000, NSHVC_START = 0x1000,
     NSHVC_UP = 0x0800, NSHVC_DOWN = 0x0400, NSHVC_LEFT = 0x0200, NSHVC_RIGHT = 0x0100,
     NSHVC_A = 0x0080, NSHVC_X = 0x0040, NSHVC_L = 0x0020, NSHVC_R = 0x0010
 };
-void nshvc_set_joypad(int port, uint16_t buttons);
+void nshvc_set_joypad(int pad, uint16_t buttons);
+/* A mouse on `port`: this frame's motion (in the mouse's counts, x right
+   and y down), which it reports at each latch until the frame ends;
+   buttons bit 0 left, bit 1 right. */
+void nshvc_set_mouse(int port, int dx, int dy, int buttons);
+/* A light gun: where it points, in the console's dots and lines (outside
+   0-255 and the picture's lines: off the screen), and its buttons. Gun 0
+   is the Super Scope or the first Justifier, gun 1 the second. */
+enum {
+    NSHVC_GUN_TRIGGER = 1, NSHVC_GUN_CURSOR = 2, NSHVC_GUN_TURBO = 4, NSHVC_GUN_PAUSE = 8,
+    NSHVC_GUN_START = 16
+};
+void nshvc_set_gun(int gun, int x, int y, unsigned buttons);
+
+/* The native device driving a player's controller now: the last one the
+   player used (the console's front end maps keyboards, game controllers,
+   mice and touch screens onto every controller above), so a game can
+   name its controls as the player sees them. nshvc_player_source: 0 when
+   there is no such player. nshvc_player_label: the name of the control
+   that makes one of the player's controls (a joypad's NSHVC_B..., a light
+   gun's NSHVC_GUN_..., a mouse's button 1 or 2) on that device ("Z",
+   "Cross", "A", "Left button"; "" none). nshvc_hooks.input hears each
+   change. */
+enum {
+    NSHVC_INPUT_NONE, NSHVC_INPUT_KEYBOARD, NSHVC_INPUT_GAMEPAD, NSHVC_INPUT_MOUSE, NSHVC_INPUT_TOUCH,
+    NSHVC_INPUT_SCRIPT
+};
+enum { NSHVC_PAD_GENERIC, NSHVC_PAD_XBOX, NSHVC_PAD_PLAYSTATION, NSHVC_PAD_NINTENDO };
+typedef struct {
+    int kind;                   /* NSHVC_INPUT_* */
+    int style;                  /* a game controller's family, NSHVC_PAD_* */
+    char name[64];              /* its product's name, or the kind's ("Keyboard") */
+} nshvc_input_source;
+int nshvc_player_source(int player, nshvc_input_source *src);
+const char *nshvc_player_label(int player, unsigned control);
 
 /* The sound: the DSP's output, stereo 16-bit (left, right) at
    NSHVC_DSP_RATE frames a second, made as the SPC700's clock runs; up to
@@ -297,6 +352,8 @@ typedef struct {
     void (*touch)(const nshvc_touch *t, int n);
     /* once a frame, after it is shown, on the front end's side */
     void (*frame)(void);
+    /* the device driving `player` changed (nshvc_player_source) */
+    void (*input)(int player, const nshvc_input_source *src);
 } nshvc_hooks;
 void nshvc_set_hooks(const nshvc_hooks *hooks);
 /* the host's folder for the player's saves and settings */
@@ -307,10 +364,10 @@ void nshvc_safe_area(float *left, float *top, float *right, float *bottom);
 /* the window's size in points (headless: the renderer's target, a point a
    pixel) */
 void nshvc_window_size(float *w, float *h);
-/* Buttons the game holds on controller port 0 or 1 (a touch scheme's), the
+/* Buttons the game holds for a joypad's player (a touch scheme's), the
    joypad's bits: kept until changed, joined with the console's own
    controls (keyboard, game controllers, a script) at each frame. */
-void nshvc_game_buttons(int port, uint16_t buttons);
+void nshvc_game_buttons(int player, uint16_t buttons);
 /* Pictures the game draws over the console's (a touch screen's controls):
    an image with alpha (0xAARRGGBB, straight alpha), kept by the console;
    its id, or -1 when NSHVC_OVERLAYS are made. Placed by its centre (cx,

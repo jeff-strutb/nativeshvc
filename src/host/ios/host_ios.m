@@ -677,6 +677,35 @@ void host_audio_close(void)
 }
 
 /* ---- game controllers ------------------------------------------------------------- */
+/* the controller's family, product and its buttons' own names (as the
+   controller shows them: "A", "Cross", "L1"), by host_pad's bits */
+static void host_pad_identify(GCController *c, GCExtendedGamepad *g, host_pad *o)
+{
+    NSString *cat = c.productCategory ? c.productCategory : @"";
+    GCControllerElement *el[16] = { g.buttonA, g.buttonB, g.buttonX, g.buttonY, g.leftShoulder, g.rightShoulder,
+                                    g.buttonOptions, g.buttonMenu, g.leftThumbstickButton, g.rightThumbstickButton,
+                                    g.leftTrigger, g.rightTrigger, g.dpad.up, g.dpad.right, g.dpad.down, g.dpad.left };
+    int i;
+    if ([cat rangeOfString:@"Xbox"].location != NSNotFound)
+        o->style = HOST_PAD_XBOX;
+    else if ([cat rangeOfString:@"DualShock"].location != NSNotFound ||
+             [cat rangeOfString:@"DualSense"].location != NSNotFound ||
+             [cat rangeOfString:@"PlayStation"].location != NSNotFound)
+        o->style = HOST_PAD_PLAYSTATION;
+    else if ([cat rangeOfString:@"Switch"].location != NSNotFound ||
+             [cat rangeOfString:@"Joy-Con"].location != NSNotFound ||
+             [cat rangeOfString:@"Nintendo"].location != NSNotFound)
+        o->style = HOST_PAD_NINTENDO;
+    snprintf(o->name, sizeof o->name, "%s", [(c.vendorName ? c.vendorName : cat) UTF8String]);
+    for (i = 0; i < 16; i++)
+        if (el[i] && el[i].localizedName)
+            snprintf(o->label[i], sizeof o->label[i], "%s", [el[i].localizedName UTF8String]);
+}
+
+/* any controller macOS knows (Xbox, PlayStation, MFi, Switch Pro) through
+ * GameController.framework, in the order macOS lists those with a full
+ * gamepad profile. One plugged in while the game runs is picked up at the
+ * next read. */
 /* any controller iOS knows (Xbox, PlayStation, MFi, Switch Pro), in the
  * order GameController lists those with a full gamepad profile */
 int host_pad_read(int index, host_pad *o)
@@ -694,6 +723,7 @@ int host_pad_read(int index, host_pad *o)
             }
         if (!c || !(g = c.extendedGamepad))
             return 0;
+        host_pad_identify(c, g, o);
         o->x = g.leftThumbstick.xAxis.value;
         o->y = -g.leftThumbstick.yAxis.value;
         if (g.buttonA.pressed) b |= 1u << 0;

@@ -47,13 +47,17 @@ enum {
     HOST_EV_KEY,          /* vk (a Win32 virtual key code on every OS), down */
     HOST_EV_FOCUS,        /* down: 1 gained, 0 lost */
     HOST_EV_CLOSE,
-    HOST_EV_TOUCH         /* a touch: id, phase (0 began, 1 moved, 2 ended), x, y in points */
+    HOST_EV_TOUCH,        /* a touch: id, phase (0 began, 1 moved, 2 ended), x, y in points */
+    HOST_EV_MOUSE         /* the mouse: x, y where the pointer is, dx, dy how far it moved (points),
+                             buttons held (bit 0 left, 1 right, 2 middle) */
 };
 typedef struct host_event {
     int type;
     int vk, down;
     int id, phase;
     float x, y;
+    float dx, dy;
+    int buttons;
 } host_event;
 
 /* the window, sized for a picture of width x height (shown larger, the
@@ -91,10 +95,17 @@ void host_audio_close(void);
  *   x, y     left stick, -1..1, y positive downward
  *   buttons  0 A  1 B  2 X  3 Y  4 LB  5 RB  6 view  7 menu  8 L3  9 R3
  *            10 LT  11 RT (past half)  12-15 d-pad up/right/down/left
+ *   style    the controller's family (HOST_PAD_*), name its product's
+ *   label    each button's name as the controller shows it ("A", "Cross",
+ *            "LB", "L1"...), by the buttons' bits
  * 0 when none is connected there (the state then reads centred) */
+enum { HOST_PAD_GENERIC, HOST_PAD_XBOX, HOST_PAD_PLAYSTATION, HOST_PAD_NINTENDO };
 typedef struct host_pad {
     float    x, y;
     unsigned buttons;
+    int      style;
+    char     name[64];
+    char     label[16][24];
 } host_pad;
 int host_pad_read(int index, host_pad *p);
 /* the window's edges a notch or rounded corners cover, in points (host/ios;

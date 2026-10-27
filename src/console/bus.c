@@ -90,6 +90,7 @@ static int poll_masked;
 static int nmi_pending, cart_irq;
 
 static void latch_counters(void);
+static void joy_run(void);
 static void cpu_clocks(uint32_t clocks);
 static void alu_stretch(uint32_t clocks);
 static void *audit_at;   /* where the last audited access came from (NSHVC_AUDIT) */
@@ -201,10 +202,17 @@ static void audit_site(uint32_t addr, int w)
 }
 
 /* the joypads */
-static uint16_t joy_held[2], joy_auto[2];
-static uint16_t joy_shift[2];
-static uint8_t joy_strobe;
-static uint64_t joy_busy_until;
+/* the joypads' automatic read (ports.c the devices): from a 256-clock
+   step of the CPU's counter at dot 130-384 of line vdisp (its counter
+   snes_clock + 4, as the counters' dots stand 4 clocks on: measured,
+   joy_busy), an edge each 128 clocks: the latch set at the first, let go
+   at the second, then each pair a bit, read at the first edge and shifted
+   in at the second, 16 of them; 33 the read not under way */
+static uint16_t joy_reg[4];
+static unsigned joy_counter = 33;
+static int joy_cpu_latch, joy_auto_latch;
+static unsigned joy_bits[2];
+static uint64_t joy_next;
 
 /* the beam: the line now and where it began */
 static unsigned vline, lines = SNES_LINES_NTSC, vblank_line = 225;
@@ -395,6 +403,16 @@ static unsigned line_length(void)
 
 static void line_begin(void)
 {
+    if (vline == snes_vdisp()) {
+        unsigned h0;
+        joy_run();
+        /* the light guns see the finished picture; the joypads' read
+           starts on its step of 256 in dots 130-384 */
+        ports_frame();
+        h0 = 130 + ((256 - (unsigned)((line_start + 130) & 255)) & 255);
+        joy_next = line_start - 4 + h0;
+        joy_counter = 34;
+    }
     if (nmi_rose) {
         nmi_rose = 0;
         vblanks++;
@@ -414,16 +432,10 @@ static void line_begin(void)
                     apu_port_read(0), apu_port_read(1), apu_port_read(2), apu_port_read(3));
             dbg_irqs = dbg_nmis = 0;
         }
-        /* the frame is done: the front end shows it and sets the buttons
-           the joypads' read now takes */
+        /* the frame is done: the front end shows it and sets what the
+           players hold, which the joypads' read now takes */
         if (snes_frame_hook)
             snes_frame_hook();
-        if (nmitimen & 1) {
-            joy_auto[0] = joy_held[0];
-            joy_auto[1] = joy_held[1];
-            joy_shift[0] = joy_shift[1] = 0xFFFF;
-            joy_busy_until = snes_clock + 130 + 4224;
-        }
     } else if (vline == 0) {
         frames++;
         /* overscan (SETINI bit 2) as the frame starts: 239 lines shown */
@@ -679,7 +691,8 @@ static uint8_t cpu_reg_read(uint16_t off)
             v |= 0x80;
         if (h <= 2 || h >= HBLANK_AT)
             v |= 0x40;
-        if (snes_clock < joy_busy_until)
+        joy_run();
+        if ((nmitimen & 1) && joy_counter < 33)
             v |= 0x01;
         return v;
     }
@@ -688,11 +701,10 @@ static uint8_t cpu_reg_read(uint16_t off)
     case 0x4215: return (uint8_t)(rddiv >> 8);
     case 0x4216: return (uint8_t)rdmpy;
     case 0x4217: return (uint8_t)(rdmpy >> 8);
-    case 0x4218: return (uint8_t)joy_auto[0];
-    case 0x4219: return (uint8_t)(joy_auto[0] >> 8);
-    case 0x421A: return (uint8_t)joy_auto[1];
-    case 0x421B: return (uint8_t)(joy_auto[1] >> 8);
-    case 0x421C: case 0x421D: case 0x421E: case 0x421F: return 0;
+    case 0x4218: case 0x4219: case 0x421A: case 0x421B:
+    case 0x421C: case 0x421D: case 0x421E: case 0x421F:
+        joy_run();
+        return (uint8_t)(joy_reg[(off - 0x4218) >> 1] >> ((off & 1) * 8));
     }
     if (off >= 0x4300 && off < 0x4380)
         return dma_read(off);
@@ -704,7 +716,17 @@ static void cpu_reg_write(uint16_t off, uint8_t v)
     switch (off) {
     case 0x4200: {
         uint8_t was = nmitimen;
+        joy_run();
         nmitimen = v;
+        /* the read's first step: the latch follows the enable; past its
+           second, a disable ends it */
+        if (joy_counter == 0) {
+            joy_auto_latch = v & 1;
+            ports_latch(joy_auto_latch | joy_cpu_latch);
+        } else if (!(v & 1) && joy_counter >= 2 && joy_counter < 33) {
+            joy_counter = 33;
+            joy_next = NEVER;
+        }
         /* the NMI enabled during the vertical blank, its flag still set */
         if (!(was & 0x80) && (v & 0x80) && rdnmi_flag) {
             nmi_pending = 1;
@@ -717,6 +739,7 @@ static void cpu_reg_write(uint16_t off, uint8_t v)
         return;
     }
     case 0x4201:
+        joy_run();
         if ((wrio & 0x80) && !(v & 0x80))
             latch_counters();
         wrio = v;
@@ -760,32 +783,67 @@ static void cpu_reg_write(uint16_t off, uint8_t v)
         dma_write(off, v);
 }
 
-/* the joypads' serial ports: a strobe latches the buttons, then each read
-   shifts out one (B first); past the 16th, a standard pad reads 1 */
+/* one edge of the automatic read (start: the frame's first) */
+static void joy_edge(int start)
+{
+    int on = nmitimen & 1;
+    if (start)
+        joy_counter = 0;
+    else if (joy_counter >= 33)
+        return;
+    else
+        joy_counter++;
+    if (joy_counter == 0) {
+        joy_auto_latch = on;
+        ports_latch(joy_auto_latch | joy_cpu_latch);
+        if (on)
+            joy_reg[0] = joy_reg[1] = joy_reg[2] = joy_reg[3] = 0;
+    }
+    if (joy_counter == 1) {
+        joy_auto_latch = 0;
+        ports_latch(joy_cpu_latch);
+    }
+    if (joy_counter != 1 && !on) {
+        joy_counter = 33;
+        return;
+    }
+    if (joy_counter >= 2) {
+        if (!(joy_counter & 1)) {
+            joy_bits[0] = ports_data(0);
+            joy_bits[1] = ports_data(1);
+        } else {
+            joy_reg[0] = (uint16_t)(joy_reg[0] << 1 | (joy_bits[0] & 1));
+            joy_reg[1] = (uint16_t)(joy_reg[1] << 1 | (joy_bits[1] & 1));
+            joy_reg[2] = (uint16_t)(joy_reg[2] << 1 | (joy_bits[0] >> 1 & 1));
+            joy_reg[3] = (uint16_t)(joy_reg[3] << 1 | (joy_bits[1] >> 1 & 1));
+        }
+    }
+}
+
+/* the automatic read's edges up to now (counter 34: the frame's first
+   edge still to come) */
+static void joy_run(void)
+{
+    while (joy_next <= snes_clock) {
+        joy_edge(joy_counter == 34);
+        joy_next = joy_counter < 33 ? joy_next + 128 : NEVER;
+    }
+}
+
+static void joy_latch_write(uint8_t v)
+{
+    joy_run();
+    joy_cpu_latch = v & 1;
+    ports_latch(joy_auto_latch | joy_cpu_latch);
+}
+
 static uint8_t joy_serial_read(int port)
 {
-    uint8_t bit;
-    if (joy_strobe & 1)
-        return (uint8_t)(joy_held[port] >> 15 & 1);
-    bit = (uint8_t)(joy_shift[port] >> 15 & 1);
-    joy_shift[port] = (uint16_t)(joy_shift[port] << 1 | 1);
-    return bit;
+    joy_run();
+    return (uint8_t)ports_data(port);
 }
 
-static void joy_strobe_write(uint8_t v)
-{
-    if ((joy_strobe & 1) && !(v & 1)) {
-        joy_shift[0] = joy_held[0];
-        joy_shift[1] = joy_held[1];
-    }
-    joy_strobe = v;
-}
-
-void snes_set_joypad(int port, uint16_t buttons)
-{
-    if (port == 0 || port == 1)
-        joy_held[port] = (uint16_t)(buttons & 0xFFF0);
-}
+uint8_t snes_wrio(void) { return wrio; }
 
 /* ---- the counters' latch (the PPU's $2137, $213C-$213D, $213F) ---- */
 /* SLHV's read and WRIO's write latch the counters as they stand
@@ -1007,7 +1065,7 @@ static void bus_write(uint32_t addr, uint8_t v, int kind)
             return;
         }
         if (off == 0x4016) {
-            joy_strobe_write(v);
+            joy_latch_write(v);
             return;
         }
         if (off >= 0x4200 && off < 0x4400) {
@@ -1321,10 +1379,12 @@ void snes_power(void)
     htime = vtime = 0x1FF;
     rdnmi_flag = timeup_flag = 0;
     nmi_pending = cart_irq = 0;
-    joy_auto[0] = joy_auto[1] = 0;
-    joy_shift[0] = joy_shift[1] = 0;
-    joy_strobe = 0;
-    joy_busy_until = 0;
+    memset(joy_reg, 0, sizeof joy_reg);
+    joy_counter = 33;
+    joy_cpu_latch = joy_auto_latch = 0;
+    joy_bits[0] = joy_bits[1] = 0;
+    joy_next = NEVER;
+    ports_reset(snes_cart.ports);
     lines = snes_cart.region == NSHVC_PAL ? SNES_LINES_PAL : SNES_LINES_NTSC;
     vblank_line = 225;
     vline = 0;

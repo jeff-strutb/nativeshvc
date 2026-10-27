@@ -186,6 +186,35 @@ static float s_aspect;
     }
     key_event(k, down);
 }
+/* the mouse: where the pointer is in the view (points, from the top
+   left), how far it moved, the buttons held */
+static void mouse_event(NSView *v, NSEvent *ev)
+{
+    host_event e;
+    NSPoint p = [v convertPoint:[ev locationInWindow] fromView:nil];
+    NSUInteger b = [NSEvent pressedMouseButtons];
+    memset(&e, 0, sizeof e);
+    e.type = HOST_EV_MOUSE;
+    e.x = (float)p.x;
+    e.y = (float)([v bounds].size.height - p.y);
+    if ([ev type] == NSEventTypeMouseMoved || [ev type] == NSEventTypeLeftMouseDragged ||
+        [ev type] == NSEventTypeRightMouseDragged || [ev type] == NSEventTypeOtherMouseDragged) {
+        e.dx = (float)[ev deltaX];
+        e.dy = (float)[ev deltaY];
+    }
+    e.buttons = (int)((b & 1) | (b >> 1 & 1) << 1 | (b >> 2 & 1) << 2);
+    qpush(&e);
+}
+- (void)mouseMoved:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)mouseDragged:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)rightMouseDragged:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)otherMouseDragged:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)mouseDown:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)mouseUp:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)rightMouseDown:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)rightMouseUp:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)otherMouseDown:(NSEvent *)ev { mouse_event(self, ev); }
+- (void)otherMouseUp:(NSEvent *)ev { mouse_event(self, ev); }
 @end
 
 @implementation PortWindowDelegate
@@ -249,6 +278,7 @@ int host_window_open(int width, int height, const char *title)
         [s_win center];
         [s_win makeKeyAndOrderFront:nil];
         [s_win makeFirstResponder:s_view];
+        [s_win setAcceptsMouseMovedEvents:YES];
         if (!getenv("PORT_NOACTIVATE"))       /* a test run launched in the background stays there */
             [NSApp activateIgnoringOtherApps:YES];
         s_rgb = CGColorSpaceCreateDeviceRGB();
@@ -469,6 +499,31 @@ void host_audio_close(void)
 }
 
 /* ---- game controllers ------------------------------------------------------------- */
+/* the controller's family, product and its buttons' own names (as the
+   controller shows them: "A", "Cross", "L1"), by host_pad's bits */
+static void host_pad_identify(GCController *c, GCExtendedGamepad *g, host_pad *o)
+{
+    NSString *cat = c.productCategory ? c.productCategory : @"";
+    GCControllerElement *el[16] = { g.buttonA, g.buttonB, g.buttonX, g.buttonY, g.leftShoulder, g.rightShoulder,
+                                    g.buttonOptions, g.buttonMenu, g.leftThumbstickButton, g.rightThumbstickButton,
+                                    g.leftTrigger, g.rightTrigger, g.dpad.up, g.dpad.right, g.dpad.down, g.dpad.left };
+    int i;
+    if ([cat rangeOfString:@"Xbox"].location != NSNotFound)
+        o->style = HOST_PAD_XBOX;
+    else if ([cat rangeOfString:@"DualShock"].location != NSNotFound ||
+             [cat rangeOfString:@"DualSense"].location != NSNotFound ||
+             [cat rangeOfString:@"PlayStation"].location != NSNotFound)
+        o->style = HOST_PAD_PLAYSTATION;
+    else if ([cat rangeOfString:@"Switch"].location != NSNotFound ||
+             [cat rangeOfString:@"Joy-Con"].location != NSNotFound ||
+             [cat rangeOfString:@"Nintendo"].location != NSNotFound)
+        o->style = HOST_PAD_NINTENDO;
+    snprintf(o->name, sizeof o->name, "%s", [(c.vendorName ? c.vendorName : cat) UTF8String]);
+    for (i = 0; i < 16; i++)
+        if (el[i] && el[i].localizedName)
+            snprintf(o->label[i], sizeof o->label[i], "%s", [el[i].localizedName UTF8String]);
+}
+
 /* any controller macOS knows (Xbox, PlayStation, MFi, Switch Pro) through
  * GameController.framework, in the order macOS lists those with a full
  * gamepad profile. One plugged in while the game runs is picked up at the
@@ -488,6 +543,7 @@ int host_pad_read(int index, host_pad *o)
             }
         if (!c || !(g = c.extendedGamepad))
             return 0;
+        host_pad_identify(c, g, o);
         o->x = g.leftThumbstick.xAxis.value;
         o->y = -g.leftThumbstick.yAxis.value;
         if (g.buttonA.pressed) b |= 1u << 0;

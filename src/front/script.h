@@ -35,6 +35,13 @@
  *   spccall APU [a= x= y= psw= at=APU]   the SPC700 routine at APU called
  *                        when the driver's C next marks `at` ($0897 if not
  *                        named) with spc_at
+ *   plug PORT DEVICE     plug joypad, none, mouse, multitap, superscope,
+ *                        justifier or justifiers into port 0 or 1
+ *   pad N BITS           player N's joypad holds BITS (hex, the joypad's
+ *                        own: B 8000) from now; players 0 and 1 are hold's
+ *   mouse PORT DX DY B   the mouse's motion and buttons the next frame
+ *   gun G X Y B          light gun G points at dot X, line Y, with buttons
+ *                        B (nshvc.h NSHVC_GUN_*), from now
  *   dump NAME also writes the chip's own RAM as DIR/NAME.gsuram.
  * save, load and a call without keep fork (script.c).
  *

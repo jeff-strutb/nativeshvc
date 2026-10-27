@@ -93,7 +93,6 @@ extern int snes_in_interrupt;              /* an interrupt handler runs (timed e
 uint32_t snes_vblanks(void);
 
 /* ---- input ---- */
-void snes_set_joypad(int port, uint16_t buttons);
 
 /* ---- sound ---- */
 int snes_audio_take(int16_t *lr, int max);

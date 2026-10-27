@@ -8,14 +8,8 @@
  * and resampled to the device's (windowed sinc), the rate trimmed by up to
  * 0.5% to keep 50 ms buffered.
  *
- * Controls (a game controller in port 1 and 2; the keyboard is port 1):
- *   SNES    keyboard          controller
- *   D-pad   arrows            d-pad or left stick
- *   B, A    Z, X              A, B (the SNES's layout: B below, A right)
- *   Y, X    A, S              X, Y
- *   L, R    Q, W              shoulders
- *   START   Return            menu
- *   SELECT  Right Shift, Tab  view
+ * The controls: the keyboard, game controllers, the mouse and touches,
+ * onto whatever is plugged into the controller ports (input.c).
  *
  * The save is the cartridge's battery RAM, kept in the host's save folder
  * as SAVE_NAME.srm and written when it changes. A headless run (a test)
@@ -34,11 +28,11 @@
 #include "rr_size.h"
 #include "resample.h"
 #include "script.h"
+#include "input.h"
 
 /* ---- the public calls ---- */
 const uint32_t *nshvc_picture(int *width, int *height) { return ppu_picture(width, height); }
 uint32_t nshvc_frames(void) { return (uint32_t)ppu_frames(); }
-void nshvc_set_joypad(int port, uint16_t buttons) { snes_set_joypad(port, buttons); }
 int nshvc_audio_take(int16_t *lr, int max) { return snes_audio_take(lr, max); }
 int nshvc_audio_queued(void) { return snes_audio_queued(); }
 uint8_t *nshvc_wram(void) { return snes_wram_rw(); }
@@ -92,11 +86,11 @@ void nshvc_window_size(float *w, float *h)
 }
 
 /* ---- the game's buttons and overlays ---- */
-static uint16_t game_buttons[2];
-void nshvc_game_buttons(int port, uint16_t buttons)
+static uint16_t game_buttons[8];
+void nshvc_game_buttons(int player, uint16_t buttons)
 {
-    if (port == 0 || port == 1)
-        game_buttons[port] = buttons;
+    if (player >= 0 && player < 8)
+        game_buttons[player] = buttons;
 }
 
 typedef struct {
@@ -242,53 +236,6 @@ static void save_write(void)
     rename(tmp, save_path);
 }
 
-/* ---- input ---- */
-static uint16_t keys;
-
-static void key(int vk, int down)
-{
-    uint16_t m = 0;
-    switch (vk) {
-    case 0x26: m = NSHVC_UP; break;
-    case 0x28: m = NSHVC_DOWN; break;
-    case 0x25: m = NSHVC_LEFT; break;
-    case 0x27: m = NSHVC_RIGHT; break;
-    case 'Z': m = NSHVC_B; break;
-    case 'X': m = NSHVC_A; break;
-    case 'A': m = NSHVC_Y; break;
-    case 'S': m = NSHVC_X; break;
-    case 'Q': m = NSHVC_L; break;
-    case 'W': m = NSHVC_R; break;
-    case 0x0D: m = NSHVC_START; break;
-    case 0x10: case 0x09: m = NSHVC_SELECT; break;
-    }
-    if (down)
-        keys |= m;
-    else
-        keys &= (uint16_t)~m;
-}
-
-static uint16_t pad_buttons(int index)
-{
-    host_pad p;
-    uint16_t b = 0;
-    if (!host_pad_read(index, &p))
-        return 0;
-    if (p.buttons & 1u << 0) b |= NSHVC_B;
-    if (p.buttons & 1u << 1) b |= NSHVC_A;
-    if (p.buttons & 1u << 2) b |= NSHVC_Y;
-    if (p.buttons & 1u << 3) b |= NSHVC_X;
-    if (p.buttons & 1u << 4) b |= NSHVC_L;
-    if (p.buttons & 1u << 5) b |= NSHVC_R;
-    if (p.buttons & 1u << 6) b |= NSHVC_SELECT;
-    if (p.buttons & 1u << 7) b |= NSHVC_START;
-    if ((p.buttons & 1u << 12) || p.y < -0.5f) b |= NSHVC_UP;
-    if ((p.buttons & 1u << 13) || p.x > 0.5f) b |= NSHVC_RIGHT;
-    if ((p.buttons & 1u << 14) || p.y > 0.5f) b |= NSHVC_DOWN;
-    if ((p.buttons & 1u << 15) || p.x < -0.5f) b |= NSHVC_LEFT;
-    return b;
-}
-
 /* ---- sound: the DSP's 32,040 Hz to the device's rate ---- */
 #define OUT_RATE 48000
 static Resampler *s_rs;
@@ -318,6 +265,20 @@ static void sound_drain(void)
 }
 
 /* ---- the picture on the window ---- */
+/* where the last frame was drawn on the renderer's target (pixels), and
+   that target's width */
+static int shown_at[4], shown_tw;
+
+int console_picture_at(float x, float y, int *dot, int *line)
+{
+    const PpuFrame *f = ppu_frame();
+    float ww, wh;
+    nshvc_window_size(&ww, &wh);
+    if (!shown_tw || ww <= 0)
+        return 0;
+    return input_point(shown_at, (float)shown_tw / ww, f->width, f->screen_height, f->height, x, y, dot, line);
+}
+
 /* the frame as large as the window holds, centred, sharp bilinear: the
    console's 256 x 224 at a television's 4:3, a larger screen at the same
    shape of pixel */
@@ -340,6 +301,8 @@ static void show(void)
     d[1] = (th - h) / 2;
     d[2] = d[0] + w;
     d[3] = d[1] + h;
+    memcpy(shown_at, d, sizeof shown_at);
+    shown_tw = tw;
     rr_begin(0xFF000000u);
     {
         int pw, ph;
@@ -442,8 +405,10 @@ static void frame(void)
         if (sound_f)
             sound_drain();
         more = script_frame(&b0, &b1);
-        snes_set_joypad(0, (uint16_t)(b0 | game_buttons[0]));
-        snes_set_joypad(1, (uint16_t)(b1 | game_buttons[1]));
+        nshvc_set_joypad(0, (uint16_t)(b0 | game_buttons[0]));
+        nshvc_set_joypad(1, (uint16_t)(b1 | game_buttons[1]));
+        input_script();
+        input_report(hooks.input);
         if (hooks.frame)
             hooks.frame();
         if ((max_frames >= 0 && frame_no >= max_frames) || (!more && script_steps() && max_frames < 0))
@@ -456,8 +421,11 @@ static void frame(void)
         while (host_poll_event(&e, 0)) {
             if (e.type == HOST_EV_KEY) {
                 if (!(hooks.key && hooks.key(e.vk, e.down)))
-                    key(e.vk, e.down);
+                    input_key(e.vk, e.down);
+            } else if (e.type == HOST_EV_MOUSE) {
+                input_mouse(e.x, e.y, e.dx, e.dy, e.buttons);
             } else if (e.type == HOST_EV_TOUCH) {
+                input_touch(e.id, e.phase, e.x, e.y);
                 if (hooks.touch) {
                     nshvc_touch t;
                     t.id = e.id;
@@ -469,11 +437,11 @@ static void frame(void)
             } else if (e.type == HOST_EV_CLOSE)
                 quit();
             else if (e.type == HOST_EV_FOCUS && !e.down)
-                keys = 0;
+                input_focus_lost();
         }
     }
-    snes_set_joypad(0, (uint16_t)(keys | pad_buttons(0) | game_buttons[0]));
-    snes_set_joypad(1, (uint16_t)(pad_buttons(1) | game_buttons[1]));
+    input_frame(game_buttons);
+    input_report(hooks.input);
     if (frame_no % 120 == 0)
         save_write();
     if (hooks.frame)

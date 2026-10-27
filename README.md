@@ -25,22 +25,18 @@ Version 0.1.0.
   cycle-by-cycle time), not in the console.
 - **Stunt Race FX's unit tests can't match yet.** Its 325 unit scripts all start from
   saved states past frame 70, where the plain play already differs from the cartridge.
-- **Parts of the script runner are untested:** Super FX program calls (`fx`) run but are
-  not checked against the reference; SPC700 routine calls (`spccall`) need the game's
-  sound driver C to mark where a call may start, and fail with an error until it does; and
-  several call entry options (`frame=`, `php`, `phb`, `rti`, `vblank`, `press=`) are
-  untested.
-- **The renderer checks** (presented frames and overlays) have not been rerun since the
-  latest console changes.
 - **The Windows build** is cross-built with MinGW but has never been run, and saving and
   loading states, and calls that put the machine back, need `fork`, so they don't work on
   Windows.
+- **Light guns from the pointer and touches** are checked as far as the console's ports
+  and the pointer's place on the picture, each on its own, not in a windowed run with a
+  real mouse or touch screen.
 
 **What is done and checked.** Every check below is against bsnes as the reference, with its
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
 each one, is in [tests/README.md](tests/README.md).
 
-- **Test cartridges:** all 1,060 console test cartridges match the reference, and none is
+- **Test cartridges:** all 1,164 console test cartridges match the reference, and none is
   listed as a known difference.
 - **Cartridges:** LoROM, HiROM, ExLoROM, ExHiROM and Super FX mappings, including
   mirroring for ROM sizes that are not a power of two, and cartridge RAM; NTSC and PAL
@@ -54,7 +50,17 @@ each one, is in [tests/README.md](tests/README.md).
   fetch by mode, CGRAM writes during display landing on the entry being looked up, VRAM
   writes blocked during display, H and V IRQs with long dots, WAI, multiply and divide
   results read mid-operation, DMA and HDMA timing at every 2-clock phase and HDMA between a
-  DMA's bytes, and the sound unit's handshake as the S-CPU sees it.
+  DMA's bytes, the joypads' automatic read bit by bit at the CPU counter's own steps, and
+  the sound unit's handshake as the S-CPU sees it.
+- **Controllers:** the joypad, the mouse (its speed setting), the multitap (IOBit picking
+  the pair), the Super Scope, one Justifier and two, and an empty port, each read through
+  the automatic read, a strobe and $4016/$4017, and while latched, with different input
+  every frame, match the reference; port 2's light guns latch the counters where they
+  point.
+- **Native input:** the keyboard, game controllers (Xbox, PlayStation, Nintendo, others;
+  each button's own name where the controller gives one), the mouse and touches drive
+  whatever is plugged in, and the game can ask which device each player is using and what
+  each control is called on it.
 - **A real decompilation runs on it:** Stunt Race FX (S-CPU, Super FX and SPC700) runs
   unchanged on nativeshvc. A check compares its 21 plays with the original cartridge on
   the reference, byte for byte (every screenshot, work RAM and Super FX RAM dump and pacing
@@ -74,9 +80,9 @@ each one, is in [tests/README.md](tests/README.md).
   Stunt Race FX's own sound driver's writes, the DSP matches the cartridge's sound over all
   23 of its recorded plays (172 million samples); the game's own sound on nativeshvc still
   differs where its S-CPU's timing does (above).
-- **Renderers:** software, Metal, OpenGL and Vulkan each present the frames and draw
-  overlays; they matched the CPU reference when last checked, before the latest console
-  changes.
+- **Renderers:** software, Metal, OpenGL and Vulkan each present every test cartridge's
+  frames (one to one and scaled) and draw overlays as the CPU reference does: 1,105
+  cartridges each, none differing.
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook).
 
@@ -115,7 +121,7 @@ The processors are the game's C. Everything that is not a processor is nativeshv
 | The game supplies | nativeshvc supplies |
 |---|---|
 | The S-CPU's (65816) code, as C | The S-CPU's bus and clock, work RAM, the CPU's registers (interrupts, timers, multiplier and divider, joypads) |
-| An expansion chip's programs, such as the Super FX's, as C | The cartridge connector a chip plugs into, and the Super FX as a library a cartridge links |
+| Its cartridge's expansion chip, if it has one (the Super FX, the SA-1, a DSP...): the chip itself and its programs | The cartridge connector a chip plugs into, and nothing of any chip |
 | The SPC700's sound driver, as C | The sound unit: 64 KB of APU RAM, its ports and timers, the boot ROM protocol, the S-DSP |
 | The ROM's data (or the whole ROM) | The cartridge's mapping, ROM and battery RAM |
 | | DMA and HDMA, the PPU, the window, the GPU presentation, sound output, controllers, the save, the frame's pace |
@@ -151,9 +157,10 @@ console, answers the S-CPU's accesses to the addresses it decodes, is brought up
 console's clock before those accesses and once a line, drives the IRQ line, and may own the
 cartridge's RAM. A cartridge with a chip names it in its description.
 
-The Super FX is the first chip, built as its own library
+The chip is the game's to bring. The Super FX library in this repository
 ([`src/chips/superfx/`](src/chips/superfx/), header [`superfx.h`](include/nshvc/superfx.h))
-that a Super FX cartridge links.
+is Stunt Race FX's chip, kept here for now; it plugs in through the same connector as any
+chip a game brings, and nothing in the console depends on it.
 
 ### Time
 
@@ -167,6 +174,44 @@ frame's end. Interrupts are taken only at the instruction boundaries the S-CPU's
 (`cpu_boundary`), as the hardware takes them only between instructions: the one the CPU
 decided on as the instruction's last cycle began. The bus never infers a boundary from the
 accesses.
+
+### Controllers
+
+The controller ports are the console's, with what the cartridge says is plugged in
+(`nshvc_cart.ports`; a joypad in each when it says nothing) or what the game plugs in later
+(`nshvc_plug`): a joypad, a mouse, a multitap, a Super Scope, a Justifier or two, or nothing
+([`src/console/ports.c`](src/console/ports.c)). Each device answers the ports' lines as the
+device does: the latch, a clock with each read, two data lines back, and the IOBit pin
+(the multitap's pair, port 2's light guns latching the counters where they point). The
+joypads' automatic read steps through its 16 bits on the CPU's own 128-clock counter.
+
+The player's own devices drive them, natively ([`src/front/input.c`](src/front/input.c)).
+The players are the devices in port order, each one player and a multitap four, port 1's
+first. Player 0 has the keyboard and the first game controller, player N the (N+1)th
+controller; a mouse in a port takes the mouse's motion and buttons; a light gun aims where
+the pointer or a touch is on the picture.
+
+| SNES joypad | Keyboard | Game controller (by position) |
+|---|---|---|
+| D-pad | arrows | d-pad or left stick |
+| B, A | Z, X | bottom, right face buttons |
+| Y, X | A, S | left, top face buttons |
+| L, R | Q, W | shoulders |
+| START | Return | menu |
+| SELECT | Right Shift, Tab | view |
+
+| Light gun | Pointer | Touch |
+|---|---|---|
+| aim | where it is on the picture | where it is |
+| trigger | left button | the touch itself |
+| Super Scope cursor, turbo, pause | right button; middle button or T; P | |
+| Justifier start | right button or Return | |
+
+The game can ask which native device is driving each player now (`nshvc_player_source`:
+keyboard, game controller and its family, mouse, touch screen or script) and what each of
+its controls is called there (`nshvc_player_label`: "Z", "Cross", "A", "Left button"; a
+controller's own name for a button first), and hears each change (`nshvc_hooks.input`), so
+it can show the player the controls they are actually holding.
 
 ### Three processors, one thread
 
@@ -237,8 +282,10 @@ time, files and the save folder, a window, input, audio.
 ### What a player gets
 
 - A frame each 1/60.0988 s (NTSC), paced against the wall clock.
-- Two controller ports: the keyboard on port 1, game controllers on ports 1 and 2, mapped
-  to the SNES layout (B below, A right); touch controls on iOS.
+- Two controller ports, with whatever the game plugs in: joypads, a mouse, a multitap, a
+  Super Scope or Justifiers. The keyboard and game controllers drive the joypads, the mouse
+  drives the mouse, and the pointer or a touch aims the light guns (see "Controllers");
+  touch controls on iOS.
 - The battery save in the host's save folder, written when it changes.
 - A headless mode with no window and no pacing that runs a script of inputs from power on
   and writes screenshots and memory dumps, for tests and for comparison with the original.
@@ -284,7 +331,14 @@ A cartridge is an `nshvc_cart`: its title and save name, its mapping (`NSHVC_LOR
 `NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, `NSHVC_SUPERFX`) and region, its ROM (a
 whole image, or only the data pages with a reader for the rest, so no copy of the code
 ships), its RAM and battery, its expansion chip if it has one, and the tables of routines
-with C by address, which a decompilation's tags already generate. A Super FX cartridge uses
+with C by address, which a decompilation's tags already generate.
+
+A cartridge's expansion chip is the game's, as it is the cartridge's on the console: the game
+implements it, or brings an implementation it owns, as an `nshvc_chip`
+([`cart.h`](include/nshvc/cart.h)), and nativeshvc gives it what the connector gives a chip
+(the S-CPU's accesses to the addresses it decodes, the master clock, the IRQ line, the ROM,
+the cartridge's RAM if the chip owns it). nativeshvc implements no chip and has no list of
+chips it supports: any chip a game brings plugs in the same way. A Super FX cartridge uses
 the `NSHVC_SUPERFX` mapping, sets its chip to `nshvc_superfx` and links the
 `nshvc_superfx` library. The game's main hands the cartridge to the console:
 
@@ -294,6 +348,11 @@ NSHVC_MAIN(argc, argv)
     return nshvc_main(&cart, argc, argv);
 }
 ```
+
+A game that uses other controllers than two joypads says so in `ports` (or plugs them in
+with `nshvc_plug` as it runs). It names its controls from `nshvc_player_source` and
+`nshvc_player_label`, and `nshvc_hooks.input` tells it when a player picks up another
+device.
 
 `NSHVC_MAIN` is `main` everywhere but iOS, where the host keeps the process's own main and
 runs the game's on a thread. `nshvc_main` opens the window, renderer, sound and controllers,
@@ -333,7 +392,8 @@ Every step is listed in [`src/front/script.h`](src/front/script.h).
 
 An app with its own loop (a libretro core, an engine, a builder) calls `nshvc_power` once,
 then `nshvc_run_frame` each frame, and takes the picture (`nshvc_picture`) and the sound
-(`nshvc_audio_take`) itself, setting the buttons with `nshvc_set_joypad`. It can read the
+(`nshvc_audio_take`) itself, setting what the players hold with `nshvc_set_joypad`,
+`nshvc_set_mouse` and `nshvc_set_gun`. It can read the
 machine's memory, peek at the bus with no side effects, and hook each frame and each S-CPU
 write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
 
@@ -348,9 +408,14 @@ differs from the cartridge, is described in [tests/README.md](tests/README.md).
 
 ### What the decompilation does not have to do
 
-It does not write a renderer, a mixer, a resampler, a window, controller handling, a save
+It does not write a renderer, a mixer, a resampler, a window, controller handling (any of
+the console's controllers, from any native device), a save
 system, frame pacing, DMA, HDMA, interrupt delivery or a sound-unit boot. It does not ship
 the ROM's code: only its C, and the ROM's data or the player's own copy.
+
+What it does bring, besides its C, is its cartridge's own hardware: an expansion chip is
+the cartridge's, so the game implements it (or brings an implementation it owns) and plugs
+it into the connector (`cart.h`).
 
 ## Licence
 

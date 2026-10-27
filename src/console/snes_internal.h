@@ -25,6 +25,14 @@ void snes_tick(unsigned clocks);
 /* the IRQ line from the cartridge (its chip: cart.h nshvc_cart_irq) */
 void snes_cart_irq(int level);
 
+uint8_t snes_wrio(void);                     /* WRIO ($4201): the ports' IOBit pins */
+
+/* ---- ports.c: the controller ports' devices ---- */
+void ports_reset(const int *ports);          /* power on: what the cartridge has plugged in */
+void ports_latch(int level);                 /* the latch line both ports share */
+unsigned ports_data(int port);               /* a clock on the port: data line 1, line 2 in bit 1 */
+void ports_frame(void);                      /* line vdisp begins: port 2's light gun latches */
+
 /* ---- dma.c ---- */
 void dma_reset(void);
 uint8_t dma_read(uint16_t reg);
