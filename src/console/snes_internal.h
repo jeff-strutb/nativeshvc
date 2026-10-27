@@ -55,6 +55,5 @@ void apu_port_write(uint8_t port, uint8_t v);
 void apu_sync(void);                         /* the SPC700 up to the S-CPU's time */
 uint8_t apu_debug_port(int n);               /* what the S-CPU last wrote to port n */
 void apu_debug(char *out, int n);            /* the SPC700's clock and last access */
-uint8_t *apu_aram_rw(void);                  /* APU RAM, written with no access (a unit call's stub) */
 
 #endif

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""states.py: the script's save, load and calls, with fork and without
+"""states.py: the script's save and load, with fork and without
 (NSHVC_SCRIPT_NOFORK=1, as on Windows), on tests/unit/states.c: every dump
 the same both ways, byte for byte, and each the machine it should be.
 
@@ -16,22 +16,17 @@ dump a
 save s1
 wait 5
 dump b
-set 7E0103 AA
-call 009000
+load s1
 dump c
-call 009000 keep
+hold B 3
 dump d
 load s1
-dump e
 hold B 3
-dump f
-load s1
-call 009000 keep
 save s2
 wait 2
-dump g
+dump e
 load s2
-dump h
+dump f
 """
 
 build = sys.argv[1] if len(sys.argv) > 1 else "build/null"
@@ -62,7 +57,7 @@ def run(nofork, d):
     check(r.returncode == 0, "%s: the run ends well (%d) %s" % ("no fork" if nofork else "fork", r.returncode,
                                                                  r.stderr.strip()[-300:]))
     dumps = {}
-    for n in "abcdefgh":
+    for n in "abcdef":
         for ext in (".wram", ".vram", ".cgram", ".oam"):
             p = os.path.join(out, n + ext)
             dumps[n + ext] = open(p, "rb").read() if os.path.exists(p) else None
@@ -81,14 +76,13 @@ def w(n, off):
     return forked[n + ".wram"][off]
 
 
-check(w("a", 0x100) == w("e", 0x100) and forked["a.wram"] == forked["e.wram"], "load s1: the machine as saved")
-check(w("c", 0x101) == w("b", 0x101) and forked["b.wram"][:0x103] == forked["c.wram"][:0x103],
-      "a call without keep: the machine as it was before it")
-check(w("c", 0x103) == 0x00, "a call without keep: its set bytes gone with it")
-check(w("d", 0x101) == (w("c", 0x101) + 0x10) & 0xFF, "a call with keep: its change kept")
-check(w("f", 0x100) == (w("e", 0x100) + 3) & 0xFF and w("f", 0x102) != w("e", 0x102),
+check(w("b", 0x100) == (w("a", 0x100) + 5) & 0xFF, "wait 5: five frames on from s1")
+check(forked["a.wram"] == forked["c.wram"], "load s1: the machine as saved")
+check(w("d", 0x100) == (w("c", 0x100) + 3) & 0xFF and w("d", 0x102) != w("c", 0x102),
       "after the load, the frames and the buttons held count on from it")
-check(w("h", 0x101) == (w("a", 0x101) + 0x10) & 0xFF and forked["h.wram"] != forked["g.wram"],
-      "load s2, saved after a load and a kept call: that machine")
+check(w("f", 0x100) == (w("a", 0x100) + 3) & 0xFF and w("f", 0x102) != w("a", 0x102),
+      "load s2, saved after a load and three frames with B: that machine")
+check(w("e", 0x100) == (w("f", 0x100) + 2) & 0xFF and forked["e.wram"] != forked["f.wram"],
+      "load s2 after two more frames: back to s2, not where the run was")
 print("%d check(s) failed" % fails)
 sys.exit(1 if fails else 0)

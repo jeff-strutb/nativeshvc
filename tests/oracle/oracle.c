@@ -28,10 +28,9 @@
  * block and byte, as the core's DSP holds them (40 32-bit values).
  *
  * --script: a play as nativeshvc's front end runs one (src/front/script.c:
- * wait, hold, press, repeat ... end, shot, dump; poke, set, call, save,
- * load, spcset, spccall as Stunt Race FX's harness runs them on the
- * pinned core's hooks, load replaying the play in NSHVC_STATES that saves
- * the state, as there), the buttons of each frame
+ * wait, hold, press, repeat ... end, shot, dump, save, load, plug, pad,
+ * mouse, gun, load replaying the play in NSHVC_STATES that saves the
+ * state, as there), the buttons of each frame
  * set before the core runs it, a step's shots and dumps (DIR/NAME.ppm,
  * .wram) taken at the end of the frame before it, the first frame's
  * buttons taken before power-on (as there, they reach no joypad read). --watch
@@ -375,14 +374,10 @@ static void write_mem(const char *dir, const char *name, const char *ext, const 
 }
 
 /* The script's steps (src/front/script.c's, which says what each does),
-   run on the core the way the Stunt Race FX project's harness (sfxbox)
-   runs them: poke and set into the core's work RAM; call through its CPU
-   hooks (a stub in work RAM, entered at the first instruction the
-   vertical blank is not under way); spcset and spccall through its SPC700 hooks. Where the machine is
-   put back (a load; a call without keep) the run forks as nativeshvc's
-   does, so the two make the same frames in the same order. */
+   run on the core. Where the machine is put back (a load) the run forks as
+   nativeshvc's does, so the two make the same frames in the same order. */
 enum {
-    S_FRAMES, S_CALL, S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_POKE, S_SET, S_SPCSET, S_SPCCALL, S_INPUT,
+    S_FRAMES, S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_INPUT,
 };
 
 typedef struct {
@@ -403,7 +398,6 @@ static int step_at;
 static long step_left;
 
 #define EXIT_WANT 75
-#define EXIT_CALLED 76
 
 typedef struct {
     char name[128];
@@ -472,17 +466,6 @@ static int words(const char *line, char w[][1024], int max)
     return n;
 }
 
-static uint32_t parse_addr(const char *t)
-{
-    char ab[64];
-    int j = 0;
-    for (; *t && j < 63; t++)
-        if (*t != '$' && *t != ':')
-            ab[j++] = *t;
-    ab[j] = 0;
-    return (uint32_t)strtoul(ab, NULL, 16);
-}
-
 static void script_range(List *l, char **lines, int lo, int hi)
 {
     int i;
@@ -504,12 +487,6 @@ static void script_range(List *l, char **lines, int lo, int hi)
             if (n < 2)
                 die("a step with no name: ", cmd);
             add_step(l, cmd[0] == 's' ? (cmd[1] == 'h' ? S_SHOT : S_SAVE) : cmd[0] == 'd' ? S_DUMP : S_LOAD, 0, 0, 0, a);
-        } else if (!strcmp(cmd, "poke") || !strcmp(cmd, "set") || !strcmp(cmd, "spcset")) {
-            if (n < 3)
-                die("ADDR BYTE[,BYTE...]: ", lines[i]);
-            add_text(l, cmd[0] == 'p' ? S_POKE : cmd[1] == 'e' ? S_SET : S_SPCSET, lines[i]);
-        } else if (!strcmp(cmd, "call") || !strcmp(cmd, "spccall")) {
-            add_text(l, cmd[0] == 'c' ? S_CALL : S_SPCCALL, lines[i]);
         } else if (!strcmp(cmd, "plug") || !strcmp(cmd, "pad") || !strcmp(cmd, "mouse") || !strcmp(cmd, "gun")) {
             add_text(l, S_INPUT, lines[i]);
         } else if (!strcmp(cmd, "repeat")) {
@@ -553,311 +530,6 @@ static void list_load(List *l, const char *path)
 }
 
 static void script_load(const char *path) { list_load(&main_list, path); }
-
-/* ---- the core's harness hooks ---- */
-struct SfxboxRegs { uint16_t a, x, y, s, d; uint8_t db, p, e; uint32_t pc; };
-struct SfxboxSmpCallbacks {
-    void (*insn)(uint16_t pc, uint16_t prev_end, uint8_t opcode);
-    void (*mem)(int write, uint16_t addr, uint8_t data);
-    void (*step)(uint32_t clocks);
-};
-struct SmpState { uint16_t pc; uint8_t a, x, y, s, p; };
-static void (*core_regs)(struct SfxboxRegs *);
-static void (*core_set_regs)(const struct SfxboxRegs *);
-static uint8_t (*core_bus_read)(uint32_t);
-static int (**cpu_exec_hook)(uint32_t);
-static int (*exec_before)(uint32_t);
-static void (*smp_get)(struct SmpState *);
-static void (*smp_put)(const struct SmpState *);
-static void (*smp_set_cb)(const struct SfxboxSmpCallbacks *, int (*)(uint16_t, uint16_t));
-
-static void need(void **p, const char *name)
-{
-    if (!*p && !(*p = dlsym(core, name)))
-        die("the core has no ", name);
-}
-
-/* poke ADDR BYTE[,BYTE...] into work RAM, as sfxbox */
-static void poke(const char *line)
-{
-    char w[64][1024];
-    int n = words(line, w, 64), i;
-    uint32_t a = parse_addr(w[1]), bank = a >> 16 & 0xFF, off = a & 0xFFFF;
-    const char *view;
-    size_t base, size;
-    uint8_t *p;
-    if (bank == 0x7E || bank == 0x7F) { view = "wram"; base = (size_t)(bank - 0x7E) << 16 | off; }
-    else if (bank <= 0x3F && off < 0x2000) { view = "wram"; base = off; }
-    else die("poke: not work RAM: ", line);
-    if (!(p = memory(view, &size)))
-        die("the core has no memory ", view);
-    for (i = 2; i < n; i++) {
-        char *t = w[i], *e;
-        while (*t) {
-            unsigned long v = strtoul(t, &e, 16);
-            if (e == t || v > 0xFF || (*e && *e != ','))
-                die("poke: bad byte list: ", line);
-            if (base >= size)
-                die("poke: past the end of the RAM: ", line);
-            p[base++] = (uint8_t)v;
-            t = *e ? e + 1 : e;
-        }
-    }
-}
-
-static const char *staged[64];
-static int nstaged;
-
-/* ---- the call (sfxbox's call) ---- */
-static struct SfxboxRegs call_from, call_regs;
-static uint32_t call_stub, call_loop, call_addr;
-static int call_state;                 /* 1 to start, 2 running, 3 returned */
-static int call_keep, call_vblank, call_noreturn, call_npress;
-static long call_f = -1, call_max, call_press_at[8];
-static uint16_t call_press[8][2];
-
-static int call_exec(uint32_t pc)
-{
-    if (call_state == 1 && !(core_bus_read(0x003030) & 0x20) && (call_vblank || !(core_bus_read(0x004212) & 0x80))) {
-        struct SfxboxRegs r;
-        int i;
-        core_regs(&call_from);
-        for (i = 0; i < nstaged; i++)
-            poke(staged[i]);
-        r = call_regs;
-        r.s = call_from.s;
-        r.e = 0;
-        r.pc = call_stub;
-        core_set_regs(&r);
-        call_state = 2;
-        return 1;
-    }
-    if (call_state == 2 && pc == call_loop) {
-        call_state = 3;
-        if (call_keep) {
-            core_set_regs(&call_from);
-            return 1;
-        }
-        return 0;
-    }
-    return exec_before ? exec_before(pc) : 0;
-}
-
-/* the call's stub written and its start armed (sfxbox's call up to its
-   frames) */
-static void call_arm(const char *line)
-{
-    char w[24][1024];
-    int n = words(line, w, 24), i, lng = 0, php = 0, phb = 0, m = 0;
-    long frame = -1, rti = -1;
-    uint32_t addr, bank;
-    size_t at = 0, sz;
-    uint32_t sb = 0;
-    uint8_t stub[32], *wram;
-    need((void **)&core_regs, "sfxbox_core_regs");
-    need((void **)&core_set_regs, "sfxbox_core_set_regs");
-    need((void **)&core_bus_read, "sfxbox_core_bus_read");
-    if (!cpu_exec_hook) {
-        need((void **)&cpu_exec_hook, "sfxbox_cpu_exec");
-        exec_before = *cpu_exec_hook;
-        *cpu_exec_hook = call_exec;
-    }
-    addr = call_addr = parse_addr(w[1]);
-    bank = addr >> 16;
-    core_regs(&call_regs);
-    call_keep = call_vblank = call_noreturn = call_npress = 0;
-    call_max = 600;
-    for (i = 2; i < n; i++) {
-        const char *eq = strchr(w[i], '=');
-        unsigned long v = strtoul(eq ? eq + 1 : "0", NULL, 16);
-        if (!strcmp(w[i], "long")) lng = 1;
-        else if (!strcmp(w[i], "noreturn")) call_noreturn = 1;
-        else if (!strcmp(w[i], "keep")) call_keep = 1;
-        else if (!strncmp(w[i], "a=", 2)) call_regs.a = (uint16_t)v;
-        else if (!strncmp(w[i], "x=", 2)) call_regs.x = (uint16_t)v;
-        else if (!strncmp(w[i], "y=", 2)) call_regs.y = (uint16_t)v;
-        else if (!strncmp(w[i], "p=", 2)) call_regs.p = (uint8_t)v;
-        else if (!strncmp(w[i], "db=", 3)) call_regs.db = (uint8_t)v;
-        else if (!strncmp(w[i], "d=", 2)) call_regs.d = (uint16_t)v;
-        else if (!strncmp(w[i], "frames=", 7)) call_max = strtol(w[i] + 7, NULL, 10);
-        else if (!strncmp(w[i], "frame=", 6)) frame = (long)(v & 0xFFFF);
-        else if (!strncmp(w[i], "rti=", 4)) rti = (long)(v & 0xFF);
-        else if (!strcmp(w[i], "php")) php = 1;
-        else if (!strcmp(w[i], "phb")) phb = 1;
-        else if (!strcmp(w[i], "vblank")) call_vblank = 1;
-        else if (!strncmp(w[i], "press=", 6) && strchr(w[i], '@') && call_npress < 8) {
-            char pb[64];
-            snprintf(pb, sizeof pb, "%s", w[i] + 6);
-            *strchr(pb, '@') = 0;
-            if (!buttons(pb, &call_press[call_npress][0], &call_press[call_npress][1]))
-                die("the script's buttons: ", pb);
-            call_press_at[call_npress++] = strtol(strchr(w[i], '@') + 1, NULL, 10);
-        } else
-            die("call: bad option ", w[i]);
-    }
-    if (call_regs.p & 0x10) {
-        call_regs.x &= 0x00FF;
-        call_regs.y &= 0x00FF;
-    }
-    if (lng || rti >= 0) { at = 0x1FE0; sb = 0x00; }
-    else if (bank == 0x7F) { at = 0x1FFE0; sb = 0x7F; }
-    else if (bank == 0x7E || bank < 0x40 || (bank >= 0x80 && bank < 0xC0)) { at = 0x1FE0; sb = bank; }
-    else die("call: a JSR cannot reach that bank from work RAM; use long: ", line);
-    if (php && lng)
-        die("call: php is for a JSR call: ", line);
-    if (phb && !lng)
-        die("call: phb is for a JSL call: ", line);
-    if (rti >= 0) {
-        uint16_t l = (uint16_t)(at + 10);
-        stub[m++] = 0xF4; stub[m++] = (uint8_t)(l >> 8); stub[m++] = (uint8_t)sb;
-        stub[m++] = 0xF4; stub[m++] = (uint8_t)rti; stub[m++] = (uint8_t)l;
-        stub[m++] = 0x5C; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8); stub[m++] = (uint8_t)bank;
-    } else if ((frame >= 0 && lng) || phb) {
-        uint16_t t = (uint16_t)(at + 6);
-        stub[m++] = 0x22; stub[m++] = (uint8_t)t; stub[m++] = (uint8_t)(t >> 8); stub[m++] = (uint8_t)sb;
-    } else if (frame >= 0 || php) {
-        uint16_t t = (uint16_t)(at + 6);
-        stub[m++] = 0x20; stub[m++] = (uint8_t)t; stub[m++] = (uint8_t)(t >> 8); stub[m++] = 0xEA;
-    } else if (lng) {
-        stub[m++] = 0x22; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8); stub[m++] = (uint8_t)bank;
-    } else {
-        stub[m++] = 0x20; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8); stub[m++] = 0xEA;
-    }
-    stub[m++] = 0x80; stub[m++] = 0xFE;
-    call_stub = sb << 16 | (uint32_t)(at & 0xFFFF);
-    call_loop = call_stub + (uint32_t)(m - 2);
-    if (frame >= 0) {
-        stub[m++] = 0xF4; stub[m++] = (uint8_t)frame; stub[m++] = (uint8_t)(frame >> 8);
-        if (lng) { stub[m++] = 0x5C; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8); stub[m++] = (uint8_t)bank; }
-        else { stub[m++] = 0x4C; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8); }
-    }
-    if (phb) {
-        stub[m++] = 0x8B;
-        stub[m++] = 0x5C; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8); stub[m++] = (uint8_t)bank;
-    }
-    if (php) {
-        stub[m++] = 0x08;
-        stub[m++] = 0x4C; stub[m++] = (uint8_t)addr; stub[m++] = (uint8_t)(addr >> 8);
-    }
-    if (!(wram = memory("wram", &sz)) || sz < 0x20000)
-        die("the core has no work RAM", NULL);
-    memcpy(wram + at, stub, (size_t)m);
-    call_state = 1;
-}
-
-/* ---- spcset, spccall (sfxbox's spccall.c unit calls) ---- */
-#define SPC_STUB 0x01F0
-static struct {
-    int state;
-    uint16_t target, at;
-    int has[4];
-    uint8_t reg[4];
-    struct SmpState saved;
-    uint8_t stub_save[5];
-    int nset;
-    uint16_t set_at[256];
-    uint8_t set_v[256];
-} U;
-static uint8_t *apuram;
-
-static int spc_exec(uint16_t pc, uint16_t prev_end)
-{
-    (void)prev_end;
-    if (U.state == 1 && pc == U.at) {
-        struct SmpState r;
-        int i;
-        smp_get(&U.saved);
-        memcpy(U.stub_save, apuram + SPC_STUB, 5);
-        apuram[SPC_STUB] = 0x3F;
-        apuram[SPC_STUB + 1] = (uint8_t)U.target;
-        apuram[SPC_STUB + 2] = (uint8_t)(U.target >> 8);
-        apuram[SPC_STUB + 3] = 0x2F;
-        apuram[SPC_STUB + 4] = 0xFE;
-        for (i = 0; i < U.nset; i++)
-            apuram[U.set_at[i]] = U.set_v[i];
-        U.nset = 0;
-        r = U.saved;
-        r.pc = SPC_STUB;
-        if (U.has[0]) r.a = U.reg[0];
-        if (U.has[1]) r.x = U.reg[1];
-        if (U.has[2]) r.y = U.reg[2];
-        if (U.has[3]) r.p = U.reg[3];
-        smp_put(&r);
-        U.state = 2;
-        return 1;
-    }
-    if (U.state == 2 && pc == SPC_STUB + 3) {
-        memcpy(apuram + SPC_STUB, U.stub_save, 5);
-        smp_put(&U.saved);
-        U.state = 0;
-        return 1;
-    }
-    return 0;
-}
-
-static void spc_need(void)
-{
-    size_t n;
-    if (apuram)
-        return;
-    need((void **)&smp_get, "sfxbox_smp_get");
-    need((void **)&smp_put, "sfxbox_smp_put");
-    need((void **)&smp_set_cb, "sfxbox_smp_set_callbacks");
-    if (!(apuram = memory("apuram", &n)))
-        die("the core has no APU RAM", NULL);
-    {
-        static struct SfxboxSmpCallbacks none = { NULL, NULL, NULL };
-        smp_set_cb(&none, spc_exec);
-    }
-}
-
-static void spcset(const char *line)
-{
-    char w[64][1024];
-    int n = words(line, w, 64), i;
-    unsigned long a = strtoul(w[1][0] == '$' ? w[1] + 1 : w[1], NULL, 16);
-    spc_need();
-    for (i = 2; i < n; i++) {
-        char *t = w[i], *e;
-        while (*t) {
-            unsigned long v = strtoul(t, &e, 16);
-            if (e == t || v > 0xFF || (*e && *e != ',') || a > 0xFFFF)
-                die("spcset: bad byte list: ", line);
-            if (U.nset == 256)
-                die("spcset: more than 256 bytes for one spccall", NULL);
-            U.set_at[U.nset] = (uint16_t)a++;
-            U.set_v[U.nset++] = (uint8_t)v;
-            t = *e ? e + 1 : e;
-        }
-    }
-}
-
-static void spccall(const char *line)
-{
-    char w[16][1024];
-    int n = words(line, w, 16), i;
-    spc_need();
-    if (U.state)
-        die("spccall: the previous one has not run yet", NULL);
-    U.target = (uint16_t)strtoul(w[1][0] == '$' ? w[1] + 1 : w[1], NULL, 16);
-    U.at = 0x0897;
-    memset(U.has, 0, sizeof U.has);
-    for (i = 2; i < n; i++) {
-        char *eq = strchr(w[i], '=');
-        unsigned long v = eq ? strtoul(eq + 1, NULL, 16) : 0;
-        if (!strcmp(w[i], "noreturn"))
-            continue;
-        if (!eq)
-            die("spccall: bad option ", w[i]);
-        if (!strncmp(w[i], "a=", 2)) { U.has[0] = 1; U.reg[0] = (uint8_t)v; }
-        else if (!strncmp(w[i], "x=", 2)) { U.has[1] = 1; U.reg[1] = (uint8_t)v; }
-        else if (!strncmp(w[i], "y=", 2)) { U.has[2] = 1; U.reg[2] = (uint8_t)v; }
-        else if (!strncmp(w[i], "psw=", 4)) { U.has[3] = 1; U.reg[3] = (uint8_t)v; }
-        else if (!strncmp(w[i], "at=", 3)) U.at = (uint16_t)v;
-        else die("spccall: bad option ", w[i]);
-    }
-    U.state = 1;
-}
 
 /* ---- the processes (src/front/script.c's) ---- */
 static pid_t fork_run(void)
@@ -964,12 +636,6 @@ static void hold(const char *have, int at)
     }
 }
 
-static void spc_unrun(void)
-{
-    if (U.state == 1)
-        die("spccall: the SPC700 never reached the instruction it waits for", NULL);
-}
-
 static void takes(const char *dir)
 {
     static int started;
@@ -988,7 +654,7 @@ static void takes(const char *dir)
     while (step_at < cur->n) {
         Step *st = &cur->s[step_at];
         char path[4200];
-        if (st->kind == S_FRAMES || st->kind == S_CALL)
+        if (st->kind == S_FRAMES)
             return;
         if (cur == &replay_list) {
             if (st->kind == S_SAVE && !strcmp(st->name, replay_name)) {
@@ -1016,7 +682,6 @@ static void takes(const char *dir)
         case S_LOAD: {
             const char *b = strrchr(st->name, '/');
             size_t k;
-            spc_unrun();
             snprintf(shared->name, sizeof shared->name, "%s", b ? b + 1 : st->name);
             k = strlen(shared->name);
             if (k > 6 && !strcmp(shared->name + k - 6, ".state"))
@@ -1025,26 +690,10 @@ static void takes(const char *dir)
             fflush(NULL);
             _exit(EXIT_WANT);
         }
-        case S_POKE: poke(st->text); break;
-        case S_SET:
-            if (nstaged == 64)
-                die("set: more than 64 for one call", NULL);
-            staged[nstaged++] = st->text;
-            break;
-        case S_SPCSET: spcset(st->text); break;
-        case S_SPCCALL: spccall(st->text); break;
         case S_INPUT: input_step(st->text); break;
         }
         step_at++;
     }
-}
-
-static void call_end(void)
-{
-    call_f = -1;
-    nstaged = 0;
-    step_at++;
-    step_left = 0;
 }
 
 /* the steps due now, then the next frame's buttons; 0 when the script is
@@ -1057,54 +706,9 @@ static int script_frame(const char *dir)
         if (step_at >= cur->n) {
             if (cur == &replay_list)
                 die("the play ends before it saves ", replay_name);
-            spc_unrun();
             return 0;
         }
         st = &cur->s[step_at];
-        if (st->kind == S_CALL) {
-            int i;
-            if (call_f < 0) {
-                call_arm(st->text);
-                if (!call_keep) {
-                    pid_t p = fork_run();
-                    if (p) {
-                        int s = child_status(p);
-                        if (s != EXIT_CALLED)
-                            _exit(s);
-                        call_state = 0;
-                        call_end();
-                        continue;
-                    }
-                }
-                call_f = 0;
-            } else if (call_state == 3) {
-                call_state = 0;
-                if (!call_keep) {
-                    spc_unrun();
-                    fflush(NULL);
-                    _exit(EXIT_CALLED);
-                }
-                call_end();
-                continue;
-            } else if (call_f >= call_max) {
-                if (!call_noreturn) {
-                    char m[64];
-                    snprintf(m, sizeof m, "%06X", (unsigned)call_addr);
-                    die("a call did not return in its frames: ", m);
-                }
-                call_state = 0;
-                call_end();
-                continue;
-            }
-            pad[0] = pad[1] = 0;
-            for (i = 0; i < call_npress; i++)
-                if (call_f >= call_press_at[i] && call_f < call_press_at[i] + 2) {
-                    pad[0] |= call_press[i][0];
-                    pad[1] |= call_press[i][1];
-                }
-            call_f++;
-            return 1;
-        }
         if (!step_left)
             step_left = st->frames;
         if (step_left <= 0) {

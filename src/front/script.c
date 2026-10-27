@@ -3,8 +3,7 @@
  *
  * A machine is never copied or put back: the C under way on the S-CPU's
  * and the SPC700's coroutines is part of it. Where the script needs the
- * machine as it was (a load; a call, after which the game goes on as if it
- * had not been made), the run forks: the process that holds the machine as
+ * machine as it was (a load), the run forks: the process that holds the machine as
  * it was waits while a child runs on, and goes on itself when the child is
  * done with it.
  *
@@ -16,8 +15,6 @@
  *   save      the process becomes the holder of NAME: a child goes on with
  *             the script; one that loads NAME ends, and a new child goes on
  *             from the step after that load
- *   call      (without keep) a child runs the call; when it returns the
- *             child ends at that frame's end and the parent goes on
  *
  * A child's end that is not one of these (the script's end, an error) ends
  * every process above it with the same status.
@@ -30,14 +27,9 @@
  *
  *   history   what made the machine: the steps of the play that saves a
  *             state (P:NAME, as above) and runs of the script's own steps
- *             (M:A-B), each without its shots, dumps and saves; a call
- *             that kept nothing only writes its stub, which stays (the
- *             bytes set for it and its run gone with it)
+ *             (M:A-B), each without its shots, dumps and saves
  *   save      NAME's history noted (passed on to each new copy)
  *   load      a new copy rebuilds NAME, and goes on from the step after
- *   call      (without keep) run here; when it returns, a new copy
- *             rebuilds the machine as it was before it, and goes on from
- *             the step after
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,10 +55,8 @@ extern char **environ;
 
 enum {
     S_FRAMES,               /* buttons for frames */
-    S_CALL,                 /* a unit call, over the frames it runs */
-    S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_POKE, S_SET, S_SPCSET, S_SPCCALL,
+    S_SHOT, S_DUMP, S_SAVE, S_LOAD,
     S_INPUT,                /* plug, pad, mouse, gun: the controller ports from now */
-    S_STUB,                 /* a replayed call that kept nothing: only its stub written, as it stays */
 };
 
 typedef struct {
@@ -74,7 +64,7 @@ typedef struct {
     uint16_t buttons[2];
     long frames;
     char name[128];
-    char *text;             /* the line (poke, set, call, spcset, spccall) */
+    char *text;             /* the line (plug, pad, mouse, gun) */
     int line;
 } Step;
 
@@ -91,7 +81,6 @@ static const char *out = ".";
 
 /* the exit statuses between the processes */
 #define EXIT_WANT 75        /* a load of a state this process does not hold */
-#define EXIT_CALLED 76      /* a call without keep returned */
 
 /* what a child that ends with EXIT_WANT wants: the state, and the step of
    the script after its load */
@@ -181,18 +170,6 @@ static int words(const char *line, char w[][1024], int max)
     return n;
 }
 
-/* an address as the scripts write one: hex, '$' and ':' allowed */
-static uint32_t parse_addr(const char *t)
-{
-    char ab[64];
-    int j = 0;
-    for (; *t && j < 63; t++)
-        if (*t != '$' && *t != ':')
-            ab[j++] = *t;
-    ab[j] = 0;
-    return (uint32_t)strtoul(ab, NULL, 16);
-}
-
 /* lines [lo, hi) of the script, expanded */
 static void script_range(List *l, char **lines, int lo, int hi, const char *path)
 {
@@ -216,16 +193,8 @@ static void script_range(List *l, char **lines, int lo, int hi, const char *path
                 nshvc_fatal("%s:%d: %s NAME", path, i + 1, cmd);
             add_step(l, cmd[0] == 's' ? (cmd[1] == 'h' ? S_SHOT : S_SAVE) : cmd[0] == 'd' ? S_DUMP : S_LOAD, 0, 0, 0,
                      a)->line = i + 1;
-        } else if (!strcmp(cmd, "poke") || !strcmp(cmd, "set") || !strcmp(cmd, "spcset")) {
-            if (n < 3)
-                nshvc_fatal("%s:%d: %s ADDR BYTE[,BYTE...]", path, i + 1, cmd);
-            add_text(l, cmd[0] == 'p' ? S_POKE : cmd[1] == 'e' ? S_SET : S_SPCSET, lines[i], i + 1);
         } else if (!strcmp(cmd, "plug") || !strcmp(cmd, "pad") || !strcmp(cmd, "mouse") || !strcmp(cmd, "gun")) {
             add_text(l, S_INPUT, lines[i], i + 1);
-        } else if (!strcmp(cmd, "call") || !strcmp(cmd, "spccall")) {
-            if (n < 2)
-                nshvc_fatal("%s:%d: %s ADDR [options]", path, i + 1, cmd);
-            add_text(l, cmd[0] == 'c' ? S_CALL : S_SPCCALL, lines[i], i + 1);
         } else if (!strcmp(cmd, "repeat")) {
             int depth = 0, j, k = atoi(a);
             for (j = i + 1; j < hi; j++) {
@@ -350,9 +319,6 @@ static void dump(const char *name)
     write_file(name, ".oam", nshvc_oam(), 544);
 }
 
-/* poke/set ADDR BYTE[,BYTE...] (the bytes split by commas or spaces): from
-   S-CPU address ADDR into work RAM ($7E-$7F, or the low 8 KB mirror in
-   banks $00-$3F), as the reference's harness writes them */
 /* plug PORT DEVICE (joypad, none, mouse, multitap, superscope, justifier,
    justifiers); pad N BITS (joypad N's buttons from now, hex; 0 and 1 are
    hold's); mouse PORT DX DY BUTTONS (motion for its next report); gun G X
@@ -380,93 +346,6 @@ static void input_step(const Step *s)
         return;
     }
     nshvc_fatal("%s:%d: '%s'", cur->path, s->line, s->text);
-}
-
-static void poke(const Step *s)
-{
-    char w[64][1024];
-    int n = words(s->text, w, 64), i;
-    uint32_t a = parse_addr(w[1]), bank = a >> 16 & 0xFF, off = a & 0xFFFF, size, at;
-    uint8_t *p;
-    const char *path = cur->path;
-    if (bank <= 0x3F && off < 0x2000) {
-        p = snes_wram_rw();
-        size = 0x20000;
-        at = off;
-    } else if (bank == 0x7E || bank == 0x7F) {
-        p = snes_wram_rw();
-        size = 0x20000;
-        at = (bank - 0x7E) << 16 | off;
-    } else {
-        nshvc_fatal("%s:%d: %s: $%06X is not work RAM", path, s->line, w[0], (unsigned)a);
-        return;
-    }
-    for (i = 2; i < n; i++) {
-        char *t = w[i], *e;
-        while (*t) {
-            unsigned long v = strtoul(t, &e, 16);
-            if (e == t || v > 0xFF || (*e && *e != ','))
-                nshvc_fatal("%s:%d: %s: bad byte list", path, s->line, w[0]);
-            if (at >= size)
-                nshvc_fatal("%s:%d: %s: past the end of the RAM", path, s->line, w[0]);
-            p[at++] = (uint8_t)v;
-            t = *e ? e + 1 : e;
-        }
-    }
-}
-
-/* set: staged for the next call, written as it starts */
-static const Step *staged[64];
-static int nstaged;
-
-static void apply_staged(void)
-{
-    int i;
-    for (i = 0; i < nstaged; i++)
-        poke(staged[i]);
-}
-
-static void spcset(const Step *s)
-{
-    char w[64][1024];
-    int n = words(s->text, w, 64), i;
-    unsigned long a = strtoul(w[1][0] == '$' ? w[1] + 1 : w[1], NULL, 16);
-    for (i = 2; i < n; i++) {
-        char *t = w[i], *e;
-        while (*t) {
-            unsigned long v = strtoul(t, &e, 16);
-            if (e == t || v > 0xFF || (*e && *e != ',') || a > 0xFFFF)
-                nshvc_fatal("%s:%d: spcset: bad byte list", cur->path, s->line);
-            snes_spc_unit_set((uint16_t)a++, (uint8_t)v);
-            t = *e ? e + 1 : e;
-        }
-    }
-}
-
-/* spccall APU [a= x= y= psw= at=] [noreturn] */
-static void spccall(const Step *s)
-{
-    char w[16][1024];
-    int n = words(s->text, w, 16), i, has[4] = { 0, 0, 0, 0 };
-    uint8_t reg[4] = { 0, 0, 0, 0 };
-    unsigned long target = strtoul(w[1][0] == '$' ? w[1] + 1 : w[1], NULL, 16), at = 0x0897;
-    if (snes_spc_unit_busy())
-        nshvc_fatal("%s:%d: spccall: the previous one has not run yet", cur->path, s->line);
-    for (i = 2; i < n; i++) {
-        char *eq = strchr(w[i], '=');
-        unsigned long v = eq ? strtoul(eq + 1, NULL, 16) : 0;
-        if (!strcmp(w[i], "noreturn"))
-            continue;
-        if (!eq)
-            nshvc_fatal("%s:%d: spccall: bad option %s", cur->path, s->line, w[i]);
-        if (!strncmp(w[i], "a=", 2)) { has[0] = 1; reg[0] = (uint8_t)v; }
-        else if (!strncmp(w[i], "x=", 2)) { has[1] = 1; reg[1] = (uint8_t)v; }
-        else if (!strncmp(w[i], "y=", 2)) { has[2] = 1; reg[2] = (uint8_t)v; }
-        else if (!strncmp(w[i], "psw=", 4)) { has[3] = 1; reg[3] = (uint8_t)v; }
-        else if (!strncmp(w[i], "at=", 3)) at = v;
-        else nshvc_fatal("%s:%d: spccall: bad option %s", cur->path, s->line, w[i]);
-    }
-    snes_spc_unit_call((uint16_t)target, (uint16_t)at, has, reg);
 }
 
 /* ---- the processes ---- */
@@ -648,17 +527,6 @@ static char *history_to(int upto)
     return str_cat(history, seg);
 }
 
-/* whether a call step keeps what it does */
-static int call_keeps(const Step *s)
-{
-    char w[24][1024];
-    int n = words(s->text, w, 24), i;
-    for (i = 2; i < n; i++)
-        if (!strcmp(w[i], "keep"))
-            return 1;
-    return 0;
-}
-
 /* steps [a, b) of `src` onto `dst`, as a history replays them */
 static void plan_add(List *dst, const List *src, int a, int b)
 {
@@ -669,17 +537,10 @@ static void plan_add(List *dst, const List *src, int a, int b)
             continue;
         if (t->kind == S_LOAD)
             nshvc_fatal("%s:%d: a load in steps replayed for a state", src->path, t->line);
-        if (t->kind == S_CALL && !call_keeps(t)) {
-            /* nor the bytes set for it; but its stub, which stays */
-            while (dst->n && dst->s[dst->n - 1].kind == S_SET)
-                dst->n--;
-        }
         dst->s = (Step *)realloc(dst->s, sizeof *dst->s * (size_t)(dst->n + 1));
         if (!dst->s)
             nshvc_fatal("no memory for the script");
         dst->s[dst->n++] = *t;
-        if (t->kind == S_CALL && !call_keeps(t))
-            dst->s[dst->n - 1].kind = S_STUB;
     }
 }
 
@@ -746,7 +607,7 @@ static void go_on_in_new_copy(const char *plan, int resume)
     char n[32];
     int st;
     if (!self_argv)
-        nshvc_fatal("save, load and calls without keep need the program's arguments (script_args)");
+        nshvc_fatal("save and load need the program's arguments (script_args)");
     env_set("NSHVC_SCRIPT_PLAN", plan[0] ? plan : "M:0-0");
     snprintf(n, sizeof n, "%d", resume);
     env_set("NSHVC_SCRIPT_RESUME", n);
@@ -864,7 +725,7 @@ static int started;
 static int counting;        /* the frame just run is one of the script's own */
 
 /* NSHVC_CYCLOG's frame: the script's frames counted as the reference's
-   harness counts them, on across loads and calls (a replay's not counted) */
+   harness counts them, on across loads (a replay's not counted) */
 static uint32_t cyclog_frame(void) { return shared->frames + 1; }
 
 static void start(void)
@@ -899,14 +760,6 @@ static void start(void)
 #endif
 }
 
-/* an spccall that has not run when the machine it was for is left: the
-   driver's C never marked its instruction (tooling.h spc_at) */
-static void spc_unrun(void)
-{
-    if (snes_spc_unit_busy() == 1)
-        nshvc_fatal("spccall: the SPC700 never reached the instruction it waits for (its C marks none with spc_at)");
-}
-
 static void load(const char *path)
 {
     const char *b = strrchr(path, '/');
@@ -916,7 +769,6 @@ static void load(const char *path)
     k = strlen(name);
     if (k > 6 && !strcmp(name + k - 6, ".state"))
         name[k - 6] = 0;
-    spc_unrun();
     if (no_fork())
         plan_load(name);
 #ifndef _WIN32
@@ -927,15 +779,13 @@ static void load(const char *path)
 #endif
 }
 
-static void call_parse(const Step *s, SnesUnit *u);
-
 /* the steps that are not frames' due now */
 static void takes(void)
 {
     start();
     while (step_at < cur->n) {
         Step *s = &cur->s[step_at];
-        if (s->kind == S_FRAMES || s->kind == S_CALL)
+        if (s->kind == S_FRAMES)
             return;
         if (cur == &replay_list) {
             if (s->kind == S_SAVE && !strcmp(s->name, replay_name)) {
@@ -960,144 +810,13 @@ static void takes(void)
             hold(s->name, step_at + 1);
             continue;
         case S_LOAD: load(s->name); break;
-        case S_POKE: poke(s); break;
-        case S_SET:
-            if (nstaged == 64)
-                nshvc_fatal("%s:%d: set: more than 64 for one call", cur->path, s->line);
-            staged[nstaged++] = s;
-            break;
-        case S_SPCSET: spcset(s); break;
-        case S_SPCCALL: spccall(s); break;
         case S_INPUT: input_step(s); break;
-        case S_STUB: {
-            SnesUnit u;
-            call_parse(s, &u);
-            snes_unit_call(&u);
-            snes_unit_cancel();
-            nstaged = 0;
-            break;
-        }
         }
         step_at++;
     }
 }
 
 void script_takes(void) { takes(); }
-
-/* ---- the call under way ---- */
-static long call_f = -1;            /* the frames it has run; -1 none */
-static long call_max;
-static int call_noreturn, call_keep, call_npress;
-static long call_press_at[8];
-static uint16_t call_press[8][2];
-static uint32_t call_addr;
-
-/* call ADDR [long] [keep] [noreturn] [a=] [x=] [y=] [p=] [db=] [d=]
-   [frames=N] [press=B@F ...] [frame=PPDD] [php] [phb] [rti=PP] [vblank] */
-static void call_parse(const Step *s, SnesUnit *u)
-{
-    char w[24][1024];
-    int n = words(s->text, w, 24), i;
-    memset(u, 0, sizeof *u);
-    u->frame = u->rti = -1;
-    u->addr = call_addr = parse_addr(w[1]);
-    call_max = 600;
-    call_noreturn = call_npress = 0;
-    for (i = 2; i < n; i++) {
-        const char *eq = strchr(w[i], '=');
-        unsigned long v = strtoul(eq ? eq + 1 : "0", NULL, 16);
-        if (!strcmp(w[i], "long")) u->lng = 1;
-        else if (!strcmp(w[i], "noreturn")) call_noreturn = 1;
-        else if (!strcmp(w[i], "keep")) u->keep = 1;
-        else if (!strncmp(w[i], "a=", 2)) { u->has_a = 1; u->a = (uint16_t)v; }
-        else if (!strncmp(w[i], "x=", 2)) { u->has_x = 1; u->x = (uint16_t)v; }
-        else if (!strncmp(w[i], "y=", 2)) { u->has_y = 1; u->y = (uint16_t)v; }
-        else if (!strncmp(w[i], "p=", 2)) { u->has_p = 1; u->p = (uint8_t)v; }
-        else if (!strncmp(w[i], "db=", 3)) { u->has_db = 1; u->db = (uint8_t)v; }
-        else if (!strncmp(w[i], "d=", 2)) { u->has_d = 1; u->d = (uint16_t)v; }
-        else if (!strncmp(w[i], "frames=", 7)) call_max = strtol(w[i] + 7, NULL, 10);
-        else if (!strncmp(w[i], "frame=", 6)) u->frame = (long)(v & 0xFFFF);
-        else if (!strncmp(w[i], "rti=", 4)) u->rti = (long)(v & 0xFF);
-        else if (!strcmp(w[i], "php")) u->php = 1;
-        else if (!strcmp(w[i], "phb")) u->phb = 1;
-        else if (!strcmp(w[i], "vblank")) u->vblank = 1;
-        else if (!strncmp(w[i], "press=", 6) && strchr(w[i], '@') && call_npress < 8) {
-            char pb[64];
-            snprintf(pb, sizeof pb, "%s", w[i] + 6);
-            *strchr(pb, '@') = 0;
-            if (!parse_buttons(pb, &call_press[call_npress][0], &call_press[call_npress][1]))
-                nshvc_fatal("%s:%d: buttons '%s'", cur->path, s->line, pb);
-            call_press_at[call_npress++] = strtol(strchr(w[i], '@') + 1, NULL, 10);
-        } else
-            nshvc_fatal("%s:%d: call: bad option %s", cur->path, s->line, w[i]);
-    }
-    call_keep = u->keep;
-    u->apply = apply_staged;
-}
-
-static void call_end(void)
-{
-    call_f = -1;
-    nstaged = 0;
-    step_at++;
-    step_left = 0;
-}
-
-/* the call step, at a frame's end: 1 and the next frame's buttons while
-   it runs, 0 when it is over */
-static int call_frame(Step *s, uint16_t *b0, uint16_t *b1)
-{
-    int i;
-    if (call_f < 0) {
-        SnesUnit u;
-        call_parse(s, &u);
-        snes_unit_call(&u);
-#ifndef _WIN32
-        if (!u.keep && !no_fork()) {
-            pid_t p = fork_run();
-            if (p) {
-                int st = child_status(p);
-                if (st != EXIT_CALLED)
-                    _exit(st);
-                snes_unit_cancel();
-                call_end();
-                return 0;
-            }
-        }
-#endif
-        call_f = 0;
-    } else {
-        int st = snes_unit_state();
-        if (st == 3) {
-            if (!call_keep) {
-                spc_unrun();
-                /* the machine as it was before the call, from the step after */
-                if (no_fork() && !plan_on)
-                    go_on_in_new_copy(history_to(step_at + 1), step_at + 1);
-                fflush(NULL);
-                _exit(EXIT_CALLED);
-            }
-            call_end();
-            return 0;
-        }
-        if (call_f >= call_max) {
-            snes_unit_cancel();
-            if (!call_noreturn)
-                nshvc_fatal("%s:%d: call %06X did not return in %ld frames", cur->path, s->line,
-                            (unsigned)call_addr, call_max);
-            call_end();
-            return 0;
-        }
-    }
-    *b0 = *b1 = 0;
-    for (i = 0; i < call_npress; i++)
-        if (call_f >= call_press_at[i] && call_f < call_press_at[i] + 2) {
-            *b0 |= call_press[i][0];
-            *b1 |= call_press[i][1];
-        }
-    call_f++;
-    return 1;
-}
 
 /* the next frame's buttons, from the main script: counted when it has run */
 static int frame_out(void)
@@ -1123,15 +842,9 @@ int script_frame(uint16_t *b0, uint16_t *b1)
         if (step_at >= cur->n) {
             if (cur == &replay_list)
                 nshvc_fatal("%s: the play ends before it saves %s", cur->path, replay_name);
-            spc_unrun();
             return 0;
         }
         s = &cur->s[step_at];
-        if (s->kind == S_CALL) {
-            if (call_frame(s, b0, b1))
-                return frame_out();
-            continue;
-        }
         if (!step_left)
             step_left = s->frames;
         if (step_left <= 0) {

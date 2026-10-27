@@ -80,7 +80,7 @@ static uint16_t htime = 0x1FF, vtime = 0x1FF;
 static uint8_t rdnmi_flag, timeup_flag;
 /* When each interrupt became due, and when the CPU's latest cycle began
    with the I flag as it stood then: in an instruction the console runs
-   (WAI, a branch to itself, a unit call's stub), the CPU decides on an
+   (WAI, a branch to itself), the CPU decides on an
    interrupt at the start of its last cycle, so one due by then, unmasked
    then, is taken at its end (measured against the reference:
    tests/rom/cases.py irq_fixed, at every dot) */
@@ -1228,13 +1228,11 @@ static uint64_t interrupt_due_at(void)
 }
 
 /* a point between two of the C's operations: the interrupt due by now is
-   taken there (and a unit call the script waits on starts) */
+   taken there */
 static void between(void)
 {
     if (rmw_open)
         return;
-    if (snes_unit_pending)
-        snes_unit_start();
     check_interrupts_at(snes_clock, snes_irq_masked && snes_irq_masked());
 }
 
@@ -1374,7 +1372,6 @@ void wr16_rmw(uint32_t addr, uint16_t value)
 
 void snes_interrupt_push(uint32_t addr, uint8_t value) { access_wr(addr, value, 1); }
 uint8_t snes_cpu_read_within(uint32_t addr) { return access_rd(addr); }
-void snes_cpu_write_within(uint32_t addr, uint8_t value) { access_wr(addr, value, 0); }
 
 /* A stretch with no access (a delay loop): the clock moves on in short
    steps, each a cycle's start where the DMA unit may take the bus. The
@@ -1497,8 +1494,6 @@ int snes_interrupt_due(void) { return (nmi_pending && nmi_at <= snes_clock) || t
    decided on as its last cycle began, with the I flag as it was then */
 void snes_cpu_boundary(void)
 {
-    if (snes_unit_pending)
-        snes_unit_start();
     check_interrupts_at(poll_clock, poll_masked);
 }
 

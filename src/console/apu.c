@@ -316,7 +316,6 @@ void spc_boot_rom(void)
 }
 
 const uint8_t *snes_aram(void) { return aram; }
-uint8_t *apu_aram_rw(void) { return aram; }
 
 /* the boot ROM's work (see the file's comment): its 64 bytes at $FFC0, an
    instruction at a time, each with the cycles the decomp's SPC700 C states

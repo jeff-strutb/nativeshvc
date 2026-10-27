@@ -10,30 +10,11 @@
  *                        DIR/NAME.sram, the PPU's memories as DIR/NAME.vram,
  *                        .cgram and .oam
  *   repeat N ... end     the lines between, N times (nests)
- *
- * And the steps of Stunt Race FX's harness (sfxbox), as it runs them:
- *   poke ADDR BYTE[,BYTE...]   bytes into work RAM ($7E-$7F, the low 8 KB in
- *                        banks $00-$3F), now
- *   set ADDR BYTE[,BYTE...]    the same, written when the next call starts
- *   call ADDR [long] [keep] [noreturn] [a= x= y= p= db= d=] [frames=N]
- *        [press=B@F] [frame=PPDD] [php] [phb] [rti=PP] [vblank]
- *                        the routine run once, entered as from the
- *                        harness's stub in work RAM, which the console
- *                        writes there and does itself (snes.h SnesUnit),
- *                        over up to N frames (600); then
- *                        the machine as it was before (keep: the game goes
- *                        on from where it was, the call's changes kept;
- *                        noreturn: one that does not return in its frames
- *                        is left running)
  *   save NAME            the machine as it is, for a load
  *   load PATH            the machine as state NAME (PATH's file name less
  *                        .state) left it: saved by this run, else replayed
  *                        from power-on, by the script's own steps to its
  *                        save NAME or by the play in NSHVC_STATES that has one
- *   spcset APU BYTE[,BYTE...]  APU RAM bytes for the next spccall
- *   spccall APU [a= x= y= psw= at=APU]   the SPC700 routine at APU called
- *                        when the driver's C next marks `at` ($0897 if not
- *                        named) with spc_at (tooling.h)
  *   plug PORT DEVICE     plug joypad, none, mouse, multitap, superscope,
  *                        justifier or justifiers into port 0 or 1
  *   pad N BITS           player N's joypad holds BITS (hex, the joypad's
@@ -42,8 +23,8 @@
  *   gun G X Y B          light gun G points at dot X, line Y, with buttons
  *                        B (nshvc.h NSHVC_GUN_*), from now
  *   dump NAME also writes the cartridge chip's own RAM as DIR/NAME.chipram.
- * save, load and a call without keep fork, or, without fork, go on in a
- * new copy of the program that replays to the machine wanted (script.c).
+ * save and load fork, or, without fork, go on in a new copy of the program
+ * that replays to the machine wanted (script.c).
  *
  * Buttons: B Y SELECT START UP DOWN LEFT RIGHT A X L R, player 1; 2. before
  * one for player 2 (2.START). '#' starts a comment.

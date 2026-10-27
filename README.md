@@ -119,25 +119,16 @@ A script plays the controllers and records what happens: `wait N`, `hold B+B N`,
 cartridge's RAM, the PPU's memories and a chip's RAM) and `repeat N ... end`; `--sound`
 writes the DSP's raw output.
 
-It also takes the steps of a decompilation's own test harness, so the same tests run on the
-reference and on the native build:
+`save NAME` and `load PATH` keep and return to the machine's state. The running C is part
+of the machine and cannot be copied, so the run forks instead: one process holds the state
+while another goes on. A state that no process holds is rebuilt by replaying, from power
+on, the steps that saved it (the script's own, or a play in `NSHVC_STATES`). Without
+`fork` (Windows), every state is rebuilt that way: the run goes on in a new copy of the
+program that replays what made the machine wanted (the same steps make the same machine),
+and ends with its status. `NSHVC_SCRIPT_NOFORK=1` takes that path anywhere.
 
-- `poke` and `set` put bytes into work RAM, now or when the next call starts.
-- `call` runs one routine once, with the registers and frames it names, entered as the
-  reference's harness enters it: the console writes the harness's stub into work RAM (it
-  stays there, as on the reference) and does what that stub does itself (its pushes, its
-  time) before the routine's C; afterwards the machine is as it was, unless `keep` says the
-  game goes on from there.
-- `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
-  marks a safe point (`spc_at`, in [`tooling.h`](include/nshvc/tooling.h): not part of
-  the game contract).
-- `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
-  of the machine and cannot be copied, so the run forks instead: one process holds the
-  state while another goes on. A state that no process holds is rebuilt by replaying, from
-  power on, the steps that saved it (the script's own, or a play in `NSHVC_STATES`).
-  Without `fork` (Windows), every state is rebuilt that way: the run goes on in a new copy
-  of the program that replays what made the machine wanted (the same steps make the same
-  machine), and ends with its status. `NSHVC_SCRIPT_NOFORK=1` takes that path anywhere.
+A script only does what a player and a save state do: it never writes memory or runs code
+the game itself doesn't.
 
 Every step is listed in [`src/front/script.h`](src/front/script.h).
 
@@ -277,9 +268,8 @@ native console. Together with the cartridge's description, they are the game con
   `spc_ret` for its calls; `spc_restart` and `spc_boot_rom` for the code no C returns from.
 
 [`hw.h`](include/nshvc/hw.h) names the hardware registers by their standard names.
-[`tooling.h`](include/nshvc/tooling.h) holds two calls for checking a decomp against its
-original (`nshvc_mark`, `spc_at`); they are outside the contract and change nothing in
-the machine.
+[`tooling.h`](include/nshvc/tooling.h) holds one call for checking a decomp against its
+original (`nshvc_mark`); it is outside the contract and changes nothing in the machine.
 
 ### The cartridge connector
 
@@ -313,9 +303,9 @@ first point between two of its operations at or after that clock: the end of an 
 to its write), or, inside a stretch of time (`cyc`, `cycs`, `cpu_idle`), the clock itself.
 No operation is split, so a handler never sees half of a word or of a read-modify-write.
 The IRQ waits while the I flag masks it. The C marks no instruction boundaries and the bus
-infers none: the C is structured, not a trace of the original's instructions. WAI, a
-branch to itself and a unit call's stub are the console's own, and take their interrupts
-exactly as the CPU does.
+infers none: the C is structured, not a trace of the original's instructions. WAI and a
+branch to itself are the console's own, and take their interrupts exactly as the CPU
+does.
 
 **The one exception to cycle exactness: interrupt latency.** The 65816 decides on an
 interrupt as an instruction's last cycle begins and takes it when that instruction ends, so

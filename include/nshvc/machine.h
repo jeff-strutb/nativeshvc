@@ -109,9 +109,7 @@ void cpu_loop_forever(uint32_t at);
 /* The original jumps to `at`, code that resets the stack (LDX #$02FF,
    TXS): every frame of the calls under it is gone, the C's own included,
    and `entry`, the C of the code at `at`, runs from there with the
-   registers in `cpu`. Never returns. (The verification harness ends the call it
-   runs in there and follows the original from `at`; `entry` is checked on
-   its own, by unit calls.) */
+   registers in `cpu`. Never returns. */
 void cpu_restart(uint32_t at, void (*entry)(void));
 /* WAI at `at`: the CPU stops until an interrupt is due (an NMI, or the IRQ
    line, masked or not), then goes on: the interrupt is taken there when it

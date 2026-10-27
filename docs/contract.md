@@ -27,8 +27,8 @@ fixed at 1.0. A game written to it plays on every later 1.x without a change.
 
 Not in the contract (they may change in a minor version):
 
-- [`tooling.h`](../include/nshvc/tooling.h) (`nshvc_mark`, `spc_at`). A game plays the same
-  without them.
+- [`tooling.h`](../include/nshvc/tooling.h) (`nshvc_mark`). A game plays the same
+  without it.
 - The headless script's steps (`src/front/script.h`).
 - The environment options (`NSHVC_AUDIT`, `NSHVC_CYCLOG`, `NSHVC_STATES`,
   `NSHVC_SCRIPT_NOFORK`, `NSHVC_DEBUG`).

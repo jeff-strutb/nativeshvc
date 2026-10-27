@@ -111,16 +111,13 @@ void snes_fatal(const char *fmt, ...);
 uint8_t snes_peek(uint32_t addr);
 /* the clocks one S-CPU access to addr takes on the bus */
 unsigned snes_access_clocks(uint32_t addr);
-/* the end of an instruction the console runs (WAI, a branch to itself, a
-   unit call's stub): the interrupt the CPU decided on as its last cycle
-   began */
+/* the end of an instruction the console runs (WAI, a branch to itself):
+   the interrupt the CPU decided on as its last cycle began */
 void snes_cpu_boundary(void);
 /* a byte the interrupt sequence pushes (NSHVC_CYCLOG's P line) */
 void snes_interrupt_push(uint32_t addr, uint8_t value);
-/* a read or write of an instruction the console runs (a pull, a store):
-   not audited */
+/* a read of an instruction the console runs (a pull): not audited */
 uint8_t snes_cpu_read_within(uint32_t addr);
-void snes_cpu_write_within(uint32_t addr, uint8_t value);
 /* whether an interrupt is due: the NMI, or the IRQ line (masked or not) */
 int snes_interrupt_due(void);
 /* an interrupt would be taken now (due, and the IRQ not masked) */
@@ -138,47 +135,6 @@ void snes_cyclog_mark(uint32_t id);                   /* NSHVC_CYCLOG's M line (
 extern int snes_cyclog_quiet;                         /* NSHVC_CYCLOG writes nothing while set */
 extern uint32_t (*snes_cyclog_frame)(void);           /* its frame number (default: frames run + 1) */
 void snes_cpu_cycle_k(unsigned cc);                   /* a cycle the console states for the C */
-
-/* ---- unit calls (the script's call and fx, src/front/script.c) ---- */
-/* A routine run once as a unit test from the state the game has reached,
-   as the reference's harness runs one: at the first place between two of
-   the S-CPU's instructions where it is not in an interrupt handler,
-   untimed, or in the vertical blank (unless `vblank`), and the cartridge's
-   chip is stopped, the CPU runs a stub in work RAM ($00:1FE0; $7F:FFE0 for
-   a JSR into bank $7F; written when the call is made): a JSR (a JSL with
-   `lng`) to the routine, then a BRA to itself, with the registers as they
-   were when the call was made but those it names, S as it is, native
-   mode. The routine's C runs from there; the stub's own instructions the
-   console runs, cycle by cycle. */
-typedef struct {
-    uint32_t addr;
-    int lng, keep, vblank, php, phb;
-    long frame, rti;                 /* frame=PPDD, rti=PP; -1 none */
-    int has_a, has_x, has_y, has_p, has_db, has_d;
-    uint16_t a, x, y, d;
-    uint8_t p, db;
-    void (*apply)(void);             /* the staged bytes, written as it starts */
-} SnesUnit;
-/* a call to start at the next place allowed (the stub checked now: a JSR
-   cannot reach every bank) */
-void snes_unit_call(const SnesUnit *u);
-/* 0 none, 1 waiting to start, 2 under way, 3 returned (the machine parked in
-   the stub's loop, or with keep the game gone on) */
-int snes_unit_state(void);
-/* a call that has not started is dropped */
-void snes_unit_cancel(void);
-extern int snes_unit_pending;
-void snes_unit_start(void);          /* at a boundary while one is pending */
-
-/* An SPC700 unit call (the script's spcset and spccall): when the driver's
-   C next marks the instruction at `at` (tooling.h spc_at), the routine at
-   `target` is called from a stub at $01F0 (CALL, then BRA to itself) with
-   the registers given and the staged bytes in APU RAM; when it returns, the
-   registers and the stub's bytes are put back and the driver goes on at
-   `at`. */
-void snes_spc_unit_set(uint16_t addr, uint8_t v);
-void snes_spc_unit_call(uint16_t target, uint16_t at, const int *has, const uint8_t *reg);
-int snes_spc_unit_busy(void);         /* 0 none, 1 waiting for `at`, 2 under way */
 
 #ifdef __cplusplus
 }
