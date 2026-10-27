@@ -37,11 +37,19 @@ static uint16_t cgram[256];
 static uint8_t oam[544];
 static uint32_t picture[2 * PPU_EXT_WIDTH * PPU_MAX_HEIGHT];    /* drawn a line at a time (NSHVC_PPUCHECK) */
 static uint32_t shown[2 * PPU_EXT_WIDTH * PPU_EXT_HEIGHT];
+/* the interlaced picture: each field's lines on its own rows (the hardware's
+   line y on row 2(y - 1) + field), over the rows of the frame before */
+static uint32_t woven[2 * PPU_EXT_WIDTH * 2 * PPU_EXT_HEIGHT];
+static int woven_w, woven_h;
+static unsigned long woven_of;                  /* the frame woven last */
 /* the extensions (nshvc.h): the screen's width asked for (from the next
    frame), the sprites' extended X bits */
 static int ext_width = PPU_WIDTH, ext_height = 224;
 static int ext_limits = 1;           /* the line's sprite and tile limits (nshvc_ext_sprite_limits) */
 static uint8_t ext_x[16], ext_y[16];
+/* the sprite table as it stands with the extended X and Y bits after it, as
+   a frame's copies hold it (what the drawing reads) */
+static uint8_t oam_live[576];
 /* the screen being drawn: sw pixels a line (256, or wider with
    nshvc_ext_screen), the hardware's column 0 at sl */
 static int sw = PPU_WIDTH, sl = 0;
@@ -61,6 +69,7 @@ unsigned long ppu_version_overflow;             /* frames that needed more copie
 /* what the drawing reads: the live memory, or a record's */
 static const uint16_t *d_vram = vram, *d_cgram = cgram;
 static const uint8_t *d_oam = oam;
+static int d_field;                             /* the field of the frame being drawn */
 
 /* the data ports: where the game's writes of tiles, palette and sprites go */
 static uint8_t bgofs_latch, bghofs_latch;
@@ -102,6 +111,13 @@ const uint32_t *ppu_picture(int *width, int *height)
         ppu_draw_frame(finished, shown);
         shown_of = frames_done;
     }
+    if (frames_done && finished->interlace && woven_of == frames_done) {
+        if (width)
+            *width = woven_w;
+        if (height)
+            *height = woven_h;
+        return woven;
+    }
     if (width)
         *width = frames_done ? ppu_frame_width(finished) : PPU_WIDTH;
     if (height)
@@ -111,6 +127,8 @@ const uint32_t *ppu_picture(int *width, int *height)
 const PpuFrame *ppu_frame(void) { return finished; }
 int ppu_forced_blank(void) { return (cur.inidisp & 0x80) != 0; }
 int ppu_overscan(void) { return (cur.setini & 0x04) != 0; }
+int ppu_interlace(void) { return cur.setini & 0x01; }
+int ppu_field(void) { return field; }
 unsigned long ppu_frames(void) { return frames_done; }
 const uint16_t *ppu_vram(void) { return vram; }
 const uint16_t *ppu_cgram(void) { return cgram; }
@@ -143,7 +161,8 @@ void ppu_reset(void)
     ext_limits = 1;
     making = &frames[0];
     finished = &frames[1];
-    frames_done = shown_of = 0;
+    frames_done = shown_of = woven_of = 0;
+    woven_w = woven_h = 0;
     dirty = 1;
     memset(&cur, 0, sizeof cur);
     cur.inidisp = 0x80;
@@ -164,6 +183,14 @@ void ppu_reset(void)
 }
 
 /* ---- registers --------------------------------------------------------------------- */
+static const uint8_t *live_oam(void)
+{
+    memcpy(oam_live, oam, sizeof oam);
+    memcpy(oam_live + 544, ext_x, sizeof ext_x);
+    memcpy(oam_live + 560, ext_y, sizeof ext_y);
+    return oam_live;
+}
+
 static uint16_t vram_remap(uint16_t a)
 {
     switch ((vmain >> 2) & 3) {
@@ -185,18 +212,24 @@ static void vram_step(void)
    address still moves on) */
 static int vram_open(void)
 {
-    return (cur.inidisp & 0x80) || snes_vcounter() >= snes_vblank_line();
+    return (cur.inidisp & 0x80) || snes_vcounter() >= snes_vdisp();
 }
 
 /* Where a write made while a line is drawn shows (measured against the
    reference, in master clocks from the line's start c): what the output
    stage takes (brightness, the screens, windows, colour maths, colours)
    from pixel (c - 52) / 4; what the backgrounds' tile fetches take (their
-   maps, characters and scroll) from the first tile fetched after it, a tile
-   fetched each 32 clocks from clock 6, the scroll's fine part as the line
-   began. */
+   maps, characters and scroll) from the first tile whose map entry is
+   fetched at or after it (bg_fetch_slot), the scroll's fine part as the
+   line began; Mode 7's matrix, scroll, flips and wrap as the output stage, as
+   it works each pixel out as the pixel is made. (The PPU makes pixel x at
+   54 + 4x clocks on from the line's start, a write landing at the end of
+   the CPU's cycle; a write at c shows from the first pixel made at or
+   after it.) */
 #define PPU_OUT_CLOCK0 52
-#define PPU_FETCH_CLOCK0 6
+/* Mode 7's own event for a write to $210D/$210E (they are BG1's scroll
+   and Mode 7's): its scroll from the pixel, as its matrix */
+#define PPU_M7_SCROLL 0x80
 #define PPU_HBLANK_CLOCK 1096
 
 static int fetch_reg(uint8_t reg) { return reg >= 0x07 && reg <= 0x14; }
@@ -214,17 +247,30 @@ static int fetch_bg(uint8_t reg)
     return (reg - 0x0D) >> 1;
 }
 
+/* The tile fetches: a tile each 32 clocks (the counters' H 32g for the
+   tile 8g on), each layer's map entry, which takes all its registers, in a
+   slot of 4 clocks of those 32 by the mode (in modes 2, 4 and 6 BG3's are
+   the offset-per-tile entries, slot 2, which the next tile of BG1 and BG2
+   takes); the counters run 4 clocks ahead of the line's clock here. */
+static const uint8_t bg_fetch_slot[8][4] = {
+    { 3, 2, 1, 0 }, { 2, 1, 0, 0 }, { 1, 0, 2, 0 }, { 1, 0, 0, 0 },
+    { 1, 0, 2, 0 }, { 1, 0, 0, 0 }, { 1, 0, 2, 0 }, { 0, 0, 0, 0 },
+};
+
 /* The pixel of the line being drawn a write now shows from: <= 0 all of
    it, >= 256 none of it (the next line). */
 static int write_pixel(uint8_t reg, uint32_t c, const PpuScreen *base)
 {
     if (fetch_reg(reg)) {
-        int t = c < PPU_FETCH_CLOCK0 ? 0 : (int)((c - PPU_FETCH_CLOCK0) / 32 + 1);
-        int x = t * 8;
+        unsigned mode = base->bgmode & 7, bg = (unsigned)fetch_bg(reg);
+        int h = (int)c + 4 - 4 * bg_fetch_slot[mode][bg];
+        /* the first tile whose fetch comes at or after the write */
+        int t = h <= 0 ? 0 : (h + 31) / 32;
+        if (bg == 2 && (mode == 2 || mode == 4 || mode == 6))
+            t++;
         if (t == 0)
             return 0;
-        x -= base->bghofs[fetch_bg(reg)] & 7;
-        return x;
+        return t * 8 - (base->bghofs[bg] & 7);
     }
     return c < PPU_OUT_CLOCK0 ? 0 : (int)((c - PPU_OUT_CLOCK0) / 4);
 }
@@ -238,8 +284,6 @@ static int write_in_line(uint8_t reg, uint32_t *c)
     unsigned v;
     if (reg == 0x02 || reg == 0x03 || reg == 0x04 || (reg >= 0x15 && reg <= 0x19) || reg == 0x21)
         return 0;
-    if (reg >= 0x1A && reg <= 0x20)
-        return 0;   /* Mode 7's matrix: the line's own, as it began (not measured mid-line) */
     v = snes_vcounter();
     if (v < 1 || v >= snes_vblank_line() || v > PPU_MAX_HEIGHT)
         return 0;
@@ -277,9 +321,10 @@ static void event_after_write(uint8_t reg, uint32_t c, uint8_t index, uint16_t c
 
 static void draw_line(unsigned line, uint32_t *out, int width);
 
-static unsigned cgram_target(void);
+static unsigned cgram_target(unsigned ahead);
 
 static void ppu_write_reg(uint8_t reg, uint8_t v);
+static void take_version(void);
 
 void ppu_write(uint8_t reg, uint8_t v)
 {
@@ -295,12 +340,22 @@ void ppu_write(uint8_t reg, uint8_t v)
         return;
     }
     event_after_write(reg, c, 0, 0);
+    if (reg == 0x0D || reg == 0x0E)
+        event_after_write(reg | PPU_M7_SCROLL, c, 0, 0);
 }
 
 static void ppu_write_reg(uint8_t reg, uint8_t v)
 {
     switch (reg) {
     case 0x00:
+        /* the forced blank lifted while the frame's lines are drawn: what
+           the blank changed shows from here, though the line's horizontal
+           blank may come in another blank */
+        if ((cur.inidisp & 0x80) && !(v & 0x80) && dirty && making->versions) {
+            unsigned l = snes_vcounter();
+            if (l >= 1 && l < snes_vblank_line())
+                take_version();
+        }
         cur.inidisp = v;
         return;
     case 0x01: cur.obsel = v; return;
@@ -397,7 +452,7 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
             cg_latch = v;
             cg_flip = 1;
         } else {
-            cgram[cgram_target()] = (uint16_t)((v & 0x7F) << 8 | cg_latch);
+            cgram[cgram_target(4)] = (uint16_t)((v & 0x7F) << 8 | cg_latch);
             cgaddr++;
             cg_flip = 0;
         }
@@ -468,10 +523,10 @@ uint8_t ppu_read(uint8_t reg)
         return ppu1_mdr = v;
     case 0x3B:
         if (!cg_flip) {
-            v = (uint8_t)cgram[cgaddr];
+            v = (uint8_t)cgram[cgram_target(4)];
             cg_flip = 1;
         } else {
-            v = (uint8_t)((cgram[cgaddr] >> 8 & 0x7F) | (ppu2_mdr & 0x80));
+            v = (uint8_t)((cgram[cgram_target(4)] >> 8 & 0x7F) | (ppu2_mdr & 0x80));
             cgaddr++;
             cg_flip = 0;
         }
@@ -524,6 +579,17 @@ void ppu_ext_vram_page(int page)
     vram_prefetch = vram[port_page << 15 | (vram_remap(vmaddr) & 0x7FFF)];
 }
 
+void ppu_ext_page_reg(uint8_t reg, uint8_t v)
+{
+    if (vram_pages == 1)
+        return;
+    v = (uint8_t)(v % vram_pages);
+    if (reg == 0xC5)
+        ppu_ext_vram_page(v);
+    else
+        ppu_ext_layer_page(reg - 0xC0, v);
+}
+
 void ppu_ext_layer_page(int layer, int page)
 {
     if (layer < 0 || layer > 4 || page < 0 || page >= vram_pages)
@@ -556,6 +622,12 @@ void ppu_frame_start(void)
     sl = (ext_width - PPU_WIDTH) / 2;
     mosaic_y = 1;
     range_over = time_over = 0;
+    making->field = field;
+    making->interlace = cur.setini & 0x01;
+}
+
+void ppu_field_flip(void)
+{
     field ^= 1;
 }
 
@@ -563,6 +635,42 @@ void ppu_frame_start(void)
    compared with the picture drawn a line at a time */
 unsigned long ppu_check_frames, ppu_check_bad;
 static uint32_t check_pic[2 * PPU_EXT_WIDTH * PPU_EXT_HEIGHT];
+
+/* A frame drawn onto the woven picture's rows of its field (-1: both). The
+   picture is as wide as the wider of its fields (a 256-wide line's pixels
+   doubled beside a hires field's); a picture of another screen starts over
+   from this frame's on both. */
+static uint32_t field_pic[2 * PPU_EXT_WIDTH * PPU_EXT_HEIGHT];
+
+static void weave(const PpuFrame *f, int rows_of)
+{
+    int w = ppu_frame_width(f), h = f->screen_height, r, x, p;
+    ppu_draw_frame(f, field_pic);
+    if (2 * h != woven_h || (woven_w != f->width && woven_w != 2 * f->width)) {
+        woven_w = w;
+        woven_h = 2 * h;
+        rows_of = -1;
+    } else if (w > woven_w) {
+        /* a hires field beside a picture that was not: the rows kept widened */
+        for (r = woven_h; r-- > 0;)
+            for (x = woven_w; x-- > 0;)
+                woven[(size_t)r * (size_t)w + 2 * x] = woven[(size_t)r * (size_t)w + 2 * x + 1] =
+                    woven[(size_t)r * (size_t)woven_w + x];
+        woven_w = w;
+    }
+    for (r = 0; r < h; r++)
+        for (p = 0; p < 2; p++) {
+            const uint32_t *from = field_pic + (size_t)r * (size_t)w;
+            uint32_t *to = woven + (size_t)(2 * r + p) * (size_t)woven_w;
+            if (rows_of >= 0 && p != rows_of)
+                continue;
+            if (w == woven_w)
+                memcpy(to, from, (size_t)w * sizeof *to);
+            else
+                for (x = 0; x < w; x++)
+                    to[2 * x] = to[2 * x + 1] = from[x];
+        }
+}
 
 void ppu_vblank_start(void)
 {
@@ -575,15 +683,21 @@ void ppu_vblank_start(void)
     finished = making;
     making = t;
     frames_done++;
+    if (finished->interlace) {
+        /* the frame before (its record still whole until the next frame's
+           lines are recorded over it) if it is not woven in yet: both its
+           rows when it was not interlaced */
+        if (woven_of != frames_done - 1 && frames_done > 1)
+            weave(making, making->interlace ? making->field : -1);
+        weave(finished, finished->field);
+        woven_of = frames_done;
+    }
     if (check < 0)
         check = getenv("NSHVC_PPUCHECK") != NULL;
     if (check) {
-        uint8_t ro = range_over, to = time_over;
         int w = ppu_frame_width(finished), y, pw = 2 * finished->width;
         int top = (finished->screen_height - finished->height) / 2;
         ppu_draw_frame(finished, check_pic);
-        range_over = ro;
-        time_over = to;
         ppu_check_frames++;
         /* the lines were drawn 512 wide: a 256-wide frame is their even pixels */
         for (y = 0; y < finished->height; y++) {
@@ -680,6 +794,10 @@ static void draw_bg(int n, unsigned line, unsigned mode)
     int y = msize > 1 ? (int)mosaic_y : draw_row + 1;
     uint16_t nba = (uint16_t)(((n < 2 ? s->bgnba[0] : s->bgnba[1]) >> ((n & 1) * 4) & 0x0F) << 12);
     int opt = mode == 2 || mode == 4 || mode == 6;
+    /* an interlaced hires line: two rows of the map to each line, the
+       field's (the first with the layer's mosaic on) */
+    if (hires && (s->setini & 0x01))
+        y = 2 * y + (d_field && !(s->mosaic & (1u << n)));
     for (x = 0; x < count; x++) {
         int hx = (int)x - (hires ? 2 * sl : sl);
         int sx = msize > 1 ? floor_to(hx, (int)(hires ? 2 * msize : msize)) : hx;
@@ -869,6 +987,9 @@ static void draw_obj(unsigned line)
     uint16_t base = (uint16_t)((s->obsel & 7) << 13);
     uint16_t gap = (uint16_t)((((s->obsel >> 3) & 3) + 1) << 12);
     unsigned sz = s->obsel >> 5;
+    /* OBJ interlace (SETINI bit 1): each sprite half as many lines, every
+       other row of it, the field's */
+    unsigned oi = (s->setini >> 1) & 1;
     (void)line;
     memset(op, 0, sizeof op);
     for (i = 0; i < 128; i++)
@@ -881,9 +1002,11 @@ static void draw_obj(unsigned line)
         uint8_t hi = (uint8_t)(d_oam[0x200 + (sp >> 2)] >> ((sp & 3) * 2));
         unsigned big = (hi >> 1) & 1, h = obj_h[sz][big], w = obj_w[sz][big], r;
         int x = obj_x(sp, hi);
-        if (!obj_row(sp, d_oam[sp * 4 + 1], h, row, &r))
+        /* X 256 is in range, whatever its width (its tiles off the screen) */
+        int at256 = (d_oam[sp * 4] | (hi & 1) << 8) == 256;
+        if (!obj_row(sp, d_oam[sp * 4 + 1], h >> oi, row, &r))
             continue;
-        if (x <= -(int)w || x >= PPU_WIDTH)
+        if (!at256 && (x <= -(int)w || x >= PPU_WIDTH))
             continue;
         if (n == 32) {
             range_over = 1;
@@ -896,9 +1019,11 @@ static void draw_obj(unsigned line)
         uint8_t hi = (uint8_t)(d_oam[0x200 + (sp >> 2)] >> ((sp & 3) * 2));
         unsigned big = (hi >> 1) & 1, w = obj_w[sz][big], c, cols = w >> 3, on = 0;
         int x = obj_x(sp, hi);
+        /* at X 256 every tile is fetched */
+        int at256 = (d_oam[sp * 4] | (hi & 1) << 8) == 256;
         for (c = 0; c < cols; c++) {
             int tx = x + (int)c * 8;
-            if (tx > -8 && tx < PPU_WIDTH)
+            if (at256 || (tx > -8 && tx < PPU_WIDTH))
                 on++;
         }
         if (tiles + on > 34) {
@@ -922,8 +1047,9 @@ static void draw_obj(unsigned line)
         uint8_t attr = d_oam[sp * 4 + 3];
         unsigned pal = (attr >> 1) & 7, prio = (attr >> 4) & 3;
         unsigned r = 0, c, cols = w >> 3, drawn = 0;
-        if (!obj_row(sp, y, h, row, &r))
+        if (!obj_row(sp, y, h >> oi, row, &r))
             continue;
+        r <<= oi;
         if (x + (int)w <= -sl || x >= sw - sl)
             continue;
         /* a vertical flip turns the sprite over in squares of its
@@ -931,6 +1057,8 @@ static void draw_obj(unsigned line)
            16x32 and 32x64) flips each square in place */
         if (attr & 0x80)
             r = h > w ? (r & ~(w - 1)) | (w - 1 - (r & (w - 1))) : h - 1 - r;
+        if (oi)
+            r = ((attr & 0x80) ? r - (unsigned)d_field : r + (unsigned)d_field) & 0xFF;
         for (c = 0; c < cols; c++) {
             unsigned col = (attr & 0x40) ? cols - 1 - c : c;
             int tx = x + (int)c * 8, kept;
@@ -1099,6 +1227,15 @@ static void apply_event(PpuScreen *d, uint16_t *pal, const PpuEvent *e)
         d->bgvofs[n] = a->bgvofs[n];
         return;
     }
+    case 0x1A: d->m7sel = a->m7sel; return;
+    case 0x1B: d->m7a = a->m7a; return;
+    case 0x1C: d->m7b = a->m7b; return;
+    case 0x1D: d->m7c = a->m7c; return;
+    case 0x1E: d->m7d = a->m7d; return;
+    case 0x1F: d->m7x = a->m7x; return;
+    case 0x20: d->m7y = a->m7y; return;
+    case 0x8D: d->m7hofs = a->m7hofs; return;
+    case 0x8E: d->m7vofs = a->m7vofs; return;
     case 0x22: pal[e->index] = e->color; return;
     case 0x23: d->w12sel = a->w12sel; return;
     case 0x24: d->w34sel = a->w34sel; return;
@@ -1121,6 +1258,22 @@ static void apply_event(PpuScreen *d, uint16_t *pal, const PpuEvent *e)
    which copy of the tiles and sprites it shows (a new copy when they have
    changed since the last line shown; VRAM changes only while the screen is
    blanked) */
+/* A copy of the tiles and sprites as they stand, for the lines drawn from
+   now on (they change only while nothing is drawn: in a blank) */
+static void take_version(void)
+{
+    if (making->versions < PPU_VERSIONS) {
+        memcpy(making->vram[making->versions], vram, (size_t)vram_pages * 0x8000 * sizeof vram[0]);
+        memcpy(making->oam[making->versions], oam, sizeof oam);
+        memcpy(making->oam[making->versions] + 544, ext_x, sizeof ext_x);
+        memcpy(making->oam[making->versions] + 560, ext_y, sizeof ext_y);
+        making->versions++;
+    } else {
+        ppu_version_overflow++;
+    }
+    dirty = 0;
+}
+
 static void record_line(unsigned line)
 {
     if (line == 1) {
@@ -1128,18 +1281,8 @@ static void record_line(unsigned line)
         making->hires = 0;
         dirty = 1;
     }
-    if (dirty && (making->versions == 0 || !(cur.inidisp & 0x80))) {
-        if (making->versions < PPU_VERSIONS) {
-            memcpy(making->vram[making->versions], vram, (size_t)vram_pages * 0x8000 * sizeof vram[0]);
-            memcpy(making->oam[making->versions], oam, sizeof oam);
-            memcpy(making->oam[making->versions] + 544, ext_x, sizeof ext_x);
-            memcpy(making->oam[making->versions] + 560, ext_y, sizeof ext_y);
-            making->versions++;
-        } else {
-            ppu_version_overflow++;
-        }
-        dirty = 0;
-    }
+    if (dirty && (making->versions == 0 || !(cur.inidisp & 0x80)))
+        take_version();
     making->version[line] = (uint8_t)(making->versions - 1);
     making->segs[line] = 0;
     if (live_vline == line && live_n) {
@@ -1227,8 +1370,9 @@ void ppu_render_line(unsigned line)
     record_line(line);
     making->mosaic_row[line] = (uint8_t)mosaic_y;
     if (draw_lines) {
+        d_field = making->field;
         d_vram = vram;
-        d_oam = oam;
+        d_oam = live_oam();
         draw_recorded(making, line, &picture[(line - 1) * 2 * sw], 2 * sw);
     }
     /* the vertical mosaic: the line the next lines repeat moves on every
@@ -1243,7 +1387,9 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
     unsigned keep = mosaic_y;
     int w = ppu_frame_width(f), keep_sw = sw, keep_sl = sl, top = (f->screen_height - f->height) / 2, r;
     const PpuScreen *keep_s = s;
+    uint8_t ro = range_over, to = time_over;
     sw = f->width;
+    d_field = f->field;
     sl = (f->width - PPU_WIDTH) / 2;
     for (r = 0; r < f->screen_height; r++) {
         int line = r - top + 1;
@@ -1268,6 +1414,9 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
             draw_line((unsigned)edge, o, w);
         }
     }
+    /* the sprite flags are the console's, not this drawing's */
+    range_over = ro;
+    time_over = to;
     mosaic_y = keep;
     s = keep_s;
     sw = keep_sw;
@@ -1446,13 +1595,13 @@ static void draw_line(unsigned line, uint32_t *out, int width)
     d_vram = vbase;
 }
 
-/* Where a colour written now lands. While a line is being drawn (the
-   screen not blanked) the PPU is looking colours up, and CGRAM takes the
-   write at the entry it is looking up: the main screen's pixel at
-   (c - 60) / 4 (measured against the reference; see tests/rom/KNOWN); else
-   at CGADD's. */
-#define PPU_CGRAM_CLOCK0 60
-static unsigned cgram_target(void)
+/* Where a colour written or read now lands. While a line is being drawn
+   (the screen not blanked, clocks 84-1091 of lines 1-224) the PPU is
+   looking colours up, and CGRAM's port goes to the entry it looked up
+   last: the main screen's colour of the last pixel made (pixel x at 54 +
+   4x); else CGADD's. A write lands at the end of the CPU's cycle, 4
+   clocks after where a read looks (`ahead`). */
+static unsigned cgram_target(unsigned ahead)
 {
     static uint32_t scratch[2 * PPU_EXT_WIDTH];
     const PpuScreen *keep_s = s;
@@ -1461,14 +1610,16 @@ static unsigned cgram_target(void)
     unsigned v = snes_vcounter(), c, x;
     if ((cur.inidisp & 0x80) || v < 1 || v >= snes_vblank_line() || v > PPU_MAX_HEIGHT)
         return cgaddr;
-    c = snes_line_clock();
-    if (c < PPU_CGRAM_CLOCK0 || c >= PPU_CGRAM_CLOCK0 + 4 * PPU_WIDTH)
+    c = snes_line_clock() + ahead;
+    if (c < 88 || c >= 1096)
         return cgaddr;
-    x = (c - PPU_CGRAM_CLOCK0) / 4;
+    x = (c - 59) / 4;
+    if (x > PPU_WIDTH - 1)
+        x = PPU_WIDTH - 1;
     s = &cur;
     d_vram = vram;
     d_cgram = cgram;
-    d_oam = oam;
+    d_oam = live_oam();
     draw_row = (int)v - 1;
     draw_line(v, scratch, sw);
     s = keep_s;

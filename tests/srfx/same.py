@@ -1,20 +1,22 @@
 """
-same.py: Stunt Race FX's decompilation on nativeshvc against Stunt Race
-FX's own port (its reference build, ref-0ebd2401), play for play: every
-shot, the work RAM and Super FX RAM dumps and the pacing record, byte for
-byte.
+same.py: Stunt Race FX's decompilation on nativeshvc against the original
+cartridge on the reference (bsnes, tests/oracle), play for play: every shot,
+the work RAM and Super FX RAM dumps and the pacing record, byte for byte.
+A play that differs is reported with where it first does: the first pacing
+record (the race frame) and the first file.
 
   python3 tests/srfx/same.py [PLAY...]
 
-SRFX (default ../stuntracefx) is the decomp's checkout; its reference build
-must exist (its ports/stuntracefx/tools/same.py builds it).
+SRFX (default ../stuntracefx) is the decomp's checkout (its plays and the
+player's ROM); NSHVC_ORACLE_CORE the reference core, as tests/rom/run.py.
 """
 import concurrent.futures, filecmp, glob, os, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRFX = os.path.abspath(os.environ.get("SRFX", os.path.join(ROOT, "..", "stuntracefx")))
 ROM = os.path.join(SRFX, "reference", "stuntracefx", "Stunt Race FX (USA) (Rev 1).sfc")
-REF = os.path.join(SRFX, "build", "stuntracefx", "port", "ref-0ebd2401", "stuntracefx")
+CORE = os.environ.get("NSHVC_ORACLE_CORE")
+ORACLE = os.environ.get("NSHVC_ORACLE", os.path.join(ROOT, "build", "null", "tests", "oracle"))
 GAME = os.environ.get("GAME", "src/stuntracefx")
 EXE = os.path.join(ROOT, "build", "srfx", GAME.replace("/", "_"), "srfx")
 WORK = os.path.join(ROOT, "build", "srfx", GAME.replace("/", "_"), "same")
@@ -34,33 +36,46 @@ def script_for(path):
 def run(cmd, out):
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
-    p = subprocess.run(cmd + ["--headless", "--out", out, "--pacing", os.path.join(out, "pacing.txt")],
+    p = subprocess.run(cmd + ["--out", out, "--pacing", os.path.join(out, "pacing.txt")],
                        capture_output=True, text=True, timeout=1800)
     return p.returncode, p.stderr[-600:]
+
+
+def first_pacing(a, b):
+    """the first pacing record that differs (its frame), or None"""
+    la, lb = open(a).read().splitlines(), open(b).read().splitlines()
+    for x, y in zip(la, lb):
+        if x != y:
+            return x.split()[0]
+    return None if len(la) == len(lb) else "the end (%d records against %d)" % (len(lb), len(la))
 
 
 def one(path):
     name = os.path.splitext(os.path.basename(path))[0]
     s = script_for(path)
-    a, b = os.path.join(WORK, name, "ref"), os.path.join(WORK, name, "nshvc")
-    ra, ea = run([REF, "--script", s], a)
-    rb, eb = run([EXE, "--rom", ROM, "--script", s], b)
+    a, b = os.path.join(WORK, name, "bsnes"), os.path.join(WORK, name, "nshvc")
+    ra, ea = run([ORACLE, "--core", CORE, "--rom", ROM, "--script", s], a)
+    rb, eb = run([EXE, "--rom", ROM, "--script", s, "--headless"], b)
     if ra or rb:
-        return name, "exit ref %d nativeshvc %d: %s" % (ra, rb, (eb or ea).strip().splitlines()[-1:] )
-    # the reference names the Super FX's RAM .gsuram, nativeshvc the cartridge's RAM .sram
-    pairs = []
-    for f in sorted(os.listdir(a)):
-        g = f[:-len(".gsuram")] + ".sram" if f.endswith(".gsuram") else f
-        if not os.path.exists(os.path.join(b, g)):
-            return name, "nativeshvc made no %s" % g
-        pairs.append((f, g))
-    bad = [f for f, g in pairs if not filecmp.cmp(os.path.join(a, f), os.path.join(b, g), shallow=False)]
-    return name, ("%d of %d files differ: %s" % (len(bad), len(pairs), " ".join(bad[:6]))) if bad else "same (%d files)" % len(pairs)
+        return name, "exit reference %d nativeshvc %d: %s" % (ra, rb, (eb or ea).strip().splitlines()[-1:])
+    names = sorted(os.listdir(a))
+    for f in names:
+        if not os.path.exists(os.path.join(b, f)):
+            return name, "nativeshvc made no %s" % f
+    bad = [f for f in names if not filecmp.cmp(os.path.join(a, f), os.path.join(b, f), shallow=False)]
+    if not bad:
+        return name, "same (%d files)" % len(names)
+    at = first_pacing(os.path.join(a, "pacing.txt"), os.path.join(b, "pacing.txt"))
+    return name, "%d of %d files differ: %s%s" % (len(bad), len(names), " ".join(bad[:6]),
+                                                 "; pacing first differs at frame %s" % at if at else "")
 
 
 def main(argv):
-    if not os.path.exists(REF):
-        sys.exit("same.py: no reference build at %s" % REF)
+    if not CORE:
+        sys.exit("same.py: set NSHVC_ORACLE_CORE")
+    for p in (ORACLE, EXE, ROM):
+        if not os.path.exists(p):
+            sys.exit("same.py: no %s" % p)
     plays = argv[1:] or sorted(glob.glob(os.path.join(SRFX, "tools", "stuntracefx", "plays", "*.sfx")))
     plays = [p for p in plays if "poke" not in open(p).read()]
     bad = 0

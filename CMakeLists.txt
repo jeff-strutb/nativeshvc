@@ -40,8 +40,6 @@ add_library(nshvc STATIC
   src/console/bus.c
   src/console/dma.c
   src/console/apu.c
-  src/console/superfx.c
-  src/console/gsu_clock.c
   src/console/coro.c
   src/console/dispatch.c
   src/ppu/ppu.c
@@ -129,6 +127,17 @@ endif()
 
 if(NOT WIN32)
   target_link_libraries(nshvc PUBLIC m)
+endif()
+
+# The cartridge's own hardware, as libraries a cartridge links (nshvc/cart.h):
+# none of it is the console's.
+add_library(nshvc_superfx STATIC
+  src/chips/superfx/superfx.c
+  src/chips/superfx/gsu_clock.c)
+target_include_directories(nshvc_superfx PRIVATE src/chips/superfx)
+target_link_libraries(nshvc_superfx PUBLIC nshvc)
+if(NOT MSVC)
+  target_compile_options(nshvc_superfx PRIVATE -Wall -fno-strict-aliasing -ffp-contract=off)
 endif()
 
 if(NSHVC_TESTS)

@@ -22,27 +22,23 @@ void bus_write_b(uint8_t reg, uint8_t v);
 int bus_a_is_register(uint32_t addr);
 /* the clock moves on (the CPU or DMA busy) */
 void snes_tick(unsigned clocks);
-/* the IRQ line from the cartridge (the Super FX's STOP) */
+/* the IRQ line from the cartridge (its chip: cart.h nshvc_cart_irq) */
 void snes_cart_irq(int level);
 
 /* ---- dma.c ---- */
 void dma_reset(void);
 uint8_t dma_read(uint16_t reg);
 void dma_write(uint16_t reg, uint8_t v);
-void dma_start(uint8_t channels);            /* MDMAEN */
+void dma_run(void);                          /* MDMAEN's transfers (dma_mdmaen's channels) */
+extern uint8_t dma_mdmaen;                   /* the channels whose general DMA is waiting or under way */
+void dma_edge(void);                         /* inside a DMA: an edge of the unit (bus.c), where HDMA comes in */
 void hdma_init(void);                        /* the frame's start */
 void hdma_line(void);                        /* each line's horizontal blank */
+int hdma_enabled(void);                      /* a channel set in HDMAEN */
+int hdma_active(void);                       /* one whose table has not ended */
+extern unsigned dma_clocks;                  /* the unit's clocks since it took the bus */
 extern uint8_t dma_hdmaen;
 
-/* ---- superfx.c ---- */
-void gsu_reset(void);
-uint8_t gsu_reg_read(uint16_t addr);         /* $3000-$32FF */
-void gsu_reg_write(uint16_t addr, uint8_t v);
-void gsu_sync(void);                         /* the Super FX up to the S-CPU's time */
-int gsu_running(void);
-extern uint8_t *gsu_ram_mem;
-extern uint32_t gsu_ram_size;
-extern uint8_t gsu_scmr_ron, gsu_scmr_ran;   /* the Super FX holds ROM, its RAM */
 
 /* ---- apu.c ---- */
 void apu_reset(void);
@@ -51,5 +47,6 @@ void apu_port_write(uint8_t port, uint8_t v);
 void apu_sync(void);                         /* the SPC700 up to the S-CPU's time */
 uint8_t apu_debug_port(int n);               /* what the S-CPU last wrote to port n */
 void apu_debug(char *out, int n);            /* the SPC700's clock and last access */
+uint8_t *apu_aram_rw(void);                  /* APU RAM, written with no access (a unit call's stub) */
 
 #endif

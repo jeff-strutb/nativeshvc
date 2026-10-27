@@ -84,6 +84,15 @@ static inline void spc_call(void (*abi)(void), uint16_t ret, unsigned first, uns
    checks end the call there and take `entry` on its own. */
 void spc_restart(uint16_t at, void (*entry)(void));
 
+/* The instruction at `at` begins: a place a test harness may run an
+   SPC700 unit call (a routine called from a stub, its registers and the
+   stub put back after, the driver going on here), as the reference's
+   harness runs one when the SPC700 reaches that instruction. The C marks
+   the places such calls start from (a driver's timer wait, $0897 in Stunt
+   Race FX's). No time passes; with no call waiting it does nothing.
+   (An extension of the decomp machine model: nativeshvc's.) */
+void spc_at(uint16_t at);
+
 /* JMP $FFC0: the console's boot ROM (the SPC700's own, not the game's): it
    takes the next upload from the S-CPU by its transfer protocol and runs
    it. Never returns. */

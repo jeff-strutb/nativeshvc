@@ -1,8 +1,7 @@
 /*
  * mixer_regs.c: the sound drivers' writes and reads of the sound chip's
  * 128 registers ($00-$7F, through the SPC700's $F2/$F3), as the mixer's
- * calls (mixer.h). A step on the way: it goes when the drivers' C calls
- * the mixer itself. The registers with no part (xA, xB, xE, $1D) and the
+ * calls (mixer.h). The registers with no part (xA, xB, xE, $1D) and the
  * values the mixer does not report keep what was written.
  */
 #include "mixer.h"
@@ -33,6 +32,8 @@ void mix_reg_write(uint8_t reg, uint8_t v)
         return;
     }
     case 0x7: mix_voice_gain(n, v); return;
+    case 0x8: mix_voice_level_write(n, v); return;
+    case 0x9: mix_voice_output_write(n, v); return;
     case 0xF: mix_echo_filter(n, (int8_t)v); return;
     }
     switch (reg) {

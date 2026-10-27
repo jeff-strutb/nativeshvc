@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "nshvc/nshvc.h"
+#include "nshvc/superfx.h"
 #include "routines.h"
 
 /* --pacing FILE: at each race frame's start, where the frames since the
@@ -35,6 +36,18 @@ static void pacing_write(uint32_t addr, uint8_t value)
         return;
     fprintf(pacing_f, "%u %06X %u %08x %08x\n", nshvc_frames(), 0u, w[0x306],
             fnv(w + 0x300, 0x20000 - 0x300, fnv(w, 0x100, 2166136261u)), fnv(nshvc_sram(), 0x10000, 2166136261u));
+}
+
+/* --hashes FILE: at each frame's end, the frame, and hashes of work RAM
+   (the stack left out) and the Super FX's RAM, as tests/oracle's --hashes
+   (tests/srfx/first.py finds where a play first differs from them) */
+static FILE *hashes_f;
+
+static void hashes_frame(void)
+{
+    const uint8_t *w = nshvc_wram();
+    fprintf(hashes_f, "%u %08x %08x\n", nshvc_frames(), fnv(w + 0x300, 0x20000 - 0x300, fnv(w, 0x100, 2166136261u)),
+            fnv(nshvc_sram(), 0x10000, 2166136261u));
 }
 
 #ifdef SRFX_ASSETS
@@ -63,6 +76,13 @@ int main(int argc, char **argv)
             setvbuf(pacing_f, NULL, _IOLBF, 0);
             nshvc_set_write_hook(pacing_write);
         }
+        if (!strcmp(argv[i], "--hashes") && i + 1 < argc) {
+            if (!(hashes_f = fopen(argv[i + 1], "w"))) {
+                fprintf(stderr, "srfx: cannot write %s\n", argv[i + 1]);
+                return 2;
+            }
+            nshvc_set_frame_hook(hashes_frame);
+        }
     }
 #ifndef SRFX_ASSETS
     if (!path) {
@@ -86,6 +106,7 @@ int main(int argc, char **argv)
     cart.title = "Stunt Race FX";
     cart.save_name = "stuntracefx";
     cart.map = NSHVC_SUPERFX;
+    cart.chip = &nshvc_superfx;    /* the cartridge's Super FX */
     cart.region = NSHVC_NTSC;
 #ifdef SRFX_ASSETS
     srfx_assets(&cart);

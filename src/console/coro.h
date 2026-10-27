@@ -1,7 +1,8 @@
 /*
  * coro.h: coroutines, for the processors that run beside the S-CPU.
  *
- * The Super FX's and the SPC700's C run on stacks of their own and hand
+ * The SPC700's C (and a cartridge chip's: cart.h nshvc_coro_*) run on
+ * stacks of their own and hand
  * control back and forth with the S-CPU's (the program's own stack), one
  * running at a time: a deterministic schedule, no threads. The switch is a
  * few instructions of assembly on arm64 and x86-64 (coro_arm64.S,

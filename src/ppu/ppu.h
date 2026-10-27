@@ -51,6 +51,10 @@ typedef struct {
     int screen_height;                          /* height, or taller: the hardware's line 1 at row
                                                    (screen_height - height) / 2 */
     int hires;                                  /* a line of the frame is hires (512 wide) */
+    int field;                                  /* its field (STAT78 bit 7) */
+    int interlace;                              /* interlaced (SETINI bit 0 as the frame began): its
+                                                   lines are the field's rows of a picture twice as
+                                                   tall, woven with the frame before's */
     int versions;
     uint16_t vram[PPU_VERSIONS][PPU_VRAM_PAGES * 0x8000];
     uint8_t oam[PPU_VERSIONS][576];             /* the table, then the extended X and Y bits */
@@ -75,7 +79,9 @@ const PpuFrame *ppu_frame(void);
    twice that when a line is hires */
 void ppu_draw_frame(const PpuFrame *f, uint32_t *out);
 static inline int ppu_frame_width(const PpuFrame *f) { return f->hires ? 2 * f->width : f->width; }
-/* the last finished frame, drawn from its record when first asked for */
+/* the last finished frame, drawn from its record when first asked for; an
+   interlaced one woven with the frame before (twice f->screen_height rows,
+   as wide as the wider of the two) */
 const uint32_t *ppu_picture(int *width, int *height);
 
 /* ---- the console's side ---- */
@@ -93,6 +99,9 @@ void ppu_render_line(unsigned line);     /* lines 1 to the frame's height */
 void ppu_vblank_start(void);             /* the frame is done */
 int ppu_forced_blank(void);
 int ppu_overscan(void);                  /* SETINI bit 2 as it stands */
+int ppu_interlace(void);                 /* SETINI bit 0 as it stands */
+int ppu_field(void);                     /* the field (STAT78 bit 7) */
+void ppu_field_flip(void);               /* a new field: the counters reached line 0 */
 unsigned long ppu_frames(void);
 
 /* the extensions (nshvc.h nshvc_ext_screen, nshvc_ext_sprite_x) */
@@ -103,6 +112,8 @@ void ppu_ext_sprite_limits(int on);
 void ppu_ext_vram(int kb);
 void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
+/* a write to $21C0-$21C5: ignored with no VRAM past 64 KB, else masked to its pages */
+void ppu_ext_page_reg(uint8_t reg, uint8_t v);
 
 /* the memories as they stand */
 const uint16_t *ppu_vram(void);

@@ -25,6 +25,27 @@ static void check(int ok, const char *what)
         fails++;
 }
 
+/* the NMI's handler: untimed set in it, then interrupts held in it */
+static int nmi_seen;
+
+static void abi_nmi(void)
+{
+    uint64_t t0;
+    nmi_seen = 1;
+    nshvc_set_untimed(1);
+    check(nshvc_untimed() == 0, "untimed set in a handler: the handler stays timed");
+    t0 = snes_clock;
+    cyc(1000);
+    check(snes_clock - t0 >= 1000, "untimed in a handler: its stated clocks take their time");
+    nshvc_hold_interrupts(1);
+    check(nshvc_untimed() == 1, "interrupts held in a handler: its code is untimed");
+    t0 = snes_clock;
+    cyc(1000);
+    check(snes_clock == t0, "interrupts held in a handler: its stated clocks take none");
+    nshvc_hold_interrupts(0);
+    nshvc_set_untimed(0);
+}
+
 static void abi_reset(void)
 {
     uint64_t t0, t1;
@@ -61,6 +82,14 @@ static void abi_reset(void)
     nshvc_wait_vblank();
     t1 = snes_clock;
     check(t1 - t0 >= 262 * 1364 - 64 && t1 - t0 <= 262 * 1364 + 64, "timed: a vertical blank to the next is a frame");
+    /* the NMI's handler, timed but for what runs with interrupts held */
+    wr8(0x004200, 0x80);
+    nshvc_wait_vblank();
+    for (i = 0; i < 100000 && !nmi_seen; i++)
+        rd8(0x7E0000);
+    wr8(0x004200, 0x00);
+    check(nmi_seen, "the NMI's handler ran");
+    check(nshvc_untimed() == 0, "untimed off again after the handler");
     if (poll_mode) {
         /* in the vertical blank, untimed: the blank never ends */
         nshvc_set_untimed(1);
@@ -71,8 +100,9 @@ static void abi_reset(void)
     exit(fails ? 1 : 0);
 }
 
-static const uint8_t rom[0x8000] = { [0x7FFC] = 0x00, [0x7FFD] = 0x80, [0x7FD5] = 0x20 };
-static const nshvc_routine routines[] = { { 0x008000, abi_reset, "reset", 0 } };
+static const uint8_t rom[0x8000] = { [0x7FFC] = 0x00, [0x7FFD] = 0x80, [0x7FFA] = 0x00, [0x7FFB] = 0x90,
+                                      [0x7FEA] = 0x00, [0x7FEB] = 0x90, [0x7FD5] = 0x20 };
+static const nshvc_routine routines[] = { { 0x008000, abi_reset, "reset", 0 }, { 0x009000, abi_nmi, "nmi", 0 } };
 
 int main(int argc, char **argv)
 {
@@ -84,7 +114,7 @@ int main(int argc, char **argv)
     cart.rom = rom;
     cart.rom_size = sizeof rom;
     cart.routines = routines;
-    cart.routine_count = 1;
+    cart.routine_count = 2;
     nshvc_power(&cart);
     for (;;)
         nshvc_run_frame();

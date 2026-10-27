@@ -23,8 +23,11 @@ void gsuclk_step(GsuClock *c, int kind, unsigned clocks)
     }
     if (c->ramcl) {
         c->ramcl = (uint8_t)(clocks < c->ramcl ? c->ramcl - clocks : 0);
-        if (!c->ramcl)
+        if (!c->ramcl) {
             bus(c, 1);
+            if (c->ram_store)
+                c->ram_store(c);
+        }
     }
     c->now += clocks;
     c->by[kind] += clocks;

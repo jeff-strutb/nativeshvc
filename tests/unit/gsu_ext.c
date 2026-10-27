@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "nshvc/nshvc.h"
+#include "nshvc/superfx.h"
 #include "nshvc/machine.h"
 #include "nshvc/gsu.h"
 
@@ -87,6 +88,31 @@ static void abi_reset(void)
         if (!ok || (a >> 16) != 0x77)
             fails++;
     }
+    /* a program run with interrupts held leaves the Super FX's interrupt as
+       the hold found it: SFR's IRQ bit (bit 15, cleared by the read of
+       $3031) set by the STOP without a hold, clear after one */
+    {
+        int i2;
+        for (i2 = 0; i2 < 2; i2++) {
+            int irq;
+            (void)rd8(0x003031);
+            if (i2)
+                nshvc_hold_interrupts(1);
+            wr8(0x00303A, 0x18 | 0x03);
+            wr8(0x00301E, 0x00);
+            wr8(0x00301F, 0x80);
+            while (rd8(0x003030) & 0x20)
+                cyc(16);
+            wr8(0x00303A, 0x03);
+            if (i2)
+                nshvc_hold_interrupts(0);
+            irq = rd8(0x003031) >> 7 & 1;
+            printf("%s %s: SFR's IRQ bit %d\n", irq == !i2 ? "ok  " : "FAIL",
+                   i2 ? "a program run held leaves no interrupt" : "a program's STOP raises the interrupt", irq);
+            if (irq != !i2)
+                fails++;
+        }
+    }
     /* a byte written by the S-CPU at $7D:FFFF lands in the last of 14 banks */
     wr8(0x7DFFFF, 0x5A);
     if (nshvc_sram()[0xDFFFF] != 0x5A) {
@@ -111,6 +137,7 @@ int main(void)
     memset(&cart, 0, sizeof cart);
     cart.title = "gsu_ext";
     cart.map = NSHVC_SUPERFX;
+    cart.chip = &nshvc_superfx;
     cart.rom = rom;
     cart.rom_size = sizeof rom;
     cart.sram_size = 0xE0000;

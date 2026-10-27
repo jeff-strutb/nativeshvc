@@ -42,6 +42,7 @@ void nshvc_set_joypad(int port, uint16_t buttons) { snes_set_joypad(port, button
 int nshvc_audio_take(int16_t *lr, int max) { return snes_audio_take(lr, max); }
 int nshvc_audio_queued(void) { return snes_audio_queued(); }
 uint8_t *nshvc_wram(void) { return snes_wram_rw(); }
+/* the cartridge's RAM as it stands (a chip that owns it brought up to now) */
 uint8_t *nshvc_sram(void) { return snes_sram(); }
 const uint8_t *nshvc_aram(void) { return snes_aram(); }
 const uint16_t *nshvc_vram(void) { return ppu_vram(); }
@@ -193,7 +194,7 @@ static char save_path[1024];
 
 static uint32_t sram_bytes(void)
 {
-    return snes_cart.map == NSHVC_SUPERFX ? gsu_ram_size : snes_cart.sram_size;
+    return snes_sram_size();
 }
 
 static void save_load(void)

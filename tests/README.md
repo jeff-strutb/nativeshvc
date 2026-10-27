@@ -5,13 +5,16 @@ Each was shown able to fail (a planted error caught) before it was relied on.
 
 | check | holds | run |
 |---|---|---|
-| `rom/run.py` | the console, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off): every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, IRQ timing and mid-line changes. 308 test cartridges; 28 more listed in `rom/KNOWN` | `python3 tests/rom/run.py [--only NAME,...]` (about 2 minutes) |
+| `rom/run.py` | the console, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off): every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, the CPU's interrupt, DMA and HDMA timing (a DMA's own time at every phase, HDMA's, HDMA between a DMA's bytes, and both inside stretches the C states cycle by cycle), the multiplier's and divider's results as they work, the counters and frame lengths, interlace (its fields woven, hires and OBJ interlace), mid-line changes (each layer's tile fetch by mode) and the sound unit's replies as the S-CPU sees them (the boot ROM's handshake, to 2 clocks). 1,060 test cartridges, every one matching; `rom/KNOWN` lists any that differ | `python3 tests/rom/run.py [--only NAME,...]` (about 3 minutes) |
 | `rom/ext_check.py` | the extensions: a larger screen's centre is exactly the console's picture, its extra columns the scene scrolled, VRAM pages the same as page 0 | `python3 tests/rom/ext_check.py` (about 1 minute) |
-| `srfx/same.py` | a real decompilation, unchanged, on nativeshvc: Stunt Race FX's 21 plays against its own port's reference build, every shot, work RAM and Super FX RAM dump and the pacing record, byte for byte | `sh tests/srfx/build.sh && python3 tests/srfx/same.py` (about 1 minute) |
+| `srfx/same.py` | a real decompilation, unchanged, on nativeshvc: Stunt Race FX's 21 plays against the original cartridge on the reference (`oracle --script`), every shot, work RAM and Super FX RAM dump and the pacing record, byte for byte; where a play differs, the decompilation's C and the cartridge part (the console is held by `rom/run.py`) | `sh tests/srfx/build.sh && python3 tests/srfx/same.py` (about 5 minutes) |
+| `srfx/first.py` | where a play that differs first does: the first frame whose RAM differs from the cartridge's, the bytes, and the cartridge's instruction that wrote each (its routine): the decompilation's C or the console | `python3 tests/srfx/first.py [PLAY...]` (about 10 minutes) |
 | `unit/untimed.c` | untimed mode, the vertical blank wait, the untimed wait guard | `build/null/tests/untimed` |
 | `unit/gsu_ext.c` | the Super FX's extended screen and RAM | `build/null/tests/gsu_ext` |
 | `unit/overlay_check.c` | every renderer's overlays against the reference drawing | `RR_SIZE=1100x800 build/null-RENDER/tests/overlay_check` |
 | `NSHVC_RRCHECK=1` | every renderer's presented frames (one to one and scaled, sharp bilinear) against the reference scaling | `NSHVC_RRCHECK=1 RR_SIZE=1000x750 build/null-RENDER/tests/testcart --rom ROM --headless --frames 4` |
+| `NSHVC_AUDIT=1` | the C's time against the DMA unit: each `cyc` stretch a DMA or HDMA falls inside, by C function and offset (where `cycs` wants using) | any headless run of a game |
+| `NSHVC_CYCLOG=FILE` | the C's time and accesses, a line each (`[NSHVC_CYCLOG_FRAMES=A-B]`; format in `src/console/bus.c`): each `cyc` and `cycs` by call site, the time the console states, waits, reads, writes and an interrupt's pushes, to pair against the original's cycles. Sites map to lines with `SRFX_CFLAGS=-g sh tests/srfx/build.sh` and `atos -o build/srfx/src_stuntracefx_g/srfx -l BASE -i SITE-1` | any headless run of a game |
 | `NSHVC_PPUCHECK=1` | each frame drawn from its record against the frame drawn a line at a time | any headless run |
 
 ## Setting up
@@ -48,17 +51,7 @@ did at each pixel.
 
 ## The known residual (`rom/KNOWN`)
 
-An IRQ that wakes the CPU from WAI starts its handler on a grid of 6 master
-clocks whose phase differs from the reference's by 2 to 4 clocks. Measured
-three ways, no single wake cost fits all three:
-
-- the counters the handler latches (`irq_latch_*`): 36 of 38 dots exact
-  with the wake at 16 clocks, the setting kept, as it is the CPU-visible one;
-- a brightness split the handler makes mid-line (`probe_scroll_00_*`): a
-  3-step cycle of 0 or 1 pixel off;
-- where a mid-line colour write lands (`probe_cgcol_*`): 1 to 2 entries off.
-
-So a mid-line effect timed from a WAI-woken IRQ lands up to two pixels from
-where the reference puts it. Nothing else is known to differ. `rom/run.py`
-reports these as KNOWN, never as passing, and reports any that start
-passing, so the list is kept true.
+None: every test matches the reference. A test that differs for a reason
+measured and not yet closed goes in `rom/KNOWN` with that reason;
+`rom/run.py` reports it as KNOWN, never as passing, and reports any that
+start passing, so the list is kept true.

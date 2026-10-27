@@ -1,10 +1,11 @@
 /*
- * superfx.c: the Super FX (GSU-1) beside the S-CPU: its registers as the
- * S-CPU sees them ($3000-$32FF), its RAM, and the bus and plotting its C
- * uses (gsu.h).
+ * superfx.c: the Super FX (GSU-1), an expansion chip on the cartridge
+ * (superfx.h's nshvc_superfx, through the connector: cart.h): its registers
+ * as the S-CPU sees them ($3000-$32FF), its RAM, and the bus and plotting
+ * its C uses (gsu.h).
  *
- * A program starts when the S-CPU writes R15's high byte: its C (found by
- * the runtime at PBR:R15, snes_gsu_run_hook) runs on the Super FX's own
+ * A program starts when the S-CPU writes R15's high byte: its C (the
+ * cartridge's, at PBR:R15: nshvc_cart.gsu_run or its routines) runs on the Super FX's own
  * coroutine and returns where the program STOPs; then GO clears and, unless
  * CFGR masks it, the Super FX's IRQ rises. Time: the Super FX keeps its own
  * clock, which moves on as the GSU-1's does (gsu_clock.c): by the original's
@@ -22,17 +23,14 @@
  */
 #include <string.h>
 
-#include "snes_internal.h"
+#include "nshvc/superfx.h"
 #include "nshvc/gsu.h"
-#include "coro.h"
 #include "gsu_clock.h"
 
 RegsGSU gsu;
-uint8_t *gsu_ram_mem;
-uint32_t gsu_ram_size = 0x10000;
+static uint32_t gsu_ram_size = 0x10000;
+static const nshvc_cart *cart;           /* the cartridge it is on */
 
-void (*snes_gsu_run_hook)(uint8_t bank, uint16_t addr);
-int (*snes_gsu_cache_first_hook)(uint8_t bank, uint16_t addr);
 static uint32_t fetch_at;                /* where the ROM buffer was last filled from */
 
 /* the game pak RAM: the GSU's 32 to 128 KB at $70-$71, or, a cartridge
@@ -55,7 +53,13 @@ static uint8_t cache[0x200];
 static uint8_t pbr, cfgr, clsr, bramr, cbr_hi, cbr_lo;
 static uint8_t reg_latch;
 static uint8_t sfr_irq, sfr_alt, sfr_b;
+
 static int go, pending;
+/* the store in the RAM buffer (gsu_wr8) */
+static uint32_t store_addr;
+static uint8_t store_value;
+static int store_pending;
+
 static uint64_t gsu_now, gsu_target;   /* master clocks */
 static GsuClock clk;
 /* The cartridge clocks the Super FX from a crystal of its own, 21.44 MHz,
@@ -64,8 +68,7 @@ static GsuClock clk;
 #define GSU_HZ 21440000u
 #define MASTER_HZ 21477273u
 static uint64_t run_master, run_clk;   /* a program's start: the console's clock, the model's */
-static unsigned gsu_div = 1;           /* snes_set_speedup's */
-static Coro *gsu_co, *main_co;   /* the Super FX's, and the one that last switched to it */
+static nshvc_coro *gsu_co, *main_co;   /* the Super FX's, and the one that last switched to it */
 
 static void gsu_main(void *arg);
 static inline uint8_t bus_byte(uint32_t addr);
@@ -73,19 +76,20 @@ uint8_t gsu_fetch(uint32_t addr);
 static void bus_wait(GsuClock *c, int ram);
 static uint8_t pix_read(GsuClock *c, uint32_t addr);
 static void pix_write(GsuClock *c, uint32_t addr, uint8_t v);
+static void store_made(GsuClock *c);
 uint8_t gsu_rd8(uint32_t addr);
 void gsu_wr8(uint32_t addr, uint8_t value);
 void gsu_plot(uint8_t x, uint8_t y);
 uint8_t gsu_rpix(uint8_t x, uint8_t y);
 
-void gsu_reset(void)
+static void power(const nshvc_cart *c)
 {
+    cart = c;
     memset(&gsu, 0, sizeof gsu);
     /* a cartridge with no save: its RAM reads $FF throughout, as the
        verification harness powers the original on */
     memset(ram_store, 0xFF, sizeof ram_store);
     memset(cache, 0, sizeof cache);
-    gsu_ram_mem = ram_store;
     pbr = cfgr = clsr = bramr = cbr_hi = cbr_lo = 0;
     reg_latch = 0;
     sfr_irq = sfr_alt = sfr_b = 0;
@@ -95,23 +99,25 @@ void gsu_reset(void)
     clk.bus = bus_wait;
     clk.pix_read = pix_read;
     clk.pix_write = pix_write;
+    clk.ram_store = store_made;
+    store_pending = 0;
     run_master = run_clk = 0;
-    if (snes_cart.map == NSHVC_SUPERFX && snes_cart.sram_size > 0x20000) {
-        if (snes_cart.sram_size > GSU_RAM_MAX || snes_cart.sram_size % 0x10000)
-            snes_fatal("the Super FX's RAM: up to %u KB, in 64 KB banks (sram_size %u)", GSU_RAM_MAX / 1024,
-                       (unsigned)snes_cart.sram_size);
-        gsu_ram_size = snes_cart.sram_size;
+    if (c->sram_size > 0x20000) {
+        if (c->sram_size > GSU_RAM_MAX || c->sram_size % 0x10000)
+            nshvc_fatal("the Super FX's RAM: up to %u KB, in 64 KB banks (sram_size %u)", GSU_RAM_MAX / 1024,
+                        (unsigned)c->sram_size);
+        gsu_ram_size = c->sram_size;
     } else {
-        gsu_ram_size = snes_cart.map == NSHVC_SUPERFX && snes_cart.sram_size >= 0x8000
-                     ? (snes_cart.sram_size >= 0x20000 ? 0x20000 : snes_cart.sram_size >= 0x10000 ? 0x10000 : 0x8000)
+        gsu_ram_size = c->sram_size >= 0x8000
+                     ? (c->sram_size >= 0x20000 ? 0x20000 : c->sram_size >= 0x10000 ? 0x10000 : 0x8000)
                      : 0x10000;
     }
     ext_w = ext_h = 0;
     if (!gsu_co)
-        gsu_co = coro_new(gsu_main, NULL, 8u << 20);
+        gsu_co = nshvc_coro_new(gsu_main, NULL, 8u << 20);
 }
 
-int gsu_running(void) { return go; }
+static int busy(void) { return go; }
 
 /* ---- time ---- */
 
@@ -121,32 +127,22 @@ static void clk_sync(void)
 {
     if (!go)
         return;
-    gsu_now = run_master + (clk.now - run_clk) * MASTER_HZ / GSU_HZ / gsu_div;
+    gsu_now = run_master + (clk.now - run_clk) * MASTER_HZ / GSU_HZ;
     if (gsu_now >= gsu_target)
-        coro_switch(gsu_co, main_co);
+        nshvc_coro_switch(gsu_co, main_co);
 }
 
-/* snes_set_speedup: a running program's time from here at the new rate */
-void gsu_speedup(unsigned n)
-{
-    if (go) {
-        run_master = run_master + (clk.now - run_clk) * MASTER_HZ / GSU_HZ / gsu_div;
-        run_clk = clk.now;
-    }
-    gsu_div = n;
-}
-
-void gsu_sync(void)
+static void sync(void)
 {
     if (!go) {
-        gsu_now = snes_clock;
+        gsu_now = nshvc_cart_clock();
         return;
     }
     /* untimed: a running program goes on to its STOP now */
-    gsu_target = snes_untimed_on ? UINT64_MAX : snes_clock;
+    gsu_target = nshvc_untimed() ? UINT64_MAX : nshvc_cart_clock();
     if (gsu_now < gsu_target) {
-        main_co = coro_current();
-        coro_switch(main_co, gsu_co);
+        main_co = nshvc_coro_current();
+        nshvc_coro_switch(main_co, gsu_co);
     }
 }
 
@@ -154,9 +150,9 @@ void gsu_sync(void)
    RON bit 4 for the ROM clear): 6 clocks at a time until it gives it back. */
 static void bus_wait(GsuClock *c, int ram)
 {
-    if (snes_untimed_on && go && !(gsu.scmr & (ram ? 0x08 : 0x10)))
-        snes_fatal("untimed, the Super FX waits for the bus the S-CPU holds (SCMR's %s): it would never get it",
-                   ram ? "RAN" : "RON");
+    if (nshvc_untimed() && go && !(gsu.scmr & (ram ? 0x08 : 0x10)))
+        nshvc_fatal("untimed, the Super FX waits for the bus the S-CPU holds (SCMR's %s): it would never get it",
+                    ram ? "RAN" : "RON");
     while (go && !(gsu.scmr & (ram ? 0x08 : 0x10))) {
         gsuclk_step(c, GSUCLK_BUS, 6);
         clk_sync();
@@ -167,36 +163,53 @@ static void program_starts(void)
 {
     go = 1;
     pending = 1;
-    gsu_now = snes_clock;
+    gsu_now = nshvc_cart_clock();
     /* the NOP the last STOP left in the pipeline runs first: it fetches
        the program's first byte */
     run_master = gsu_now;
     run_clk = clk.now;
 }
 
+/* the C of the program at bank:addr: the cartridge's gsu_run, or its
+   routine there */
+static void run_program(uint8_t bank, uint16_t addr)
+{
+    const nshvc_routine *r;
+    if (cart->gsu_run) {
+        cart->gsu_run(bank, addr);
+        return;
+    }
+    r = nshvc_cart_routine((uint32_t)bank << 16 | addr);
+    if (!r)
+        nshvc_fatal("Super FX program at $%02X:%04X has no C", bank, addr);
+    r->abi();
+}
+
 static void gsu_main(void *arg)
 {
     (void)arg;
     for (;;) {
+        const nshvc_routine *r;
         while (!pending)
-            coro_switch(gsu_co, main_co);
+            nshvc_coro_switch(gsu_co, main_co);
         pending = 0;
         gsu.pre_b = gsu.pre_alt1 = gsu.pre_alt2 = gsu.pre_sreg = gsu.pre_dreg = 0;
-        if (!snes_gsu_run_hook)
-            snes_fatal("Super FX started with no runtime");
         gsuclk_code(&clk, (uint32_t)pbr << 16 | gsu.r[15], 1);
-        if (snes_gsu_cache_first_hook && snes_gsu_cache_first_hook(pbr, gsu.r[15]))
+        r = nshvc_cart_routine((uint32_t)pbr << 16 | gsu.r[15]);
+        if (r && (r->flags & NSHVC_RT_GSU_CACHE_FIRST))
             gsuclk_cache(&clk, (uint16_t)(gsu.r[15] + 1));   /* a CACHE first: it runs after the next fetch */
         clk_sync();
-        snes_gsu_run_hook(pbr, gsu.r[15]);
+        run_program(pbr, gsu.r[15]);
         /* the STOP: GO clear, the interrupt unless masked */
         go = 0;
+        store_made(&clk);
+        clk.ramcl = 0;
         sfr_alt = sfr_b = 0;
         if (!(cfgr & 0x80)) {
             sfr_irq = 1;
-            snes_cart_irq(1);
+            nshvc_cart_irq(1);
         }
-        coro_switch(gsu_co, main_co);
+        nshvc_coro_switch(gsu_co, main_co);
     }
 }
 
@@ -207,7 +220,7 @@ static uint16_t sfr(void)
                       (sfr_alt & 3) << 8 | sfr_b << 12 | sfr_irq << 15);
 }
 
-uint8_t gsu_reg_read(uint16_t addr)
+static uint8_t reg_read(uint16_t addr)
 {
     if (addr >= 0x3100 && addr < 0x3300)
         return cache[(addr - 0x3100 + clk.cbr) & 511];
@@ -220,7 +233,7 @@ uint8_t gsu_reg_read(uint16_t addr)
     case 0x3031: {
         uint8_t v = (uint8_t)(sfr() >> 8);
         sfr_irq = 0;
-        snes_cart_irq(0);
+        nshvc_cart_irq(0);
         return v;
     }
     case 0x3034: return pbr;
@@ -230,10 +243,10 @@ uint8_t gsu_reg_read(uint16_t addr)
     case 0x303E: return cbr_lo;
     case 0x303F: return cbr_hi;
     }
-    return snes_mdr;
+    return nshvc_open_bus();
 }
 
-void gsu_reg_write(uint16_t addr, uint8_t v)
+static void reg_write(uint16_t addr, uint8_t v)
 {
     if (addr >= 0x3100 && addr < 0x3300) {
         /* the code cache, CBR on; a line's last byte makes it valid */
@@ -263,7 +276,7 @@ void gsu_reg_write(uint16_t addr, uint8_t v)
         gsu.s = (v >> 3) & 1;
         gsu.ov = (v >> 4) & 1;
         if (!(v & 0x20) && go)
-            snes_fatal("the S-CPU stopped a running Super FX program (not supported)");
+            nshvc_fatal("the S-CPU stopped a running Super FX program (not supported)");
         if ((v & 0x20) && !go)
             program_starts();
         return;
@@ -293,9 +306,9 @@ static inline uint8_t bus_byte_by(uint32_t addr, int who)
     if (bank >= 0x70 && bank < 0x7E)
         return *ram_byte(addr);
     if (bank < 0x40)
-        return snes_rom_byte(snes_rom_mirror((uint32_t)(bank & 0x3F) << 15 | (off & 0x7FFF)), who);
+        return nshvc_cart_rom((uint32_t)(bank & 0x3F) << 15 | (off & 0x7FFF), who);
     if (bank < 0x60)
-        return snes_rom_byte(snes_rom_mirror((uint32_t)(bank & 0x1F) << 16 | off), who);
+        return nshvc_cart_rom((uint32_t)(bank & 0x1F) << 16 | off, who);
     return 0;
 }
 
@@ -332,6 +345,18 @@ uint8_t gsu_rd8(uint32_t addr)
     return bus_byte(addr);
 }
 
+/* A store goes into the RAM buffer and reaches the RAM as the buffer
+   drains, 5 clocks on (after the last store's, which it waits for); one
+   left when the program stops reaches it then. */
+static void store_made(GsuClock *c)
+{
+    (void)c;
+    if (store_pending) {
+        store_pending = 0;
+        *ram_byte(store_addr) = store_value;
+    }
+}
+
 void gsu_wr8(uint32_t addr, uint8_t value)
 {
     addr &= 0xFFFFFF;
@@ -339,7 +364,11 @@ void gsu_wr8(uint32_t addr, uint8_t value)
         return;
     if (go) {
         gsuclk_ram_write(&clk);
+        store_addr = addr;
+        store_value = value;
+        store_pending = 1;
         clk_sync();
+        return;
     }
     *ram_byte(addr) = value;
 }
@@ -393,12 +422,10 @@ static GsuScreen screen(void)
     return s;
 }
 
-void (*snes_gsu_plot_hook)(uint8_t x, uint8_t y, uint8_t c);
-
 void nshvc_ext_gsu_screen(int width, int height)
 {
     if ((width || height) && (width < 8 || width > 1024 || height < 8 || height > 512 || (width & 7) || (height & 7)))
-        snes_fatal("nshvc_ext_gsu_screen(%d, %d): 8 to 1024 by 8 to 512, in characters (0, 0: the GSU's own)", width,
+        nshvc_fatal("nshvc_ext_gsu_screen(%d, %d): 8 to 1024 by 8 to 512, in characters (0, 0: the GSU's own)", width,
                    height);
     ext_w = (uint16_t)width;
     ext_h = (uint16_t)height;
@@ -431,8 +458,6 @@ void gsu_plot_at(uint16_t x, uint16_t y)
             c >>= 4;
         c &= 0x0F;
     }
-    if (snes_gsu_plot_hook)
-        snes_gsu_plot_hook((uint8_t)x, (uint8_t)y, c);
     gsuclk_plot(&clk, &s, x, y, c);
     clk_sync();
 }
@@ -444,3 +469,99 @@ uint8_t gsu_rpix_at(uint16_t x, uint16_t y)
     clk_sync();
     return v;
 }
+
+/* ---- the chip on the connector (cart.h) ---- */
+
+/* the S-CPU's accesses it decodes: its registers at $3000-$32FF of banks
+   $00-$3F and $80-$BF, its RAM at $70-$7D (and its first 8 KB at
+   $6000-$7FFF of those banks), brought up to the S-CPU's time first */
+static int decodes(uint32_t addr, int *reg)
+{
+    uint8_t b = (uint8_t)(addr >> 16) & 0x7F;
+    uint16_t off = (uint16_t)addr;
+    if (b < 0x40 && off >= 0x3000 && off < 0x3300) {
+        *reg = 1;
+        return 1;
+    }
+    *reg = 0;
+    if (b < 0x40 && off >= 0x6000 && off < 0x8000)
+        return 1;
+    return b >= 0x70 && b < 0x7E && (gsu_ram_size > 0x20000 ? (uint32_t)(b - 0x70) << 16 < gsu_ram_size : b < 0x72);
+}
+
+/* the S-CPU's view of the RAM at addr (banks $80-$FF as $00-$7F; the 8 KB
+   window at $6000 its first) */
+static uint8_t *cpu_ram(uint32_t addr)
+{
+    uint8_t b = (uint8_t)(addr >> 16) & 0x7F;
+    if (b < 0x40)
+        return ram_byte(0x700000u | ((uint16_t)addr - 0x6000));
+    return ram_byte((uint32_t)b << 16 | (uint16_t)addr);
+}
+
+static int cpu_read(uint32_t addr, uint8_t *v)
+{
+    int reg;
+    if (!decodes(addr, &reg))
+        return 0;
+    sync();
+    *v = reg ? reg_read((uint16_t)addr) : *cpu_ram(addr);
+    return 1;
+}
+
+static int cpu_write(uint32_t addr, uint8_t v)
+{
+    int reg;
+    if (!decodes(addr, &reg))
+        return 0;
+    sync();
+    if (reg)
+        reg_write((uint16_t)addr, v);
+    else
+        *cpu_ram(addr) = v;
+    return 1;
+}
+
+static int cpu_peek(uint32_t addr, uint8_t *v)
+{
+    int reg;
+    if (!decodes(addr, &reg))
+        return 0;
+    *v = reg ? 0 : *cpu_ram(addr);
+    return 1;
+}
+
+/* the interrupt as a hold found it, put back as the hold ends, so a program
+   held code ran (its STOP raising the interrupt) leaves the game's own
+   handlers nothing to take */
+static int held_irq;
+
+static void hold(int on)
+{
+    if (on) {
+        held_irq = sfr_irq;
+        return;
+    }
+    sfr_irq = (uint8_t)held_irq;
+    nshvc_cart_irq(sfr_irq);
+}
+
+static uint8_t *ram(uint32_t *size)
+{
+    sync();
+    if (size)
+        *size = gsu_ram_size;
+    return ram_store;
+}
+
+const nshvc_chip nshvc_superfx = {
+    .name = "Super FX",
+    .power = power,
+    .read = cpu_read,
+    .write = cpu_write,
+    .peek = cpu_peek,
+    .sync = sync,
+    .hold = hold,
+    .ram = ram,
+    .busy = busy,
+};

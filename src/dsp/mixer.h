@@ -10,7 +10,8 @@
  * addresses; the echo's delay line lives in the same memory. The arithmetic
  * (decoding, Gaussian interpolation, envelopes, the echo's filter) is the
  * sound chip's as Nocash's fullsnes documents it, so the game sounds as it
- * did. A change takes effect from the next frame mixed.
+ * did. It runs a clock at a time, each voice reading what the game set at
+ * the clock the chip does, so a change takes effect where it would there.
  */
 #ifndef PORT_MIXER_H
 #define PORT_MIXER_H
@@ -60,12 +61,19 @@ void mix_echo_filter(int tap, int8_t coefficient);
 /* the voices that have reached their sample's end since last cleared */
 uint8_t mix_voices_ended(void);
 void mix_clear_ended(void);
-/* a voice's envelope (its top 7 of 11 bits) and output (its top 8 bits) */
+/* a voice's envelope (its top 7 of 11 bits) and output (its top 8 bits),
+   as last set; the game's own writes to them, which stand until the voice
+   sets them again */
 uint8_t mix_voice_level(int v);
 int8_t mix_voice_output(int v);
+void mix_voice_level_write(int v, uint8_t value);
+void mix_voice_output_write(int v, uint8_t value);
 
-/* one frame: left and right */
-void mix_frame(int16_t *left, int16_t *right);
+/* one clock (an SPC700 cycle; a frame is 32): 1, with the frame's left and
+   right, on the clock that finishes one */
+int mix_clock(int16_t *left, int16_t *right);
+/* the clock to run next within the frame, 0-31 */
+int mix_phase(void);
 
 /* the replay check's view: each voice's envelope level and stage (0
    release, 1 attack, 2 decay, 3 sustain), play position, block address and

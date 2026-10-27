@@ -2,12 +2,14 @@
  * dma.c: the CPU's eight DMA channels, as general DMA (MDMAEN) and HDMA.
  *
  * General DMA moves bytes between the A bus (any address but the
- * registers) and one B-bus register ($21xx) in the channel's pattern, 8
- * clocks a byte, the CPU stopped meanwhile (the clock and the lines it
- * passes go on). HDMA runs in each line's horizontal blank, lines 0-224:
- * each channel's table gives a line count (bit 7: transfer every line of
- * the run, else only its first) and the bytes, inline or (indirect) through
- * an address in the table.
+ * registers) and one B-bus register ($21xx) in the channel's pattern, the
+ * CPU stopped meanwhile (the clock and the lines it passes go on). HDMA
+ * runs in each line's horizontal blank, lines 0-224: each channel's table
+ * gives a line count (bit 7: transfer every line of the run, else only its
+ * first) and the bytes, inline or (indirect) through an address in the
+ * table. The unit's time: 8 clocks to start, 8 for each channel a DMA
+ * runs, 8 a byte moved or read from a table (its access 4 clocks in); the
+ * bus (bus.c) puts it between two of the CPU's cycles and aligns it.
  */
 #include <string.h>
 
@@ -27,6 +29,24 @@ typedef struct {
 
 static Channel ch[8];
 uint8_t dma_hdmaen;
+uint8_t dma_mdmaen;
+unsigned dma_clocks;       /* the unit's clocks since it took the bus */
+
+static void dma_tick(unsigned clocks)
+{
+    dma_clocks += clocks;
+    snes_tick(clocks);
+}
+
+/* a byte of an HDMA table: its read, 4 clocks into its 8 */
+static uint8_t table_read(uint32_t a)
+{
+    uint8_t v;
+    dma_tick(4);
+    v = bus_read_a(a);
+    dma_tick(4);
+    return v;
+}
 
 /* the B-bus offsets of each transfer mode's bytes */
 static const uint8_t pattern[8][4] = {
@@ -89,92 +109,139 @@ void dma_write(uint16_t reg, uint8_t v)
 void (*snes_dma_hook)(uint32_t a, uint8_t b, uint8_t v);
 
 /* one byte between A-bus address `a` and B-bus register `b`, the way the
-   channel's direction says (DMAP bit 7: from the B bus to the A bus) */
+   channel's direction says (DMAP bit 7: from the B bus to the A bus): 8
+   clocks, the read 4 in and the write at the end */
 static void move(const Channel *c, uint32_t a, uint8_t b)
 {
     uint8_t v;
+    dma_tick(4);
     if (c->dmap & 0x80) {
         v = bus_read_b(b);
         snes_mdr = v;
+        dma_tick(4);
         if (snes_dma_hook)
             snes_dma_hook(a, b, v);
         bus_write_a(a, v);
         return;
     }
     v = bus_read_a(a);
+    dma_tick(4);
     if (snes_dma_hook)
         snes_dma_hook(a, b, v);
     bus_write_b(b, v);
 }
 
-void dma_start(uint8_t channels)
+/* MDMAEN's channels in turn; the unit's edges inside (dma_edge), after its
+   start and each byte, where HDMA comes in, which stops a DMA on its own
+   channel */
+void dma_run(void)
 {
     int i;
-    snes_tick(18);
+    dma_tick(8);
+    dma_edge();
     for (i = 0; i < 8; i++) {
         Channel *c = &ch[i];
+        uint8_t bit = (uint8_t)(1u << i);
         unsigned k = 0, mode;
-        if (!(channels & (1u << i)))
+        if (!(dma_mdmaen & bit))
             continue;
         mode = c->dmap & 7;
-        snes_tick(8);
+        dma_tick(8);
+        dma_edge();
         do {
             move(c, (uint32_t)c->a1b << 16 | c->a1t, (uint8_t)(c->bbad + pattern[mode][k & 3]));
             k++;
             /* bits 3-4: fixed (1, 3), decrement (2) or increment (0) */
             if (!(c->dmap & 0x08))
                 c->a1t = (uint16_t)(c->a1t + ((c->dmap & 0x10) ? -1 : 1));
-            c->das--;
-            snes_tick(8);
-        } while (c->das);
+            dma_edge();
+        } while ((dma_mdmaen & bit) && --c->das);
+        dma_mdmaen &= (uint8_t)~bit;
+    }
+}
+
+int hdma_enabled(void) { return dma_hdmaen != 0; }
+
+int hdma_active(void)
+{
+    int i;
+    for (i = 0; i < 8; i++)
+        if (!ch[i].done && (dma_hdmaen & (1u << i)))
+            return 1;
+    return 0;
+}
+
+/* the channels after channel i have all ended */
+static int later_done(int i)
+{
+    for (i++; i < 8; i++)
+        if (!ch[i].done && (dma_hdmaen & (1u << i)))
+            return 0;
+    return 1;
+}
+
+/* channel c's next run: its line count and (indirect) address, read from
+   its table; none read when the table has ended and no channel after
+   this one is left (the unit stops) */
+static void reload(Channel *c, int i)
+{
+    c->ntrl = table_read((uint32_t)c->a1b << 16 | c->a2a);
+    c->a2a++;
+    c->done = c->ntrl == 0;
+    if (c->dmap & 0x40) {
+        uint8_t lo, hi;
+        lo = table_read((uint32_t)c->a1b << 16 | c->a2a);
+        c->a2a++;
+        if (c->done && later_done(i)) {
+            c->das = (uint16_t)(lo << 8);
+            return;
+        }
+        hi = table_read((uint32_t)c->a1b << 16 | c->a2a);
+        c->a2a++;
+        c->das = (uint16_t)(lo | hi << 8);
     }
 }
 
 void hdma_init(void)
 {
     int i;
+    dma_tick(8);
     for (i = 0; i < 8; i++) {
         Channel *c = &ch[i];
         c->done = 1;
         c->transfer = 0;
         if (!(dma_hdmaen & (1u << i)))
             continue;
+        dma_mdmaen &= (uint8_t)~(1u << i);      /* HDMA stops a DMA on its channel */
         c->a2a = c->a1t;
-        c->ntrl = bus_read_a((uint32_t)c->a1b << 16 | c->a2a);
-        c->a2a++;
-        if (c->dmap & 0x40) {
-            uint8_t lo = bus_read_a((uint32_t)c->a1b << 16 | c->a2a);
-            uint8_t hi = bus_read_a((uint32_t)c->a1b << 16 | (uint16_t)(c->a2a + 1));
-            c->das = (uint16_t)(lo | hi << 8);
-            c->a2a += 2;
-        }
-        c->done = c->ntrl == 0;
+        c->done = 0;
+        reload(c, i);
         c->transfer = !c->done;
     }
 }
 
 void hdma_line(void)
 {
-    int i, any = 0;
+    int i;
+    dma_tick(8);
     for (i = 0; i < 8; i++) {
         Channel *c = &ch[i];
         unsigned k, mode;
         if (c->done || !(dma_hdmaen & (1u << i)))
             continue;
-        any = 1;
-        if (c->transfer) {
-            mode = c->dmap & 7;
-            for (k = 0; k < pattern_len[mode]; k++) {
-                uint8_t b = (uint8_t)(c->bbad + pattern[mode][k]);
-                if (c->dmap & 0x40) {
-                    move(c, (uint32_t)c->dasb << 16 | c->das, b);
-                    c->das++;
-                } else {
-                    move(c, (uint32_t)c->a1b << 16 | c->a2a, b);
-                    c->a2a++;
-                }
+        dma_mdmaen &= (uint8_t)~(1u << i);      /* HDMA stops a DMA on its channel */
+        if (!c->transfer)
+            continue;
+        mode = c->dmap & 7;
+        for (k = 0; k < pattern_len[mode]; k++) {
+            uint8_t b = (uint8_t)(c->bbad + pattern[mode][k]);
+            if (c->dmap & 0x40) {
+                move(c, (uint32_t)c->dasb << 16 | c->das, b);
+                c->das++;
+            } else {
+                move(c, (uint32_t)c->a1b << 16 | c->a2a, b);
+                c->a2a++;
             }
-            snes_clock += 8 * k;      /* in the line's event: no events from here */
         }
     }
     for (i = 0; i < 8; i++) {
@@ -184,19 +251,12 @@ void hdma_line(void)
         c->ntrl--;
         c->transfer = (c->ntrl & 0x80) != 0;
         if (!(c->ntrl & 0x7F)) {
-            c->ntrl = bus_read_a((uint32_t)c->a1b << 16 | c->a2a);
-            c->a2a++;
-            if (c->dmap & 0x40) {
-                uint8_t lo = bus_read_a((uint32_t)c->a1b << 16 | c->a2a);
-                uint8_t hi = bus_read_a((uint32_t)c->a1b << 16 | (uint16_t)(c->a2a + 1));
-                c->das = (uint16_t)(lo | hi << 8);
-                c->a2a += 2;
-            }
-            if (!c->ntrl)
-                c->done = 1;
-            c->transfer = 1;
+            reload(c, i);
+            c->transfer = !c->done;
+        } else {
+            /* the unit reads the table's next byte every line, the line
+               count's own when it is due and in vain otherwise */
+            table_read((uint32_t)c->a1b << 16 | c->a2a);
         }
     }
-    if (any)
-        snes_clock += 18;
 }

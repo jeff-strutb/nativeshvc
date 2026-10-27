@@ -254,6 +254,440 @@ def pseudo_hires():
     return shown(t)
 
 
+def interlace_lines(setini, pal=False):
+    """the lines each frame has (an IRQ on the line past a 262-line
+       frame's, 312 on PAL, turns the backdrop red for the next frame; the
+       NMI turns it blue): shots of consecutive frames"""
+    last = 312 if pal else 262
+    t = Test("interlace_lines_%02x%s" % (setini, "_pal" if pal else ""), frames=8, shots=(4, 5, 6, 7, 8), pal=pal)
+    t.w(0x2133, setini)
+    t.w(0x212C, 0x00)
+    t.w2(0x4209, last)
+    t.w2(0x4207, 50)
+    for a, red, blue in ((0x2121, 0, 0), (0x2122, 0x1F, 0x00), (0x2122, 0x00, 0x7C)):
+        t.irq_w(a, red)
+        t.nmi_w(a, blue)
+    t.irq_end()
+    t.show()
+    t.w(0x4200, 0xA0)
+    t.cli()
+    return t
+
+
+def interlace(name, mode, setini=0x01, big=0, mosaic=0, sprites_on=False, obsel=0x03, seed=None):
+    """an interlaced picture: two consecutive frames (both fields), random
+       backgrounds (and sprites)"""
+    t = bg_mode(name, mode, big=big, seed=seed)
+    t.frames = 7
+    t.shots = [6, 7]
+    if mosaic:
+        t.w(0x2106, mosaic)
+    if sprites_on:
+        t.w(0x2101, obsel)
+        oam = bytearray()
+        for i in range(128):
+            oam += bytes([t.rng.getrandbits(8), t.rng.getrandbits(8), t.rng.getrandbits(8), t.rng.getrandbits(8)])
+        oam += t.rand_bytes(32)
+        t.oam(oam)
+        t.w(0x212C, 0x13)
+    t.w(0x2133, setini)
+    if setini & 0x04:
+        t.overscan = True
+    return shown(t)
+
+
+def frame_length(setini, pal=False, lines_to=250):
+    """the counters latched (SLHV) after the same fixed work from the vertical
+       blank's start, frame after frame: a frame whose length differs moves
+       them"""
+    t = Test("frame_length_%02x%s" % (setini, "_pal" if pal else ""), frames=12, shots=(12,), pal=pal)
+    t.w(0x2133, setini)
+    t.show()
+    for _ in range(6):
+        t.wait_frames(1)
+        for _ in range(110):
+            t.w(0x4202, 0)
+        t.read(0x2137)
+        for a in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+            t.read(a)
+    return t
+
+
+def frame_clock(setini, delay, pal=False, v=230, n=1000):
+    """the time a frame's end takes: from an IRQ at line v (after delay
+       frames, so either field), the same fixed work past the frame's end,
+       then the counters latched (WRIO) and read back"""
+    t = Test("frame_clock_%02x_%d%s%s" % (setini, delay, "_pal" if pal else "", "_%d" % n if n != 1000 else ""),
+             frames=8, shots=(8,), pal=pal)
+    t.w(0x2133, setini)
+    t.show()
+    t.w2(0x4209, v)
+    t.w2(0x4207, 100)
+    for _ in range(n):
+        t.irq_w(0x4202, 0)
+    t.irq_w(0x4201, 0x00)
+    t.irq_w(0x4201, 0xFF)
+    t.irq_end()
+    if delay:
+        t.wait_frames(delay)
+    t.w(0x4200, 0x30)
+    t.cli()
+    t.wait_frames(3)
+    t.w(0x4200, 0x00)
+    t.read(0x213F)
+    for a in (0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(a)
+    return t
+
+
+def power_on(pal=False):
+    """the counters latched (SLHV) by the first step after reset, before
+       anything else: where the beam is as the CPU starts"""
+    t = Test("power_on%s" % ("_pal" if pal else ""), frames=2, shots=(2,), pal=pal, prologue=False)
+    t.read(0x2137)
+    for a in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(a)
+    return t
+
+
+def beam_walk(setini=0, pal=False, blocks=15, m=250, name=None):
+    """the beam latched (SLHV) as the CPU does the same fixed work over
+       several frames, from reset, with no waits and no interrupts: the
+       power-on position, each line's and frame's length"""
+    t = Test(name or "beam_walk_%02x%s" % (setini, "_pal" if pal else ""), frames=6, shots=(6,), pal=pal,
+             prologue=False)
+    t.w(0x2133, setini)
+    for _ in range(blocks):
+        t.read(0x2137)
+        for a in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+            t.read(a)
+        for _ in range(m):
+            t.w(0x4202, 0)
+    return t
+
+
+def irq_entry(h, v=40):
+    """the counters latched (WRIO) by the first write of an IRQ at dot h of
+       line v, the CPU in a polling loop (no WAI): when the IRQ's code runs"""
+    t = Test("irq_entry_%d_%d" % (v, h), frames=6, shots=(6,))
+    t.w2(0x4209, v)
+    t.w2(0x4207, h)
+    t.irq_w(0x4201, 0x00)
+    t.irq_w(0x4201, 0xFF)
+    t.irq_end()
+    t.nmi_w(0x4209, v & 0xFF)
+    t.show()
+    t.w(0x4200, 0xB0)
+    t.cli()
+    t.wait_frames(2)
+    t.w(0x4200, 0x00)
+    t.read(0x213F)
+    for a in (0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(a)
+    return t
+
+
+def poll_exit(kind, n):
+    """the counters latched (SLHV) as the CPU leaves a wait (frames: HVBJOY's
+       vertical blank bit; line: the line), from reset with nothing before"""
+    t = Test("poll_exit_%s_%d" % (kind, n), frames=4, shots=(4,), prologue=False)
+    for _ in range(n % 7):
+        t.w(0x4202, 0)
+    if kind == "frames":
+        t.wait_frames(1)
+    else:
+        t.wait_line(n)
+    t.read(0x2137)
+    for a in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(a)
+    return t
+
+
+def irq_fixed(h, v=40):
+    """an IRQ at dot h of line v taken during fixed work (no waits, from
+       reset): its handler's first write latches the counters (WRIO)"""
+    t = Test("irq_fixed_%d_%d" % (v, h), frames=4, shots=(4,), prologue=False)
+    t.w(0x0010, 0x00)          # the IRQ's steps from their start
+    t.w(0x0011, 0xE0)
+    t.w2(0x4209, v)
+    t.w2(0x4207, h)
+    t.irq_w(0x4201, 0x00)
+    t.irq_w(0x4201, 0xFF)
+    t.irq_end()
+    t.w(0x4200, 0x30)
+    t.cli()
+    for _ in range(200):
+        t.w(0x4202, 0)
+    t.w(0x4200, 0x00)
+    t.read(0x213F)
+    for a in (0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(a)
+    return t
+
+
+def dma_phase(n, total, mode=0x08):
+    """a DMA of n bytes after a delay of `total` clocks (dma_time's, but at
+       every phase of the DMA unit's 8-clock step: 2-clock steps)"""
+    a, b = next((a, (total - 60 * a) // 74) for a in range(total // 60 + 1) if (total - 60 * a) % 74 == 0)
+    t = Test("dma_phase_%d_%d" % (n, total), frames=4, shots=(4,), prologue=False)
+    t.w(0x2181, 0x00)
+    t.w(0x2182, 0x40)
+    t.w(0x2183, 0x00)
+    t.delay(a, b)
+    t.dma(0, mode, 0x80, t.blob(bytes((i * 37 + 11) & 0xFF for i in range(n))), n)
+    t.read(0x2137)
+    for r in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    return t
+
+
+def dma_time(n, pad, mode=0x00, bbad=0x80):
+    """the counters latched (SLHV) after a DMA of n bytes from ROM (to the
+       work RAM's port, or bbad), from reset with no waits: the DMA's own
+       time, its start on the DMA unit's step and its return to the CPU's
+       cycle, with the refreshes it crosses (pad: work before it, for the
+       phase)"""
+    t = Test("dma_time_%d_%d%s%s" % (n, pad, "" if bbad == 0x80 else "_%02x" % bbad, "_fixed" if mode & 0x08 else ""),
+             frames=4, shots=(4,),
+             prologue=False)
+    t.w(0x2181, 0x00)
+    t.w(0x2182, 0x40)
+    t.w(0x2183, 0x00)
+    for _ in range(pad):
+        t.w(0x4202, 0)
+    t.dma(0, mode, bbad, t.blob(bytes((i * 37 + 11) & 0xFF for i in range(n))), n)
+    t.read(0x2137)
+    for a in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(a)
+    return t
+
+
+def apu_ipl(pad):
+    """the boot ROM's replies as the S-CPU sees them: from reset, its ready
+       signature, then the start of an upload ($CC) and a byte, each
+       followed by reads of port 0 logged one after another (when each
+       reply shows; pad: work before it, for the phase)"""
+    t = Test("apu_ipl_%d" % pad, frames=4, shots=(4,), prologue=False)
+    t.wait_frames(1)
+    for _ in range(pad):
+        t.w(0x4202, 0)
+    t.read(0x2140)
+    t.read(0x2141)
+    t.w(0x2142, 0x00)
+    t.w(0x2143, 0x02)
+    t.w(0x2141, 0x01)
+    t.w(0x2140, 0xCC)
+    for _ in range(20):
+        t.read(0x2140)
+    t.w(0x2141, 0x5A)
+    t.w(0x2140, 0x00)
+    for _ in range(20):
+        t.read(0x2140)
+    t.w(0x2141, 0xA5)
+    t.w(0x2140, 0x01)
+    for _ in range(20):
+        t.read(0x2140)
+    return t
+
+
+def apu_echo(total):
+    """when the boot ROM's replies show to the S-CPU: from reset, a delay of
+       `total` clocks (2-clock steps across more than one of the ROM's poll
+       loops), the start of an upload ($CC) and then a byte, each waited
+       for and the counters latched as it shows"""
+    a, b = next((a, (total - 60 * a) // 74) for a in range(total // 60 + 1) if (total - 60 * a) % 74 == 0)
+    t = Test("apu_echo_%d" % total, frames=4, shots=(4,), prologue=False)
+    t.wait_frames(1)
+    t.delay(a, b)
+    t.w(0x2142, 0x00)
+    t.w(0x2143, 0x02)
+    t.w(0x2141, 0x01)
+    t.w(0x2140, 0xCC)
+    t.poll(0x2140, 0xCC)
+    t.read(0x2137)
+    for r in (0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    t.w(0x2141, 0x5A)
+    t.w(0x2140, 0x00)
+    t.poll(0x2140, 0x00)
+    t.read(0x2137)
+    for r in (0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    return t
+
+
+def dma_lump(n, total):
+    """a DMA started by a $420B write followed by a stretch of cycles the C
+       states as one (machine.h cycs): where in it the DMA takes the bus,
+       at every 2-clock phase, as the counters latched after show"""
+    a, b = next((a, (total - 60 * a) // 74) for a in range(total // 60 + 1) if (total - 60 * a) % 74 == 0)
+    t = Test("dma_lump_%d_%d" % (n, total), frames=4, shots=(4,), prologue=False)
+    t.w(0x2181, 0x00)
+    t.w(0x2182, 0x40)
+    t.w(0x2183, 0x00)
+    src = t.blob(bytes((i * 37 + 11) & 0xFF for i in range(n)))
+    for reg, v in ((0, 0x00), (1, 0x80), (2, src & 0xFF), (3, src >> 8 & 0xFF), (4, src >> 16 & 0xFF),
+                   (5, n & 0xFF), (6, n >> 8 & 0xFF)):
+        t.w(0x4300 + reg, v)
+    t.delay(a, b)
+    t.dmago(0x01)
+    t.read(0x2137)
+    for r in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    return t
+
+
+def hdma_lump(total, hdma=True):
+    """an HDMA every line landing in stretches of cycles the C states as
+       one (cycs): 200 turns of a NOP loop at every 2-clock phase, then the
+       counters latched"""
+    a, b = next((a, (total - 60 * a) // 74) for a in range(total // 60 + 1) if (total - 60 * a) % 74 == 0)
+    t = Test("hdma_lump_%d%s" % (total, "" if hdma else "_off"), frames=4, shots=(4,), prologue=False)
+    table = bytes([0xFF]) + bytes(range(127)) + bytes([0xFF]) + bytes(range(127)) + bytes([0x00])
+    t.hdma(1, 0x00, 0x26, table)
+    t.wait_frames(1)
+    t.w(0x420C, 0x02 if hdma else 0x00)   # in the vertical blank: the HDMA from line 0
+    t.delay(a, b)
+    t.nops(0, 3)                          # 768 turns: through line 0 and some 40 lines of HDMA
+    t.read(0x2137)
+    for r in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    return t
+
+
+def hdma_in_dma(total, same_channel=False):
+    """a DMA of 8448 bytes started in the vertical blank, through the
+       frame's start and some 12 lines of HDMA, which come in between its
+       bytes (on its own channel, HDMA stops it): the counters latched
+       after, and the work RAM it filled; at every 2-clock phase"""
+    a, b = next((a, (total - 60 * a) // 74) for a in range(total // 60 + 1) if (total - 60 * a) % 74 == 0)
+    t = Test("hdma_in_dma_%d%s" % (total, "_same" if same_channel else ""), frames=4, shots=(4,), prologue=False)
+    table = bytes([0xFF]) + bytes(range(127)) + bytes([0xFF]) + bytes(range(127)) + bytes([0x00])
+    hch = 0 if same_channel else 1
+    t.hdma(hch, 0x00, 0x26, table)
+    n = 8448
+    src = t.blob(bytes((i * 37 + 11) & 0xFF for i in range(n)))
+    t.wait_frames(1)
+    t.w(0x2181, 0x00)
+    t.w(0x2182, 0x40)
+    t.w(0x2183, 0x00)
+    # channel 0 the DMA's (on its own channel the HDMA moves to the work
+    # RAM's port too, from the line its table starts)
+    for reg, v in ((0, 0x00), (1, 0x80), (2, src & 0xFF), (3, src >> 8 & 0xFF), (4, src >> 16 & 0xFF),
+                   (5, n & 0xFF), (6, n >> 8 & 0xFF)):
+        t.w(0x4300 + reg, v)
+    t.w(0x420C, 1 << hch)
+    t.delay(a, b)
+    t.dmago(0x01)
+    t.read(0x2137)
+    for r in (0x213F, 0x213C, 0x213C, 0x213D, 0x213D):
+        t.read(r)
+    for o in (0x0000, 0x0100, 0x0FFF, 0x1000, 0x20FF):
+        t.read(0x7E4000 + o)
+    return t
+
+
+def alu_steps(kind, a, b):
+    """the multiplier (WRMPYA a, WRMPYB b) or divider (WRDIV a, WRDIVB b)
+       read at once after its start, as it works: RDDIV and RDMPY a cycle
+       and more apart (kind: mul, div, mul_nop, mul_div)"""
+    op = {"mul": 0x0E, "div": 0x0F, "mul_nop": 0x10, "mul_div": 0x11}[kind]
+    t = Test("alu_%s_%04x_%02x" % (kind, a, b), frames=4, shots=(4,), prologue=False)
+    if kind == "div":
+        t.w(0x4204, a & 0xFF)
+        t.w(0x4205, a >> 8)
+    else:
+        t.w(0x4202, a & 0xFF)
+        t.w(0x4204, 0x34)
+        t.w(0x4205, 0x12)
+    t.alu(op, b)
+    for r in (0x10, 0x11, 0x12, 0x13):
+        t.read(r)
+    for r in (0x4214, 0x4215, 0x4216, 0x4217):
+        t.read(r)
+    return t
+
+
+def dma_time_tests():
+    out = []
+    for n in (1, 2, 7, 100, 1000, 8448, 30000):
+        for pad in range(4):
+            out.append(dma_time(n, pad))
+    for pad in range(3):
+        out.append(dma_time(4000, pad, mode=0x01, bbad=0x18))
+    # a fixed source (DMAP bit 3), as a work RAM clear is made, at every
+    # phase of the DMA unit's step and the line
+    for pad in range(16):
+        out.append(dma_time(8448, pad, mode=0x08))
+    for n in (1, 8448):
+        for total in range(3000, 3032, 2):
+            out.append(dma_phase(n, total))
+    for total in range(3000, 3032, 2):
+        out.append(dma_lump(7, total))
+        out.append(hdma_lump(total))
+    for total in range(3000, 3008, 2):
+        out.append(hdma_lump(total, hdma=False))
+    for total in range(3000, 3032, 2):
+        out.append(hdma_in_dma(total))
+    for total in range(3000, 3016, 2):
+        out.append(hdma_in_dma(total, same_channel=True))
+    for kind in ("mul", "mul_nop", "mul_div"):
+        for a in (0x00, 0x01, 0xFF, 0x5A):
+            for b in (0x00, 0xFF, 0xA5, 0x13):
+                out.append(alu_steps(kind, a, b))
+    for a in (0xFFFF, 0x1234, 0x0000, 0x8001):
+        for b in (0x00, 0x01, 0x13, 0xFF):
+            out.append(alu_steps("div", a, b))
+    for pad in range(16):
+        out.append(apu_ipl(pad))
+    for total in range(3000, 3240, 2):
+        out.append(apu_echo(total))
+    for mode, bg in ((0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2),
+                     (5, 0), (5, 1)):
+        for h in list(range(200, 208)) + list(range(260, 268)):
+            out.append(fetch_slot(mode, bg, h))
+    return out
+
+
+def interlace_tests():
+    out = [power_on(), power_on(pal=True)]
+    for n in range(7):
+        out.append(poll_exit("frames", n))
+    for n in (3, 40, 100, 200):
+        out.append(poll_exit("line", n))
+    for h in range(0, 340, 7):
+        out.append(irq_fixed(h))
+    for h in range(0, 340, 11):
+        out.append(irq_entry(h))
+    for setini in (0x00, 0x01):
+        out.append(beam_walk(setini))
+        out.append(beam_walk(setini, pal=True))
+    for m in (37, 41):
+        out.append(beam_walk(blocks=80, m=m, name="beam_walk_m%d" % m))
+    for setini in (0x00, 0x01):
+        for delay in (1, 2):
+            out.append(frame_clock(setini, delay))
+            out.append(frame_clock(setini, delay, pal=True))
+            for n in (20, 40, 80, 200):
+                out.append(frame_clock(setini, delay, n=n))
+    for setini in (0x00, 0x01):
+        out.append(interlace_lines(setini))
+        out.append(interlace_lines(setini, pal=True))
+    for mode in range(8):
+        out.append(interlace("interlace_mode%d" % mode, mode))
+    out.append(interlace("interlace_mode5_big", 5, big=0xF))
+    out.append(interlace("interlace_mode6_big", 6, big=0x1))
+    out.append(interlace("interlace_mode5_mosaic", 5, mosaic=0x31))
+    out.append(interlace("interlace_mode1_mosaic", 1, mosaic=0x31))
+    out.append(interlace("interlace_mode5_overscan", 5, setini=0x05))
+    out.append(interlace("interlace_mode5_pseudo", 5, setini=0x09))
+    for obsel in (0x00, 0x03, 0x06, 0xA5):
+        out.append(interlace("interlace_obj_%02x" % obsel, 1, setini=0x03, sprites_on=True, obsel=obsel))
+        out.append(interlace("interlace_objonly_%02x" % obsel, 1, setini=0x02, sprites_on=True, obsel=obsel))
+    out.append(interlace("interlace_obj_mode5", 5, setini=0x03, sprites_on=True))
+    return out
+
+
 def all_tests():
     out = []
     for mode in range(7):
@@ -330,6 +764,16 @@ def all_tests():
         out.append(probe_cgram_col(h, tm=0x01, ts=0x01, cgwsel=0x02))
     out.append(probe_cgram(100, index=0x80))
     out.append(probe_cgram(100, mode=3))
+    for h in (0, 40, 80, 120, 200, 280):
+        out.append(probe_m7(h, 0x211B, 0x0200))
+        out.append(probe_m7(h, 0x210D, 0x0040))
+    for h in (0, 120, 280):
+        for pre in (0, 1):
+            for reg, value in ((0x211A, 0x01), (0x211B, 0x0200), (0x211C, 0x0100), (0x211D, 0x0100),
+                               (0x211E, 0x0200), (0x211F, 0x0040), (0x2120, 0x0040),
+                               (0x210D, 0x0040), (0x210E, 0x0020)):
+                if pre or reg not in (0x211B, 0x210D):
+                    out.append(probe_m7(h, reg, value, pre=pre))
     for h in (0, 100, 160, 200):
         out.append(irq_reg(0x2100, 0x07, h))
         out.append(irq_reg(0x212C, 0x00, h))
@@ -337,6 +781,13 @@ def all_tests():
     out.append(irq_split("irq_off", 0x80, seed="irq_v"))
     out.append(irq_split("irq_hv_10", 0xB0, h=10))
     out.append(irq_split("irq_hv_200", 0xB0, h=200, lines=(30, 31, 90, 150, 151, 200)))
+    for h, v in ((0, 280), (100, 300), (200, 311), (50, 262)):
+        out.append(pal_variant(irq_latch(h, v=v)))
+    out.append(pal_variant(reads()))
+    out.append(pal_variant(overscan()))
+    out.append(pal_variant(hdma_gradient()))
+    out.append(pal_variant(shown(bg_mode("mode1", 1))))
+    out.append(pal_variant(irq_split("irq_v", 0xA0, lines=(40, 120, 230, 236))))
     out.append(mapping("map_lorom_1m", "lorom", 0x100000))
     out.append(mapping("map_lorom_3m", "lorom", 0x300000, sram=0x2000))
     out.append(mapping("map_lorom_1_5m_sram", "lorom", 0x180000, sram=0x8000))
@@ -347,8 +798,12 @@ def all_tests():
     out.append(mapping("map_hirom_3m", "hirom", 0x300000, sram=0x800))
     out.append(mapping("map_hirom_4m", "hirom", 0x400000))
     out.append(mapping("map_exhirom_6m", "exhirom", 0x600000, sram=0x2000))
+    out.append(mapping("map_exlorom_6m", "exlorom", 0x600000, sram=0x2000))
+    out.append(mapping("map_exlorom_8m", "exlorom", 0x800000))
     out.append(backdrop())
     out.append(one_bg())
+    out += interlace_tests()
+    out += dma_time_tests()
     return [t for t in out if t is not None]
 
 
@@ -471,7 +926,8 @@ def mapping(name, mapping, rom_size, sram=0, banks=None):
     if sram:
         ram_at = {"lorom": [0x700000, 0x710123, 0x7D7FFF, 0xF00000, 0xFE4567, 0x700000 + sram],
                   "hirom": [0x206000, 0x317FFF, 0x3F6123, 0xA06000, 0xBF7FFF],
-                  "exhirom": [0x806000, 0x8F7123, 0xBF7FFF, 0xA06000]}[mapping]
+                  "exhirom": [0x806000, 0x8F7123, 0xBF7FFF, 0xA06000],
+                  "exlorom": [0x700000, 0x710123, 0x7D7FFF, 0xF00000]}[mapping]
         for i, a in enumerate(ram_at):
             t.wlong(a, 0x11 * (i + 1))
         for a in ram_at:
@@ -521,6 +977,13 @@ def irq_reg(reg, val, h, v=40, name=None):
     return t
 
 
+def pal_variant(t):
+    """a cartridge as a PAL one"""
+    t.name = "pal_" + t.name
+    t.pal = True
+    return t
+
+
 def irq_latch(h, v=40):
     """the counters latched from an IRQ at dot h of line v (WRIO's bit 7
        falling), read back by the main code: when the IRQ's code runs"""
@@ -541,6 +1004,33 @@ def irq_latch(h, v=40):
     t.read(0x213F)
     for a in (0x213C, 0x213C, 0x213D, 0x213D):
         t.read(a)
+    return t
+
+
+def fetch_slot(mode, bg, h, v=40):
+    """a scroll write from an IRQ at dot h of line v to background bg in
+       mode `mode`, shown alone: where in the line its tile fetches take it
+       (the map entry's slot of the 32 clocks a tile takes, by mode and
+       layer), against the reference; h steps of 4 clocks across a tile"""
+    t = probe_scroll(h, reg=0x210D + 2 * bg, value=0x48, v=v)
+    t.name = "fetch_slot_m%d_bg%d_%d" % (mode, bg + 1, h)
+    t.shots = [2, 6]                      # 2: the forced blank set and lifted mid-frame
+    # a map of its own at $0800: each column its own palette (the low
+    # depths' characters repeat across a tile), so a split a tile on shows
+    m = bytearray()
+    for ty in range(32):
+        for tx in range(32):
+            m += bytes([tx, (tx & 7) << 2])
+    t.w(0x2100, 0x80)                     # forced blank, for VRAM
+    t.vram(0x0800, m)
+    t.nmi_w(0x210D + 2 * bg, 0x00)
+    t.nmi_w(0x210D + 2 * bg, 0x00)
+    t.w(0x2105, mode)
+    t.w(0x2107 + bg, 0x08)
+    t.w(0x210B, 0x11)                     # every layer's characters at $1000, the probe's
+    t.w(0x210C, 0x11)
+    t.w(0x212C, 1 << bg)
+    t.w(0x2100, 0x0F)
     return t
 
 
@@ -580,7 +1070,7 @@ def probe_scroll(h, reg=0x210D, value=0x40, v=40):
     t.w(0x212C, 0x01)
     t.w2(0x4209, v)
     t.w2(0x4207, h)
-    if reg in (0x210D, 0x210E):
+    if 0x210D <= reg <= 0x2114:           # a scroll: both its writes
         t.irq_w(reg, value)
         t.irq_w(reg, 0x00)
     else:
@@ -726,6 +1216,59 @@ def probe_stat78():
     t.read(0x213E)
     t.read(0x213E)
     t.show()
+    return t
+
+
+def probe_m7(h, reg, value, v=40, pre=0):
+    """Mode 7 with the identity matrix over a texture whose every pixel's
+       colour is its own x (characters of 8 columns, a map of them across):
+       a matrix register written from an IRQ at dot h of line v, and from
+       which pixel the mapping changes (after pre writes that change nothing,
+       each moving the write's clock by 2 modulo the 4 of a pixel)"""
+    t = Test("probe_m7_%02x_%d_%04x%s" % (reg & 0xFF, h, value, "_p%d" % pre if pre else ""))
+    low = bytearray(0x8000)
+    high = bytearray(0x8000)
+    for ty in range(128):
+        for tx in range(128):
+            low[ty * 128 + tx] = tx & 0x1F       # tile = its column, 32 of them
+    for tile in range(32):
+        for y in range(8):
+            for x in range(8):
+                high[tile * 64 + y * 8 + x] = (tile * 8 + x) & 0xFF or 1
+    for part, port, vmain in ((low, 0x18, 0x00), (high, 0x19, 0x80)):
+        t.w(0x2115, vmain)
+        t.w2(0x2116, 0)
+        t.dma(0, 0x00, port, t.blob(part), 0x8000)
+    pal = bytearray()
+    for c in range(256):
+        col = (c & 31) | ((c >> 5) & 7) << 5 | (31 - (c & 31)) << 10
+        pal += bytes([col & 0xFF, col >> 8])
+    t.cgram(0, pal)
+    t.w(0x2105, 0x07)
+    t.w(0x211A, 0x00)
+    t.w16(0x211B, 0x0100)
+    t.w16(0x211C, 0x0000)
+    t.w16(0x211D, 0x0000)
+    t.w16(0x211E, 0x0100)
+    t.w(0x212C, 0x01)
+    t.w2(0x4209, v)
+    t.w2(0x4207, h)
+    for _ in range(pre):
+        t.irq_w(0x2133, 0x00)
+    t.irq_w(reg, value & 0xFF)
+    if reg != 0x211A:
+        t.irq_w(reg, value >> 8)
+    t.irq_w(0x4209, 0xFF)
+    t.irq_w(0x420A, 0x01)
+    t.irq_end()
+    t.nmi_w(0x4209, v & 0xFF)
+    t.nmi_w(0x420A, v >> 8)
+    t.nmi_w(reg, 0x00)
+    if reg != 0x211A:
+        t.nmi_w(reg, 0x01 if reg in (0x211B, 0x211E) else 0x00)
+    t.show()
+    t.w(0x4200, 0xB0)
+    t.cli()
     return t
 
 

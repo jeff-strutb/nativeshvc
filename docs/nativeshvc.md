@@ -8,8 +8,8 @@ processors are the game's own C, written against the machine model
 nativeshvc: the S-CPU's bus and clock, work RAM, the cartridge's mapping,
 ROM and RAM, the CPU's registers (interrupts, timers, multiplier, divider,
 joypads), DMA and HDMA, the PPU, the sound unit (RAM, ports, timers, boot
-ROM protocol) and the DSP, the Super FX's registers, RAM, bus, caches and
-clock; and the machine's surroundings (window, renderer, sound out,
+ROM protocol) and the DSP, and the cartridge connector an expansion chip
+plugs into (`include/nshvc/cart.h`); and the machine's surroundings (window, renderer, sound out,
 controllers, touch, the battery save, the frame's pace) on macOS, Windows,
 iOS and headless.
 
@@ -59,10 +59,11 @@ sharp bilinear filtering, and draw the game's overlays over it.
 | `map` | `NSHVC_LOROM`, `HIROM`, `EXLOROM`, `EXHIROM`, `SUPERFX` |
 | `region` | `NSHVC_NTSC`, `NSHVC_PAL` |
 | `rom`, `rom_size` | the ROM image; or `rom_pages` and `rom_read` for a build that holds only the game's data (the code is the C) |
-| `sram_size`, `battery` | the cartridge's RAM (the Super FX's on a Super FX cartridge), kept in the save folder; `save_from`, `save_size` narrow what is written |
+| `sram_size`, `battery` | the cartridge's RAM (a chip's that owns it: the Super FX's), kept in the save folder; `save_from`, `save_size` narrow what is written |
 | `routines` | every S-CPU routine reached by address (vectors, computed calls and jumps) and every Super FX program, sorted by address |
 | `spc_routines` | the SPC700 routines by APU address, with the ROM bytes each stands for (`uses`) |
 | `spc_run`, `gsu_run` | optional: the game's own entry in place of the lookup |
+| `chip` | the cartridge's expansion chip, or none: the cartridge's own hardware, on the connector (`nshvc/cart.h`). nativeshvc implements no chip in the console; its chips are libraries a cartridge links: the Super FX, `nshvc/superfx.h`'s `nshvc_superfx` (`libnshvc_superfx`), with `map` `NSHVC_SUPERFX` |
 
 An interrupt vector's code is a routine with C (the console makes the
 interrupt's sequence and the RTI), or a short stub in RAM or ROM (NOPs, JMP,
@@ -95,10 +96,11 @@ Each is off by default; off, the console is exact.
 | `nshvc_ext_sprite_x`, `_y` | sprites past the 9-bit X (+512) and the 256-row Y (+256) |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
-| `nshvc_ext_gsu_screen(w, h)`, `gsu_plot_at`, `gsu_rpix_at` | the Super FX's screen to 1024 x 512, at 16-bit coordinates, in its own character layout; its RAM to 896 KB (`sram_size`) at $70-$7D |
-| `nshvc_set_untimed`, `nshvc_wait_vblank` | the S-CPU's work taking no time (a frame's work at once); interrupt handlers stay timed; a wait on time untimed is a fatal error |
+| `nshvc_ext_gsu_screen(w, h)`, `gsu_plot_at`, `gsu_rpix_at` (`nshvc/superfx.h`, the chip's) | the Super FX's screen to 1024 x 512, at 16-bit coordinates, in its own character layout; its RAM to 896 KB (`sram_size`) at $70-$7D |
+| `nshvc_set_untimed`, `nshvc_wait_vblank` | the S-CPU's work taking no time (a frame's work at once); interrupt handlers stay timed, but for code run in one with interrupts held; a wait on time untimed is a fatal error |
 | `nshvc_hold_interrupts` | no interrupt taken while held (an app's own work in the game's machine, from the frame hook) |
 | `cpu_wai` (machine.h) | WAI |
+| `cycs` (machine.h) | time stated cycle by cycle (each hex digit a cycle's clocks), where the DMA unit takes the bus as on the console |
 
 The game owns what shows past the console's screen: sprites it hides off the
 console's screen may come into view on a larger one.
@@ -107,12 +109,30 @@ console's screen may come into view on a larger one.
 
 The master clock is the console's (21.477 MHz NTSC). Each access takes the
 bus's time for it (8 clocks for SlowROM and work RAM, 6 for FastROM and
-most registers, 12 for $4000-$41FF); the C states the time between (`cyc`,
-`gsu_code`, `spc_cyc`). The beam's lines are 1,364 clocks, dots 323 and 327
-6 clocks each; the work RAM's refresh stops the CPU 40 clocks a line; DMA
-takes 8 clocks a byte, HDMA runs in each line's horizontal blank. Interrupts
-are taken where the S-CPU's C touches the bus, never between the two bytes
-of one word; an H-IRQ past a line's end comes early in the next.
+most registers, 12 for $4000-$41FF), a read taking its value 4 clocks
+before its end and a write landing at its end; the C states the time
+between (`cyc`, `gsu_code`, `spc_cyc`). The beam's lines are 1,364 clocks,
+dots 323 and 327 6 clocks each (NTSC's line 240 in field 1 1,360 when not
+interlaced; an interlaced frame's field 0 a line longer); the work RAM's
+refresh stops the CPU 40 clocks a line. The DMA unit takes work up at the
+start of the CPU's next cycle and makes it at the start of the one after: a
+DMA at the second cycle after its $420B write, HDMA (the frame's setup in
+line 0, a transfer in each shown line's horizontal blank) at the second
+cycle after it comes due, or between a DMA's bytes, where HDMA stops a DMA
+on its own channel. It waits for its 8-clock step, takes 8 clocks to
+start, 8 a channel and 8 a byte (read 4 clocks in, written at the end) and
+an HDMA table byte each line, and gives the bus back on the CPU's own
+cycle. So the unit lands at the right cycle, the C states the cycles a DMA
+or HDMA can fall in one by one (`cycs`: machine.h); `NSHVC_AUDIT=1` names
+each `cyc` stretch that one falls in. Interrupts are taken at the
+instruction boundaries the C marks (`cpu_boundary`), decided as the
+instruction's last cycle begins, with the I flag as it stood then: the C
+states that last cycle on its own (an access, a single `cyc`, or
+`cpu_implied` for a two-cycle implied instruction). The sound unit runs
+from power on with the console's clock (the S-CPU starts after its reset);
+each side sees an access of the other's made at or before its own time, a
+port read taking its value half an SPC700 cycle before its cycle ends. A
+Super FX store reaches its RAM as the RAM buffer drains.
 
 ## The picture
 
@@ -120,10 +140,16 @@ Each line is recorded as the beam passes its horizontal blank. A register
 write made while a line is being drawn shows from the pixel the beam has
 reached, as on the console: the output stage's registers (brightness, the
 screens, windows, colour maths, colours) from pixel (clock - 52) / 4; the
-backgrounds' maps, characters and scroll from the next tile fetched (a tile
-each 32 clocks from clock 6), the scroll's fine part as the line began. A
-CGRAM write made while the screen is drawn lands at the entry the PPU is
-looking up (the main screen's pixel at (clock - 60) / 4). VRAM writes during
-the display are lost. These were measured against the reference with probe
-cartridges (`tests/rom/cases.py`'s `probe_*`); the one residual is in
-`tests/README.md`.
+backgrounds' maps, characters and scroll from the first tile whose map
+entry is fetched at or after it (a tile each 32 clocks, each layer's entry
+in its own slot of them by the mode), the scroll's fine part as the line
+began. Mode 7's
+matrix and scroll follow the output stage's rule. A CGRAM access made while
+the screen is drawn goes to the entry the PPU is looking up (the main
+screen's pixel at (clock - 55) / 4). VRAM writes during the display are
+lost. An interlaced frame (SETINI bit 0 as it began) draws its field's rows
+of a picture twice as tall, woven with the frame before's; hires lines read
+two map rows a line (the field's), and OBJ interlace draws each sprite in
+half its lines, every other row. These were measured against the reference
+with probe cartridges (`tests/rom/cases.py`'s `probe_*`); nothing is known
+to differ (`tests/README.md`).

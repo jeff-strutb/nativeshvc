@@ -20,7 +20,7 @@ import cases  # noqa: E402
 
 BUILD = os.environ.get("NSHVC_TESTBUILD", os.path.join(ROOT, "build", "null", "tests"))
 OUTROOT = os.path.join(ROOT, "build", "tests")
-OUT = os.path.join(OUTROOT, "rom")
+OUT = os.environ.get("NSHVC_TESTOUT", os.path.join(OUTROOT, "rom"))
 ORACLE = os.environ.get("NSHVC_ORACLE", os.path.join(BUILD, "oracle"))
 CART = os.environ.get("NSHVC_TESTCART", os.path.join(BUILD, "testcart"))
 CORE = os.environ.get("NSHVC_ORACLE_CORE")

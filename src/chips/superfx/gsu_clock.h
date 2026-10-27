@@ -12,8 +12,9 @@
  *   MULT and UMULT 1 more, FMULT and LMULT 3 more (7 without CFGR's MS0);
  *   waiting for the ROM buffer: writing R14 starts a 5-clock fill, which
  *     GETB, GETC, ROMB and a fetch from ROM wait for;
- *   waiting for the RAM buffer: a store takes 5 clocks to be made, which
- *     the next load, store, RAMB or fetch from RAM waits for;
+ *   waiting for the RAM buffer: a store takes 5 clocks to be made (it
+ *     reaches the RAM then), which the next load, store, RAMB or fetch
+ *     from RAM waits for;
  *   a pixel-cache flush, 5 a byte (bpp bytes), 5 more for each when the
  *     row is not all plotted (it reads the byte first); RPIX flushes both
  *     caches, then reads bpp bytes at 5;
@@ -52,6 +53,8 @@ struct GsuClock {
     /* the pixel caches' own accesses to game pak RAM (a flush's, RPIX's) */
     uint8_t (*pix_read)(GsuClock *c, uint32_t addr);
     void (*pix_write)(GsuClock *c, uint32_t addr, uint8_t v);
+    /* the RAM buffer's store made, as the buffer drains (NULL: none) */
+    void (*ram_store)(GsuClock *c);
 };
 
 /* The screen as PLOT and RPIX lay it out: ht the height (POR's OBJ: 3, the

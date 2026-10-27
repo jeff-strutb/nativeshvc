@@ -106,10 +106,27 @@ void cpu_loop_forever(uint32_t at);
 void cpu_restart(uint32_t at, void (*entry)(void));
 /* WAI at `at`: the CPU stops until an interrupt is due (an NMI, or the IRQ
    line, masked or not), then goes on: the interrupt is taken there when it
-   is not masked. Its opcode's fetch and two internal cycles, then internal
-   cycles until the wake. (An extension of the decomp machine model:
+   is not masked. Its opcode's fetch, then internal cycles: the one that
+   begins with the interrupt due and one more. (An extension of the decomp machine model:
    nativeshvc's, for code the original runs WAI in.) */
 void cpu_wai(uint32_t at);
+/* An instruction boundary: the original's next instruction starts here.
+   The CPU takes an interrupt only between instructions; a C that marks
+   each boundary gets its interrupts exactly there, and from its first
+   mark no longer at its accesses. Without marks, an interrupt is taken at
+   the next access the C makes (never between the two bytes of a word, nor
+   between a read and its write back). (An extension of the decomp
+   machine model: nativeshvc's.) */
+void cpu_boundary(void);
+/* The CPU decides on an interrupt as an instruction's last cycle begins,
+   with the I flag as it is then: a C that marks its boundaries states
+   each instruction's last cycle on its own (the access that ends it, or a
+   cyc of that one cycle, or cpu_implied). */
+/* The internal cycle that ends a two-cycle implied instruction at `at`
+   (INX, TAX, CLC, NOP, XCE...): 6 clocks, or, with an interrupt to be
+   taken after it, a read at the next opcode (at + 1) instead, as the CPU
+   makes. (An extension of the decomp machine model: nativeshvc's.) */
+void cpu_implied(uint32_t at);
 /* Time the original spends with no access the C makes: a delay loop's
    turns (its fetches and internal cycles), `clocks` master clocks (21.477
    MHz). The rest of the machine runs meanwhile, so the time matters: the
@@ -120,6 +137,20 @@ void cpu_idle(uint32_t clocks);
    clocks. The C states it where its code stands for the original's, so
    each access comes at the original's time. */
 void cyc(uint32_t clocks);
+/* The same time stated cycle by cycle, in order: each hex digit of
+   `lengths` one cycle's master clocks (6, 8, or C for 12), the first cycle
+   the leftmost digit: cycs(0x8668) is cycles of 8, 6, 6 and 8 clocks, up
+   to 16 a call. Each is a cycle of the original's, where the console's
+   DMA unit takes the bus as the S-CPU's does: a DMA a $420B write starts
+   runs at the second cycle after it, an HDMA due at the first cycle that
+   begins after its time. A stretch a DMA or HDMA falls in wants stating
+   this way (NSHVC_AUDIT=1 names each cyc that one falls in). */
+void cycs(uint64_t lengths);
+/* A mark in NSHVC_CYCLOG's stream (an M line, `id`, between the lines of
+   the accesses and time around it), for lining a record up with the C
+   that made it. No time passes; without NSHVC_CYCLOG it does nothing.
+   (An extension of the decomp machine model: nativeshvc's.) */
+void nshvc_mark(uint32_t id);
 /* `v`, with the time before an access stated after the access's other
    arguments are worked out: where the access is reached in the middle of
    an expression, so no statement before it stands for that place. */
@@ -134,6 +165,18 @@ static inline int cyc_loop(uint32_t clocks, int again)
 {
     if (again)
         cyc(clocks);
+    return again;
+}
+/* cyc_then and cyc_loop, the time stated cycle by cycle (cycs) */
+static inline uint32_t cycs_then(uint64_t lengths, uint32_t v)
+{
+    cycs(lengths);
+    return v;
+}
+static inline int cycs_loop(uint64_t lengths, int again)
+{
+    if (again)
+        cycs(lengths);
     return again;
 }
 

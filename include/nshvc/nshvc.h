@@ -45,8 +45,8 @@ typedef enum {
     NSHVC_HIROM,       /* ROM in 64 KB banks at $40-$7D, $C0-$FF (and $00-$3F:8000); RAM at $20-$3F:6000-$7FFF */
     NSHVC_EXLOROM,     /* LoROM past 4 MB: $80-$FF the first 4 MB, $00-$7D the rest */
     NSHVC_EXHIROM,     /* HiROM past 4 MB: $C0-$FF the first 4 MB, $40-$7D the rest; RAM as HiROM's */
-    NSHVC_SUPERFX      /* GSU-1/2: LoROM at $00-$3F:8000, all of ROM at $40-$5F; the Super FX's RAM at $70-$71
-                          (and its first 8 KB at $00-$3F:6000); its registers at $3000-$32FF */
+    NSHVC_SUPERFX      /* the Super FX's board: LoROM at $00-$3F:8000, all of ROM at $40-$5F; the rest (its
+                          registers, its RAM) the chip's (nshvc_cart.chip: nshvc/superfx.h) */
 } nshvc_map;
 
 typedef enum { NSHVC_NTSC = 0, NSHVC_PAL = 1 } nshvc_region;
@@ -90,6 +90,9 @@ typedef struct {
     const nshvc_spc_use *uses;
 } nshvc_spc_routine;
 
+/* the cartridge's own hardware, an expansion chip (cart.h) */
+typedef struct nshvc_chip nshvc_chip;
+
 typedef struct nshvc_cart {
     const char *title;          /* the window's and dialogs' */
     const char *save_name;      /* the save folder's and the save file's name (title when NULL) */
@@ -106,9 +109,9 @@ typedef struct nshvc_cart {
     const uint8_t *const *rom_pages;
     uint8_t (*rom_read)(uint32_t off, int who);
 
-    /* The cartridge's RAM: sram_size bytes (0 none); for NSHVC_SUPERFX, the
-       Super FX's RAM (32 or 64 KB). battery: kept in the save folder
-       between runs. */
+    /* The cartridge's RAM: sram_size bytes (0 none); a chip that owns the
+       RAM (its ram member: the Super FX's) takes its size from here.
+       battery: kept in the save folder between runs. */
     uint32_t sram_size;
     int battery;
     /* optional: the part of the RAM the battery keeps worth writing (a
@@ -129,6 +132,11 @@ typedef struct nshvc_cart {
        SPC700's never does; a Super FX program's at its STOP). */
     void (*spc_run)(uint16_t addr);
     void (*gsu_run)(uint8_t bank, uint16_t addr);
+
+    /* The cartridge's expansion chip (cart.h), or NULL: the cartridge's
+       own hardware, which the console's bus gives the addresses it decodes
+       (nativeshvc's: nshvc/superfx.h's nshvc_superfx). */
+    const nshvc_chip *chip;
 } nshvc_cart;
 
 /* ---- running it -------------------------------------------------------------- */
@@ -211,14 +219,15 @@ void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 
 /* Untimed: the S-CPU's code runs without spending the console's time (its
    accesses and stated cycles take none), so a stretch of the game's work
-   takes no frames at all; interrupt handlers stay timed. A Super FX
+   takes no frames at all; interrupt handlers stay timed, but for code run
+   in one with interrupts held (nshvc_hold_interrupts: from the frame hook). A Super FX
    program started meanwhile runs to its STOP at once (the S-CPU's next
    look at it). A restart (machine.h cpu_restart: the stack reset, every
    call dropped) ends it. Waiting on time while untimed is a fatal error:
    20,000,000 reads with no write between, the Super FX waiting for its
    bus, a loop for ever. Off (the default), the console is exact. */
 void nshvc_set_untimed(int on);
-int nshvc_untimed(void);
+int nshvc_untimed(void);   /* untimed as it stands now */
 /* The clock run on, timed, to the next vertical blank's start (the NMI,
    the joypads' read and the frame's end come on the way as they would),
    then untimed put back as it was. */
@@ -258,23 +267,19 @@ void nshvc_ext_sprite_limits(int on);
 void nshvc_ext_vram(int kb);
 void nshvc_ext_vram_page(int page);
 void nshvc_ext_layer_page(int layer, int page);
-
-/* The Super FX past its own: its screen width x height pixels (8 to 1024
-   by 8 to 512, multiples of 8; 0, 0 the GSU's own, the default), plotted
-   at 16-bit coordinates (gsu.h gsu_plot_at, gsu_rpix_at; gsu_plot and
-   gsu_rpix the same at 8 bits), laid out as the GSU lays its own: 8x8
-   characters, each its bit planes in pairs of bytes, in columns of
-   height / 8 characters, down then across, from SCBR's 1 KB on, past bank
-   $71 into the RAM after it. Its RAM: nshvc_cart.sram_size past 128 KB
-   (up to 896 KB, in 64 KB banks) is at $70-$7D on the S-CPU's bus and the
-   Super FX's. */
-void nshvc_ext_gsu_screen(int width, int height);
+/* The same pages as registers on the B bus, for the game's code and its
+   HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
+   BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the
+   console's 64 KB they take no notice of writes (the console's open bus
+   there). */
 
 /* Interrupts held: while on, none is taken; those that come due (the
    NMI, the IRQ) wait, and are taken at the first place one can be after
    the hold ends. For code an app runs in the game's machine outside the
    game's own flow (from the frame hook: an in-between frame drawn, the
-   machine put back after), which the game's handlers must not see. */
+   machine put back after), which the game's handlers must not see. The
+   Super FX's interrupt (SFR's IRQ bit, the cartridge's IRQ line) is put
+   back as the hold ends to what it was as the hold began. */
 void nshvc_hold_interrupts(int on);
 
 /* ---- the front end's hooks, for the game's own additions ------------------------- */

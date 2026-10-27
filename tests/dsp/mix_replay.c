@@ -1,119 +1,112 @@
 /*
- * mix_replay.c: the native mixer (../mixer.c) given what bsnes's DSP was given, held to
- * bsnes's own output, sample for sample.
+ * mix_replay.c: the native mixer (src/dsp) given what the reference's
+ * sound chip was given, at the clocks it was given it, held to the chip's
+ * own output and replies, sample for sample.
  *
- *   mix_replay LOG SOUND
+ *   mix_replay SPCLOG SOUND [VOICES]
  *
- * LOG is sfxbox --apulog's record (the APU RAM at power-on, then each
- * SPC700 write with the DSP samples made before it and the DSP's cycle in
- * the sample it was making); SOUND is sfxbox --sound's output of the same
- * run. Each write lands in the replay's APU RAM and, for $F3, in the DSP
- * register $F2 names, from the frame after the one it came in (PHASE_AT=N:
- * a write before cycle N lands in its own frame). The
- * chip's output comes a sample after the mixer's (OUT_DELAY=0 compares
- * them unshifted).
- * Prints the first sample that differs and the count; exit 1 on any.
- * VOX=FILE (sfxbox --voices of the same run): also the first frame each
- * voice's envelope level or stage differs (the chip wraps its play
- * position and decodes a frame later than the mixer, from the same values,
- * so those are not compared).
+ * SPCLOG is the oracle's --spclog record (each SPC700 write, and each read
+ * of $F0-$FF, at its time in half cycles from power-on); SOUND the
+ * oracle's --sound of the same run (each sample as the chip made it);
+ * VOICES its --voices (each voice's envelope level and stage, pitch
+ * counter, BRR block and byte, at each sample). The chip's clock is the
+ * SPC700's cycle, from power-on with the APU RAM clear, so the mixer runs
+ * clock by clock and each write lands between the same two clocks it did
+ * on the chip: in the APU RAM and, for $F3, in the DSP register $F2 names.
+ * Each read of $F3 is held to the mixer's register; each read of the APU
+ * RAM, when the log has them (--spcreads), to the mixer's, which holds
+ * what the echo wrote.
+ * Prints the first difference of each kind and the counts; exit 1 on any.
  */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "mixer.h"
 #include "mixer_regs.h"
 
+static const char *field[] = { "level", "stage", "position", "block", "byte" };
+
 int main(int argc, char **argv)
 {
-    FILE *lf, *sf;
+    FILE *lf, *sf, *vf = NULL;
     static uint8_t ram[65536];
     uint8_t rec[8], f2 = 0;
-    int have = 0, cut = getenv("PHASE_AT") ? atoi(getenv("PHASE_AT")) : 0;
-    uint32_t s = 0, ws = 0, first = UINT32_MAX;
-    unsigned long bad = 0, n = 0;
-    int16_t want[2], prev[2] = { 0, 0 };
-    int vcut[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-    FILE *vf = getenv("VOX") ? fopen(getenv("VOX"), "rb") : NULL;
-    int32_t chip[2][40], mine[2][40];
-    int vk = 0, vreported[2] = { 0, 0 };
-    int delay = getenv("OUT_DELAY") ? atoi(getenv("OUT_DELAY")) : 1;
-    if (argc < 3 || !(lf = fopen(argv[1], "rb")) || !(sf = fopen(argv[2], "rb"))) {
-        fprintf(stderr, "usage: mix_replay LOG SOUND\n");
+    int have = 0;
+    uint64_t clocks = 0;
+    uint32_t made = 0;
+    unsigned long bad = 0, vbad = 0, rbad = 0, mbad = 0, reads = 0, mreads = 0;
+    if (argc < 3 || !(lf = fopen(argv[1], "rb")) || !(sf = fopen(argv[2], "rb")) ||
+        (argc > 3 && !(vf = fopen(argv[3], "rb")))) {
+        fprintf(stderr, "usage: mix_replay SPCLOG SOUND [VOICES]\n");
         return 2;
     }
-    if (getenv("VCUT"))
-        sscanf(getenv("VCUT"), "%d,%d,%d,%d,%d,%d,%d,%d", &vcut[0], &vcut[1], &vcut[2], &vcut[3], &vcut[4], &vcut[5],
-               &vcut[6], &vcut[7]);
-    if (fread(ram, 1, sizeof ram, lf) != sizeof ram)
-        return 2;
     mix_init(ram);
     mix_regs_reset();
-    while (fread(want, 2, 2, sf) == 2) {
-        int16_t l, r;
-        /* the writes that land before this sample */
+    for (;;) {
+        int16_t l, r, want[2];
+        /* the accesses made after this many clocks */
         for (;;) {
+            uint32_t t;
             uint16_t a;
             if (!have) {
                 if (fread(rec, 1, 8, lf) != 8)
                     break;
                 have = 1;
             }
-            ws = rec[0] | rec[1] << 8 | rec[2] << 16 | (uint32_t)rec[3] << 24;
-            {
-                /* the cycle from which this write waits for the next frame:
-                   VCUT=c0,..,c7 for each voice's registers, else PHASE_AT */
-                int c = cut;
-                uint16_t wa = (uint16_t)(rec[5] | rec[6] << 8);
-                if (wa == 0xF3 && !(f2 & 0x80) && (f2 & 0x0F) < 0x0A && vcut[f2 >> 4] >= 0)
-                    c = vcut[f2 >> 4];
-                if (ws > s || (ws == s && rec[4] >= c))
-                    break;
-            }
+            t = rec[0] | rec[1] << 8 | rec[2] << 16 | (uint32_t)rec[3] << 24;
+            /* a port read is made between its cycle's two halves */
+            if ((t + 1) / 2 > clocks)
+                break;
             a = (uint16_t)(rec[5] | rec[6] << 8);
-            ram[a] = rec[7];
-            if (a == 0xF2)
-                f2 = rec[7];
-            else if (a == 0xF3 && !(f2 & 0x80))
-                mix_reg_write(f2, rec[7]);
+            if (!rec[4]) {
+                if ((a < 0xF0 || a > 0xFF) && a < 0xFFC0) {
+                    mreads++;
+                    if (ram[a] != rec[7] && !mbad++)
+                        fprintf(stderr, "first RAM read that differs at clock %llu: $%04X, reference %02X, mixer %02X\n",
+                                (unsigned long long)clocks, a, rec[7], ram[a]);
+                } else if (a == 0xF3) {
+                    uint8_t mine = mix_reg_read(f2 & 0x7F);
+                    reads++;
+                    if (mine != rec[7] && !rbad++)
+                        fprintf(stderr, "first read that differs at clock %llu: DSP $%02X, reference %02X, mixer %02X\n",
+                                (unsigned long long)clocks, f2 & 0x7F, rec[7], mine);
+                }
+            } else {
+                ram[a] = rec[7];
+                if (a == 0xF2)
+                    f2 = rec[7];
+                else if (a == 0xF3 && !(f2 & 0x80))
+                    mix_reg_write(f2, rec[7]);
+            }
             have = 0;
         }
-        mix_frame(&l, &r);
-        if (vf && fread(chip[vk], 4, 40, vf) == 40) {
-            int v, k;
-            mix_voice_states(mine[vk]);
-            for (v = 0; v < 8; v++)
-                for (k = 0; k < 2; k++) {
-                    const int32_t *c = chip[vk], *m = mine[vk];
-                    if (vreported[k] || s < 2 || (!c[5 * v] && !m[5 * v]))
-                        continue;
-                    if (c[5 * v + k] != m[5 * v + k]) {
-                        fprintf(stderr, "voice state first differs at frame %u: voice %d %s, chip %d, mixer %d\n", s, v,
-                                (const char *[]){ "level", "stage", "position", "block", "byte" }[k], c[5 * v + k], m[5 * v + k]);
-                        vreported[k] = 1;
-                    }
+        clocks++;
+        if (!mix_clock(&l, &r))
+            continue;
+        if (fread(want, 2, 2, sf) != 2)
+            break;
+        if ((l != want[0] || r != want[1]) && !bad++)
+            fprintf(stderr, "first difference at sample %u: reference %d %d, mixer %d %d\n", made, want[0], want[1], l,
+                    r);
+        if (vf) {
+            int32_t chip[40], mine[40];
+            int k;
+            if (fread(chip, 4, 40, vf) != 40)
+                break;
+            mix_voice_states(mine);
+            for (k = 0; k < 40; k++)
+                if (chip[k] != mine[k]) {
+                    if (!vbad)
+                        fprintf(stderr, "voice state first differs at sample %u: voice %d %s, reference %d, mixer %d\n",
+                                made, k / 5, field[k % 5], chip[k], mine[k]);
+                    vbad++;
+                    break;
                 }
-            vk ^= 1;
         }
-        if (delay) {                         /* the output a sample later */
-            int16_t t0 = prev[0], t1 = prev[1];
-            prev[0] = l;
-            prev[1] = r;
-            l = t0;
-            r = t1;
-        }
-        if (l != want[0] || r != want[1]) {
-            if (first == UINT32_MAX) {
-                first = s;
-                fprintf(stderr, "first difference at sample %u: bsnes %d %d, mixer %d %d\n", s, want[0], want[1], l, r);
-            }
-            bad++;
-        }
-        n++;
-        s++;
+        made++;
     }
-    printf("%lu of %lu samples differ%s\n", bad, n, first == UINT32_MAX ? "" : "");
-    return bad != 0;
+    printf("%lu of %u samples differ, %lu with voice states that differ; %lu of %lu DSP reads, %lu of %lu RAM reads\n",
+           bad, made, vbad, rbad, reads, mbad, mreads);
+    return bad || vbad || rbad || mbad;
 }

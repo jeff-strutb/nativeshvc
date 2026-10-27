@@ -19,6 +19,19 @@ from $F000, writes only):
   07 aaaaaa vv      write vv to $aaaaaa
   08                CLI: the IRQ unmasked
   09                WAI: until an interrupt
+  0A aaaa vv        wait until $00:aaaa reads vv (polled: LDA ($00); CMP; BNE)
+  0B nn mm          a delay: nn turns of a 60-clock loop, then mm of a 74-clock
+                    one (a start's phase set to 2 clocks)
+  0C nn mm          turns of four NOPs, DEC, BNE: nn, then 256 more for each mm
+                    past 1 (testcart.c states the loop in stretches of
+                    cycles: machine.h cycs)
+  0D vv             write vv to MDMAEN ($420B), then four NOPs (the same)
+  0E vv             write vv to WRMPYB ($4203), then read RDDIV and RDMPY
+                    ($4214-$4217) at once, each stored to $10-$13
+  0F vv             the same with WRDIVB ($4206)
+  10 vv             0E with a NOP before the reads
+  11 vv             vv to WRMPYB and at once to WRDIVB (the second while the
+                    first is under way), then the reads
   00                stop (the CPU loops for ever)
 
 The cartridge's mapping (LoROM, HiROM, ExHiROM) puts the interpreter's
@@ -77,6 +90,38 @@ next:
     cmp #$09
     bne +
     jmp op_wai
++
+    cmp #$0A
+    bne +
+    jmp op_poll
++
+    cmp #$0B
+    bne +
+    jmp op_delay
++
+    cmp #$0C
+    bne +
+    jmp op_nops
++
+    cmp #$0D
+    bne +
+    jmp op_dmago
++
+    cmp #$0E
+    bne +
+    jmp op_mul
++
+    cmp #$0F
+    bne +
+    jmp op_div
++
+    cmp #$10
+    bne +
+    jmp op_mul_nop
++
+    cmp #$11
+    bne +
+    jmp op_mul_div
 +
 halt:
     wai
@@ -150,6 +195,106 @@ op_read:
 
 op_cli:
     cli
+    jmp next
+
+op_poll:
+    rep #$20
+    lda $0000,x
+    sta $00
+    sep #$20
+    lda $0002,x
+    sta $02
+    inx
+    inx
+    inx
+.p:
+    lda ($00)
+    cmp $02
+    bne .p
+    jmp next
+
+op_delay:
+    lda $0000,x
+    sta $06
+    lda $0001,x
+    sta $07
+    inx
+    inx
+    lda $06
+    beq .b
+.a:
+    dec $06
+    bne .a
+.b:
+    lda $07
+    beq .d
+.c:
+    nop
+    dec $07
+    bne .c
+.d:
+    jmp next
+
+op_nops:
+    lda $0000,x
+    sta $06
+    lda $0001,x
+    sta $07
+    inx
+    inx
+.l:
+    nop
+    nop
+    nop
+    nop
+    dec $06
+    bne .l
+    dec $07
+    bne .l
+    jmp next
+
+op_mul:
+    lda $0000,x
+    sta $4203
+    jmp alu_reads
+
+op_div:
+    lda $0000,x
+    sta $4206
+    jmp alu_reads
+
+op_mul_nop:
+    lda $0000,x
+    sta $4203
+    nop
+    jmp alu_reads
+
+op_mul_div:
+    lda $0000,x
+    sta $4203
+    sta $4206
+    jmp alu_reads
+
+alu_reads:
+    lda $4214
+    sta $10
+    lda $4215
+    sta $11
+    lda $4216
+    sta $12
+    lda $4217
+    sta $13
+    inx
+    jmp next
+
+op_dmago:
+    lda $0000,x
+    sta $420B
+    nop
+    nop
+    nop
+    nop
+    inx
     jmp next
 
 op_wai:
@@ -248,7 +393,7 @@ org $00FFFC
 """
 
 TABLE = 0x9000               # the steps, bank $00
-MAP_MODE = {"lorom": 0x20, "hirom": 0x21, "exhirom": 0x25}
+MAP_MODE = {"lorom": 0x20, "hirom": 0x21, "exhirom": 0x25, "exlorom": 0x30}
 
 
 def pattern(o):
@@ -257,7 +402,8 @@ def pattern(o):
 
 
 class Test:
-    def __init__(self, name, frames=6, shots=(6,), seed=None, mapping="lorom", rom_size=0x40000, sram=0):
+    def __init__(self, name, frames=6, shots=(6,), seed=None, mapping="lorom", rom_size=0x40000, sram=0, pal=False,
+                 prologue=True):
         self.name = name
         self.frames = frames
         self.shots = list(shots)
@@ -265,13 +411,15 @@ class Test:
         self.mapping = mapping
         self.rom_size = rom_size
         self.sram = sram
+        self.pal = pal
         self.blobs = []           # (file offset, bytes)
-        self.next_file = self.code_offset() + 0x10000 if mapping != "lorom" else 0x8000
+        self.next_file = {"lorom": 0x8000, "exlorom": 0x8000}.get(mapping, self.code_offset() + 0x10000)
         self.rng = random.Random(seed if seed is not None else name)
         self.reads = 0
         self.irq_steps = bytearray()
         self.nmi_steps = bytearray()
-        self.prologue()
+        if prologue:
+            self.prologue()
 
     # ---- steps ----
     def w(self, addr, v):
@@ -314,6 +462,21 @@ class Test:
     def wlong(self, addr, v):
         self.steps += bytes([0x07, addr & 0xFF, addr >> 8 & 0xFF, addr >> 16 & 0xFF, v & 0xFF])
 
+    def poll(self, addr, v):
+        self.steps += bytes([0x0A, addr & 0xFF, addr >> 8 & 0xFF, v & 0xFF])
+
+    def delay(self, n, m):
+        self.steps += bytes([0x0B, n & 0xFF, m & 0xFF])
+
+    def nops(self, n, m=1):
+        self.steps += bytes([0x0C, n & 0xFF, m & 0xFF])
+
+    def dmago(self, channels):
+        self.steps += bytes([0x0D, channels & 0xFF])
+
+    def alu(self, op, v):
+        self.steps += bytes([op, v & 0xFF])
+
     def read(self, addr):
         self.steps += bytes([0x06, addr & 0xFF, addr >> 8 & 0xFF, addr >> 16 & 0xFF])
         self.reads += 1
@@ -321,12 +484,16 @@ class Test:
     # ---- data ----
     def code_offset(self):
         """the file offset of $00:8000"""
-        return {"lorom": 0, "hirom": 0x8000, "exhirom": 0x408000}[self.mapping]
+        return {"lorom": 0, "hirom": 0x8000, "exhirom": 0x408000, "exlorom": 0x400000}[self.mapping]
 
     def cpu_address(self, o):
         """an S-CPU address that reads file offset o"""
         if self.mapping == "lorom":
             return (o >> 15) << 16 | 0x8000 | (o & 0x7FFF)
+        if self.mapping == "exlorom":
+            if o < 0x400000:
+                return (0x80 | o >> 15) << 16 | 0x8000 | (o & 0x7FFF)
+            return ((o - 0x400000) >> 15) << 16 | 0x8000 | (o & 0x7FFF)
         if self.mapping == "hirom":
             return (0xC0 | o >> 16) << 16 | (o & 0xFFFF)
         return ((0xC0 | o >> 16) if o < 0x400000 else (0x40 | (o - 0x400000) >> 16)) << 16 | (o & 0xFFFF)
@@ -450,13 +617,13 @@ class Test:
         rom[c:c + 0x8000] = bank0
         for o, data in self.blobs:
             rom[o:o + len(data)] = data
-        header(rom, self.name, c + 0x7FC0, MAP_MODE[self.mapping], self.sram)
+        header(rom, self.name, c + 0x7FC0, MAP_MODE[self.mapping], self.sram, self.pal)
         with open(rom_path, "wb") as f:
             f.write(rom)
         return rom_path
 
 
-def header(rom, title, h, map_mode, sram):
+def header(rom, title, h, map_mode, sram, pal=False):
     """the header at $00:FFC0 (file offset h), with its checksum"""
     t = title.upper().encode("ascii", "replace")[:21].ljust(21, b" ")
     rom[h:h + 21] = t
@@ -470,7 +637,7 @@ def header(rom, title, h, map_mode, sram):
     while sram and (1024 << ram) < sram:
         ram += 1
     rom[h + 0x18] = ram if sram else 0
-    rom[h + 0x19] = 0x01          # North America
+    rom[h + 0x19] = 0x02 if pal else 0x01      # Europe (PAL) or North America
     rom[h + 0x1A] = 0x00
     rom[h + 0x1B] = 0x00
     rom[h + 0x1C:h + 0x20] = b"\xFF\xFF\x00\x00"

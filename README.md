@@ -18,40 +18,44 @@ Version 0.1.0.
 
 **What is not done:**
 
-- **ExLoROM** is implemented but not yet checked against the reference.
-- **PAL** is implemented (312 lines, its own clock) but not yet checked.
-- **Interlace** sets only the field flag; interlaced pictures are not drawn at 448 or 478
-  lines.
-- **Mid-line writes to Mode 7's matrix** are not modelled: each line uses the matrix as it
-  stood when the line began.
-- **The sound unit and DSP** are checked only through Stunt Race FX's plays (its pacing and
-  RAM), not on their own against the reference's samples. The mixer has an open difference
-  of 1 to 2 levels on one channel from sample 126,206 of Stunt Race FX's attract mode,
-  carried over from that port.
-- **28 test ROMs** are tracked as a known residual: when WAI wakes for an IRQ, the
-  handler's mid-line effects land 1 to 2 pixels off.
+- **Stunt Race FX does not yet match its cartridge.** All 21 of its plays still differ from
+  the original cartridge on the reference. Every difference traced so far is in the game's
+  C (timing it states in lumps that a DMA or HDMA can fall inside, being converted to
+  cycle-by-cycle time), not in the console.
+- **The sound unit and DSP** are checked only through Stunt Race FX's plays, not on their
+  own against the reference's samples, and one channel differs by 1 to 2 levels from
+  sample 126,206 of Stunt Race FX's attract mode.
+- **The renderer checks** (presented frames and overlays) have not been rerun since the
+  latest console changes.
 - **The Windows build** is cross-built with MinGW but has never been run.
 
 **What is done and checked.** Every check below is against bsnes as the reference, with its
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
 each one, is in [tests/README.md](tests/README.md).
 
-- **Cartridges:** LoROM, HiROM, ExHiROM and Super FX mappings, including mirroring for ROM
-  sizes that are not a power of two, and cartridge RAM.
+- **Test cartridges:** all 1,060 console test cartridges match the reference, and none is
+  listed as a known difference.
+- **Cartridges:** LoROM, HiROM, ExLoROM, ExHiROM and Super FX mappings, including
+  mirroring for ROM sizes that are not a power of two, and cartridge RAM; NTSC and PAL
+  frame lengths.
 - **Picture:** modes 0 to 7, 16x16 tiles, offset-per-tile (modes 2, 4, 6), direct colour,
-  Mode 7 and EXTBG, hires and pseudo-hires (512 wide), overscan (239 lines), mosaic,
-  sprites in every size (with the vertical flip of tall sprites), their line limits and
-  priority rotation, windows, colour maths, brightness, HDMA, the read side and open bus.
-- **Timing:** mid-line register writes timed by register class, CGRAM writes during display
-  landing on the entry being looked up, VRAM writes blocked during display, H and V IRQs
-  with long dots, WAI.
-- **Test ROMs:** 308 match the reference exactly.
-- **A real decompilation:** Stunt Race FX (S-CPU, Super FX and SPC700), both its unchanged
-  decomp and its converted port cartridge (assets only, no ROM image), matches its own
-  port's reference over 21 plays: every screenshot, work RAM and Super FX RAM dump and
-  pacing record, byte for byte.
+  Mode 7 and EXTBG, hires and pseudo-hires (512 wide), overscan (239 lines), interlace (its
+  fields woven, hires and OBJ interlace), mosaic, sprites in every size (with the vertical
+  flip of tall sprites), their line limits and priority rotation, windows, colour maths,
+  brightness, HDMA, the read side and open bus.
+- **Timing:** mid-line register writes (Mode 7's matrix included) and each layer's tile
+  fetch by mode, CGRAM writes during display landing on the entry being looked up, VRAM
+  writes blocked during display, H and V IRQs with long dots, WAI, multiply and divide
+  results read mid-operation, DMA and HDMA timing at every 2-clock phase and HDMA between a
+  DMA's bytes, and the sound unit's handshake as the S-CPU sees it.
+- **A real decompilation runs on it:** Stunt Race FX (S-CPU, Super FX and SPC700) runs
+  unchanged on nativeshvc. A check compares its 21 plays with the original cartridge on
+  the reference, byte for byte (every screenshot, work RAM and Super FX RAM dump and pacing
+  record), and another finds the frame and the instruction where a play first differs.
+  They do not all match yet (see above).
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the frames and draw
-  overlays, matching the CPU reference.
+  overlays; they matched the CPU reference when last checked, before the latest console
+  changes.
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook).
 
@@ -90,7 +94,7 @@ The processors are the game's C. Everything that is not a processor is nativeshv
 | The game supplies | nativeshvc supplies |
 |---|---|
 | The S-CPU's (65816) code, as C | The S-CPU's bus and clock, work RAM, the CPU's registers (interrupts, timers, multiplier and divider, joypads) |
-| The Super FX's (GSU) programs, as C | The Super FX's registers, RAM, bus, code cache and pixel caches, and its clock |
+| An expansion chip's programs, such as the Super FX's, as C | The cartridge connector a chip plugs into, and the Super FX as a library a cartridge links |
 | The SPC700's sound driver, as C | The sound unit: 64 KB of APU RAM, its ports and timers, the boot ROM protocol, the S-DSP |
 | The ROM's data (or the whole ROM) | The cartridge's mapping, ROM and battery RAM |
 | | DMA and HDMA, the PPU, the window, the GPU presentation, sound output, controllers, the save, the frame's pace |
@@ -117,11 +121,26 @@ native console.
 
 [`hw.h`](include/nshvc/hw.h) names the hardware registers by their standard names.
 
+### The cartridge connector
+
+nativeshvc is the console, and implements no expansion chip itself. A cartridge's own
+hardware (the Super FX, the SA-1, a DSP) is the cartridge's, as on the console, and plugs in
+through the connector in [`cart.h`](include/nshvc/cart.h): the chip powers on with the
+console, answers the S-CPU's accesses to the addresses it decodes, is brought up to the
+console's clock before those accesses and once a line, drives the IRQ line, and may own the
+cartridge's RAM. A cartridge with a chip names it in its description.
+
+The Super FX is the first chip, built as its own library
+([`src/chips/superfx/`](src/chips/superfx/), header [`superfx.h`](include/nshvc/superfx.h))
+that a Super FX cartridge links.
+
 ### Time
 
 Time is the console's master clock (21.477 MHz NTSC). Each S-CPU access moves it by what
 that access takes on the bus, and `cyc` moves it by the time the original spends between
-accesses. As the clock passes each line's horizontal blank, that line is drawn and HDMA
+accesses. Where a DMA or HDMA can fall inside that time, the C states it cycle by cycle
+instead (`cycs`, each hex digit one cycle's clocks), so the transfer lands on the right
+cycle edge. As the clock passes each line's horizontal blank, that line is drawn and HDMA
 runs; at the vertical blank's start come the NMI, the joypads' automatic read and the
 frame's end. Interrupts are taken only where the S-CPU's C touches the bus, never between
 the two bytes of one word, as an instruction boundary is the only place the hardware takes
@@ -136,7 +155,7 @@ of them does (its registers, its RAM, the sound ports) and once a line, the S-CP
 up to its own time, and it hands back when it gets there. One runs at a time, on a
 deterministic schedule, with no threads: the same input gives the same run on every host.
 
-- **Super FX** ([`superfx.c`](src/console/superfx.c), [`gsu_clock.c`](src/console/gsu_clock.c)).
+- **Super FX** ([`superfx.c`](src/chips/superfx/superfx.c), [`gsu_clock.c`](src/chips/superfx/gsu_clock.c)).
   A program starts when the S-CPU writes R15; its C, found by its address (PBR:R15), runs
   until its STOP, then GO clears and the IRQ rises. Its clock follows the GSU-1's: the code
   cache and its fills, ROM and RAM buffer waits, multiplier times, pixel-cache flushes, and
@@ -237,8 +256,10 @@ outputs there.
 A cartridge is an `nshvc_cart`: its title and save name, its mapping (`NSHVC_LOROM`,
 `NSHVC_HIROM`, `NSHVC_EXLOROM`, `NSHVC_EXHIROM`, `NSHVC_SUPERFX`) and region, its ROM (a
 whole image, or only the data pages with a reader for the rest, so no copy of the code
-ships), its RAM and battery, and the tables of routines with C by address, which a
-decompilation's tags already generate. The game's main hands it to the console:
+ships), its RAM and battery, its expansion chip if it has one, and the tables of routines
+with C by address, which a decompilation's tags already generate. A Super FX cartridge uses
+the `NSHVC_SUPERFX` mapping, sets its chip to `nshvc_superfx` and links the
+`nshvc_superfx` library. The game's main hands the cartridge to the console:
 
 ```c
 NSHVC_MAIN(argc, argv)
@@ -270,6 +291,14 @@ then `nshvc_run_frame` each frame, and takes the picture (`nshvc_picture`) and t
 (`nshvc_audio_take`) itself, setting the buttons with `nshvc_set_joypad`. It can read the
 machine's memory, peek at the bus with no side effects, and hook each frame and each S-CPU
 write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
+
+### 5. Check its timing
+
+Two options show where a port's stated time and the console disagree, on any headless run:
+`NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
+needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
+against the original's cycles. Stunt Race FX's own check, which finds where a play first
+differs from the cartridge, is described in [tests/README.md](tests/README.md).
 
 ### What the decompilation does not have to do
 
