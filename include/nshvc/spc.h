@@ -4,9 +4,11 @@
  * The C of an SPC700 routine works on `spc` (A, X, Y, SP and the PSW flags)
  * and makes every APU RAM and I/O access through spc_rd/spc_wr, in the
  * order and number the assembly makes them (a decomp's checks compare the
- * accesses with the original's; nativeshvc's apu.c answers them as the sound
- * unit does: APU RAM, the DSP through $F2/$F3, the ports $F4-$F7, the timers
- * $FA-$FF). The stack is page 1; direct page is page 0 or 1 by P.
+ * accesses with the original's; nativeshvc answers them as the sound unit
+ * does: APU RAM, the DSP through $F2/$F3, the ports $F4-$F7, the timers
+ * $FA-$FF). The stack is page 1; direct page is page 0 or 1 by P. The
+ * SPC700 takes no interrupts, so nothing comes between the C's operations.
+ * With machine.h, the game's side of the contract (docs/contract.md).
  *
  * A routine is entered by CALL, PCALL or TCALL: the caller pushes the return
  * address (spc_call), the routine's RET pulls it (spc_ret). abi_Name(void)
@@ -78,20 +80,11 @@ static inline void spc_call(void (*abi)(void), uint16_t ret, unsigned first, uns
 }
 
 /* The driver jumps to `at`, code that never comes back to what called it
-   (the reload loop at $0675, which ends by restarting the driver): every
-   C frame of the calls under it is gone, and `entry`, the C of the code at
-   `at`, runs from there. Write the address as a literal (0x0675); the
-   checks end the call there and take `entry` on its own. */
+   (a reload loop that ends by restarting the driver): every C frame of
+   the calls under it is gone, and `entry`, the C of the code at `at`,
+   runs from there. Never returns. A decomp's checks end the call there
+   and take `entry` on its own. */
 void spc_restart(uint16_t at, void (*entry)(void));
-
-/* The instruction at `at` begins: a place a test harness may run an
-   SPC700 unit call (a routine called from a stub, its registers and the
-   stub put back after, the driver going on here), as the reference's
-   harness runs one when the SPC700 reaches that instruction. The C marks
-   the places such calls start from (a driver's timer wait, $0897 in Stunt
-   Race FX's). No time passes; with no call waiting it does nothing.
-   (An extension of the decomp machine model: nativeshvc's.) */
-void spc_at(uint16_t at);
 
 /* JMP $FFC0: the console's boot ROM (the SPC700's own, not the game's): it
    takes the next upload from the S-CPU by its transfer protocol and runs

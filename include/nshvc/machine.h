@@ -3,8 +3,11 @@
  *
  * The C reads and writes the S-CPU's 24-bit address space through rd8/wr8,
  * exactly as the original code does, so a routine's C has the same inputs
- * and outputs as its assembly. Inside the verification harness these go to
- * the emulated machine; a native port supplies its own implementation.
+ * and outputs as its assembly. nativeshvc answers each access as the
+ * console does; a decomp's verification harness answers the same calls
+ * from the original's record. This header, with spc.h, is the game's side
+ * of the contract (docs/contract.md); it changes only with nativeshvc's
+ * major version.
  *
  * Routines that assembly still calls also need the register file: each such
  * routine has an abi_ wrapper that takes its inputs from `cpu` and leaves its
@@ -30,8 +33,8 @@ uint32_t rd24(uint32_t addr);
    on memory): its read, then its write, one operation, no interrupt
    between them: rd8_rmw then wr8, or rd16_rmw then wr16_rmw, whose write
    is the high byte first, then the low, as the CPU makes them. The C may
-   state time between the two (cyc); a read before the write is a fatal
-   error. */
+   state time between the two (cyc); another read before the write is a
+   fatal error. */
 uint8_t rd8_rmw(uint32_t addr);
 uint16_t rd16_rmw(uint32_t addr);
 void wr16_rmw(uint32_t addr, uint16_t value);
@@ -113,14 +116,8 @@ void cpu_restart(uint32_t at, void (*entry)(void));
 /* WAI at `at`: the CPU stops until an interrupt is due (an NMI, or the IRQ
    line, masked or not), then goes on: the interrupt is taken there when it
    is not masked. Its opcode's fetch, then internal cycles: the one that
-   begins with the interrupt due and one more. (An extension of the decomp machine model:
-   nativeshvc's, for code the original runs WAI in.) */
+   begins with the interrupt due and one more. */
 void cpu_wai(uint32_t at);
-/* The internal cycle that ends a two-cycle implied instruction at `at`
-   (INX, TAX, CLC, NOP, XCE...): 6 clocks, or, with an interrupt to be
-   taken after it, a read at the next opcode (at + 1) instead, as the CPU
-   makes. (An extension of the decomp machine model: nativeshvc's.) */
-void cpu_implied(uint32_t at);
 /* Time the original spends with no access the C makes: a delay loop's
    turns (its fetches and internal cycles), `clocks` master clocks (21.477
    MHz). The rest of the machine runs meanwhile, so the time matters: the
@@ -141,11 +138,6 @@ void cyc(uint32_t clocks);
    begins after its time. A stretch a DMA or HDMA falls in wants stating
    this way (NSHVC_AUDIT=1 names each cyc that one falls in). */
 void cycs(uint64_t lengths);
-/* A mark in NSHVC_CYCLOG's stream (an M line, `id`, between the lines of
-   the accesses and time around it), for lining a record up with the C
-   that made it. No time passes; without NSHVC_CYCLOG it does nothing.
-   (An extension of the decomp machine model: nativeshvc's.) */
-void nshvc_mark(uint32_t id);
 /* `v`, with the time before an access stated after the access's other
    arguments are worked out: where the access is reached in the middle of
    an expression, so no statement before it stands for that place. */

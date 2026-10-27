@@ -900,7 +900,7 @@ static void start(void)
 }
 
 /* an spccall that has not run when the machine it was for is left: the
-   driver's C never marked its instruction (spc.h spc_at) */
+   driver's C never marked its instruction (tooling.h spc_at) */
 static void spc_unrun(void)
 {
     if (snes_spc_unit_busy() == 1)

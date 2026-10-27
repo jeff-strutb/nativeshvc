@@ -33,7 +33,7 @@
  *   spcset APU BYTE[,BYTE...]  APU RAM bytes for the next spccall
  *   spccall APU [a= x= y= psw= at=APU]   the SPC700 routine at APU called
  *                        when the driver's C next marks `at` ($0897 if not
- *                        named) with spc_at
+ *                        named) with spc_at (tooling.h)
  *   plug PORT DEVICE     plug joypad, none, mouse, multitap, superscope,
  *                        justifier or justifiers into port 0 or 1
  *   pad N BITS           player N's joypad holds BITS (hex, the joypad's

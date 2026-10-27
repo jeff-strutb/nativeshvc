@@ -112,7 +112,7 @@ static int audit_on(void)
      C 0xSITE n              cyc(n) from the C at SITE (cyc_then, cyc_loop too)
      S 0xSITE 0xLENGTHS      cycs(LENGTHS) from SITE
      K n                     time the console states for the C: an opcode
-                             fetch it makes, cpu_implied, WAI, an interrupt's
+                             fetch it makes, WAI, an interrupt's
      D n                     cpu_idle's wait, n clocks
      M n                     nshvc_mark(n): a place the C names, in stream order
      R aaaaaa vv / W aaaaaa vv / P aaaaaa vv   a read, a write, an interrupt's push */
@@ -1238,7 +1238,6 @@ static void between(void)
     check_interrupts_at(snes_clock, snes_irq_masked && snes_irq_masked());
 }
 
-void snes_c_between(void) { between(); }
 
 /* `clocks` of the C's time with no access in it, as the clock moves on:
    each interrupt that comes due in it is taken at its time (the multiplier
@@ -1494,11 +1493,6 @@ static void cpu_clocks(uint32_t clocks)
 }
 static int timeup_seen(void) { return timeup_flag && timeup_at <= snes_clock; }
 int snes_interrupt_due(void) { return (nmi_pending && nmi_at <= snes_clock) || timeup_seen() || cart_irq; }
-int snes_interrupt_taken_now(void)
-{
-    return !interrupts_held
-        && ((nmi_pending && nmi_at <= snes_clock) || ((timeup_seen() || cart_irq) && !(snes_irq_masked && snes_irq_masked())));
-}
 /* the end of an instruction the console runs: the interrupt the CPU
    decided on as its last cycle began, with the I flag as it was then */
 void snes_cpu_boundary(void)

@@ -21,9 +21,10 @@
 #define I(clocks) cyc(clocks)
 /* the same, the instruction's last cycle (last clocks) in it */
 #define L(clocks, last) ((void)(last), cyc(clocks))
-/* a two-cycle implied instruction (INX, TYX, CLI...): its opcode, then
-   the internal cycle the CPU makes a read when an interrupt follows */
-#define IMP() (cyc(OP), cpu_implied(0x008000))
+/* a two-cycle implied instruction (INX, TYX, CLI...): its opcode's fetch
+   and its internal cycle, cycle by cycle (a DMA the step before started
+   begins in them) */
+#define IMP() cycs(0x86)
 
 static uint16_t rd16_00(uint16_t a) { return rd16(a); }
 

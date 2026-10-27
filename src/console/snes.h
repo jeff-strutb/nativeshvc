@@ -115,9 +115,6 @@ unsigned snes_access_clocks(uint32_t addr);
    unit call's stub): the interrupt the CPU decided on as its last cycle
    began */
 void snes_cpu_boundary(void);
-/* a point between two of the C's operations: the interrupt due by now
-   (bus.c, the C's operations) */
-void snes_c_between(void);
 /* a byte the interrupt sequence pushes (NSHVC_CYCLOG's P line) */
 void snes_interrupt_push(uint32_t addr, uint8_t value);
 /* a read or write of an instruction the console runs (a pull, a store):
@@ -127,7 +124,6 @@ void snes_cpu_write_within(uint32_t addr, uint8_t value);
 /* whether an interrupt is due: the NMI, or the IRQ line (masked or not) */
 int snes_interrupt_due(void);
 /* an interrupt would be taken now (due, and the IRQ not masked) */
-int snes_interrupt_taken_now(void);
 /* clocks with no access: the console's own wait, no interrupt taken in
    it (snes_cpu_wait); the C's (cpu_idle), each taken as it comes due */
 void snes_cpu_wait(uint32_t clocks);
@@ -175,7 +171,7 @@ extern int snes_unit_pending;
 void snes_unit_start(void);          /* at a boundary while one is pending */
 
 /* An SPC700 unit call (the script's spcset and spccall): when the driver's
-   C next marks the instruction at `at` (spc.h spc_at), the routine at
+   C next marks the instruction at `at` (tooling.h spc_at), the routine at
    `target` is called from a stub at $01F0 (CALL, then BRA to itself) with
    the registers given and the staged bytes in APU RAM; when it returns, the
    registers and the stub's bytes are put back and the driver goes on at

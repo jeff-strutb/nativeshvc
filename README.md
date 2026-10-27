@@ -14,7 +14,9 @@ that every Super Nintendo decompilation can share one console instead of buildin
 
 ## Status
 
-Version 0.1.0.
+Version 1.0.0. The game contract, what a game writes against and what the console
+promises it, is fixed at 1.0: [docs/contract.md](docs/contract.md). Only a 2.0 may change
+it.
 
 **What is not done:**
 
@@ -324,7 +326,7 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 
 ### 2. Write the C against the machine model
 
-Write each routine's C against `machine.h` and `spc.h`: every bus access through
+The rules are [the game contract](docs/contract.md). Write each routine's C against `machine.h` and `spc.h`: every bus access through
 `rd8`/`wr8` (`spc_rd`/`spc_wr`) in the original's order, and the original's time between
 them through `cyc` (`spc_cyc`). A cartridge chip's processor (the Super FX) has the game's
 own machine model, with its chip. This is the same C the decompilation's verification
@@ -389,7 +391,8 @@ reference and on the native build:
   time) before the routine's C; afterwards the machine is as it was, unless `keep` says the
   game goes on from there.
 - `spcset` and `spccall` do the same for an SPC700 routine, started where the driver's C
-  marks a safe point (`spc_at`).
+  marks a safe point (`spc_at`, in [`tooling.h`](include/nshvc/tooling.h): not part of
+  the game contract).
 - `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
   of the machine and cannot be copied, so the run forks instead: one process holds the
   state while another goes on. A state that no process holds is rebuilt by replaying, from
@@ -414,8 +417,9 @@ write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
 Two options show where a port's stated time and the console disagree, on any headless run:
 `NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
 needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
-against the original's cycles. The C can drop markers into that record with `nshvc_mark`,
-which takes no time, to line it up with the code that made it.
+against the original's cycles. The C can drop markers into that record with `nshvc_mark`
+([`tooling.h`](include/nshvc/tooling.h), outside the game contract), which takes no time,
+to line it up with the code that made it.
 
 ### What the decompilation does not have to do
 

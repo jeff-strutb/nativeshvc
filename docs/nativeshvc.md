@@ -1,5 +1,9 @@
 # nativeshvc: the console, its interface and its extensions
 
+What a game must do and what the console promises it are fixed in
+[the game contract](contract.md) (1.0); this page describes the interface
+around it.
+
 ## What it is
 
 A decompiled game is the cartridge; nativeshvc is the console. The
@@ -109,8 +113,6 @@ Each is off by default; off, the console is exact.
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
 | `nshvc_set_untimed`, `nshvc_wait_vblank` | the S-CPU's work taking no time (a frame's work at once); interrupt handlers stay timed, but for code run in one with interrupts held; a wait on time untimed is a fatal error |
 | `nshvc_hold_interrupts` | no interrupt taken while held (an app's own work in the game's machine, from the frame hook) |
-| `cpu_wai` (machine.h) | WAI |
-| `cycs` (machine.h) | time stated cycle by cycle (each hex digit a cycle's clocks), where the DMA unit takes the bus as on the console |
 
 The game owns what shows past the console's screen: sprites it hides off the
 console's screen may come into view on a larger one.

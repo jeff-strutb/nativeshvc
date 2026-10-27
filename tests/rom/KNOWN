@@ -21,7 +21,7 @@ irq_fixed_40_42 interrupt latency: the handler starts 4 dots earlier
 irq_fixed_40_49 interrupt latency: the handler starts 4 dots earlier
 irq_fixed_40_56 interrupt latency: the handler starts 3 dots earlier
 irq_fixed_40_63 interrupt latency: the handler starts 6 dots earlier
-irq_fixed_40_70 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_70 interrupt latency: the handler starts 2 dots earlier
 irq_fixed_40_77 interrupt latency: the handler starts 3 dots earlier
 irq_fixed_40_84 interrupt latency: the handler starts 2 dots earlier
 irq_fixed_40_91 interrupt latency: the handler starts 12 dots earlier
@@ -32,8 +32,8 @@ irq_fixed_40_119 interrupt latency: the handler starts 7 dots earlier
 irq_fixed_40_126 interrupt latency: the handler starts 10 dots earlier
 irq_fixed_40_133 interrupt latency: the handler starts 6 dots earlier
 irq_fixed_40_140 interrupt latency: the handler starts 6 dots earlier
-irq_fixed_40_147 interrupt latency: the handler starts 3 dots earlier
-irq_fixed_40_154 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_147 interrupt latency: the handler starts 2 dots earlier
+irq_fixed_40_154 interrupt latency: the handler starts 2 dots earlier
 irq_fixed_40_161 interrupt latency: the handler starts 11 dots earlier
 irq_fixed_40_168 interrupt latency: the handler starts 4 dots earlier
 irq_fixed_40_175 interrupt latency: the handler starts 4 dots earlier
@@ -49,7 +49,7 @@ irq_fixed_40_238 interrupt latency: the handler starts 4 dots earlier
 irq_fixed_40_245 interrupt latency: the handler starts 4 dots earlier
 irq_fixed_40_252 interrupt latency: the handler starts 3 dots earlier
 irq_fixed_40_259 interrupt latency: the handler starts 6 dots earlier
-irq_fixed_40_266 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_266 interrupt latency: the handler starts 2 dots earlier
 irq_fixed_40_273 interrupt latency: the handler starts 3 dots earlier
 irq_fixed_40_280 interrupt latency: the handler starts 2 dots earlier
 irq_fixed_40_287 interrupt latency: the handler starts 12 dots earlier
@@ -59,7 +59,7 @@ irq_fixed_40_308 interrupt latency: the handler starts 5 dots earlier
 irq_fixed_40_315 interrupt latency: the handler starts 7 dots earlier
 irq_fixed_40_322 interrupt latency: the handler starts 10 dots earlier
 irq_fixed_40_329 interrupt latency: the handler starts 2 dots earlier
-irq_fixed_40_336 interrupt latency: the handler starts 3 dots earlier
+irq_fixed_40_336 interrupt latency: the handler starts 2 dots earlier
 irq_entry_40_0 interrupt latency: the handler starts 16 dots earlier
 irq_entry_40_11 interrupt latency: the handler starts 8 dots earlier
 irq_entry_40_22 interrupt latency: the handler starts 2 dots earlier

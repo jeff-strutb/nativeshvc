@@ -15,6 +15,7 @@
 
 #include "nshvc/nshvc.h"
 #include "nshvc/machine.h"
+#include "nshvc/tooling.h"
 
 extern uint64_t snes_clock;
 

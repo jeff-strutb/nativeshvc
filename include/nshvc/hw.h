@@ -1,6 +1,7 @@
 /*
- * hw.h: S-CPU hardware registers used by the code, by their standard names,
- * as 24-bit S-CPU addresses, by their standard names.
+ * hw.h: the console's registers on the S-CPU's bus (the PPU's, the APU's
+ * ports, work RAM's port, the CPU's, DMA's), by their standard names, as
+ * 24-bit S-CPU addresses. Names only: the C may use them or the numbers.
  */
 #ifndef NSHVC_HW_H
 #define NSHVC_HW_H

@@ -29,6 +29,7 @@
 
 #include "nshvc/machine.h"
 #include "nshvc/spc.h"
+#include "nshvc/tooling.h"
 #include "snes_internal.h"
 #include "nshvc/cart.h"
 #include "coro.h"
@@ -148,13 +149,6 @@ void cycs(uint64_t lengths)
                        __builtin_return_address(0));
         snes_cpu_cycle_c(c);
     }
-}
-void cpu_implied(uint32_t at)
-{
-    /* with an interrupt to be taken, the internal cycle is a read at the
-       next opcode instead */
-    cpu_cycle(snes_interrupt_taken_now() ? fetch(at + 1) : 6);
-    snes_c_between();
 }
 
 void cpu_restart(uint32_t at, void (*entry)(void))
@@ -522,7 +516,7 @@ static void spc_run(uint16_t addr)
         snes_fatal("SPC700 code at $%04X: no routine with C matches the APU's RAM", addr);
     fn();
 }
-/* ---- SPC700 unit calls (snes.h snes_spc_unit_call; spc.h spc_at) ---- */
+/* ---- SPC700 unit calls (snes.h snes_spc_unit_call; tooling.h spc_at) ---- */
 #define SPC_STUB 0x01F0
 static struct {
     int state;                               /* 1 waiting for `at`, 2 under way */
