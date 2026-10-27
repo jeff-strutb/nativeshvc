@@ -14,17 +14,20 @@ that every Super Nintendo decompilation can share one console instead of buildin
 
 ## Status
 
-Version 1.0.0. The game contract, what a game writes against and what the console
-promises it, is fixed at 1.0: [docs/contract.md](docs/contract.md). Only a 2.0 may change
-it.
+Version 1.0.0. **The standard is finished:** the game contract, what a game writes against
+and what the console promises it, is fixed at 1.0 in [docs/contract.md](docs/contract.md).
+A game built against it plays on every later 1.x unchanged; only a 2.0 may change it. The
+one difference from the hardware, interrupt latency, is part of that contract (see
+[Time](#time)).
 
-**What is not done:**
+**Platform hosts still to come.** These are separate implementations of the host
+interface, outside the standard; a game written against 1.0 needs no change for them:
 
-- **The Windows build** is cross-built with MinGW with no warnings but has never been run
-  on Windows. Its saving and loading of states, and calls that put the machine back, use
-  the replay that needs no `fork` (see step 3), which is checked on macOS to make exactly
-  what `fork` makes, not on Windows itself.
-- **Linux** has no windowed host. The headless host is plain POSIX, but it has not been
+- **Windows:** the host is written and cross-builds with MinGW with no warnings, but has
+  never been run on Windows. Its saving and loading of states, and calls that put the
+  machine back, use the replay that needs no `fork` (see step 3), which is checked on
+  macOS to make exactly what `fork` makes, not on Windows itself.
+- **Linux:** no windowed host yet. The headless host is plain POSIX, but has not been
   built or run on Linux.
 
 **What is done and checked.** Every check below is against bsnes as the reference, with its
@@ -62,20 +65,22 @@ each one, is in [tests/README.md](tests/README.md).
   each control is called on it.
 - **Unit tests from a game state:** a script can run one routine's C once, from any point
   the game reached, with its registers and inputs, and return the machine to where it was;
-  it can also save and load states.
+  it can also save and load states, with `fork` or without it, the two making the same
+  machine byte for byte.
+- **The cartridge connector:** a chip on a test board answers its registers, decodes the
+  board's ROM, owns the cartridge's RAM and drives the IRQ line, all through `cart.h`.
 - **Sound unit and DSP, on their own:** a test cartridge's SPC700 program writes every DSP
   register at random on every clock of the chip's frame, plays random sample data, runs the
   timers and the ports. The DSP matches the reference's chip sample for sample, with every
   voice's state, every register read and every APU RAM read; the whole sound unit on
   nativeshvc matches every SPC700 access (time, address, value: the timers' counts and the
-  ports' values), every sample and every S-CPU port read (8 seeds, a minute each). Given
-  Stunt Race FX's own sound driver's writes, the DSP matches the cartridge's sound over all
-  23 of its recorded plays (172 million samples).
-- **Renderers:** software, Metal, OpenGL and Vulkan each present every test cartridge's
+  ports' values), every sample and every S-CPU port read (seeds 1 to 4).
+- **Renderers:** software, Metal, OpenGL and Vulkan each present the test cartridges'
   frames (one to one and scaled) and draw overlays as the CPU reference does: 1,105
   cartridges each, none differing.
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
-  touch, buttons, the frame hook).
+  touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
+  the iOS simulator, Windows) compiles with no warnings.
 
 ## Project Purpose
 
@@ -86,8 +91,9 @@ a television's frame rate. Each native port has had to rebuild all of that aroun
 
 nativeshvc builds it once. Its purpose is the equivalent of putting a cartridge in the
 console and switching it on: a decompilation describes its cartridge, hands over its C, and
-gets a native program that plays on macOS, Windows, Linux and iOS, presented on the GPU at
-any window size, with sound, controllers and saves, at the console's own pace.
+gets a native program that plays on any platform with a host (macOS and iOS now; Windows
+and Linux to come), presented on the GPU at any window size, with sound, controllers and
+saves, at the console's own pace.
 
 It holds to the standard of the decompilations it serves. It runs no emulated CPU, does no
 high-level emulation of the game, and has no per-game fixes. The game's own C makes every
@@ -120,20 +126,26 @@ The processors are the game's C. Everything that is not a processor is nativeshv
 The C is written against the machine model in two headers, the same model the
 decompilations' verification harnesses provide. Inside a harness these calls reach an
 emulated machine and are checked against the original; under nativeshvc they reach the
-native console.
+native console. Together with the cartridge's description, they are the game contract
+([docs/contract.md](docs/contract.md)).
 
 - [`machine.h`](include/nshvc/machine.h), the S-CPU: `rd8`/`wr8` (and `rd16`, `wr16`,
-  `rd24`) for every access to the 24-bit address space, `rd8_rmw`/`rd16_rmw` for a
-  read-modify-write's read (its write ends it); `cyc(clocks)` for the original's
-  fetches and internal cycles between two accesses, in master clocks; the 65816 register
-  file `cpu` for routines entered through `abi_` wrappers; `call_routine` and
-  `jump_routine` for calls and jumps through computed addresses; `cpu_loop_forever`,
-  `cpu_restart` and `cpu_idle` for the code no C returns from.
+  `rd24`) for every access to the 24-bit address space; `rd8_rmw`/`rd16_rmw` for a
+  read-modify-write's read and `wr8`/`wr16_rmw` for its write; `cyc(clocks)` for the
+  original's fetches and internal cycles between two accesses, in master clocks, and
+  `cycs` for the same cycle by cycle where a DMA or HDMA starts in them; the 65816
+  register file `cpu` for routines entered through `abi_` wrappers; `call_routine`,
+  `jump_routine` and `jump_routine_pushed` for calls and jumps through computed addresses;
+  `cpu_loop_forever` and `cpu_restart` for the code no C returns from; `cpu_wai` for WAI;
+  `cpu_idle` for time with no access of the C's.
 - [`spc.h`](include/nshvc/spc.h), the SPC700: the register file `spc`; `spc_rd`/`spc_wr`
   for every APU RAM and I/O access; `spc_cyc` for the original's cycles; `spc_call` and
-  `spc_ret` for its calls.
+  `spc_ret` for its calls; `spc_restart` and `spc_boot_rom` for the code no C returns from.
 
 [`hw.h`](include/nshvc/hw.h) names the hardware registers by their standard names.
+[`tooling.h`](include/nshvc/tooling.h) holds two calls for checking a decomp against its
+original (`nshvc_mark`, `spc_at`); they are outside the contract and change nothing in
+the machine.
 
 ### The cartridge connector
 
@@ -285,7 +297,7 @@ time, files and the save folder, a window, input, audio.
 |---|---|
 | `null` | no window, input or audio, for tests and headless comparisons |
 | `macos` | Cocoa window, keyboard and game controllers, Core Audio |
-| `windows` | Win32 window, keyboard, XInput controllers, WASAPI |
+| `windows` | Win32 window, keyboard, XInput controllers, WASAPI (not yet run on Windows) |
 | `ios` | full-screen view, touch controls, keyboard and game controllers, RemoteIO |
 | `none` | nothing: the app (a builder, a libretro core) supplies `host.h` itself |
 
@@ -326,13 +338,15 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 
 ### 2. Write the C against the machine model
 
-The rules are [the game contract](docs/contract.md). Write each routine's C against `machine.h` and `spc.h`: every bus access through
-`rd8`/`wr8` (`spc_rd`/`spc_wr`) in the original's order, and the original's time between
-them through `cyc` (`spc_cyc`). A cartridge chip's processor (the Super FX) has the game's
-own machine model, with its chip. This is the same C the decompilation's verification
-harness checks against the original, unchanged. Each routine that is entered from an
-address (a vector, a computed call, a chip's program, an SPC700 routine) gets an `abi_` wrapper that takes its inputs from the register file and leaves its
-outputs there.
+The rules are [the game contract](docs/contract.md). Write each routine's C against
+`machine.h` and `spc.h`: every bus access through `rd8`/`wr8` (`spc_rd`/`spc_wr`) in the
+original's order, and the original's time between them through `cyc` (`spc_cyc`), cycle by
+cycle with `cycs` wherever a DMA or HDMA starts. Mark no instruction's end: the C is
+structured, not a trace. A cartridge chip's processor has the game's own machine model,
+with its chip. This is the same C the decompilation's verification harness checks against
+the original, unchanged. Each routine that is entered from an address (a vector, a
+computed call, a chip's program, an SPC700 routine) gets an `abi_` wrapper that takes its
+inputs from the register file and leaves its outputs there.
 
 ### 3. Describe the cartridge and switch it on
 
