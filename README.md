@@ -1,4 +1,4 @@
-# nativeshvc: a native Super Famicom / Super Nintendo for decompiled games
+# nativeshvc: a native Super Famicom / Super Nintendo implementation
 
 **nativeshvc is not an emulator.** It is a native implementation of the Super Famicom /
 Super Nintendo itself: the console's bus, picture unit, sound unit, DMA, interrupts and
