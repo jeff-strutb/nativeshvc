@@ -52,6 +52,8 @@ MIN_ACCESSES = 1000             # a kind with fewer is not measured: weight 0
 CHIP_MIN_JOBS = 20              # a program with fewer: a multiplier on the chip's speed
 ONE = 4096                      # a chip weight's unit: 1/4096 of a chip clock
 KINDS = ["wram", "rom", "cart-ram", "io"]
+SPC_KINDS = ["ram", "reg"]          # the SPC700's: its RAM, its registers $F0-$FF
+SPC_FRAME = 17066                   # SPC700 cycles an NTSC frame
 # the console's default with no profile declared: 0, the bus's time alone
 DEFAULT_TENTHS = [[0, 0, 0, 0], [0, 0, 0, 0]]
 
@@ -63,8 +65,9 @@ def oracle_path():
 
 
 def run_reference(rom, frames, play, outdir):
-    """the oracle's --cpustats of one span: each frame's (reads[4], writes[4],
-       gap clocks, bus clocks)"""
+    """the oracle's --cpustats of one span: each frame's (frame, counts[8],
+       gap clocks, bus clocks) for the S-CPU, and (counts[4], gap cycles) for
+       the SPC700 (its reads of RAM and registers, then its writes)"""
     core = os.environ.get("NSHVC_ORACLE_CORE")
     if not core:
         sys.exit("nshvc-profile: set NSHVC_ORACLE_CORE (the reference core, tests/README.md)")
@@ -74,27 +77,32 @@ def run_reference(rom, frames, play, outdir):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         sys.exit("nshvc-profile: the reference failed on %s: %s" % (rom, r.stderr.strip()[-300:]))
-    out = []
+    out, spc = [], []
     for line in open(stats):
-        if not line.startswith("F "):
-            continue
-        w = list(map(int, line.split()[1:]))
-        n, g = w[1:17:2], w[2:17:2]
-        out.append((w[0], n, sum(g), w[17]))
-    return out
+        if line.startswith("F "):
+            w = list(map(int, line.split()[1:]))
+            out.append((w[0], w[1:17:2], sum(w[2:17:2]), w[17], w[2:17:2]))
+        elif line.startswith("S "):
+            w = list(map(int, line.split()[1:]))
+            spc.append((w[1:9:2], sum(w[2:9:2]) / 2.0, [g / 2.0 for g in w[2:9:2]]))
+    return out, spc
 
 
 # ---- the fit ---------------------------------------------------------------------------
 
 def subset_ls(A, b, idx):
     """least squares on the unknowns in idx alone, from the normal equations;
-       None when they do not fix one answer (columns that move together)"""
+       None when they do not fix one answer (columns that move together). The
+       columns are scaled to a unit diagonal first, so the test is the same
+       whatever their units (a chip's fixed part against its op counts)."""
     m = len(idx)
-    M = [[A[i][j] for j in idx] + [b[i]] for i in idx]
-    scale = max([abs(A[i][i]) for i in idx] + [1.0])
+    d = [A[i][i] ** 0.5 for i in idx]
+    if any(x <= 0 for x in d):
+        return None
+    M = [[A[idx[r]][idx[c]] / (d[r] * d[c]) for c in range(m)] + [b[idx[r]] / d[r]] for r in range(m)]
     for c in range(m):
         p = max(range(c, m), key=lambda r: abs(M[r][c]))
-        if abs(M[p][c]) <= 1e-9 * scale:
+        if abs(M[p][c]) <= 1e-9:
             return None
         M[c], M[p] = M[p], M[c]
         for r in range(m):
@@ -103,7 +111,7 @@ def subset_ls(A, b, idx):
                 M[r] = [u - k * v for u, v in zip(M[r], M[c])]
     x = [0.0] * len(b)
     for c, i in enumerate(idx):
-        x[i] = M[c][m] / M[c][c]
+        x[i] = M[c][m] / M[c][c] / d[c]
     return x
 
 
@@ -160,6 +168,32 @@ def fit_cpu(frames, measured):
     for i, k in enumerate(idx):
         w[k] = sub[i]
     return [w[k] if measured[k] else DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in k8], rows
+
+
+def fit_spc(frames):
+    """the SPC700's four weights in its cycles: each kind's mean gap (least
+       squares on each access's own), over frames whose SPC700 worked 5% of
+       the frame or more; a kind not measured is 0"""
+    act = [f for f in frames if f[1] + sum(f[0]) >= ACTIVE * SPC_FRAME]
+    totals = [sum(f[0][k] for f in act) for k in range(4)]
+    measured = [t >= MIN_ACCESSES for t in totals]
+    w = [sum(f[2][k] for f in act) / totals[k] if measured[k] else 0.0 for k in range(4)]
+    return w, totals, measured, [(f[0], f[1]) for f in act]
+
+
+def spc_errors(rows, w):
+    if not rows:
+        return None
+    def rel(r):
+        n, g = r
+        own = sum(n)
+        return (own + sum(a * c for a, c in zip(w, n)) - (own + g)) / (own + g)
+    e = [rel(r) for r in rows]
+    a = sorted(abs(x) for x in e)
+    heavy = sorted(rows, key=lambda r: r[1] + sum(r[0]))[-max(1, len(rows) // 20):]
+    he = [rel(r) for r in heavy]
+    return (sum(e) / len(e), sum(a) / len(a), a[int(0.95 * (len(a) - 1))], a[-1],
+            sum(he) / len(he), max(abs(x) for x in he))
 
 
 def errors(rows, weights):
@@ -291,7 +325,7 @@ def tenths(w):
     return int(round(w * 10))
 
 
-def write_profile(path, roms, weights, chip, checked, ratios, src):
+def write_profile(path, roms, weights, chip, checked, ratios, src, spc_w=(0.0, 0.0, 0.0, 0.0)):
     with open(path, "w") as f:
         f.write("nshvc-cost-profile %d\n" % FORMAT_VERSION)
         f.write("tool nshvc-profile %s\n" % TOOL_VERSION)
@@ -305,6 +339,9 @@ def write_profile(path, roms, weights, chip, checked, ratios, src):
         for wi, wname in enumerate(("read", "write")):
             f.write("cpu %-5s %s\n" % (wname, " ".join("%s %.1f" % (KINDS[k], tenths(weights[4 * wi + k]) / 10)
                                                          for k in range(4))))
+        for wi, wname in enumerate(("read", "write")):
+            f.write("spc %-5s %s\n" % (wname, " ".join("%s %.1f" % (SPC_KINDS[k], tenths(spc_w[2 * wi + k]) / 10)
+                                                       for k in range(2))))
         if chip:
             name, ops, speed, default, rows = chip
             f.write("chip %s ops %s speed %g\n" % (name, " ".join(ops), speed))
@@ -315,7 +352,7 @@ def write_profile(path, roms, weights, chip, checked, ratios, src):
                                                        " ".join(str(round(w * ONE)) for w in default[1])))
 
 
-def write_c(path, name, weights, chip):
+def write_c(path, name, weights, chip, spc_w=(0.0, 0.0, 0.0, 0.0)):
     with open(path, "w") as f:
         f.write("/* %s's cost profile: written by tools/nshvc-profile %s (docs/cost-profile.md) */\n"
                 % (name, TOOL_VERSION))
@@ -337,7 +374,8 @@ def write_c(path, name, weights, chip):
         f.write("    NSHVC_COST_PROFILE_VERSION,\n")
         f.write("    { { %s }, { %s } },\n" % (", ".join(str(tenths(weights[k])) for k in range(4)),
                                               ", ".join(str(tenths(weights[4 + k])) for k in range(4))))
-        f.write("    %d, %s, %d, %s,\n};\n" % (nops, progs, count, dflt))
+        f.write("    %d, %s, %d, %s,\n" % (nops, progs, count, dflt))
+        f.write("    { { %d, %d }, { %d, %d } },\n};\n" % tuple(tenths(w) for w in spc_w))
 
 
 # ---- the commands -------------------------------------------------------------------
@@ -355,15 +393,18 @@ def measure(a):
         os.makedirs(d)
         return run_reference(rom, a.frames, play, d)
 
+    spc_frames = []
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as ex:
-        for (ri, rom, si, play), got in zip(runs, ex.map(one, runs)):
+        for (ri, rom, si, play), (got, spc) in zip(runs, ex.map(one, runs)):
             frames += got
+            spc_frames += spc
             per_rom[(rom, play)] = got
     totals = [sum(f[1][k] for f in frames) for k in range(8)]
     measured = [t >= MIN_ACCESSES for t in totals]
     weights, rows = fit_cpu(frames, measured)
     default_w = [DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in range(8)]
     chip = fit_chip(a.chip_jobs) if a.chip_jobs else None
+    spc_w, spc_totals, spc_measured, spc_rows = fit_spc(spc_frames)
 
     checked, ratios, mism, src = False, None, [], None
     if a.decomp:
@@ -390,8 +431,8 @@ def measure(a):
 
     name = a.name or os.path.splitext(os.path.basename(a.rom[0]))[0].replace(" ", "_").lower()
     name = "".join(c if c.isalnum() else "_" for c in name)
-    write_profile(os.path.join(a.out, "profile.txt"), a.rom, weights, chip, checked, ratios, src)
-    write_c(os.path.join(a.out, "profile.c"), name, weights, chip)
+    write_profile(os.path.join(a.out, "profile.txt"), a.rom, weights, chip, checked, ratios, src, spc_w)
+    write_c(os.path.join(a.out, "profile.c"), name, weights, chip, spc_w)
 
     with open(os.path.join(a.out, "report.txt"), "w") as f:
         f.write("nshvc-profile %s report\n\n" % TOOL_VERSION)
@@ -406,6 +447,14 @@ def measure(a):
                                                              "" if measured[k] else "; too few to measure: 0"))
         f.write("\n  this profile:          %s\n" % fmt_err(errors(rows, weights)))
         f.write("  no profile (bus only): %s\n" % fmt_err(errors(rows, default_w)))
+        f.write("\nSPC700: the weight of each access kind, in its cycles besides the access's own\n")
+        for k in range(4):
+            f.write("  %-5s %-4s %6.1f   (%d accesses%s)\n" % ("read" if k < 2 else "write", SPC_KINDS[k % 2],
+                                                           tenths(spc_w[k]) / 10, spc_totals[k],
+                                                           "" if spc_measured[k] else "; too few to measure: 0"))
+        f.write("  frames with work: %d\n" % len(spc_rows))
+        f.write("  this profile:          %s\n" % fmt_err(spc_errors(spc_rows, spc_w)))
+        f.write("  no profile (bus only): %s\n" % fmt_err(spc_errors(spc_rows, [0.0] * 4)))
         f.write("\nacceptance bar: TBD\n")
         if chip:
             cname, ops, speed, default, crows = chip

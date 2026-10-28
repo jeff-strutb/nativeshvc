@@ -129,7 +129,8 @@ S-CPU's C makes costs the bus's time for it (8 clocks for SlowROM and work
 RAM, 6 for FastROM and most registers, 12 for $4000-$41FF, a read taking
 its value 4 clocks before its end, a write landing at its end), and before
 it the weight of its kind from the cartridge's cost profile (0 with none:
-cost-profile.md); the SPC700's C takes none. The clock also moves on in the
+cost-profile.md); each access the SPC700's C makes costs its one bus cycle and its kind's
+weight from the profile. The clock also moves on in the
 C's waits (`nshvc_wait_until`, `nshvc_wait_vblank`,
 `cpu_wai`, `cpu_loop_forever`; `spc_wait_until`), in steps of a poll
 loop's few cycles cut short wherever what a wait looks at changes (a line's

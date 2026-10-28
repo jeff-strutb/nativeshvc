@@ -1148,6 +1148,19 @@ static uint32_t spin_reads;
 /* the time before an access: the allowance (the C's own, by the access's
    kind, `write`; none for the console's interrupt sequence, `game` 0),
    then the cycle's start, where the DMA unit may take the bus */
+/* the weight of an access of the C's (its kind's, from the profile),
+   spent: none with interrupts held */
+static void allowance_spend(uint32_t addr, int write)
+{
+    if (interrupts_held)
+        return;
+    allowance_carry += allowance[write][nshvc_access_kind(addr & 0xFFFFFF)];
+    if (allowance_carry >= 10) {
+        snes_tick(allowance_carry / 10);
+        allowance_carry %= 10;
+    }
+}
+
 static int access_begins(uint32_t addr, unsigned cc, int game, int write)
 {
     if (interrupts_held) {
@@ -1156,15 +1169,21 @@ static int access_begins(uint32_t addr, unsigned cc, int game, int write)
                        "loop that waits for the console's time, which does not pass held", (unsigned)addr);
         return 0;
     }
-    if (game) {
-        allowance_carry += allowance[write][nshvc_access_kind(addr)];
-        if (allowance_carry >= 10) {
-            snes_tick(allowance_carry / 10);
-            allowance_carry %= 10;
-        }
-    }
+    if (game)
+        allowance_spend(addr, write);
     cycle_begins(cc);
     return 1;
+}
+
+/* A word, a long, a read-modify-write's two reads or two writes: one
+   instruction's, its bytes in consecutive bus cycles as the 65816 makes
+   them. Each byte's weight is spent before the first, so none comes
+   between them (an S-CPU that writes a port's index and its byte as a
+   word lands them a cycle apart, as on the console). */
+static void allowance_ahead(uint32_t addr, int write, int bytes)
+{
+    while (bytes--)
+        allowance_spend(addr++, write);
 }
 
 /* a read: its value 4 clocks before its cycle ends */
@@ -1226,40 +1245,50 @@ static void between(void)
     check_interrupts();
 }
 
-static uint8_t c_rd(uint32_t addr)
+/* a read of the C's; `game` 0: its weight spent already (allowance_ahead) */
+static uint8_t c_rd(uint32_t addr, int game)
 {
     if (rmw_open)
         snes_fatal("rd8_rmw at $%06X: a read of $%06X before its write", (unsigned)rmw_at, (unsigned)(addr & 0xFFFFFF));
-    return access_rd(addr, 1);
+    return access_rd(addr, game);
 }
 
 uint8_t rd8(uint32_t addr)
 {
-    uint8_t v = c_rd(addr);
+    uint8_t v = c_rd(addr, 1);
     between();
     return v;
 }
 
 uint16_t rd16(uint32_t addr)
 {
-    uint8_t lo = c_rd(addr);
-    uint16_t v = (uint16_t)(lo | c_rd((addr + 1) & 0xFFFFFF) << 8);
+    uint8_t lo;
+    uint16_t v;
+    if (rmw_open)
+        c_rd(addr, 0);
+    allowance_ahead(addr, 0, 2);
+    lo = c_rd(addr, 0);
+    v = (uint16_t)(lo | c_rd((addr + 1) & 0xFFFFFF, 0) << 8);
     between();
     return v;
 }
 
 uint32_t rd24(uint32_t addr)
 {
-    uint32_t v = c_rd(addr);
-    v |= (uint32_t)c_rd((addr + 1) & 0xFFFFFF) << 8;
-    v |= (uint32_t)c_rd((addr + 2) & 0xFFFFFF) << 16;
+    uint32_t v;
+    if (rmw_open)
+        c_rd(addr, 0);
+    allowance_ahead(addr, 0, 3);
+    v = c_rd(addr, 0);
+    v |= (uint32_t)c_rd((addr + 1) & 0xFFFFFF, 0) << 8;
+    v |= (uint32_t)c_rd((addr + 2) & 0xFFFFFF, 0) << 16;
     between();
     return v;
 }
 
 uint8_t rd8_rmw(uint32_t addr)
 {
-    uint8_t v = c_rd(addr);
+    uint8_t v = c_rd(addr, 1);
     rmw_open = 1;
     rmw_at = addr & 0xFFFFFF;
     return v;
@@ -1267,8 +1296,13 @@ uint8_t rd8_rmw(uint32_t addr)
 
 uint16_t rd16_rmw(uint32_t addr)
 {
-    uint8_t lo = c_rd(addr);
-    uint16_t v = (uint16_t)(lo | c_rd((addr + 1) & 0xFFFFFF) << 8);
+    uint8_t lo;
+    uint16_t v;
+    if (rmw_open)
+        c_rd(addr, 0);
+    allowance_ahead(addr, 0, 2);
+    lo = c_rd(addr, 0);
+    v = (uint16_t)(lo | c_rd((addr + 1) & 0xFFFFFF, 0) << 8);
     rmw_open = 1;
     rmw_at = addr & 0xFFFFFF;
     return v;
@@ -1299,16 +1333,18 @@ void wr8(uint32_t addr, uint8_t value)
 
 void wr16(uint32_t addr, uint16_t value)
 {
-    access_wr(addr, (uint8_t)value, 1);
-    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), 1);
+    allowance_ahead(addr, 1, 2);
+    access_wr(addr, (uint8_t)value, 0);
+    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), 0);
     rmw_open = 0;
     between();
 }
 
 void wr16_rmw(uint32_t addr, uint16_t value)
 {
-    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), 1);
-    access_wr(addr, (uint8_t)value, 1);
+    allowance_ahead(addr, 1, 2);
+    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), 0);
+    access_wr(addr, (uint8_t)value, 0);
     rmw_open = 0;
     between();
 }

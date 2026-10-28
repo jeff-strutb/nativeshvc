@@ -41,7 +41,11 @@
  * past 1,024 clocks (a branch to itself). And a line a frame: "F frame",
  * then for reads and for writes of work RAM, ROM, cartridge RAM and I/O
  * (nshvc.h NSHVC_KIND_*: the same addresses), each the accesses and their
- * gaps' clocks, then the accesses' own bus clocks. --voices: at
+ * gaps' clocks, then the accesses' own bus clocks. And for the SPC700 a
+ * line a frame, "S frame", then for reads and writes of its RAM and of its
+ * registers ($F0-$FF) each the data accesses and their gaps in half cycles
+ * (the cycles since the access before, its own not counted: fetches, dummy
+ * reads, internal cycles), poll loops and gaps past 1,024 cycles left out. --voices: at
  * each sample, each voice's envelope level, its stage, pitch counter, BRR
  * block and byte, as the core's DSP holds them (40 32-bit values).
  *
@@ -208,14 +212,67 @@ struct smp_callbacks {
     void (*mem)(int write, uint16_t addr, uint8_t data);
     void (*step)(uint32_t clocks);
 };
+/* --cpustats: counting from the script's shot named this (NULL: from power on), and
+   whether it is now */
+static const char *cpustats_after;
+static int cpustats_on;
 static FILE *spclog_f;
 static int spclog_reads;
 static uint32_t smp_halves;
 
-static void smp_step(uint32_t clocks) { smp_halves += clocks & 0x7FFFFFFFu; }
+/* --cpustats, the SPC700's: each data access's gap (the cycles since the
+   one before, its own not counted: fetches, dummy reads, internal cycles)
+   by kind, [read, write][RAM, registers $F0-$FF], the reads held until a
+   write shows they were not a poll loop (more than 64); per frame */
+static int spcstats_on;
+static uint32_t spc_gap_now;                 /* half cycles since the last data access */
+static uint32_t spc_pending[65], spc_pending_n;
+static uint8_t spc_pending_kind[65];
+static uint64_t spc_frame_n[4], spc_frame_gap[4];
+
+static void spc_count(uint32_t g, unsigned kind)
+{
+    if (g > 2048)                            /* past 1,024 cycles: not one instruction's */
+        return;
+    spc_frame_n[kind]++;
+    spc_frame_gap[kind] += g;
+}
+
+static void spcstats_access(int write, uint16_t addr)
+{
+    unsigned kind = (write ? 2u : 0u) + (addr >= 0xF0 && addr <= 0xFF ? 1u : 0u);
+    uint32_t g = spc_gap_now >= 2 ? spc_gap_now - 2 : 0;    /* its own cycle out */
+    uint32_t k;
+    spc_gap_now = 0;
+    if (!cpustats_on)
+        return;
+    if (!write) {
+        if (spc_pending_n < 65) {
+            spc_pending[spc_pending_n] = g;
+            spc_pending_kind[spc_pending_n] = (uint8_t)kind;
+        }
+        spc_pending_n++;
+        return;
+    }
+    if (spc_pending_n <= 64)
+        for (k = 0; k < spc_pending_n; k++)
+            spc_count(spc_pending[k], spc_pending_kind[k]);
+    spc_pending_n = 0;
+    spc_count(g, kind);
+}
+
+static void smp_step(uint32_t clocks)
+{
+    smp_halves += clocks & 0x7FFFFFFFu;
+    spc_gap_now += clocks & 0x7FFFFFFFu;
+}
 
 static void smp_mem(int write, uint16_t addr, uint8_t v)
 {
+    if (spcstats_on)
+        spcstats_access(write, addr);
+    if (!spclog_f)
+        return;
     if (write || spclog_reads || (addr >= 0xF0 && addr <= 0xFF)) {
         uint8_t rec[8] = { (uint8_t)smp_halves, (uint8_t)(smp_halves >> 8), (uint8_t)(smp_halves >> 16),
                            (uint8_t)(smp_halves >> 24), (uint8_t)write, (uint8_t)addr, (uint8_t)(addr >> 8), v };
@@ -369,10 +426,6 @@ static void shot(const char *dir, long n)
 /* ---- --script ---- */
 static void *core;
 static long runs;                      /* frames the core has run */
-/* --cpustats: counting from the script's shot named this (NULL: from power on), and
-   whether it is now */
-static const char *cpustats_after;
-static int cpustats_on;
 
 static uint8_t *memory(const char *name, size_t *size)
 {
@@ -909,6 +962,12 @@ static void cpustats_frame(long frame)
     for (k = 0; k < 8; k++)
         fprintf(cpustats_f, " %llu %llu", (unsigned long long)frame_n[k], (unsigned long long)frame_gap[k]);
     fprintf(cpustats_f, " %llu\n", (unsigned long long)frame_bus);
+    fprintf(cpustats_f, "S %ld", frame);
+    for (k = 0; k < 4; k++)
+        fprintf(cpustats_f, " %llu %llu", (unsigned long long)spc_frame_n[k], (unsigned long long)spc_frame_gap[k]);
+    fprintf(cpustats_f, "\n");
+    memset(spc_frame_n, 0, sizeof spc_frame_n);
+    memset(spc_frame_gap, 0, sizeof spc_frame_gap);
     memset(frame_n, 0, sizeof frame_n);
     memset(frame_gap, 0, sizeof frame_gap);
     frame_bus = 0;
@@ -1045,10 +1104,11 @@ int main(int argc, char **argv)
             *ds = dsp_sample;
             dsp_hooked = 1;
         }
-        if (spclog_f) {
+        if (spclog_f || cpustats_f) {
             struct smp_callbacks *cb = (struct smp_callbacks *)dlsym(core, "sfxbox_smp_cb");
             if (!cb)
-                die("the core has no SPC700 hooks for --spclog", NULL);
+                die("the core has no SPC700 hooks for --spclog or --cpustats", NULL);
+            spcstats_on = cpustats_f != NULL;
             cb->mem = smp_mem;
             cb->step = smp_step;
         }

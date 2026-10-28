@@ -10,11 +10,16 @@
  * SPC700 takes no interrupts, so nothing comes between the C's operations.
  * With machine.h, the game's side of the contract (docs/contract.md).
  *
- * The C's work takes none of the sound unit's time: its accesses are made
- * at its clock as it stands, and the clock (1,025,280 Hz, the DSP's 32,040
- * samples a second) moves on only where the code waits for the hardware
- * (spc_wait_until: a timer's counter, a port), the DSP and the timers
- * running meanwhile. One rule keeps the DSP hearing what the original
+ * Each access the C makes costs its one bus cycle of the sound unit's
+ * clock (1,025,280 Hz, the DSP's 32,040 samples a second), and before it
+ * the weight of its kind from the cartridge's cost profile (nshvc.h
+ * spc_tenths, docs/cost-profile.md; 0 with none): the driver's own work
+ * around it. The C states no time. The clock also
+ * moves on where the code waits for the hardware (spc_wait_until: a
+ * timer's counter, a port), the DSP and the timers running meanwhile. So
+ * an S-CPU that writes a port's index a cycle before its byte (a word to
+ * $2140) is answered as on the console: the read after the one that sees
+ * the index comes a cycle later and sees the byte. One rule keeps the DSP hearing what the original
  * made it hear: after a write of KON or KOFF, the next write to the DSP
  * waits until the DSP has taken that key event (it takes them every other
  * sample), so no note is lost or cut short, and none starts with the
@@ -45,8 +50,8 @@ void spc_wr(uint16_t addr, uint8_t v);
    does) and says whether the loop ends; it is called at once, and while
    it says no the sound unit's clock moves on a cycle at a time, the DSP,
    the timers and the S-CPU running meanwhile. Returns the SPC700 cycles
-   waited. A loop that waits with no wait (reads of the registers and no
-   write, without end) is a fatal error. */
+   waited. (A loop of reads with no wait sees the clock move too, a cycle
+   an access.) */
 uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx);
 
 static inline uint16_t spc_dp(uint8_t d) { return (uint16_t)(spc.p ? 0x0100 | d : d); }

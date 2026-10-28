@@ -306,8 +306,8 @@ Time is the console's master clock (21.477 MHz NTSC). nativeshvc is behaviour ex
 cycle exact: the hardware runs at the hardware's time. Each access the S-CPU's C makes costs
 what the console's bus takes for it, by the console's memory speeds (6, 8 or 12 clocks),
 and before it the weight of its kind from the game's cost profile (0 with none); the C's
-own arithmetic between accesses costs nothing, and the C states no time. The SPC700's C
-takes none. The clock also moves on where the code waits for the hardware, as on the
+own arithmetic between accesses costs nothing, and the C states no time. Each access the
+SPC700's C makes costs its one bus cycle, and its kind's weight from the profile. The clock also moves on where the code waits for the hardware, as on the
 console it spends that time in a poll loop: `nshvc_wait_until` (a status bit, a counter, a chip's flag, the sound unit's
 reply), `nshvc_wait_vblank`, WAI and a branch to itself for the S-CPU, `spc_wait_until`
 for the SPC700. In a wait the clock moves in steps of a poll loop's few cycles, and each
@@ -336,14 +336,17 @@ weights are never set by a person: nativeshvc provides the standard and the tool
 (`tools/nshvc-profile`, [docs/cost-profile.md](docs/cost-profile.md)) that measures them
 from the game's own ROM on the reference, and the game runs it. A game that paces itself on
 the console's clock (waiting for the vertical blank rather than spinning) needs none. The
-sound driver's own work is not reproduced: its beat is its timers', which run at their real
-time. The multiplier and divider are done when read. The hardware's own time is all kept:
+sound driver's beat is its timers', which run at their real time; its profile's weights give
+it the real chip's time around each access. The multiplier and divider are done when read. The hardware's own time is all kept:
 a DMA, an HDMA, a line, a timer, a chip's job.
 
 **The sound.** The DSP makes its 32,040 samples a second at its own clock, and the
-driver's waits on its timers keep its beat exactly. Inside a beat, the writes the
-original spread through its work all land at the beat's start, a fraction of a
-millisecond earlier, which no ear hears. The one place that would be heard is a key
+driver's waits on its timers keep its beat exactly. Each access the driver's C makes costs
+its one bus cycle and, from the game's cost profile, the driver's work around it, so it
+answers the S-CPU's handshakes as the console's does: an upload sent as a word to `$2140`
+lands its index a cycle before its byte (more when the work RAM's refresh falls between),
+and the driver reads the byte a few of its cycles later. Inside a beat, the writes the original spread through its work land
+closer together, a fraction of a millisecond earlier, which no ear hears. The one place that would be heard is a key
 event: the DSP takes KON and KOFF every other sample, so two written in the same instant
 would lose one. So after a KON or KOFF write, the SPC700's next DSP write waits until the
 DSP has taken it: every note reaches the DSP, in order, with its voice's registers as the

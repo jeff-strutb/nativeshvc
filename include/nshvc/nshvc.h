@@ -125,6 +125,9 @@ typedef struct {
     const nshvc_chip_program *programs;
     int program_count;
     nshvc_chip_program chip_default;
+    /* the SPC700's: [read, write][its RAM, its registers $F0-$FF], tenths of
+       one of its cycles, besides each access's own cycle */
+    uint32_t spc_tenths[2][2];
 } nshvc_cost_profile;
 #define NSHVC_COST_PROFILE_VERSION 1
 

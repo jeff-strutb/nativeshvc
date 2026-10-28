@@ -29,9 +29,9 @@ true = [8.0, 28.0, 12.3, 34.7, 31.6, 0.0, 45.7, 33.3]
 frames = []
 for f in range(400):
     n = [rng.randrange(200, 3000) if k != 5 else 0 for k in range(8)]
-    gap = sum(w * c for w, c in zip(true, n))
+    gaps = [w * c for w, c in zip(true, n)]
     bus = sum(8 * c for c in n)
-    frames.append((f, n, gap, bus))
+    frames.append((f, n, sum(gaps), bus, gaps))
 totals = [sum(fr[1][k] for fr in frames) for k in range(8)]
 measured = [t >= P.MIN_ACCESSES for t in totals]
 w, rows = P.fit_cpu(frames, measured)
@@ -43,17 +43,43 @@ check(e is not None and abs(e[1]) < 1e-9, "their error on those frames is 0", e 
 
 # the objective: noisy frames of one kind, whose least squares on the error
 # in clocks has a closed form, w = sum(n y) / sum(n n); a fit on relative
-# error gives another value
+# error, or on each access's own gap, gives another value
 frames = []
 for f in range(300):
     c = rng.randrange(100, 4000)
     n = [c, 0, 0, 0, 0, 0, 0, 0]
     gap = 20.0 * c + rng.uniform(-30000, 30000)
-    frames.append((f, n, gap, 8 * c))
+    frames.append((f, n, gap, 8 * c, [gap] + [0] * 7))
 w1, _ = P.fit_cpu(frames, [True] + [False] * 7)
 want = sum(fr[1][0] * fr[2] for fr in frames if fr[2] + fr[3] >= P.ACTIVE * P.FRAME) / \
     sum(fr[1][0] ** 2 for fr in frames if fr[2] + fr[3] >= P.ACTIVE * P.FRAME)
-check(abs(w1[0] - want) < 1e-9, "the fit is least squares on each frame's error in clocks", w1[0], want)
+check(abs(w1[0] - want) < 1e-9, "the S-CPU's fit is least squares on each frame's error in clocks", w1[0], want)
+
+# the SPC700's is each access's own gap: a kind's mean gap, its own though
+# two kinds come together in every frame (a driver's register and RAM reads)
+spc_frames = []
+for f in range(300):
+    c = rng.randrange(1000, 4000)
+    n = [c, c, 0, 0]
+    gaps = [c * 4.0 + rng.uniform(-600, 600), c * 1.0, 0, 0]
+    spc_frames.append((n, sum(gaps), gaps))
+sw1, _, _, _ = P.fit_spc(spc_frames)
+act = [fr for fr in spc_frames if fr[1] + sum(fr[0]) >= P.ACTIVE * P.SPC_FRAME]
+want = [sum(fr[2][k] for fr in act) / sum(fr[0][k] for fr in act) for k in range(2)]
+check(all(abs(a - b) < 1e-9 for a, b in zip(sw1, want)),
+      "each SPC700 kind's weight is its own mean gap, though two come together", [round(x, 4) for x in sw1[:2]],
+      [round(x, 4) for x in want])
+
+# the SPC700: four weights in its cycles, given back exactly
+spc_true = [4.6, 4.5, 1.2, 0.2]
+spc_frames = []
+for f in range(300):
+    n = [rng.randrange(500, 4000), rng.randrange(100, 900), rng.randrange(200, 1500), rng.randrange(50, 400)]
+    gaps = [w * c for w, c in zip(spc_true, n)]
+    spc_frames.append((n, sum(gaps), gaps))
+sw, _, _, _ = P.fit_spc(spc_frames)
+check(all(abs(a - b) < 1e-6 for a, b in zip(sw, spc_true)), "the SPC700's weights come back exactly",
+      ["%.4f" % x for x in sw], spc_true)
 
 # a chip: two programs fitted, one with too few jobs (a multiplier), the default
 ops = ["LOAD", "STORE", "FLUSH", "RPIX"]
@@ -69,6 +95,13 @@ with tempfile.TemporaryDirectory() as d:
         for _ in range(5):
             c = [rng.randrange(1, 50) for _ in ops]
             f.write("job 03C000 %.3f %s\n" % (2.0 * 5 * sum(c), " ".join(map(str, c))))
+        # columns far apart in scale (Stunt Race FX's 01AB13: fixed ~1e3 on
+        # the diagonal, the loads ~1e12, RPIX ~1e5)
+        for _ in range(40):
+            c = [rng.randrange(100000, 300000), rng.randrange(50000, 400000), rng.randrange(100000, 300000),
+                 rng.randrange(0, 120)]
+            f.write("job 05E000 %.6f %s\n" % (150000.0 + 28.0 * c[0] + 7.5 * c[1] + 7.4 * c[2] + 580.0 * c[3],
+                                              " ".join(map(str, c))))
         # every job 4 loads: constant work, which the tie-break puts in fixed
         for _ in range(40):
             c = [4] + [rng.randrange(0, 300) for _ in ops[1:]]
@@ -85,6 +118,11 @@ with tempfile.TemporaryDirectory() as d:
           all(abs(a - b) < 1e-6 for a, b in zip(r[2][1:], [2.5, 6.0, 1.5])),
           "a count the same in every job: its work in fixed (the tie-break)", (round(r[1], 3), [round(x, 4) for x in r[2]]),
           (2192.0, [0.0, 2.5, 6.0, 1.5]))
+    r = got[0x05E000]
+    check(r[3] == "fit" and abs(r[1] / 150000.0 - 1) < 1e-6 and
+          all(abs(a / b - 1) < 1e-6 for a, b in zip(r[2], [28.0, 7.5, 7.4, 580.0])),
+          "columns a billion apart in scale: the full fit, none dropped as singular",
+          (round(r[1], 2), [round(x, 4) for x in r[2]]), (150000.0, [28.0, 7.5, 7.4, 580.0]))
     r = got[0x03C000]
     check(r[3] == "multiplier" and all(abs(x - 10.0) < 1e-9 for x in r[2]),
           "a program with too few jobs: its multiplier on the speed", [round(x, 4) for x in r[2]], [10.0] * 4)
@@ -96,14 +134,16 @@ with tempfile.TemporaryDirectory() as d:
     text = open(prof).read()
     check("chip superfx ops LOAD STORE FLUSH RPIX" in text and "checked unchecked" in text,
           "the profile names the chip's ops and says step 2 did not run", "", "")
-    P.write_c(csrc, "t", w, chip)
+    P.write_c(csrc, "t", w, chip, sw)
     main = os.path.join(d, "m.c")
     with open(main, "w") as f:
         f.write('#include <stdio.h>\n#include "nshvc/nshvc.h"\nextern const nshvc_cost_profile t_cost_profile;\n'
                 'int main(void) { const nshvc_cost_profile *p = &t_cost_profile; int k;\n'
                 ' for (k = 0; k < 4; k++) printf("%u %u ", p->cpu_tenths[0][k], p->cpu_tenths[1][k]);\n'
-                ' printf("%d %d %X %u %u\\n", p->chip_ops, p->program_count, p->programs[0].entry,\n'
-                '        p->programs[0].fixed, p->programs[0].weight[0]); return 0; }\n')
+                ' printf("%d %d %X %u %u ", p->chip_ops, p->program_count, p->programs[0].entry,\n'
+                '        p->programs[0].fixed, p->programs[0].weight[0]);\n'
+                ' printf("%u %u %u %u\\n", p->spc_tenths[0][0], p->spc_tenths[0][1], p->spc_tenths[1][0],\n'
+                '        p->spc_tenths[1][1]); return 0; }\n')
     exe = os.path.join(d, "m")
     r = subprocess.run(["cc", "-std=c11", "-Wall", "-Werror", "-I", os.path.join(ROOT, "include"), csrc, main, "-o", exe],
                        capture_output=True, text=True)
@@ -113,7 +153,7 @@ with tempfile.TemporaryDirectory() as d:
         want = []
         for k in range(4):
             want += [str(round(true[k] * 10)), str(round(true[4 + k] * 10))]
-        want += ["4", "4", "1A000", "120", str(round(5.25 * 4096))]
+        want += ["4", "5", "1A000", "120", str(round(5.25 * 4096)), "46", "45", "12", "2"]
         check(out == want, "the C table carries the weights", out, want)
 
 print("%d check(s) failed" % fails)

@@ -111,7 +111,8 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   0 with none. The C states nothing; its own arithmetic between accesses takes no time. The
   clock also moves on in its waits (the waits above, WAI, a branch to itself) and while a
   DMA (a `$420B` write) stops it, for the DMA unit's real time. The multiplier and divider
-  are done when read. The SPC700's C takes no time: its clock moves in its waits.
+  are done when read. Each access the SPC700's C makes costs its one bus cycle and the
+  weight of its kind from the profile (0 with none); its clock also moves in its waits.
 - **The sound as the original's.** After a KON or KOFF write, the SPC700's next DSP write
   waits until the DSP has taken that key event (every other sample), so every note the
   driver keys on or off reaches the DSP, in order, with the voice's registers as the
@@ -126,8 +127,7 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 - **A fatal error, never a guess,** when the game reaches something the contract doesn't
   cover: an address with no C (a vector's included), a wait while interrupts are held, or,
   with interrupts held (where no time passes), a loop that waits for the hardware
-  (20,000,000 reads with no write between); the SPC700's loop that waits with no wait
-  likewise. It's reported, then the process exits with status 70.
+  (20,000,000 reads with no write between). It's reported, then the process exits with status 70.
 - **The console's numbers by default.** Every extension (`nshvc_ext_*`,
   `nshvc_hold_interrupts`) is off until the game asks for it, and with no cost profile an
   access costs the bus's time alone.
@@ -143,7 +143,11 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   (`nshvc.h`, docs/cost-profile.md, measured by `tools/nshvc-profile`). A loop that waits
   for the hardware with no wait sees the clock move, and is no longer fatal (but with
   interrupts held). `nshvc_set_read_hook`: each S-CPU read as it is made, with its value.
-  The SPC700's boot ROM keeps its own instruction time, as the console's firmware does.
+  A word's or a long's bytes go out in consecutive bus cycles, their weights spent before
+  the first. The SPC700's boot ROM keeps its own instruction time, as the console's firmware does,
+  and each access the sound driver's C makes costs its one bus cycle and its kind's weight
+  from the profile (`spc_tenths`), so an upload sent as a word to `$2140` is taken as on the
+  console; a sound driver's loop with no wait sees the clock move, and is no longer fatal.
 - **2.0:** behaviour exact, not cycle exact. The S-CPU's and the SPC700's C state no time:
   `cyc`, `cycs`, `cyc_then`, `cyc_loop`, `cycs_then`, `cycs_loop`, `cpu_idle`, `spc_cyc` and
   `spc_wr_cyc` are gone, and `spc_call` and `spc_ret` take no cycles. Their waits are

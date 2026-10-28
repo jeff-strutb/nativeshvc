@@ -4,8 +4,9 @@
  * the three timers), the bus its C uses (spc.h), and the boot ROM's work.
  *
  * The SPC700's C runs on a coroutine of its own with its own clock
- * (1,025,280 Hz: 32,040 DSP samples a second, a real console's rate). The
- * C's work takes none of it; the clock moves on in the C's waits
+ * (1,025,280 Hz: 32,040 DSP samples a second, a real console's rate). Each
+ * access the C makes costs its one bus cycle; the C's own work between
+ * accesses costs nothing. The clock also moves on in the C's waits
  * (spc_wait_until) and where a DSP write waits for a key event to be taken
  * (spc.h). The S-CPU brings it up to its own time before it touches the
  * ports and once a line (apu_sync); the SPC700 hands back when it gets
@@ -48,6 +49,7 @@ static uint8_t control, dsp_addr;
 static uint8_t t_target[3], t_stage[3], t_count[3];
 static unsigned t01_div, t2_div;
 static uint64_t spc_cycles, spc_target;
+static uint32_t spc_carry;            /* the cost profile's tenths not yet spent (access_cycle) */
 static Coro *spc_co, *main_co;
 void (*snes_spc_run_hook)(uint16_t addr);
 static port_jmp_buf jb;
@@ -89,6 +91,7 @@ void apu_reset(void)
     memset(t_count, 0, sizeof t_count);
     t01_div = t2_div = 0;
     spc_cycles = spc_target = 0;
+    spc_carry = 0;
     atomic_store(&ring_w, 0);
     atomic_store(&ring_r, 0);
     mix_init(aram);
@@ -226,32 +229,46 @@ void spc_wr(uint16_t addr, uint8_t v);
 void spc_restart(uint16_t at, void (*entry)(void));
 void spc_boot_rom(void);
 
-/* The C's work takes no time, so a loop of it that waits for the hardware
-   without spc_wait_until never ends; such a loop reads the registers and
-   writes nothing. 20,000,000 such reads with no write or wait between
-   them are taken for one. */
-static uint32_t spin_reads;
-
 uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx)
 {
     uint64_t from = spc_cycles;
     while (!ready(ctx))
         spc_advance(1);
-    spin_reads = 0;
     return (uint32_t)(spc_cycles - from);
 }
 
 static uint8_t spc_rd_reg(uint16_t addr);
 
+/* Each access the driver's C makes costs its bus cycle, and before it the
+   weight of its kind from the cartridge's cost profile (nshvc.h
+   spc_tenths: [read, write][RAM, registers], tenths of a cycle carried from
+   one access to the next; 0 with none): the driver's own work around it,
+   its fetches and internal cycles (spc.h). So it answers the S-CPU's
+   handshakes in the console's time. The boot ROM's work states its own
+   cycles, the accesses' included (ipl, below). */
+static int in_ipl;
+
+static void access_cycle(uint16_t addr, int write)
+{
+    const nshvc_cost_profile *p = snes_cart.cost_profile;
+    unsigned n = 1;
+    if (in_ipl)
+        return;
+    if (p) {
+        spc_carry += p->spc_tenths[write][addr >= 0xF0 && addr <= 0xFF];
+        n += spc_carry / 10;
+        spc_carry %= 10;
+    }
+    spc_advance(n);
+}
+
 uint8_t spc_rd(uint16_t addr)
 {
     uint8_t v;
+    access_cycle(addr, 0);
     dbg_last = addr;
     if (addr < 0xF0 || addr > 0xFF)
         return aram[addr];
-    if (++spin_reads >= 20000000u)
-        snes_fatal("the SPC700 made 20,000,000 reads of its registers and no write (the last of $%04X): a loop "
-                   "that waits for the hardware with no wait (spc.h spc_wait_until)", addr);
     if (spclog) {
         v = spc_rd_reg(addr);
         spclog_put(0, addr, v);
@@ -278,7 +295,7 @@ static uint8_t spc_rd_reg(uint16_t addr)
 
 void spc_wr(uint16_t addr, uint8_t v)
 {
-    spin_reads = 0;
+    access_cycle(addr, 1);
     /* a key event the DSP has not taken yet: the next write to the DSP
        waits for it (spc.h) */
     if (addr == 0xF3 && dsp_addr < 0x80)
@@ -345,7 +362,6 @@ const uint8_t *snes_aram(void) { return aram; }
    (a word to $2140) is answered as the console answers it. */
 static void ipl_cyc(unsigned n)
 {
-    spin_reads = 0;
     spc_advance(n);
 }
 
@@ -505,6 +521,7 @@ static void spc_main(void *arg)
     jump_entry = NULL;
     for (;;) {
         if (port_setjmp(jb) == 0) {
+            in_ipl = jump_to == 0xFFC0;
             if (jump_to == 0xFFC0 && (control & 0x80))
                 ipl();
             else if (jump_to == 0xFFC0)

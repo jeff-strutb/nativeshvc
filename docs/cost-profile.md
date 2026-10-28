@@ -26,9 +26,11 @@ scales motion by the frames that actually passed.
 
 **With none declared, the cost is 0:** each access takes the bus's time alone.
 
-**Scope.** The profile covers the S-CPU and a cartridge's chips. The sound CPU (SPC700) is
-outside it: its driver keeps its pace by its own timers, which the console runs at their
-real time, and its own work's time is not reproduced (contract 2.0).
+**Scope.** The profile covers the S-CPU, the sound CPU (SPC700) and a cartridge's chips.
+The sound driver keeps its beat by its own timers, which the console runs at their real
+time; its weights give it the real chip's time around each access, so it answers the
+S-CPU's handshakes as the console does (an upload's byte read a few cycles after its index,
+past a refresh that falls between the S-CPU's two writes).
 
 ## 1. The profile
 
@@ -45,8 +47,18 @@ work RAM, ROM, cartridge RAM or I/O, by address, the same in every mapping:
 | ROM | the rest |
 
 Each kind has a weight in tenths of a master clock, charged before each access of that kind
-the game's C makes, besides the bus's time. The tenths carry from one access to the next. The
+the game's C makes, besides the bus's time. The tenths carry from one access to the next. A
+word or a long (`rd16`, `wr16`, `rd24`, a read-modify-write's two reads or two writes) is one
+instruction's: its bytes' weights are all spent before its first byte, and its bytes go out
+in consecutive bus cycles, as the 65816 makes them. The
 console's interrupt sequence (its pushes, RTI's pulls) is charged the bus's time only.
+
+### The SPC700
+
+Four access kinds: a read or a write of its RAM, or of its registers (`$F0-$FF`). Each has a
+weight in tenths of an SPC700 cycle, charged before each access of that kind the driver's C
+makes, besides the access's own cycle (which the console always charges). The tenths carry
+from one access to the next. The boot ROM's work is the console's, with its own time.
 
 ### A cartridge's chip
 
@@ -84,6 +96,8 @@ The tool writes the profile as a versioned text file, and the C table a cartridg
     counts <kind> <decomp ÷ original> ...     (step 2's ratios, when it ran)
     cpu read  wram <w> rom <w> cart-ram <w> io <w>
     cpu write wram <w> rom <w> cart-ram <w> io <w>
+    spc read  ram <w> reg <w>
+    spc write ram <w> reg <w>
     chip <name> ops <KIND> ... speed <clocks> (named, so a chip whose enum differs is caught)
     program <entry> fixed <f> weights <w> ...
     default fixed <f> weights <w> ...
@@ -108,19 +122,32 @@ nativeshvc's script language) as an extra span. On each frame the reference reco
   internal cycles. It leaves out WAI, DMA, refresh, and poll loops (a stretch of more than 64
   reads with no write), which the console's waits stand for, and any single gap over 1,024
   clocks (a branch to itself).
-- **its data accesses by kind**, the eight above.
+- **its data accesses by kind**, the eight above, each with its own gap: the CPU's work
+  since the access before (its fetches and internal cycles).
+- **the SPC700's**, the same: its data accesses by its four kinds, each with its gap in its
+  cycles (fetches, dummy reads, internal cycles), its poll loops left out the same way.
 
-The fit is fixed, with nothing to tune: non-negative least squares on each frame's error in
-clocks (a frame's time is the sum of its costs, so the slowest frames, where slowdown
-shows, weigh most), over the frames whose CPU worked 5% of the frame or more. The report's
-errors are relative. The answer is one answer: the tool searches every set of non-zero
-weights exactly, and where the data leave more than one answer with the least error (a count
-that never changes, two that move together), it takes the one with the fewest non-zero
-weights, and among those the first in order (the kinds' order; for a chip, `fixed` first,
-then the ops in theirs). So work that is the same every time goes to the first: a chip's
-fixed part. A kind with fewer than 1,000
-accesses is not measured, and its weight is 0. More than one ROM gives one profile over all
-of them.
+The fit is fixed, with nothing to tune, and each processor's is the one its profile is for.
+Both are taken over the frames whose processor worked 5% of the frame or more.
+
+- **The S-CPU's sets the game's pace**: how much work fits in a frame. Its weights are
+  non-negative least squares on each frame's error in clocks: they make each frame's total
+  come out as near the real one as they can (a frame's time is the sum of its costs, so the
+  slowest frames, where slowdown shows, weigh most). The answer is one answer: the tool
+  searches every set of non-zero weights exactly, and where the data leave more than one
+  answer with the least error (a count that never changes, two that move together), it takes
+  the one with the fewest non-zero weights, and among those the first in order (the kinds'
+  order; for a chip, `fixed` first, then the ops in theirs). So work that is the same every
+  time goes to the first: a chip's fixed part.
+- **The SPC700's sets when each access is made**: the driver answers the S-CPU's handshakes
+  access by access. Each access's gap is measured, so a kind's weight is least squares on its
+  own accesses' gaps, which is its mean gap: its own, never traded against another kind's
+  that comes with it (as frame totals would trade a driver's register reads against its RAM
+  reads).
+
+A kind with fewer than 1,000 accesses is not measured, and its weight is 0. More than one ROM
+gives one profile over all of them. The report gives each processor's error frame by frame,
+relative to each frame's real work.
 
 **A chip's programs** come from the chip's jobs as the game recorded them on the reference
 (`--chip-jobs`): the game owns its chip and its recorder, and hands the tool its jobs in the
@@ -134,7 +161,10 @@ makes for the S-CPU taken out: the Super FX's RON and RAN holds), a COUNT for ea
 in the order named; `speed` the chip clocks an access of its takes (the Super FX: 5 at
 CLSR's 21 MHz, 6 at 10.7). Each program with 20 jobs or more is fitted on its own (fixed and
 weights, non-negative least squares on each job's error in chip clocks, so the long jobs
-weigh most); one with fewer is one
+weigh most; one answer: every set of non-zero weights is searched exactly, and where the
+jobs leave more than one answer with the least error, a count that never changes or two
+that move together, the one with the fewest non-zero weights, then the first in order,
+`fixed` first, so work the same every job goes to `fixed`); one with fewer is one
 multiplier on the speed, as is the default row, over all the jobs. Work the recording does
 not count as operations (the Super FX's ROM-buffer fills) is carried by the fixed part.
 
@@ -151,7 +181,8 @@ consistency is the game's own run of its jobs against its recording.
 ## 3. The report (`report.txt`, fixed format)
 
 - the ROMs and spans, the frames, and those with work;
-- the S-CPU: each kind's weight and its accesses (or "too few to measure: 0");
+- the S-CPU and the SPC700: each kind's weight and its accesses (or "too few to measure:
+  0");
 - the profile's error against the original, frame by frame: bias, mean |error|, 95th
   percentile, worst, and the slowest 5% of frames separately (bias, worst), where slowdown
   shows; beside it, the same with no profile (the bus's time alone);
@@ -164,6 +195,6 @@ consistency is the game's own run of its jobs against its recording.
 
 ## 4. In the contract (2.1)
 
-`nshvc.h`: `nshvc_cost_profile`, `nshvc_chip_program`, `NSHVC_KIND_*`, `nshvc_access_kind`,
+`nshvc.h`: `nshvc_cost_profile` (its `spc_tenths` the SPC700's), `nshvc_chip_program`, `NSHVC_KIND_*`, `nshvc_access_kind`,
 the field `nshvc_cart.cost_profile`, and `nshvc_set_read_hook` (each S-CPU read as it is made,
 with its value: what step 2's measuring mode counts by, and any app may use).
