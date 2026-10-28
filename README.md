@@ -1,15 +1,26 @@
 # nativeshvc: a native Super Famicom / Super Nintendo for decompiled games
 
-**nativeshvc is not an emulator.** It is a native implementation of the Super Famicom /
-Super Nintendo itself: the console's bus, picture unit, sound unit, DMA, interrupts and
-controller ports, built as native code for the host. Nothing in it interprets, translates or
-recompiles machine code: there is no emulated 65816 or SPC700, no instruction loop and no
-ROM image of the game's code. The game's own decompiled C runs directly on it, natively.
+**nativeshvc is a behaviour-exact implementation of the Super Famicom / Super Nintendo,
+not an emulator.** It is the console itself, built as native code for the host: its bus,
+picture unit, sound unit, DMA, interrupts and controller ports. Nothing in it interprets,
+translates or recompiles machine code: there is no emulated 65816 or SPC700, no instruction
+loop and no ROM image of the game's code. The game's own decompiled C runs directly on it,
+natively.
+
+**Behaviour exact, not cycle exact.** Everything the console does, nativeshvc does as the
+console does it, at the console's own time: the picture line by line, DMA and HDMA, the
+interrupts, the timers, the sound chip's 32,040 samples a second, held to the reference
+(bsnes) read for read, pixel for pixel and sample for sample. The game's processors are
+its C, and their work takes no time: the C makes every access the original makes, in the
+original's order, and waits where the original waited for the hardware. So the game does
+what it did, and sees and plays what it saw and played; only how long its own processors
+took is not kept (see [Time](#time)).
 
 **A decompiled game is the cartridge; nativeshvc is the console it plugs into.** A game's
 decompiled C, linked against nativeshvc, builds a native program that powers on, runs the
-reset vector's code and plays as it did on the console: the same picture, the same sound,
-the same pace, with no emulated processor and no ROM image of the code.
+reset vector's code and plays as it did on the console: the same picture and the same
+sound, with the console's own frame rate, and no emulated processor and no ROM image of the
+code.
 
 **Maintainer:** Jeffrey Wilbur, Strut B, LLC\
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)
@@ -32,11 +43,11 @@ and Linux to come), presented on the GPU at any window size, with sound, control
 saves, at the console's own pace.
 
 It holds to the standard of the decompilations it serves. It runs no emulated CPU, does no
-high-level emulation of the game, and has no per-game fixes. It is behaviour exact, not
-cycle exact: the game's own C makes every access the original makes, in the original's
-order, and waits where the original waits for the hardware; nativeshvc answers each access
-as the hardware does, and runs the hardware at the hardware's time. The C's own work takes
-no time (see [Time](#time)).
+high-level emulation of the game, and has no per-game fixes. It is behaviour exact: the
+game's own C makes every access the original makes, in the original's order, and waits
+where the original waits for the hardware; nativeshvc answers each access as the hardware
+does, and runs the hardware at the hardware's time. The C's own work takes no time (see
+[Time](#time)).
 
 Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
 console's numbers are its baseline, and a port may opt out of them (see

@@ -1,6 +1,11 @@
 /*
  * nshvc.h: nativeshvc, a native Super Nintendo for decompiled games.
  *
+ * Behaviour exact, not an emulator: the console's hardware does what the
+ * console's does, at the console's time, and the processors' work (the
+ * game's C) takes none; the C waits where the original waited for the
+ * hardware (machine.h nshvc_wait_until, spc.h spc_wait_until).
+ *
  * A decompiled game is the cartridge; nativeshvc is the console it plugs
  * into. The console is everything but the processors: the S-CPU's bus and
  * clock, work RAM, the cartridge's ROM and RAM in its mapping, the CPU's

@@ -164,6 +164,9 @@ static void take_interrupt(int nmi)
     if (!r)
         snes_fatal("interrupt vector $%04X: no routine with C starts at $00:%04X (the code there needs C, as any "
                    "other code the CPU runs)", (unsigned)(vector & 0xFFFF), (unsigned)at);
+    /* the handler's own: what the interrupted code left in it is put back
+       with the rest */
+    cpu.unwound = 0;
     r->abi();
     if (cpu.unwound)
         snes_fatal("the interrupt handler at $00:%04X left through its caller's frame", (unsigned)at);

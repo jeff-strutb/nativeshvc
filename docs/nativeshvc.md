@@ -6,6 +6,10 @@ around it.
 
 ## What it is
 
+nativeshvc is a behaviour-exact implementation of the console, not an
+emulator: the hardware does what the console's does, at the console's time,
+and the processors' work (the game's C) takes none (README.md, Time).
+
 A decompiled game is the cartridge; nativeshvc is the console. The
 processors are the game's own C, written against the machine model
 (`include/nshvc/machine.h`, `spc.h`; a cartridge chip's processor, the
@@ -19,8 +23,8 @@ controllers, touch, the battery save, the frame's pace) on macOS, Windows,
 iOS and headless.
 
 The console's own numbers are the baseline, not hard limits: at its own
-settings nativeshvc is the console, checked against the reference pixel for
-pixel and cycle for cycle; past them, the extensions lift each limit the
+settings nativeshvc is the console, its hardware checked against the
+reference read for read and pixel for pixel, to the clock; past them, the extensions lift each limit the
 same way the console's own registers work, and a game asks for each.
 
 ## Plugging a game in

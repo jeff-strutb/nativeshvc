@@ -134,9 +134,13 @@ static void abi_reset(void)
     nshvc_wait_until(not_hblank, NULL);
     wr8(0x004200, 0x80);
     nmis = 0;
+    cpu.unwound = 1;                /* as code that left through its caller's frame and goes on */
     nshvc_wait_until(flag_set, &nmis);
     check(snes_vcounter() == 225 && nmi_at == line_start() + 2, "the NMI is taken in a wait at its clock",
           (long long)(nmi_at - line_start()), 2);
+    check(cpu.unwound == 1, "an interrupt in code that left through its caller's frame: no fatal, the flag kept",
+          cpu.unwound, 1);
+    cpu.unwound = 0;
     wr8(0x004200, 0x00);
 
     /* the H IRQ, at 4 x HTIME + 14 into its line (bus.c IRQ_DELAY) */

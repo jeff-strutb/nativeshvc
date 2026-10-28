@@ -1,7 +1,9 @@
 # The game contract, version 2.0
 
-This is what a decompiled game writes against and what nativeshvc promises in return. It is
-at 2.0: the console is behaviour exact, and the game's C states no time (Changes, below). A
+This is what a decompiled game writes against and what nativeshvc promises in return.
+nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
+contract is at 2.0: the console is behaviour exact, and the game's C states no time
+(Changes, below). A
 game written to it plays on every later 2.x without a change.
 
 ## How it changes
