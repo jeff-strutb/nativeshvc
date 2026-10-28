@@ -27,9 +27,10 @@ both respecting the original game:
 2. **Enhanced mode: independent of processor speed, exactly.** The game's code is updated
    as a properly built modern game's is: its pace is set by the time that really passes and
    the display, not by how much work fits in a frame (60 Hz, or a frame rate left
-   unlocked). It behaves the same at any CPU cost, zero included, and needs no S-CPU or
-   SPC700 weights. A cartridge chip still runs each job for its own time, the hardware's,
-   so its programs' durations are still declared.
+   unlocked). It behaves the same at any S-CPU cost, zero included, and runs with the
+   S-CPU's costs off (`nshvc_set_cpu_costs(0)`: its accesses take no console time). The SPC700 keeps its weights: the sound
+   driver runs its own program at its own speed. A cartridge chip is the cartridge's own,
+   so the game makes its jobs independent of the chip's speed itself.
    Where the original slowed down, it does not: that slowdown was a side effect of the
    chips' speed, not something the game was written to do.
 
@@ -90,8 +91,10 @@ own jobs.
 ### Declaring it
 
 A cartridge declares its profile once, in its description: `nshvc_cart.cost_profile`, read
-at power on. Nothing is stated during play. With none, the S-CPU's cost is 0 and a chip uses
-what it has of its own.
+at power on. With none, the S-CPU's cost is 0 and a chip uses what it has of its own. As it
+runs, the game turns the S-CPU's costs off and on with `nshvc_set_cpu_costs` (on at power
+on): off in its Enhanced mode, where its accesses take no console time; on in its Original
+mode and in any scene that must keep the original's pacing.
 
 ### The file
 
@@ -204,8 +207,9 @@ consistency is the game's own run of its jobs against its recording.
 - step 2: each kind's count ratio and the frames whose counts differ, or `unchecked`;
 - **acceptance bar: TBD**, to be set once Stunt Race FX's first report has been seen.
 
-## 4. In the contract (2.1)
+## 4. In the contract (2.1, 2.2)
 
 `nshvc.h`: `nshvc_cost_profile` (its `spc_tenths` the SPC700's), `nshvc_chip_program`, `NSHVC_KIND_*`, `nshvc_access_kind`,
-the field `nshvc_cart.cost_profile`, and `nshvc_set_read_hook` (each S-CPU read as it is made,
+the field `nshvc_cart.cost_profile`, `nshvc_set_cpu_costs` (2.2: the S-CPU's costs on or
+off as the game runs), and `nshvc_set_read_hook` (each S-CPU read as it is made,
 with its value: what step 2's measuring mode counts by, and any app may use).

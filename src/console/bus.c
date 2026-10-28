@@ -1070,11 +1070,21 @@ uint8_t snes_peek(uint32_t addr)
    RAM, ROM, cartridge RAM, I/O), in tenths of a master clock: the
    cartridge's cost profile (nshvc_cart.cost_profile, docs/cost-profile.md)
    or, with none, 0: the bus's time alone. The tenths carry from one access
-   to the next. NSHVC_CPU_ALLOWANCE overrides them, for
+   to the next. nshvc_set_cpu_costs(0) takes the S-CPU's accesses out of
+   the console's time as the game runs (its Enhanced mode: no bus time, no
+   weight; its waits and a DMA still take theirs), (1) puts them back.
+   NSHVC_CPU_ALLOWANCE overrides the weights, for
    measuring only: one value in clocks for every kind, or eight,
    comma-separated, the reads' four then the writes'. */
 static uint32_t allowance[2][NSHVC_KINDS];
 static uint32_t allowance_carry;          /* tenths not yet spent */
+static int allowance_on;                  /* nshvc_set_cpu_costs: 0, accesses take no time */
+
+void nshvc_set_cpu_costs(int on)
+{
+    allowance_on = on != 0;
+    allowance_carry = 0;
+}
 
 int nshvc_access_kind(uint32_t addr)
 {
@@ -1099,6 +1109,7 @@ static void allowance_set(void)
     int n = 0, w, k;
     memset(allowance, 0, sizeof allowance);
     allowance_carry = 0;
+    allowance_on = 1;
     if (p) {
         if (p->version != NSHVC_COST_PROFILE_VERSION)
             snes_fatal("the cartridge's cost profile is version %d; this console reads version %d", p->version,
@@ -1139,10 +1150,11 @@ static unsigned access_clocks(uint32_t addr)
     return 6;
 }
 
-/* Code run with interrupts held (an app's, outside the console's time)
-   costs nothing, so a loop of it that waits for the hardware never ends;
-   such a loop reads and does not write. 20,000,000 reads with no write or
-   wait between them are taken for one. */
+/* Code run with interrupts held (an app's, outside the console's time), or
+   with the S-CPU's costs off (nshvc_set_cpu_costs(0)), costs nothing, so a
+   loop of it that waits for the hardware never ends; such a loop reads and
+   does not write. 20,000,000 reads with no write or wait between them are
+   taken for one. */
 static uint32_t spin_reads;
 
 /* the time before an access: the allowance (the C's own, by the access's
@@ -1167,6 +1179,13 @@ static int access_begins(uint32_t addr, unsigned cc, int game, int write)
         if (++spin_reads >= 20000000u)
             snes_fatal("with interrupts held, the S-CPU made 20,000,000 reads and no write (the last of $%06X): a "
                        "loop that waits for the console's time, which does not pass held", (unsigned)addr);
+        return 0;
+    }
+    if (!allowance_on) {
+        if (++spin_reads >= 20000000u)
+            snes_fatal("with the S-CPU's costs off, it made 20,000,000 reads and no write (the last of $%06X): a "
+                       "loop that waits for the console's time, which its accesses do not take (wait with "
+                       "nshvc_wait_until)", (unsigned)addr);
         return 0;
     }
     if (game)

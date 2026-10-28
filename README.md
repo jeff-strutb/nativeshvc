@@ -196,8 +196,8 @@ it into the connector (`cart.h`).
 
 ## Status
 
-Version 2.1.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.1: behaviour exact, each
+Version 2.2.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.2: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight (see [Time](#time)). A
 game built against it plays on every later 2.x unchanged; only a 3.0 may change it. The
 cost profile's standard is [docs/cost-profile.md](docs/cost-profile.md); its acceptance
@@ -378,10 +378,17 @@ do. Making such a game's C changes its code either way, so the standard
 2. **Enhanced mode: independent of processor speed.** The game's code is updated as a
    properly built modern game's is: its pace is set by the time that really passes and the
    display, not by how much work fits in a frame (60 Hz, or a frame rate left unlocked).
-   Its behaviour no longer depends on the processors' speed, so nativeshvc runs it exactly,
-   with no S-CPU or SPC700 weights (their cost 0). A cartridge chip still runs each job for
-   its own time, the hardware's, as a DMA does, so its profile still declares its programs'
-   durations. Where the original slowed down, it does not.
+   Its behaviour no longer depends on the processors' speed, so nativeshvc runs it exactly
+   with the S-CPU's costs off: `nshvc_set_cpu_costs(0)`, its accesses taking no console
+   time, as a modern CPU's work takes next to none of a frame. The clock still moves in its
+   waits and while a DMA runs, and a loop that polls the hardware with no wait is fatal, as
+   with interrupts held. The game switches as it runs (`nshvc_set_cpu_costs(1)` back to the
+   bus's time and the profile's weights), so one build plays both modes, and a scene that
+   must keep the original's pacing in either (a demo replaying the original's buttons)
+   turns them on for its length. The SPC700 keeps
+   its weights in both: the sound driver runs its own program at its own speed. A
+   cartridge chip is the cartridge's own, so the game makes its jobs independent of the
+   chip's speed itself. Where the original slowed down, it does not.
 
 Both are behaviour correct, and both respect the original game. With no profile declared
 the cost is 0. The sound driver's beat is its timers', which run at their real time; a

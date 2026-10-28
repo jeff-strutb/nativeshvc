@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 1
+#define NSHVC_VERSION_MINOR 2
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -130,6 +130,15 @@ typedef struct {
     uint32_t spc_tenths[2][2];
 } nshvc_cost_profile;
 #define NSHVC_COST_PROFILE_VERSION 1
+
+/* The S-CPU's costs, on (1, the default at power on: each access the bus's
+   time and its kind's weight from the cost profile) or off (0: its accesses
+   take no console time), from the next access: a game's Original mode on,
+   its Enhanced mode off (README.md, Time, Pacing), switched as it runs.
+   Off, the clock still moves in the waits and while a DMA runs; a loop
+   that polls the hardware with no wait is fatal, as with interrupts held.
+   The SPC700's costs and a chip's own time are not affected. (Since 2.2.) */
+void nshvc_set_cpu_costs(int on);
 
 typedef struct nshvc_cart {
     const char *title;          /* the window's and dialogs' */

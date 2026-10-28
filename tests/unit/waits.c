@@ -11,7 +11,12 @@
  *
  *   waits              runs the checks; exit 0 when every one holds
  *   waits --allowance  a cartridge's cost profile (nshvc_cart.cost_profile):
- *                      each kind's weight, over 10,000 accesses
+ *                      each kind's weight, over 10,000 accesses; with
+ *                      nshvc_set_cpu_costs(0), no time at all, while a
+ *                      wait and a DMA still take theirs; with (1), the
+ *                      bus's time and the weights again
+ *   waits --offpoll    a loop polling a status bit with the costs off,
+ *                      where no time passes: must stop the run (exit 70)
  *   waits --held       a wait with interrupts held: must stop the run
  *                      (exit 70)
  *   waits --heldpoll   a loop polling a status bit with interrupts held,
@@ -112,6 +117,11 @@ static void abi_reset(void)
         nshvc_hold_interrupts(1);
         nshvc_wait_vblank();
     }
+    if (!strcmp(mode, "--offpoll")) {
+        nshvc_set_cpu_costs(0);
+        while (!(rd8(0x004212) & 0x80))
+            ;
+    }
     if (!strcmp(mode, "--heldpoll")) {
         nshvc_hold_interrupts(1);
         while (!(rd8(0x004212) & 0x80))
@@ -133,16 +143,53 @@ static void abi_reset(void)
             { "writes of work RAM", 0x7E2000, 1, 8, 316 },      { "writes of cartridge RAM", 0x700000, 1, 8, 457 },
             { "writes of I/O", 0x002180, 1, 6, 333 },
         };
-        unsigned j;
-        for (j = 0; j < sizeof k / sizeof k[0]; j++) {
-            uint64_t a, lines;
-            a = snes_clock;
-            lines = 0;
-            for (i = 0; i < 10000; i++)
-                lines += timed(k[j].addr, k[j].write);
-            check(snes_clock - a - 40 * lines == 10000ull * k[j].bus + 1000ull * k[j].tenths, k[j].what,
-                  (long long)(snes_clock - a - 40 * lines), (long long)(10000ull * k[j].bus + 1000ull * k[j].tenths));
+        unsigned j, pass;
+        /* the costs on, off (nshvc_set_cpu_costs(0): no time at all), and
+           on again */
+        for (pass = 0; pass < 3; pass++) {
+            nshvc_set_cpu_costs(pass != 1);
+            for (j = 0; j < sizeof k / sizeof k[0]; j++) {
+                uint64_t a, lines, want = pass != 1 ? 10000ull * k[j].bus + 1000ull * k[j].tenths : 0;
+                char what[96];
+                a = snes_clock;
+                lines = 0;
+                for (i = 0; i < 10000; i++)
+                    lines += timed(k[j].addr, k[j].write);
+                snprintf(what, sizeof what, "%s, costs %s", k[j].what, pass == 0 ? "on" : pass == 1 ? "off" : "on again");
+                check(snes_clock - a - 40 * lines == want, what, (long long)(snes_clock - a - 40 * lines), (long long)want);
+            }
         }
+        /* the costs off: a wait still ends at its event, and a DMA still
+           takes the DMA unit's time (8 to start, 8 for the channel, 8 a
+           byte, 8 to 16 aligning and given back, the refreshes it passes),
+           though the $420B write that starts it takes none */
+        nshvc_set_cpu_costs(0);
+        nshvc_wait_vblank();
+        check(snes_vcounter() == 225 && snes_line_clock() == 0, "costs off: nshvc_wait_vblank ends at line 225's start",
+              snes_line_clock(), 0);
+        {
+            uint64_t a = snes_clock, b, ls = line_start(), refresh = 0, l, extra;
+            wr8(0x002115, 0x80);
+            wr8(0x002116, 0x00);
+            wr8(0x002117, 0x00);
+            wr8(0x004300, 0x01);
+            wr8(0x004301, 0x18);
+            wr8(0x004302, 0x00);
+            wr8(0x004303, 0x20);
+            wr8(0x004304, 0x7E);
+            wr8(0x004305, 0xD0);
+            wr8(0x004306, 0x07);
+            check(snes_clock == a, "costs off: nine writes take no time", (long long)(snes_clock - a), 0);
+            wr8(0x00420B, 0x01);
+            b = snes_clock;
+            for (l = ls; l < b; l += 1364)
+                if (l + 534 - (l & 7) >= a && l + 534 - (l & 7) < b)
+                    refresh += 40;
+            extra = b - a - refresh - (8 + 8 + 2000 * 8);
+            check(extra >= 8 && extra <= 16, "costs off: a DMA of 2,000 bytes takes the DMA unit's time, 8 to 16 aligning",
+                  (long long)extra, 8);
+        }
+        nshvc_set_cpu_costs(1);
         printf("%d check(s) failed\n", fails);
         exit(fails ? 1 : 0);
     }

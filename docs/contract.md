@@ -1,8 +1,8 @@
-# The game contract, version 2.1
+# The game contract, version 2.2
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.1: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.2: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -118,8 +118,9 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   by a cost profile, which approximates the original's processor time, so its slowdown is
   approximate; and an Enhanced mode, made independent of processor speed (its pace set by
   the time that really passes and the display, as a properly built modern game's is, not
-  by how much work fits in a frame), which nativeshvc runs exactly at any S-CPU and SPC700
-  cost (a cartridge chip's jobs still take their own time, the hardware's). Both are
+  by how much work fits in a frame), which nativeshvc runs exactly at any S-CPU cost, with
+  its costs off (`nshvc_set_cpu_costs(0)`: its accesses take no time; the SPC700 keeps its
+  own, and a cartridge chip is the game's to make speed independent). Both are
   behaviour correct and respect the original game. The original's slowdown was a side
   effect of the chips' speed, not something the game was written to do.
 - **The sound as the original's.** After a KON or KOFF write, the SPC700's next DSP write
@@ -145,6 +146,12 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.2:** `nshvc_set_cpu_costs(on)`: the S-CPU's costs on (the default at power on: each
+  access the bus's time and its kind's weight from the cost profile) or off (its accesses
+  take no console time; the clock still moves in its waits and while a DMA runs, and a loop
+  polling the hardware with no wait is fatal, as with interrupts held), from the next
+  access, so a game switches between its Original and Enhanced modes as it runs. The
+  SPC700's costs and a chip's own time are not affected.
 - **2.1:** each S-CPU access costs the bus's time for it, as the console's memory speeds
   give it, and the weight of its kind from the cartridge's cost profile: `nshvc_cart`'s
   `cost_profile` field (a zeroed description has none: the bus's time alone),
