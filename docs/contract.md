@@ -121,9 +121,13 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 - **The one exception to cycle exactness: interrupt latency.** The 65816 starts a handler
   at the end of the instruction in progress. Structured C doesn't carry that instruction,
   so here the handler can start earlier by the rest of it. On the test cartridges that
-  measure it, that's 1 to 20 dots (README.md, Time; `tests/rom/KNOWN`). What the handler
-  reads and writes is the hardware's; only when it starts differs. Where the code waits
-  for the interrupt (WAI, or polling a flag or status register), the timing is exact.
+  measure it, that's 1 to 20 dots (README.md, Time; `tests/rom/KNOWN`). The handler can
+  also come before a read or write the interrupted instruction still had to make (an
+  interrupt due while the original fetches an instruction is taken before its access, on
+  the hardware after it). So a loop polling a flag the handler sets, or a status register,
+  can leave a turn early, and that access differs where the handler writes what it reads
+  or reads what it writes. Where the code waits with WAI (or a branch to itself), the
+  timing is exact.
 - **A fatal error, never a guess,** when the game reaches something the contract doesn't
   cover: an address with no C (a vector's included), a cycle length other than 6, 8 or 12, or a wait on time while untimed. It's reported,
   then the process exits with status 70.

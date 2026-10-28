@@ -46,7 +46,8 @@ void wr16_rmw(uint32_t addr, uint16_t value);
    masks it: at an operation's end, or, in a stretch of time (cyc, cycs,
    cpu_idle), at the clock it comes due. The C marks no instruction's end:
    the original takes the interrupt at its instruction's end, later than
-   here by the rest of that instruction (README.md, Time). */
+   here by the rest of that instruction, which can put the handler here
+   before that instruction's own read or write (README.md, Time). */
 
 /* The 65816 register file, for abi_ wrappers. */
 typedef struct {

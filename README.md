@@ -316,14 +316,18 @@ when the interrupt comes due in its last cycle, after the next instruction as we
 delay of a few CPU cycles, by which instructions those are (1 to 20 dots, 4 to 80 master
 clocks, on the test cartridges that measure it). Which instruction is in
 progress is a fact of the original's machine code that structured C does not carry, so
-nativeshvc starts the handler at the operation's end or the clock it comes due instead.
-What the handler reads and writes, and in what order against the interrupted code's
-accesses, is the hardware's; only its start can differ, earlier here by that delay.
-Where the code waits for the interrupt (WAI, a loop polling a flag or a status register),
-the two are the same and the timing is exact. It shows only where a handler's writes are
-timed to the dot without such a wait (a mid-line split from an H-IRQ the code does not wait
-for) and in test cartridges that measure the latency itself: 104 of the 1,164, listed in
-`tests/rom/KNOWN`.
+nativeshvc starts the handler at the operation's end or the clock it comes due instead,
+earlier here by that delay. That can also put the handler before an access the interrupted
+instruction still had to make: an interrupt that comes due while the original fetches an
+instruction is taken here before that instruction's read or write, and on the hardware
+after it. That access then reads or writes something else only where the handler writes
+what it reads or reads what it writes; and a loop polling a flag the handler sets, or a
+status register (a chip's, as it stops), can see the change a turn sooner and leave a turn
+early. Where the code waits with WAI (or a branch to itself), the console takes the
+interrupt as the CPU does and the timing is exact. It shows where a handler's writes are
+timed to the dot (a mid-line split from an H-IRQ the code does not wait for), in poll loops
+like those, and in test cartridges that measure the latency itself: 104 of the 1,164,
+listed in `tests/rom/KNOWN`.
 
 ### Controllers
 
