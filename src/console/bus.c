@@ -87,6 +87,7 @@ static uint8_t rdnmi_flag, timeup_flag;
 static uint64_t nmi_at, timeup_at, poll_clock;
 static int poll_masked;
 static int nmi_pending, cart_irq;
+static uint64_t cart_irq_at;    /* the clock the cartridge's IRQ line rose at */
 
 static void latch_counters(void);
 static void joy_run(void);
@@ -627,7 +628,51 @@ void snes_tick(unsigned clocks)
         run_events();
 }
 
-void snes_cart_irq(int level) { cart_irq = level; }
+/* The cartridge's IRQ line, changed at the chip's clock `at`: a rise is
+   due from then, the earliest kept while the line stays high. */
+void snes_cart_irq(int level, uint64_t at)
+{
+    if (!level) {
+        cart_irq = 0;
+        return;
+    }
+    if (!cart_irq) {
+        cart_irq = 1;
+        cart_irq_at = at;
+    }
+}
+
+/* The chip's clock: a sync brings it to nshvc_cart_clock, the console's
+   own, or, run ahead through a stretch with no access of the S-CPU's in
+   it, that stretch's end, brought back to the clock its IRQ rises at so
+   the chip stops there (chip_ahead). */
+static uint64_t chip_to;
+static int chip_ahead;
+
+/* whether a rise of the chip's IRQ could be taken now: a chip that syncs,
+   running (busy, when it says), its line low, interrupts not held, and
+   (`unmasked`) the IRQ not masked */
+static int chip_watch(int unmasked)
+{
+    if (!chip || !chip->sync || cart_irq || interrupts_held)
+        return 0;
+    if (unmasked && (!snes_interrupt_hook || (snes_irq_masked && snes_irq_masked())))
+        return 0;
+    return !chip->busy || chip->busy();
+}
+
+/* the chip run ahead `n` clocks, where nothing the S-CPU does can reach
+   it, so a rise of its IRQ in them is seen at its clock: 1 when it rose */
+static int chip_run_ahead(uint32_t n)
+{
+    if (!chip_watch(1))
+        return 0;
+    chip_to = snes_clock + n;
+    chip_ahead = 1;
+    chip->sync();
+    chip_ahead = 0;
+    return cart_irq;
+}
 
 /* nshvc_hold_interrupts: due interrupts wait while held */
 void nshvc_hold_interrupts(int on)
@@ -651,7 +696,7 @@ static void check_interrupts_at(uint64_t by, int masked)
             snes_interrupt_hook(1);
         return;
     }
-    if (((timeup_flag && timeup_at <= by) || cart_irq) && snes_interrupt_hook && !masked) {
+    if (((timeup_flag && timeup_at <= by) || (cart_irq && cart_irq_at <= by)) && snes_interrupt_hook && !masked) {
         dbg_irqs++;
         snes_interrupt_hook(0);
     }
@@ -1219,8 +1264,8 @@ static uint64_t interrupt_due_at(void)
     if (nmi_pending)
         t = nmi_at;
     if (!(snes_irq_masked && snes_irq_masked())) {
-        if (cart_irq)
-            return 0;
+        if (cart_irq && cart_irq_at < t)
+            t = cart_irq_at;
         if (timeup_flag && timeup_at < t)
             t = timeup_at;
     }
@@ -1228,11 +1273,13 @@ static uint64_t interrupt_due_at(void)
 }
 
 /* a point between two of the C's operations: the interrupt due by now is
-   taken there */
+   taken there (the chip brought up to now, so its IRQ is seen) */
 static void between(void)
 {
     if (rmw_open)
         return;
+    if (chip_watch(1))
+        chip_sync();
     check_interrupts_at(snes_clock, snes_irq_masked && snes_irq_masked());
 }
 
@@ -1244,13 +1291,18 @@ static void c_time(uint32_t clocks, uint32_t *alu_pending)
 {
     while (clocks) {
         uint32_t n = clocks;
-        uint64_t due = interrupt_due_at();
         if (!rmw_open && !snes_untimed()) {
-            if (due > snes_clock && due - snes_clock < n)
-                n = (uint32_t)(due - snes_clock);
+            uint64_t due;
             /* an event in it may raise one */
             if (next_event > snes_clock && next_event - snes_clock < n)
                 n = (uint32_t)(next_event - snes_clock);
+            /* and so may the chip: at once, when it rose in time the S-CPU
+               has already passed (a refresh) */
+            if (chip_run_ahead(n) && cart_irq_at <= snes_clock)
+                n = 0;
+            due = interrupt_due_at();
+            if (due > snes_clock && due - snes_clock < n)
+                n = (uint32_t)(due - snes_clock);
         }
         snes_tick(n);
         clocks -= n;
@@ -1489,11 +1541,18 @@ static void cpu_clocks(uint32_t clocks)
     alu_stretch(clocks);
 }
 static int timeup_seen(void) { return timeup_flag && timeup_at <= snes_clock; }
-int snes_interrupt_due(void) { return (nmi_pending && nmi_at <= snes_clock) || timeup_seen() || cart_irq; }
+int snes_interrupt_due(void)
+{
+    if (chip_watch(0))
+        chip_sync();
+    return (nmi_pending && nmi_at <= snes_clock) || timeup_seen() || (cart_irq && cart_irq_at <= snes_clock);
+}
 /* the end of an instruction the console runs: the interrupt the CPU
    decided on as its last cycle began, with the I flag as it was then */
 void snes_cpu_boundary(void)
 {
+    if (!poll_masked && chip_watch(1))
+        chip_sync();
     check_interrupts_at(poll_clock, poll_masked);
 }
 
@@ -1582,8 +1641,15 @@ void nshvc_wait_vblank(void)
 }
 
 /* ---- the cartridge connector's side (cart.h) ---- */
-uint64_t nshvc_cart_clock(void) { return snes_clock; }
-void nshvc_cart_irq(int level) { snes_cart_irq(level); }
+uint64_t nshvc_cart_clock(void) { return chip_ahead ? chip_to : snes_clock; }
+void nshvc_cart_irq_at(int level, uint64_t clock)
+{
+    snes_cart_irq(level, clock);
+    /* run ahead: the chip stops where its IRQ rose */
+    if (level && chip_ahead && clock < chip_to)
+        chip_to = clock > snes_clock ? clock : snes_clock;
+}
+void nshvc_cart_irq(int level) { nshvc_cart_irq_at(level, nshvc_cart_clock()); }
 uint8_t nshvc_cart_rom(uint32_t off, int who) { return snes_rom_byte(snes_rom_mirror(off), who); }
 uint8_t nshvc_open_bus(void) { return snes_mdr; }
 nshvc_coro *nshvc_coro_new(void (*fn)(void *), void *arg, size_t stack) { return (nshvc_coro *)coro_new(fn, arg, stack); }

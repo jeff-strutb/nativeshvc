@@ -37,8 +37,12 @@ struct nshvc_chip {
        there itself (nshvc_cart.rom, rom_pages or rom_read), for the S-CPU,
        DMA and a look alike, as it does a mapping's. */
     int (*rom_at)(uint32_t addr, uint32_t *off);
-    /* the chip brought up to the console's clock (nshvc_cart_clock): made
-       before the S-CPU's accesses to it and once a line */
+    /* the chip brought up to the clock nshvc_cart_clock gives: made before
+       the S-CPU's accesses to it, once a line, and, while it runs, where
+       the S-CPU could take its IRQ. That clock can be ahead of the
+       S-CPU's, through time in which the S-CPU makes no access, and comes
+       back to the clock the chip's IRQ rises at (nshvc_cart_irq_at): the
+       chip reads it again after each of its steps and stops at it. */
     void (*sync)(void);
     /* interrupts held (nshvc_hold_interrupts) or released: what the chip
        keeps of its interrupt across a hold, so code an app runs held leaves
@@ -52,9 +56,15 @@ struct nshvc_chip {
 };
 
 /* ---- what the connector gives a chip ---- */
-/* the master clock: clocks since power on (21.477 MHz NTSC) */
+/* the master clock: clocks since power on (21.477 MHz NTSC); in a sync,
+   the clock to bring the chip to */
 uint64_t nshvc_cart_clock(void);
-/* the cartridge's IRQ line, driven by the chip (1 asserted) */
+/* the cartridge's IRQ line, driven by the chip (1 asserted), changed at
+   master clock `clock`: the chip's own, when it raises or lowers it. The
+   S-CPU sees a rise from that clock, as on the console. (Since 1.1.) */
+void nshvc_cart_irq_at(int level, uint64_t clock);
+/* the same at nshvc_cart_clock(): for a chip that does not run on a clock
+   of its own (its line changed by the S-CPU's accesses) */
 void nshvc_cart_irq(int level);
 /* a byte of the cartridge's ROM at file offset `off` (mirrored as the
    console decodes a size that is not a power of two); `who`: NSHVC_ROM_* */

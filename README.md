@@ -163,14 +163,15 @@ it into the connector (`cart.h`).
 
 ## Status
 
-Version 1.0.0. **The standard is finished:** the game contract, what a game writes against
-and what the console promises it, is fixed at 1.0 in [docs/contract.md](docs/contract.md).
+Version 1.1.0. **The standard is finished:** the game contract, what a game writes against
+and what the console promises it, is in [docs/contract.md](docs/contract.md), at 1.1 (1.0
+and one addition, a chip's IRQ at its own clock).
 A game built against it plays on every later 1.x unchanged; only a 2.0 may change it. The
 one difference from the hardware, interrupt latency, is part of that contract (see
 [Time](#time)).
 
 **Platform hosts still to come.** These are separate implementations of the host
-interface, outside the standard; a game written against 1.0 needs no change for them:
+interface, outside the standard; a game written against 1.x needs no change for them:
 
 - **Windows:** the host is written and cross-builds with MinGW with no warnings, but has
   never been run on Windows. Its saving and loading of states, and calls that put the
@@ -212,12 +213,12 @@ each one, is in [tests/README.md](tests/README.md).
   each button's own name where the controller gives one), the mouse and touches drive
   whatever is plugged in, and the game can ask which device each player is using and what
   each control is called on it.
-- **Unit tests from a game state:** a script can run one routine's C once, from any point
-  the game reached, with its registers and inputs, and return the machine to where it was;
-  it can also save and load states, with `fork` or without it, the two making the same
-  machine byte for byte.
+- **States:** a script can save and load states, with `fork` or without it, the two making
+  the same machine byte for byte.
 - **The cartridge connector:** a chip on a test board answers its registers, decodes the
-  board's ROM, owns the cartridge's RAM and drives the IRQ line, all through `cart.h`.
+  board's ROM, owns the cartridge's RAM and drives the IRQ line, all through `cart.h`; a
+  chip running on its own clock raises its IRQ at that clock, and the S-CPU takes it there
+  (in a stretch of its time, between its reads, in WAI, after a refresh).
 - **Sound unit and DSP, on their own:** a test cartridge's SPC700 program writes every DSP
   register at random on every clock of the chip's frame, plays random sample data, runs the
   timers and the ports. The DSP matches the reference's chip sample for sample, with every
@@ -277,8 +278,9 @@ nativeshvc is the console, and implements no expansion chip itself. A cartridge'
 hardware (the Super FX, the SA-1, a DSP) is the cartridge's, as on the console, and plugs in
 through the connector in [`cart.h`](include/nshvc/cart.h): the chip powers on with the
 console, answers the S-CPU's accesses to the addresses it decodes, is brought up to the
-console's clock before those accesses and once a line, drives the IRQ line, and may own the
-cartridge's RAM. A board the chip decodes (`NSHVC_CHIP`) tells the console where its ROM
+console's clock before those accesses, once a line and wherever the S-CPU could take its
+IRQ, drives the IRQ line at its own clock (`nshvc_cart_irq_at`: the S-CPU sees a rise from
+the clock the chip raised it at, as on the console), and may own the cartridge's RAM. A board the chip decodes (`NSHVC_CHIP`) tells the console where its ROM
 is (`rom_at`), and the console reads that ROM as it reads a mapping's. A cartridge with a
 chip names it in its description.
 
@@ -366,8 +368,10 @@ it can show the player the controls they are actually holding.
 The SPC700's C, and a cartridge chip's that has a processor, run on coroutines of their own
 ([`src/console/coro.c`](src/console/coro.c), a few instructions of assembly on arm64 and
 x86-64, fibers on Windows; a chip's through `cart.h`), each with its own clock. Whenever
-the S-CPU could see what one of them does (its registers, its RAM, the sound ports) and
-once a line, the S-CPU brings it up to its own time, and it hands back when it gets there.
+the S-CPU could see what one of them does (its registers, its RAM, the sound ports, a
+chip's IRQ) and once a line, the S-CPU brings it up to its own time, and it hands back when
+it gets there. Through a stretch in which the S-CPU makes no access, a chip runs to the
+stretch's end, or stops where its IRQ rises.
 One runs at a time, on a deterministic schedule, with no threads: the same input gives the
 same run on every host.
 

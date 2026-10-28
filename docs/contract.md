@@ -1,7 +1,8 @@
-# The game contract, version 1.0
+# The game contract, version 1.1
 
 This is what a decompiled game writes against and what nativeshvc promises in return. It is
-fixed at 1.0. A game written to it plays on every later 1.x without a change.
+at 1.1: 1.0 and one addition (Changes, below). A game written to it plays on every later 1.x
+without a change.
 
 ## How it changes
 
@@ -112,7 +113,7 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   The reference is bsnes with its accuracy options. Where nativeshvc differs from it,
   that's a defect in nativeshvc, fixed in a patch release.
 - **Interrupts in the console's time.** An interrupt comes due at the clock the hardware
-  raises it. It is taken at the first point between two of the C's operations at or
+  raises it; a chip's IRQ, at the clock the chip gives (`nshvc_cart_irq_at`). It is taken at the first point between two of the C's operations at or
   after that clock: the end of an access, a word, or a read-modify-write's write, or that
   clock itself inside `cyc`, `cycs` or `cpu_idle`. No operation is split. The IRQ waits
   while `cpu`'s I flag masks it. WAI, a branch to itself and the console's own code take
@@ -131,6 +132,13 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   all of them off, the console is exact.
 - **The same run on every host.** One thread, a deterministic schedule: the same input
   gives the same machine.
+
+## Changes
+
+- **1.1:** `nshvc_cart_irq_at` (`cart.h`): a chip changes the cartridge's IRQ line at its
+  own clock, and the S-CPU sees a rise from that clock, as on the console. A chip that
+  calls `nshvc_cart_irq` builds and runs as before, its line changed at the clock its sync
+  was brought to.
 
 ## Not done, outside the contract
 

@@ -22,8 +22,9 @@ void bus_write_b(uint8_t reg, uint8_t v);
 int bus_a_is_register(uint32_t addr);
 /* the clock moves on (the CPU or DMA busy) */
 void snes_tick(unsigned clocks);
-/* the IRQ line from the cartridge (its chip: cart.h nshvc_cart_irq) */
-void snes_cart_irq(int level);
+/* the IRQ line from the cartridge (its chip: cart.h nshvc_cart_irq_at),
+   changed at clock `at` */
+void snes_cart_irq(int level, uint64_t at);
 
 uint8_t snes_wrio(void);                     /* WRIO ($4201): the ports' IOBit pins */
 

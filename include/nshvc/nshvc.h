@@ -33,7 +33,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 1
-#define NSHVC_VERSION_MINOR 0
+#define NSHVC_VERSION_MINOR 1
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */

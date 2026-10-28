@@ -34,6 +34,10 @@ set_target_properties(states PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_
 add_executable(chip unit/chip.c)
 target_link_libraries(chip PRIVATE nshvc)
 set_target_properties(chip PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(chip_irq unit/chip_irq.c)
+target_link_libraries(chip_irq PRIVATE nshvc)
+target_include_directories(chip_irq PRIVATE ${PROJECT_SOURCE_DIR}/src/console)
+set_target_properties(chip_irq PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
 # the sound chip held to the reference's (tests/dsp/fuzz.py, and any run's
 # oracle --spclog), and the resampler to the exact signal
