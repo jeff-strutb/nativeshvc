@@ -260,21 +260,22 @@ static void write_file(const char *name, const char *ext, const void *p, size_t 
 /* A shot is the picture made the way the reference's are (tests/oracle):
    an interlaced picture whose two fields' rows are the same is its lines
    once, a hires one of the console's width whose pixel pairs are all the
-   same 256 wide. */
+   same 256 wide. A presented one (NSHVC_SCALE) is as
+   presented. */
 static void shot(const char *name)
 {
-    int w, h, x, y, xs = 1, ys = 1;
-    const uint32_t *px = nshvc_picture(&w, &h);
+    int w, h, x, y, xs = 1, ys = 1, presented;
+    const uint32_t *px = front_shot_picture(&w, &h, &presented);
     const PpuFrame *fr = ppu_frame();
     char path[1024];
     FILE *f;
-    if (fr->interlace && h == 2 * fr->screen_height) {
+    if (!presented && fr->interlace && h == 2 * fr->screen_height) {
         ys = 2;
         for (y = 0; y + 1 < h && ys == 2; y += 2)
             if (memcmp(px + (size_t)y * (size_t)w, px + (size_t)(y + 1) * (size_t)w, (size_t)w * sizeof *px))
                 ys = 1;
     }
-    if (fr->width == PPU_WIDTH && w == PPU_HIRES_WIDTH) {
+    if (!presented && fr->width == PPU_WIDTH && w == PPU_HIRES_WIDTH) {
         xs = 2;
         for (y = 0; y < h && xs == 2; y++)
             for (x = 0; x < w; x += 2)

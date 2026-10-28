@@ -24,10 +24,12 @@
  *                the colour window's clip and prevent regions
  *   brightness   and forced blank; overscan (239 lines)
  */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "ppu.h"
+#include "rr_mode7.h"
 #include "snes.h"
 
 static uint16_t vram[PPU_VRAM_PAGES * 0x8000];
@@ -929,54 +931,69 @@ static void draw_bg(int n, unsigned line, unsigned mode)
 static int sext13(int v) { return (v & 0x1000) ? v | ~0x1FFF : v & 0x1FFF; }
 static int clip10(int v) { return (v & 0x2000) ? (v | ~0x3FF) : (v & 0x3FF); }
 
-/* Mode 7: BG1 (or BG2, EXTBG, with bit 7 as priority) through the matrix */
-static void draw_m7(int n, unsigned line)
+/* Mode 7's texel at texel coordinates (px, py) (integers, 1024 a side
+   inside the map) into o: the wrap modes past the map, the tile and its
+   pixel, BG2's bit 7 as priority (EXTBG) */
+static void m7_lookup(int n, int px, int py, LayerPx *o)
+{
+    int tx, ty;
+    uint8_t tile, pix;
+    if ((px | py) & ~0x3FF) {
+        if ((s->m7sel & 0xC0) == 0x80) {
+            o->opaque = 0;
+            return;
+        }
+        if ((s->m7sel & 0xC0) == 0xC0)
+            tile = 0;
+        else
+            tile = (uint8_t)d_vram[((py >> 3 & 127) << 7 | (px >> 3 & 127)) & 0x7FFF];
+    } else {
+        tile = (uint8_t)d_vram[((py >> 3) << 7 | (px >> 3)) & 0x7FFF];
+    }
+    tx = px & 7;
+    ty = py & 7;
+    pix = (uint8_t)(d_vram[(tile * 64 + ty * 8 + tx) & 0x7FFF] >> 8);
+    if (n == 1) {
+        o->prio = pix >> 7;
+        pix &= 0x7F;
+    } else {
+        o->prio = 0;
+    }
+    o->opaque = pix != 0;
+    if (pix)
+        o->color = (s->cgwsel & 1) && n == 0 ? direct_color(pix, 0) : d_cgram[pix], o->ci = pix;
+}
+
+/* Mode 7's matrix applied to the line: the texel coordinates of screen
+   column sx (the hardware's, flipped) are ((ox + a * sx) >> 8, (oy + c * sx)
+   >> 8), in 1/256 texels; y the line (mosaic and flip applied) */
+static void m7_origin(int y, int *ox, int *oy)
 {
     int a = s->m7a, b = s->m7b, c = s->m7c, d = s->m7d;
     int cx = sext13(s->m7x), cy = sext13(s->m7y);
     int hofs = sext13(s->m7hofs), vofs = sext13(s->m7vofs);
+    int x0 = clip10(hofs - cx), y0 = clip10(vofs - cy);
+    *ox = ((a * x0) & ~63) + ((b * y) & ~63) + ((b * y0) & ~63) + (cx << 8);
+    *oy = ((c * x0) & ~63) + ((d * y) & ~63) + ((d * y0) & ~63) + (cy << 8);
+}
+
+/* Mode 7: BG1 (or BG2, EXTBG, with bit 7 as priority) through the matrix */
+static void draw_m7(int n, unsigned line)
+{
+    int a = s->m7a, c = s->m7c;
     unsigned msize = (s->mosaic & (1u << n)) ? ((s->mosaic >> 4) + 1u) : 1u;
     int y = msize > 1 ? (int)mosaic_y : draw_row + 1;
-    int x0, y0, ox, oy, px, py;
+    int ox, oy;
     unsigned x;
+    (void)line;
     if (s->m7sel & 2)
         y = 255 - y;
-    x0 = clip10(hofs - cx);
-    y0 = clip10(vofs - cy);
-    ox = ((a * x0) & ~63) + ((b * y) & ~63) + ((b * y0) & ~63) + (cx << 8);
-    oy = ((c * x0) & ~63) + ((d * y) & ~63) + ((d * y0) & ~63) + (cy << 8);
+    m7_origin(y, &ox, &oy);
     for (x = 0; x < (unsigned)sw; x++) {
         int hx = (int)x - sl, sx = msize > 1 ? floor_to(hx, (int)msize) : hx;
-        int tx, ty;
-        uint8_t tile, pix;
         if (s->m7sel & 1)
             sx = 255 - sx;
-        px = (ox + a * sx) >> 8;
-        py = (oy + c * sx) >> 8;
-        if ((px | py) & ~0x3FF) {
-            if ((s->m7sel & 0xC0) == 0x80) {
-                lp[x].opaque = 0;
-                continue;
-            }
-            if ((s->m7sel & 0xC0) == 0xC0)
-                tile = 0;
-            else
-                tile = (uint8_t)d_vram[((py >> 3 & 127) << 7 | (px >> 3 & 127)) & 0x7FFF];
-        } else {
-            tile = (uint8_t)d_vram[((py >> 3) << 7 | (px >> 3)) & 0x7FFF];
-        }
-        tx = px & 7;
-        ty = py & 7;
-        pix = (uint8_t)(d_vram[(tile * 64 + ty * 8 + tx) & 0x7FFF] >> 8);
-        if (n == 1) {
-            lp[x].prio = pix >> 7;
-            pix &= 0x7F;
-        } else {
-            lp[x].prio = 0;
-        }
-        lp[x].opaque = pix != 0;
-        if (pix)
-            lp[x].color = (s->cgwsel & 1) && n == 0 ? direct_color(pix, 0) : d_cgram[pix], lp[x].ci = pix;
+        m7_lookup(n, (ox + a * sx) >> 8, (oy + c * sx) >> 8, &lp[x]);
     }
 }
 
@@ -1679,3 +1696,271 @@ static unsigned cgram_target(unsigned ahead)
     return main_px[x + (unsigned)sl].ci;
 }
 
+/* ---- the presentation: the frame at the output's resolution ------------------------- */
+/* (ppu.h ppu_mode7, render/rr_mode7.h) Each picture pixel on a Mode 7 line
+   is given everything of draw_line's rules that does not depend on where
+   the sample falls in it: the sprites' pixel over the backdrop on each
+   screen, which Mode 7 layer may show on each (its enable bits and
+   windows), the colour window's regions; its line's or segment's state
+   once in the segment table. */
+static RrM7Px *m7_px;
+static size_t m7_px_cap;
+static uint8_t m7_row[PPU_EXT_HEIGHT];
+static RrM7Seg m7_seg[PPU_EXT_HEIGHT * (PPU_SEGS + 1)];
+static uint16_t m7_pal[PPU_EXT_HEIGHT * (PPU_SEGS + 1)][256];
+static uint16_t m7_vram[PPU_VERSIONS * PPU_VRAM_PAGES][0x8000];
+static const uint16_t *m7_vram_of[PPU_VERSIONS * PPU_VRAM_PAGES];
+/* each VRAM's plane (rr_mode7.h rr_m7_plane), made again when the VRAM
+   differs from the frame before's at its index */
+static uint8_t *m7_plane;
+static int m7_planes;                 /* made: indexes 0 to m7_planes - 1 */
+static uint32_t m7_plane_gen;
+
+/* whether a line's state shows a Mode 7 layer */
+static int pres_is_m7(const PpuScreen *st)
+{
+    return !(st->inidisp & 0x80) && (st->bgmode & 7) == 7 &&
+           (((st->tm | st->ts) & 1) || ((st->setini & 0x40) && ((st->tm | st->ts) & 2)));
+}
+
+int ppu_frame_mode7(const PpuFrame *f)
+{
+    int line, k;
+    for (line = 1; line <= f->height; line++) {
+        if (pres_is_m7(&f->line[line]))
+            return 1;
+        for (k = 0; k < f->segs[line]; k++)
+            if (pres_is_m7(&f->seg_line[line][k]))
+                return 1;
+    }
+    return 0;
+}
+
+/* a screen's pixel with the sprites' over the backdrop (put_obj's rule) */
+static void m7_base(const ObjPx *o, int x, int sub, uint16_t *c, uint8_t *z, uint8_t *l)
+{
+    static const uint8_t o7[4] = { 2, 4, 6, 7 };
+    int inside;
+    *c = sub ? (uint16_t)(s->fixed_r | s->fixed_g << 5 | s->fixed_b << 10) : d_cgram[0];
+    *z = 0;
+    *l = 5;
+    if (!o->opaque || !(((sub ? s->ts : s->tm) >> 4) & 1))
+        return;
+    inside = ((s->tmw | s->tsw) >> 4 & 1) ? win_mask(layer_sel(4), layer_logic(4), x - sl) : 0;
+    if (inside && (((sub ? s->tsw : s->tmw) >> 4) & 1))
+        return;
+    *c = o->color;
+    *z = o7[o->prio];
+    *l = o->math ? 4 : 6;
+}
+
+/* whether Mode 7 layer n may show on a screen at column x */
+static int m7_may(int n, int x, int sub)
+{
+    unsigned on = sub ? s->ts : s->tm, wn = sub ? s->tsw : s->tmw;
+    int inside;
+    if (!(on >> n & 1) || (n == 1 && !(s->setini & 0x40)))
+        return 0;
+    inside = ((s->tmw | s->tsw) >> n & 1) ? win_mask(layer_sel(n), layer_logic(n), x - sl) : 0;
+    return !(inside && (wn >> n & 1));
+}
+
+/* the line's or segment's state, its palette and VRAM, as an entry of the
+   segment table */
+static int m7_state(RrMode7 *m, const PpuScreen *st, const uint16_t *pal, const uint16_t *vr, int draw_y)
+{
+    RrM7Seg *g = &m7_seg[m->segs];
+    int y = draw_y + 1, ox, oy, v, pi;
+    const uint16_t *vp = vr + ((unsigned)st->page[0] << 15);
+    if (st->m7sel & 2)
+        y = 255 - y;
+    s = st;
+    m7_origin(y, &ox, &oy);
+    for (v = 0; v < m->vrams && m7_vram_of[v] != vp; v++)
+        ;
+    if (v == m->vrams) {
+        m7_vram_of[v] = vp;
+        if (v >= m7_planes || memcmp(m7_vram[v], vp, sizeof m7_vram[v])) {
+            if (v >= m7_planes) {
+                uint8_t *np = (uint8_t *)realloc(m7_plane, (size_t)(v + 1) * 0x100000u);
+                if (!np)
+                    snes_fatal("no memory for the Mode 7 plane");
+                m7_plane = np;
+                m7_planes = v + 1;
+            }
+            memcpy(m7_vram[v], vp, sizeof m7_vram[v]);
+            rr_m7_plane(m7_plane + (size_t)v * 0x100000u, m7_vram[v]);
+            m7_plane_gen++;
+        }
+        m->vrams++;
+    }
+    pi = m->pals - 1;
+    if (pi < 0 || memcmp(m7_pal[pi], pal, sizeof m7_pal[pi])) {
+        pi = m->pals++;
+        memcpy(m7_pal[pi], pal, sizeof m7_pal[pi]);
+    }
+    g->s[0] = ox;
+    g->s[1] = oy;
+    g->s[2] = (int32_t)((uint32_t)(uint16_t)st->m7a | (uint32_t)(uint16_t)st->m7b << 16);
+    g->s[3] = (int32_t)((uint32_t)(uint16_t)st->m7c | (uint32_t)(uint16_t)st->m7d << 16);
+    g->s[4] = (int32_t)((uint32_t)st->m7sel | (uint32_t)(st->cgwsel & 1) << 8 | (uint32_t)st->cgadsub << 16 |
+                        (uint32_t)st->cgwsel << 24);
+    g->s[5] = (int32_t)((uint32_t)(st->fixed_r | st->fixed_g << 5 | st->fixed_b << 10) |
+                        (uint32_t)(st->inidisp & 0x0F) << 16 | (uint32_t)v << 24);
+    g->s[6] = pi;
+    g->s[7] = 0;
+    return m->segs++;
+}
+
+/* Mode 7 layer n's pixel byte at console column x under mosaic: its
+   block's (draw_m7's sample) */
+static unsigned m7_mosaic_texel(int n, int x, unsigned mosaic_row, const uint16_t *vp)
+{
+    unsigned msize = (s->mosaic >> 4) + 1u;
+    int y = (int)mosaic_row, ox, oy, sx = floor_to(x - sl, (int)msize);
+    (void)n;
+    if (s->m7sel & 2)
+        y = 255 - y;
+    m7_origin(y, &ox, &oy);
+    if (s->m7sel & 1)
+        sx = 255 - sx;
+    return rr_m7_texel(vp, s->m7sel, (ox + s->m7a * sx) >> 8, (oy + s->m7c * sx) >> 8);
+}
+
+int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
+{
+    int pw = ppu_frame_width(f), ph = f->screen_height, cpp = pw / f->width, top = (ph - f->height) / 2, r;
+    int keep_sw = sw, keep_sl = sl, keep_row = draw_row;
+    const PpuScreen *keep_s = s;
+    uint8_t ro = range_over, to = time_over;
+    size_t need = (size_t)pw * (size_t)ph;
+    if (need > m7_px_cap) {
+        free(m7_px);
+        m7_px = (RrM7Px *)malloc(need * sizeof *m7_px);
+        m7_px_cap = m7_px ? need : 0;
+        if (!m7_px)
+            return 0;
+    }
+    memset(m, 0, sizeof *m);
+    m->pic = pic;
+    m->pw = pw;
+    m->ph = ph;
+    m->cpp = cpp;
+    m->px = m7_px;
+    m->row_m7 = m7_row;
+    m->seg = m7_seg;
+    m->pal = &m7_pal[0][0];
+    m->vram = &m7_vram[0][0];
+    sw = f->width;
+    sl = (f->width - PPU_WIDTH) / 2;
+    m->left = sl;
+    d_field = f->field;
+    for (r = 0; r < ph; r++) {
+        int line = r - top + 1, edge = line < 1 ? 1 : line > f->height ? f->height : line, k, n, x, i;
+        const uint8_t *oamv = f->oam[f->version[edge]];
+        const uint16_t *vr = f->vram[f->version[edge]];
+        unsigned mosaic = edge == line ? f->mosaic_row[line] : (unsigned)line;
+        RrM7Px *row = m7_px + (size_t)r * (size_t)pw;
+        n = edge == line ? f->segs[line] : 0;
+        m7_row[r] = 0;
+        for (k = 0; k <= n; k++) {
+            const PpuScreen *st = k ? &f->seg_line[line][k - 1] : &f->line[edge];
+            const uint16_t *pal = k ? f->seg_palette[line][k - 1] : f->palette[edge];
+            int x0 = k ? f->seg_x[line][k - 1] + sl : 0, x1 = k < n ? f->seg_x[line][k] + sl : sw, g, hires;
+            if (x0 < 0) x0 = 0;
+            if (x1 > sw) x1 = sw;
+            if (x0 >= x1)
+                continue;
+            if (!pres_is_m7(st)) {
+                for (i = x0 * cpp; i < x1 * cpp; i++)
+                    row[i].w2 = RR_M7_NOT;
+                continue;
+            }
+            m7_row[r] = 1;
+            g = m7_state(m, st, pal, vr, line - 1);
+            s = st;
+            d_cgram = pal;
+            d_oam = oamv;
+            draw_row = line - 1;
+            if ((s->tm | s->ts) & 0x10) {
+                d_vram = vr + ((unsigned)s->page[4] << 15);
+                draw_obj((unsigned)edge);
+            } else {
+                memset(op, 0, sizeof op);
+            }
+            hires = ppu_line_hires(s);
+            for (x = x0; x < x1; x++) {
+                uint16_t mc, sc;
+                uint8_t mz, sz, ml, sl5;
+                unsigned flags = 0, fix = 0;
+                int cw = win_mask(layer_sel(5), layer_logic(5), x - sl);
+                const uint16_t *vp = vr + ((unsigned)s->page[0] << 15);
+                m7_base(&op[x], x, 0, &mc, &mz, &ml);
+                m7_base(&op[x], x, 1, &sc, &sz, &sl5);
+                if (m7_may(0, x, 0)) flags |= RR_M7_BG1_MAIN;
+                if (m7_may(0, x, 1)) flags |= RR_M7_BG1_SUB;
+                if (m7_may(1, x, 0)) flags |= RR_M7_BG2_MAIN;
+                if (m7_may(1, x, 1)) flags |= RR_M7_BG2_SUB;
+                if (region(s->cgwsel >> 6, cw)) flags |= RR_M7_CLIP;
+                if (region(s->cgwsel >> 4, cw)) flags |= RR_M7_PREVENT;
+                if ((flags & (RR_M7_BG1_MAIN | RR_M7_BG1_SUB)) && (s->mosaic & 1) && (s->mosaic >> 4)) {
+                    flags |= RR_M7_BG1_FIX;
+                    fix |= m7_mosaic_texel(0, x, mosaic, vp);
+                }
+                if ((flags & (RR_M7_BG2_MAIN | RR_M7_BG2_SUB)) && (s->mosaic & 2) && (s->mosaic >> 4)) {
+                    flags |= RR_M7_BG2_FIX;
+                    fix |= m7_mosaic_texel(1, x, mosaic, vp) << 8;
+                }
+                for (i = x * cpp; i < (x + 1) * cpp; i++) {
+                    RrM7Px *q = &row[i];
+                    unsigned fl = flags;
+                    if (cpp == 2 && hires && i == 0)
+                        fl |= RR_M7_BLACK;
+                    else if (cpp == 2 && hires && !(i & 1))
+                        fl |= RR_M7_SWAP;
+                    q->w0 = (uint32_t)mc | (uint32_t)sc << 16;
+                    q->w1 = (uint32_t)mz | (uint32_t)sz << 8 | (uint32_t)ml << 16 | (uint32_t)sl5 << 24;
+                    q->w2 = fl | (uint32_t)g << 16;
+                    q->w3 = fix;
+                }
+            }
+        }
+    }
+    m->plane = m7_plane;
+    m->plane_gen = m7_plane_gen;
+    range_over = ro;
+    time_over = to;
+    s = keep_s;
+    sw = keep_sw;
+    sl = keep_sl;
+    draw_row = keep_row;
+    d_vram = vram;
+    d_cgram = cgram;
+    d_oam = oam;
+    return 1;
+}
+
+void ppu_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, int ow, int oh)
+{
+    static int32_t *cols, *rows;
+    static int ccap, rcap;
+    RrMode7 m;
+    RrM7Samples smp;
+    int d[4] = { 0, 0, ow, oh };
+    if (ow <= 0 || oh <= 0)
+        return;
+    if (ow > ccap) {
+        free(cols);
+        cols = (int32_t *)malloc((size_t)ow * 3 * 4);
+        ccap = cols ? ow : 0;
+    }
+    if (oh > rcap) {
+        free(rows);
+        rows = (int32_t *)malloc((size_t)oh * 4 * 4);
+        rcap = rows ? oh : 0;
+    }
+    if (!cols || !rows || !ppu_mode7(f, pic, &m))
+        return;
+    rr_m7_tables(&m, ow, oh, &smp, cols, rows);
+    rr_ref_mode7(out, ow, oh, &m, d, &smp);
+}

@@ -4,7 +4,8 @@
  * draw with Metal): the frame is drawn into a
  * framebuffer object the size of the window, then copied onto the window's
  * back buffer and swapped. Pictures go on with the sharp bilinear shader
- * (rr_size.h's weight; fwidth gives the texels to one target pixel).
+ * (rr_size.h's weight; fwidth gives the texels to one target pixel); a
+ * frame with Mode 7 with rr_mode7.h's arithmetic in a fragment shader.
  *
  * GL keeps rows bottom up: the frame is drawn with its top at NDC +1, so the
  * framebuffer object's last row is the picture's first, and a read back
@@ -17,6 +18,7 @@
 #include "gl_api.h"
 #include "rr.h"
 #include "rr_size.h"
+#include "rr_mode7.h"
 #include "host.h"
 
 /* the host's window for GL (the Windows host's HWND), its size in pixels;
@@ -62,7 +64,14 @@ static const char *k_over =
     "out vec4 o;\n"
     "void main() { o = texture(t, uv); }\n";
 
-static GLuint s_copy, s_sharp, s_over, s_otex, s_vao, s_vbo, s_fbo, s_col, s_pic;
+/* a frame with Mode 7 presented (rr_mode7.h, the same arithmetic): the
+   shader the Vulkan backend's is made from (vulkan/shaders/m7_body.glsl) */
+#include "rr_m7_glsl.h"
+
+static GLuint s_copy, s_sharp, s_over, s_m7, s_otex, s_vao, s_vbo, s_fbo, s_col, s_pic;
+static GLuint s_m7buf[7], s_m7tex[7], s_plane;
+static uint32_t s_plane_gen;
+static int s_planes, s_plane_layers;
 static int s_pw, s_ph;
 static int s_rw, s_rh, s_window;
 
@@ -133,8 +142,19 @@ int rr_open(void)
     s_copy = program(k_vs, k_copy);
     s_sharp = program(k_vs, k_sharp);
     s_over = program(k_vs, k_over);
-    if (!s_copy || !s_sharp || !s_over)
+    s_m7 = program(k_vs, k_m7);
+    if (!s_copy || !s_sharp || !s_over || !s_m7)
         return 0;
+    {
+        static const char *names[8] = { "Pb", "Sb", "palb", "vramb", "picb", "colsb", "rowsb", "planet" };
+        int i;
+        glUseProgram(s_m7);
+        glGenBuffers(7, s_m7buf);
+        glGenTextures(7, s_m7tex);
+        glGenTextures(1, &s_plane);
+        for (i = 0; i < 8; i++)
+            glUniform1i(glGetUniformLocation(s_m7, names[i]), i + 1);
+    }
     glGenTextures(1, &s_otex);
     glBindTexture(GL_TEXTURE_2D, s_otex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -226,6 +246,90 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, argb);
     }
     draw(s_pic, w, h, d);
+}
+
+void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
+{
+    static const GLenum fmt[7] = { GL_RGBA32UI, GL_R32I, GL_R16UI, GL_R16UI, GL_R32UI, GL_R32I, GL_R32I };
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    int ow = d[2] - d[0], oh = d[3] - d[1], i, du[28], dv[28];
+    size_t np = (size_t)m->pw * (size_t)m->ph;
+    const void *src[7];
+    size_t len[7];
+    float c[4][4] = { { (float)d[0], (float)d[1], 0, 0 }, { (float)d[2], (float)d[1], 1, 0 },
+                      { (float)d[0], (float)d[3], 0, 1 }, { (float)d[2], (float)d[3], 1, 1 } };
+    float q[6][4];
+    if (ow <= 0 || oh <= 0 || np == 0)
+        return;
+    src[0] = m->px;
+    len[0] = np * sizeof *m->px;
+    src[1] = m->seg;
+    len[1] = (size_t)(m->segs ? m->segs : 1) * sizeof *m->seg;
+    src[2] = m->pal;
+    len[2] = (size_t)(m->pals ? m->pals : 1) * 512;
+    src[3] = m->vram;
+    len[3] = (size_t)(m->vrams ? m->vrams : 1) * 0x10000;
+    src[4] = m->pic;
+    len[4] = np * 4;
+    src[5] = s->cols;
+    len[5] = (size_t)ow * 3 * 4;
+    src[6] = s->rows;
+    len[6] = (size_t)oh * 4 * 4;
+    glUseProgram(s_m7);
+    for (i = 0; i < 7; i++) {
+        glBindBuffer(GL_TEXTURE_BUFFER, s_m7buf[i]);
+        glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)len[i], src[i], GL_STREAM_DRAW);
+        glActiveTexture(GL_TEXTURE0 + 1 + (GLenum)i);
+        glBindTexture(GL_TEXTURE_BUFFER, s_m7tex[i]);
+        glTexBuffer(GL_TEXTURE_BUFFER, fmt[i], s_m7buf[i]);
+    }
+    glActiveTexture(GL_TEXTURE0 + 8);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, s_plane);
+    if (s_planes < m->vrams || s_plane_gen != m->plane_gen) {
+        /* the planes changed: uploaded again */
+        int layers = m->vrams ? m->vrams : 1;
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        if (s_plane_layers < layers) {
+            glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_R8UI, 1024, 1024, layers, 0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            s_plane_layers = layers;
+        }
+        if (m->vrams)
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1024, 1024, m->vrams, GL_RED_INTEGER, GL_UNSIGNED_BYTE, m->plane);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        s_plane_gen = m->plane_gen;
+        s_planes = m->vrams;
+    }
+    /* the supersamples' offsets: 4 from 0, 8 from 4, 16 from 12 */
+    memcpy(du, s->du4, sizeof s->du4);
+    memcpy(du + 4, s->du8, sizeof s->du8);
+    memcpy(du + 12, s->du16, sizeof s->du16);
+    memcpy(dv, s->dv4, sizeof s->dv4);
+    memcpy(dv + 4, s->dv8, sizeof s->dv8);
+    memcpy(dv + 12, s->dv16, sizeof s->dv16);
+    glUniform1i(glGetUniformLocation(s_m7, "U_pw"), m->pw);
+    glUniform1i(glGetUniformLocation(s_m7, "U_ph"), m->ph);
+    glUniform1i(glGetUniformLocation(s_m7, "U_d0"), d[0]);
+    glUniform1i(glGetUniformLocation(s_m7, "U_d1"), d[1]);
+    glUniform1i(glGetUniformLocation(s_m7, "U_step_u"), s->step_u);
+    glUniform1i(glGetUniformLocation(s_m7, "U_step_v"), s->step_v);
+    glUniform1i(glGetUniformLocation(s_m7, "U_rh"), s_rh);
+    glUniform1iv(glGetUniformLocation(s_m7, "U_du_"), 28, du);
+    glUniform1iv(glGetUniformLocation(s_m7, "U_dv_"), 28, dv);
+    for (i = 0; i < 6; i++) {
+        q[i][0] = c[ix[i]][0] / s_rw * 2 - 1;
+        q[i][1] = 1 - c[ix[i]][1] / s_rh * 2;
+        q[i][2] = c[ix[i]][2];
+        q[i][3] = c[ix[i]][3];
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+    glViewport(0, 0, s_rw, s_rh);
+    glBindVertexArray(s_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])

@@ -5,7 +5,9 @@
  *   wait N               N frames, no buttons
  *   hold B[+B...] [N]    hold buttons for N frames (default 1)
  *   press B[+B...] [N]   hold for N frames (default 2), then 2 released
- *   shot NAME            the finished frame as DIR/NAME.ppm
+ *   shot NAME            the finished frame as DIR/NAME.ppm (the console's
+ *                        picture; at NSHVC_SCALE the presented one:
+ *                        console.c front_shot_picture)
  *   dump NAME            work RAM as DIR/NAME.wram, the cartridge's RAM as
  *                        DIR/NAME.sram, the PPU's memories as DIR/NAME.vram,
  *                        .cgram and .oam
@@ -46,5 +48,9 @@ int script_steps(void);
 void script_takes(void);
 /* the next frame's buttons from the script; 0 when it has ended */
 int script_frame(uint16_t *b0, uint16_t *b1);
+
+/* the picture a shot holds (console.c): nshvc_picture's, or with
+   NSHVC_SCALE the frame presented at that scale (*presented 1) */
+const uint32_t *front_shot_picture(int *w, int *h, int *presented);
 
 #endif

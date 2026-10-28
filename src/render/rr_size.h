@@ -7,6 +7,7 @@
 #define PORT_RR_SIZE_H
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -76,6 +77,19 @@ static inline void rr_ref_image(uint32_t *dst, int tw, int th, const uint32_t *s
             dst[(size_t)y * (size_t)tw + (size_t)x] = rr_mix(top, bot, fy);
         }
     }
+}
+
+/* The standard sample positions (Direct3D's and Vulkan's
+   standardSampleLocations) of 4, 8 and 16 samples a pixel, in 1/16 of a
+   pixel from its centre: what the Mode 7 plane is supersampled at where it
+   is minified (rr_mode7.h). */
+static inline const int8_t (*rr_samples(int n))[2]
+{
+    static const int8_t p4[4][2] = { { -2, -6 }, { 6, -2 }, { -6, 2 }, { 2, 6 } };
+    static const int8_t p8[8][2] = { { 1, -3 }, { -1, 3 }, { 5, 1 }, { -3, -5 }, { -5, 5 }, { -7, -1 }, { 3, 7 }, { 7, -7 } };
+    static const int8_t p16[16][2] = { { 1, 1 }, { -1, -3 }, { -3, 2 }, { 4, -1 }, { -5, -2 }, { 2, 5 }, { 5, 3 }, { 3, -5 },
+                                       { -2, 6 }, { 0, -7 }, { -4, -6 }, { -6, 4 }, { -8, 0 }, { 7, -4 }, { 6, 7 }, { -7, -8 } };
+    return n >= 16 ? p16 : n >= 8 ? p8 : p4;
 }
 
 /* The reference overlay (rr.h rr_overlay), the software backend's drawing

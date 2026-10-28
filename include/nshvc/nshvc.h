@@ -425,6 +425,25 @@ void nshvc_game_buttons(int player, uint16_t buttons);
 int nshvc_overlay_image(const uint32_t *argb, int w, int h);
 void nshvc_overlay_place(int id, float cx, float cy, float scale, float angle_rad, float alpha, int visible);
 
+/* ---- the picture on the window ------------------------------------------------ */
+/* The game draws in the console's own pixels (its screen at most what
+   nshvc_ext_screen asked for) and nativeshvc draws the frame at the
+   window's own resolution, as large as the window holds at its shape: the
+   pixel art as whole pixels (sharp bilinear: the picture scaled, blended
+   only across the one window pixel an edge falls in), and the Mode 7
+   plane, the one thing the console draws in 3D, looked up through its
+   line's matrix at each window pixel and anti-aliased by the pixel's
+   footprint on it: where the plane is magnified, its texels' edges
+   covered exactly (sharp bilinear on the plane); where it is minified,
+   toward the horizon, 4, 8 or 16 samples by how many texels the pixel
+   spans. Each texel is composed by the console's rules for the console
+   pixel under it (its sprites, windows, colour maths, brightness).
+   Sprites, the other backgrounds, every picture drawn into VRAM (a
+   cartridge chip's among them) and the windows are the console pixel's
+   whatever the texel: a sprite's edge over Mode 7 is as over tiles. It is
+   not a filter over the frame. The game's overlays go over it.
+   nshvc_picture stays the console's picture, 1 pixel a console pixel. */
+
 /* A fatal error in the port (the game reached code with no C, a state the
    console cannot be in): reported, then the process exits (status 70). */
 void nshvc_fatal(const char *fmt, ...);

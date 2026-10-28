@@ -10,6 +10,7 @@
 
 #include "rr.h"
 #include "rr_size.h"
+#include "rr_mode7.h"
 #include "host.h"
 
 void host_window_pixels(int *w, int *h);
@@ -67,6 +68,11 @@ void rr_begin(uint32_t argb)
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 {
     rr_ref_image(s_px, s_w, s_h, argb, w, h, d);
+}
+
+void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
+{
+    rr_ref_mode7(s_px, s_w, s_h, m, d, s);
 }
 
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])

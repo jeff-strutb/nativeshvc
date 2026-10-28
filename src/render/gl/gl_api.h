@@ -117,6 +117,8 @@ typedef ptrdiff_t GLsizeiptr, GLintptr;
 #define GL_DEPTH_CLAMP 0x864F
 #define GL_SAMPLE_ALPHA_TO_COVERAGE 0x809E
 #define GL_TEXTURE_2D_MULTISAMPLE 0x9100
+#define GL_RGBA32UI 0x8D70
+#define GL_R32I 0x8235
 
 /* the functions, one pointer each (gl_api_load fills them) */
 #define GL_FUNCS(X) \
@@ -170,7 +172,11 @@ typedef ptrdiff_t GLsizeiptr, GLintptr;
     X(void, glVertexAttribIPointer, (GLuint, GLint, GLenum, GLsizei, const void *)) \
     X(void, glVertexAttribDivisor, (GLuint, GLuint)) \
     X(void, glDrawArraysInstanced, (GLenum, GLint, GLsizei, GLsizei)) \
-    X(void, glClearBufferuiv, (GLenum, GLint, const GLuint *))
+    X(void, glClearBufferuiv, (GLenum, GLint, const GLuint *)) \
+    X(void, glTexBuffer, (GLenum, GLenum, GLuint)) \
+    X(void, glUniform1iv, (GLint, GLsizei, const GLint *)) \
+    X(void, glTexImage3D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
+    X(void, glTexSubImage3D, (GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *))
 
 #define GL_DECL(ret, name, args) typedef ret (GLAPIENTRY *PFN_##name) args; extern PFN_##name name##_p;
 GL_FUNCS(GL_DECL)
@@ -228,6 +234,10 @@ GL_FUNCS(GL_DECL)
 #define glVertexAttribDivisor glVertexAttribDivisor_p
 #define glDrawArraysInstanced glDrawArraysInstanced_p
 #define glClearBufferuiv glClearBufferuiv_p
+#define glTexBuffer glTexBuffer_p
+#define glUniform1iv glUniform1iv_p
+#define glTexImage3D glTexImage3D_p
+#define glTexSubImage3D glTexSubImage3D_p
 
 /* ---- the context (gl_ctx.c, built with the system's own headers) ---------------------- */
 /* a 3.3 core context current on this thread: on the window (an HWND on Windows) when win is

@@ -26,6 +26,7 @@
 #include "host.h"
 #include "rr.h"
 #include "rr_size.h"
+#include "rr_mode7.h"
 #include "resample.h"
 #include "script.h"
 #include "input.h"
@@ -307,6 +308,92 @@ static void sound_drain(void)
             fwrite(b, 4, (size_t)n, sound_f);
 }
 
+/* ---- a frame with Mode 7 presented (render/rr_mode7.h) ---- */
+static int32_t *m7_cols, *m7_rows;
+static int m7_cols_cap, m7_rows_cap;
+
+/* the last frame's record and where it samples drawn at ow x oh; 0 when it
+   is drawn as its picture scaled (no Mode 7 in it, or an interlaced
+   weave) */
+static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
+{
+    const PpuFrame *f = ppu_frame();
+    int pw, ph;
+    const uint32_t *px;
+    if (ow <= 0 || oh <= 0 || !ppu_frame_mode7(f))
+        return 0;
+    px = ppu_picture(&pw, &ph);
+    if (ph != f->screen_height || !ppu_mode7(f, px, m))
+        return 0;
+    if (ow > m7_cols_cap) {
+        free(m7_cols);
+        m7_cols = (int32_t *)malloc((size_t)ow * 3 * 4);
+        m7_cols_cap = m7_cols ? ow : 0;
+    }
+    if (oh > m7_rows_cap) {
+        free(m7_rows);
+        m7_rows = (int32_t *)malloc((size_t)oh * 4 * 4);
+        m7_rows_cap = m7_rows ? oh : 0;
+    }
+    if (!m7_cols || !m7_rows)
+        nshvc_fatal("no memory for the picture at %dx%d", ow, oh);
+    rr_m7_tables(m, ow, oh, s, m7_cols, m7_rows);
+    return 1;
+}
+
+/* a shot's picture (script.h): NSHVC_SCALE=S or SXxSY (headless), window
+   pixels a console pixel: the frame presented as a window that size shows
+   it (without it, the console's picture) */
+const uint32_t *front_shot_picture(int *w, int *h, int *presented)
+{
+    static int parsed;
+    static double sx, sy;
+    static uint32_t *buf;
+    static size_t cap;
+    int pw, ph, d[4];
+    const uint32_t *px = nshvc_picture(&pw, &ph);
+    RrMode7 m;
+    RrM7Samples smp;
+    size_t i, len;
+    if (!parsed) {
+        const char *e = getenv("NSHVC_SCALE");
+        parsed = 1;
+        if (e && sscanf(e, "%lfx%lf", &sx, &sy) < 2)
+            sy = sx;
+        if (!(sx > 0 && sy > 0 && sx <= 16 && sy <= 16))
+            sx = sy = 0;
+    }
+    *w = sx ? (int)(pw * sx + 0.5) : pw;
+    *h = sy ? (int)(ph * sy + 0.5) : ph;
+    if (*w < 1)
+        *w = 1;
+    if (*h < 1)
+        *h = 1;
+    *presented = 0;
+    if (!sx)
+        return px;
+    *presented = 1;
+    len = (size_t)*w * (size_t)*h;
+    if (len > cap) {
+        free(buf);
+        buf = (uint32_t *)malloc(len * 4);
+        cap = buf ? len : 0;
+        if (!buf)
+            nshvc_fatal("no memory for the picture at %dx%d", *w, *h);
+    }
+    d[0] = d[1] = 0;
+    d[2] = *w;
+    d[3] = *h;
+    if (mode7_prepare(*w, *h, &m, &smp)) {
+        rr_ref_mode7(buf, *w, *h, &m, d, &smp);
+    } else {
+        for (i = 0; i < len; i++)
+            buf[i] = 0xFF000000u;
+        rr_ref_image(buf, *w, *h, px, pw, ph, d);
+    }
+    return buf;
+}
+
 /* ---- the picture on the window ---- */
 /* where the last frame was drawn on the renderer's target (pixels), and
    that target's width */
@@ -324,10 +411,14 @@ int console_picture_at(float x, float y, int *dot, int *line)
 
 /* the frame as large as the window holds, centred, sharp bilinear: the
    console's 256 x 224 at a television's 4:3, a larger screen at the same
-   shape of pixel */
+   shape of pixel; a frame with Mode 7 presented by its record (rr_mode7:
+   the plane at the window's pixels, anti-aliased by each pixel's
+   footprint on it) */
 static void show(void)
 {
     int tw, th, w, h, d[4];
+    RrMode7 m;
+    RrM7Samples smp;
     double aspect;
     rr_target(&tw, &th);
     {
@@ -350,7 +441,10 @@ static void show(void)
     {
         int pw, ph;
         const uint32_t *px = ppu_picture(&pw, &ph);
-        rr_image(px, pw, ph, d);
+        if (mode7_prepare(w, h, &m, &smp))
+            rr_mode7(&m, d, &smp);
+        else
+            rr_image(px, pw, ph, d);
     }
     draw_overlays(tw, th);
     rr_present();
@@ -359,14 +453,15 @@ static void show(void)
 /* NSHVC_RRCHECK=1 (headless, any RENDER): each finished frame shown by the
    renderer one to one and scaled to the target with sharp bilinear, read
    back, against the PPU's picture drawn the same way on the CPU (rr_size.h
-   rr_ref_image); at exit, the frames and pixels that differ by more than 1
-   in a channel (a GPU's filtering rounds) */
-static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1;
+   rr_ref_image); a frame with Mode 7 presented by its record (rr_mode7)
+   against rr_ref_mode7; at exit, the frames and pixels
+   that differ by more than 1 in a channel (a GPU's filtering rounds) */
+static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames;
 
 static void rr_report(void)
 {
-    fprintf(stderr, "rrcheck: %s, %ld frames, %ld differ (first at frame %ld), %ld pixels\n", rr_name(), rr_frames,
-            rr_bad, rr_first, rr_pixels);
+    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 presented), %ld differ (first at frame %ld), %ld pixels\n",
+            rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels);
 }
 
 static void rr_check(void)
@@ -395,12 +490,22 @@ static void rr_check(void)
     d[2] = tw;
     d[3] = th;
     rr_begin(0xFF000000u);
-    rr_image(px, pw, ph, d);
-    rr_present();
-    rr_read(got);
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
-    rr_ref_image(want, tw, th, px, pw, ph, d);
+    if (ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
+        RrMode7 m;
+        RrM7Samples smp;
+        if (!mode7_prepare(tw, th, &m, &smp))
+            nshvc_fatal("rrcheck: no record for the frame");
+        rr_mode7(&m, d, &smp);
+        rr_ref_mode7(want, tw, th, &m, d, &smp);
+        rr_m7_frames++;
+    } else {
+        rr_image(px, pw, ph, d);
+        rr_ref_image(want, tw, th, px, pw, ph, d);
+    }
+    rr_present();
+    rr_read(got);
     for (i = 0; i < tw * th; i++) {
         int sh, worst = 0;
         for (sh = 0; sh < 24; sh += 8) {

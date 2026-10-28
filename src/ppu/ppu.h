@@ -84,6 +84,25 @@ static inline int ppu_frame_width(const PpuFrame *f) { return f->hires ? 2 * f->
    as wide as the wider of the two) */
 const uint32_t *ppu_picture(int *width, int *height);
 
+/* The presentation of a frame with Mode 7 (render/rr_mode7.h): m set to
+   frame f's record for rr_mode7, pic its picture (ppu_draw_frame's, one
+   row a line: not an interlaced weave); valid until the next call. 0 when
+   there is no memory for it. */
+struct RrMode7;
+int ppu_mode7(const PpuFrame *f, const uint32_t *pic, struct RrMode7 *m);
+/* frame f presented at ow x oh pixels into out (0xFFRRGGBB): rr_mode7.h
+   rr_ref_mode7 of ppu_mode7's record, as the window shows it. Every
+   output pixel is pic scaled with sharp bilinear exactly as rr_ref_image
+   scales it, but that a picture pixel on a Mode 7 line is composed again
+   by the console's rules for that pixel with the Mode 7 plane under the
+   output pixel, filtered by the pixel's footprint on the plane (its
+   texels' edges covered where magnified, supersampled where minified; a
+   Mode 7 layer under mosaic keeps its block's texel). */
+void ppu_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, int ow, int oh);
+/* whether a line of f shows a Mode 7 layer (else ppu_present is pic
+   scaled, nothing more) */
+int ppu_frame_mode7(const PpuFrame *f);
+
 /* ---- the console's side ---- */
 void ppu_reset(void);
 /* A write to $2100 + reg ($00-$33). */
