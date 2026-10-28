@@ -12,7 +12,8 @@
  *   waits              runs the checks; exit 0 when every one holds
  *   waits --allowance  a cartridge's cost profile (nshvc_cart.cost_profile):
  *                      each kind's weight, over 10,000 accesses; with
- *                      nshvc_set_cpu_costs(0), no time at all, while a
+ *                      nshvc_set_cpu_costs(0), no time at all (words and
+ *                      read-modify-writes too), while a
  *                      wait and a DMA still take theirs; with (1), the
  *                      bus's time and the weights again
  *   waits --offpoll    a loop polling a status bit with the costs off,
@@ -180,6 +181,22 @@ static void abi_reset(void)
             wr8(0x004305, 0xD0);
             wr8(0x004306, 0x07);
             check(snes_clock == a, "costs off: nine writes take no time", (long long)(snes_clock - a), 0);
+            {
+                /* words, longs and read-modify-writes spend their bytes'
+                   weights ahead of their first byte: none with the costs off */
+                uint64_t w0 = snes_clock;
+                uint16_t v;
+                for (i = 0; i < 1000; i++) {
+                    v = rd16(0x7E2000);
+                    wr16(0x7E2002, v);
+                    (void)rd24(0x008000);
+                    wr16_rmw(0x7E2004, (uint16_t)(rd16_rmw(0x7E2004) + 1));
+                    wr8(0x7E2006, (uint8_t)(rd8_rmw(0x7E2006) + 1));
+                }
+                check(snes_clock == w0, "costs off: 1,000 each of rd16, wr16, rd24, rd16_rmw/wr16_rmw and rd8_rmw/wr8 take no time",
+                      (long long)(snes_clock - w0), 0);
+            }
+            a = snes_clock;
             wr8(0x00420B, 0x01);
             b = snes_clock;
             for (l = ls; l < b; l += 1364)

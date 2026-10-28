@@ -1161,10 +1161,11 @@ static uint32_t spin_reads;
    kind, `write`; none for the console's interrupt sequence, `game` 0),
    then the cycle's start, where the DMA unit may take the bus */
 /* the weight of an access of the C's (its kind's, from the profile),
-   spent: none with interrupts held */
+   spent: none with interrupts held or the costs off (a word's weights are
+   spent here, ahead of its first byte, before access_begins looks) */
 static void allowance_spend(uint32_t addr, int write)
 {
-    if (interrupts_held)
+    if (interrupts_held || !allowance_on)
         return;
     allowance_carry += allowance[write][nshvc_access_kind(addr & 0xFFFFFF)];
     if (allowance_carry >= 10) {
