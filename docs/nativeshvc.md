@@ -204,4 +204,5 @@ characters takes the canvas's texel under its centre in its console pixel,
 composed by that pixel's rules, and `nshvc_picture` takes each pixel's
 centre texel. A headless run's shots are the console's picture, or with `NSHVC_SCALE=S`
 (or `SXxSY`) the frame as a window that many pixels a console pixel shows
-it.
+it, the canvas's scale (`nshvc_ext_canvas_scale`) that window's from power
+on.

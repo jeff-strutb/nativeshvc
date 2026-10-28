@@ -359,17 +359,12 @@ static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
 /* a shot's picture (script.h): NSHVC_SCALE=S or SXxSY (headless), window
    pixels a console pixel: the frame presented as a window that size shows
    it (without it, the console's picture) */
-const uint32_t *front_shot_picture(int *w, int *h, int *presented)
+/* NSHVC_SCALE (headless): window pixels a console pixel across and down,
+   0 when not set */
+static void shot_scale(double *x, double *y)
 {
     static int parsed;
     static double sx, sy;
-    static uint32_t *buf;
-    static size_t cap;
-    int pw, ph, d[4];
-    const uint32_t *px = nshvc_picture(&pw, &ph);
-    RrMode7 m;
-    RrM7Samples smp;
-    size_t i, len;
     if (!parsed) {
         const char *e = getenv("NSHVC_SCALE");
         parsed = 1;
@@ -378,6 +373,21 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
         if (!(sx > 0 && sy > 0 && sx <= 16 && sy <= 16))
             sx = sy = 0;
     }
+    *x = sx;
+    *y = sy;
+}
+
+const uint32_t *front_shot_picture(int *w, int *h, int *presented)
+{
+    double sx, sy;
+    static uint32_t *buf;
+    static size_t cap;
+    int pw, ph, d[4];
+    const uint32_t *px = nshvc_picture(&pw, &ph);
+    RrMode7 m;
+    RrM7Samples smp;
+    size_t i, len;
+    shot_scale(&sx, &sy);
     *w = sx ? (int)(pw * sx + 0.5) : pw;
     *h = sy ? (int)(ph * sy + 0.5) : ph;
     if (*w < 1)
@@ -671,6 +681,14 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     if (script)
         script_load(script, out_dir);
     nshvc_power(cart);
+    if (headless) {
+        /* shots as a window NSHVC_SCALE pixels a console pixel shows them:
+           the canvas's scale that window's (nshvc_ext_canvas_scale) */
+        double sx, sy;
+        shot_scale(&sx, &sy);
+        if (sx > 0)
+            ppu_set_canvas_scale((int)ceil(sx > sy ? sx : sy));
+    }
     if (counts_f) {
         nshvc_set_read_hook(count_read);
         nshvc_set_write_hook(count_write);

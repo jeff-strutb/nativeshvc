@@ -380,7 +380,8 @@ void nshvc_ext_vram_direct(int page);
    row, the characters one after the other; a texel is a pixel value as a
    tile's (0 transparent; 4 bpp with the tile's palette, and so on).
    nshvc_ext_canvas_scale: k for the window as it is now (its pixels a
-   console pixel, rounded up), the k to draw at. The canvas is copied, and
+   console pixel, rounded up), the k to draw at; headless, NSHVC_SCALE's
+   (its shots that window's picture), else 1. The canvas is copied, and
    a frame shows the canvas as it stands when the frame begins; a line in a
    hires mode, or the layer under mosaic, shows the layer's own tiles.
    texels NULL (or count 0): no canvas. The console's picture (nshvc_picture)
