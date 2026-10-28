@@ -131,14 +131,41 @@ static void move(const Channel *c, uint32_t a, uint8_t b)
     bus_write_b(b, v);
 }
 
-/* MDMAEN's channels in turn; the unit's edges inside (dma_edge), after its
-   start and each byte, where HDMA comes in, which stops a DMA on its own
-   channel */
-void dma_run(void)
+/* channel c writes only the VRAM data port ($2118-$2119) while the port's
+   writes go to a page directly (nshvc_ext_vram_direct): it takes no time */
+static int direct(const Channel *c)
+{
+    unsigned k, mode = c->dmap & 7;
+    if (ppu_vram_direct() < 0 || (c->dmap & 0x80))
+        return 0;
+    for (k = 0; k < pattern_len[mode]; k++) {
+        uint8_t b = (uint8_t)(c->bbad + pattern[mode][k]);
+        if (b != 0x18 && b != 0x19)
+            return 0;
+    }
+    return 1;
+}
+
+int dma_direct_only(void)
 {
     int i;
-    dma_tick(8);
-    dma_edge();
+    for (i = 0; i < 8; i++)
+        if ((dma_mdmaen & (1u << i)) && !direct(&ch[i]))
+            return 0;
+    return 1;
+}
+
+/* MDMAEN's channels in turn; the unit's edges inside (dma_edge), after its
+   start and each byte, where HDMA comes in, which stops a DMA on its own
+   channel. A channel that writes VRAM directly (direct) moves its bytes
+   with no time, and a DMA of only such channels takes none to start. */
+void dma_run(void)
+{
+    int i, timed = !dma_direct_only();
+    if (timed) {
+        dma_tick(8);
+        dma_edge();
+    }
     for (i = 0; i < 8; i++) {
         Channel *c = &ch[i];
         uint8_t bit = (uint8_t)(1u << i);
@@ -146,6 +173,20 @@ void dma_run(void)
         if (!(dma_mdmaen & bit))
             continue;
         mode = c->dmap & 7;
+        if (direct(c)) {
+            do {
+                uint32_t a = (uint32_t)c->a1b << 16 | c->a1t;
+                uint8_t v = bus_read_a(a);
+                if (snes_dma_hook)
+                    snes_dma_hook(a, (uint8_t)(c->bbad + pattern[mode][k & 3]), v);
+                bus_write_b((uint8_t)(c->bbad + pattern[mode][k & 3]), v);
+                k++;
+                if (!(c->dmap & 0x08))
+                    c->a1t = (uint16_t)(c->a1t + ((c->dmap & 0x10) ? -1 : 1));
+            } while (--c->das);
+            dma_mdmaen &= (uint8_t)~bit;
+            continue;
+        }
         dma_tick(8);
         dma_edge();
         do {

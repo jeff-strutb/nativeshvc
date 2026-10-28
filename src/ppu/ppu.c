@@ -33,6 +33,8 @@
 static uint16_t vram[PPU_VRAM_PAGES * 0x8000];
 static int vram_pages = 1;            /* nshvc_ext_vram */
 static unsigned port_page;            /* the page the data port reads and writes */
+static int direct_page = -1;          /* nshvc_ext_vram_direct: the data port's writes land here at once */
+static int hidden_dirty;              /* a page no layer showed changed since the last copy */
 static uint16_t cgram[256];
 static uint8_t oam[544];
 static uint32_t picture[2 * PPU_EXT_WIDTH * PPU_MAX_HEIGHT];    /* drawn a line at a time (NSHVC_PPUCHECK) */
@@ -145,6 +147,8 @@ void ppu_reset(void)
     memset(vram, 0, sizeof vram);
     vram_pages = 1;
     port_page = 0;
+    direct_page = -1;
+    hidden_dirty = 0;
     memset(cgram, 0, sizeof cgram);
     memset(oam, 0, sizeof oam);
     memset(picture, 0, sizeof picture);
@@ -205,6 +209,21 @@ static void vram_step(void)
 {
     static const uint16_t inc[4] = { 1, 32, 128, 128 };
     vmaddr = (uint16_t)(vmaddr + inc[vmain & 3]);
+}
+
+/* A change to page p outside the console's bus (nshvc_ext_vram_direct,
+   nshvc_ext_vram_copy): shown from the next line drawn when a layer reads
+   p; else kept back until a layer is switched to it, so changes to a page
+   no layer shows take none of the frame's copies */
+static void page_changed(unsigned p)
+{
+    int l;
+    for (l = 0; l < 5; l++)
+        if (cur.page[l] == p) {
+            dirty = 1;
+            return;
+        }
+    hidden_dirty = 1;
 }
 
 /* VRAM can be written only while nothing is drawn from it: in forced
@@ -421,7 +440,11 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
         return;
     case 0x18: {
         uint32_t a = port_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
-        if (vram_open()) {
+        if (direct_page >= 0) {
+            a = (uint32_t)direct_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
+            vram[a] = (uint16_t)((vram[a] & 0xFF00) | v);
+            page_changed((unsigned)direct_page);
+        } else if (vram_open()) {
             dirty = 1;
             vram[a] = (uint16_t)((vram[a] & 0xFF00) | v);
         }
@@ -431,7 +454,11 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
     }
     case 0x19: {
         uint32_t a = port_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
-        if (vram_open()) {
+        if (direct_page >= 0) {
+            a = (uint32_t)direct_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
+            vram[a] = (uint16_t)((vram[a] & 0x00FF) | v << 8);
+            page_changed((unsigned)direct_page);
+        } else if (vram_open()) {
             dirty = 1;
             vram[a] = (uint16_t)((vram[a] & 0x00FF) | v << 8);
         }
@@ -596,7 +623,29 @@ void ppu_ext_layer_page(int layer, int page)
         snes_fatal("nshvc_ext_layer_page(%d, %d): layers 0-3 (BG1-4) and 4 (sprites), pages below %d", layer, page,
                    vram_pages);
     cur.page[layer] = (uint8_t)page;
+    if (hidden_dirty)
+        dirty = 1;
 }
+
+void ppu_ext_vram_copy(int to_page, int from_page)
+{
+    if (to_page < 1 || to_page >= vram_pages || from_page < 0 || from_page >= vram_pages)
+        snes_fatal("nshvc_ext_vram_copy(%d, %d): to pages 1-%d, from 0-%d (page 0 is the console's)", to_page,
+                   from_page, vram_pages - 1, vram_pages - 1);
+    if (to_page == from_page)
+        return;
+    memcpy(&vram[(unsigned)to_page << 15], &vram[(unsigned)from_page << 15], 0x8000 * sizeof vram[0]);
+    page_changed((unsigned)to_page);
+}
+
+void ppu_ext_vram_direct(int page)
+{
+    if (page != -1 && (page < 1 || page >= vram_pages))
+        snes_fatal("nshvc_ext_vram_direct(%d): pages 1-%d, or -1 (page 0 is the console's)", page, vram_pages - 1);
+    direct_page = page;
+}
+
+int ppu_vram_direct(void) { return direct_page; }
 
 void ppu_ext_sprite_y(int sprite, int on)
 {
@@ -1272,6 +1321,7 @@ static void take_version(void)
         ppu_version_overflow++;
     }
     dirty = 0;
+    hidden_dirty = 0;
 }
 
 static void record_line(unsigned line)

@@ -39,6 +39,7 @@ void dma_reset(void);
 uint8_t dma_read(uint16_t reg);
 void dma_write(uint16_t reg, uint8_t v);
 void dma_run(void);                          /* MDMAEN's transfers (dma_mdmaen's channels) */
+int dma_direct_only(void);                   /* MDMAEN's channels all write VRAM directly: no time */
 extern uint8_t dma_mdmaen;                   /* the channels whose general DMA is waiting or under way */
 void dma_edge(void);                         /* inside a DMA: an edge of the unit (bus.c), where HDMA comes in */
 void hdma_init(void);                        /* the frame's start */

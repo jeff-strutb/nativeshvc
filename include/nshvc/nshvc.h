@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 2
+#define NSHVC_VERSION_MINOR 3
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -356,6 +356,17 @@ void nshvc_ext_sprite_limits(int on);
 void nshvc_ext_vram(int kb);
 void nshvc_ext_vram_page(int page);
 void nshvc_ext_layer_page(int layer, int page);
+/* Pages 1-3 written outside the console's bus and time, at any moment (a
+   board whose extra VRAM is the cartridge's too); page 0 is the console's,
+   written only through the bus. copy: page from_page (0 included) into
+   to_page, all 64 KB. direct: from now, every write through the data port
+   ($2118-$2119, by the S-CPU or a DMA) lands in `page` at once, while
+   lines are drawn too, and a DMA that writes only the data port takes no
+   time; -1 (the default) turns it off. A change to a page a layer reads
+   shows from the next line drawn; one to a page no layer reads, from when
+   a layer is switched to it. (Since 2.3.) */
+void nshvc_ext_vram_copy(int to_page, int from_page);
+void nshvc_ext_vram_direct(int page);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
    BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the

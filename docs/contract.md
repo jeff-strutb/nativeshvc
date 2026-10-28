@@ -1,8 +1,8 @@
-# The game contract, version 2.2
+# The game contract, version 2.3
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.2: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.3: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,10 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.3:** `nshvc_ext_vram_copy(to_page, from_page)` and `nshvc_ext_vram_direct(page)`: VRAM
+  pages 1-3 written outside the console's bus and time, at any moment, a whole page copied
+  or the data port's writes (the S-CPU's or a DMA's) landing in a page at once, a DMA of
+  only those taking no time; page 0 only through the bus, as before. Off until asked for.
 - **2.2:** `nshvc_set_cpu_costs(on)`: the S-CPU's costs on (the default at power on: each
   access the bus's time and its kind's weight from the cost profile) or off (its accesses
   take no console time; the clock still moves in its waits and while a DMA runs, and a loop

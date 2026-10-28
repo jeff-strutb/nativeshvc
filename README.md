@@ -195,8 +195,8 @@ it into the connector (`cart.h`).
 
 ## Status
 
-Version 2.2.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.2: behaviour exact, each
+Version 2.3.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.3: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Time](#time)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -528,7 +528,8 @@ time, files and the save folder, a window, input, audio.
 
 The console's numbers are baselines a port may raise, each off until the port asks for it:
 any screen size up to 1024x480, sprite X and Y extension bits, sprite line limits off, VRAM
-up to 256 KB in pages, and held interrupts. The front end adds key, touch
+up to 256 KB in pages (pages past the console's written directly, outside its bus and time,
+when a game asks), and held interrupts. The front end adds key, touch
 and frame hooks, overlays, buttons the game holds itself, the safe area and the window's
 size. They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions).
 

@@ -50,6 +50,8 @@ void nshvc_ext_sprite_limits(int on) { ppu_ext_sprite_limits(on); }
 void nshvc_ext_vram(int kb) { ppu_ext_vram(kb); }
 void nshvc_ext_vram_page(int page) { ppu_ext_vram_page(page); }
 void nshvc_ext_layer_page(int layer, int page) { ppu_ext_layer_page(layer, page); }
+void nshvc_ext_vram_copy(int to_page, int from_page) { ppu_ext_vram_copy(to_page, from_page); }
+void nshvc_ext_vram_direct(int page) { ppu_ext_vram_direct(page); }
 
 void nshvc_fatal(const char *fmt, ...)
 {

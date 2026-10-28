@@ -382,7 +382,11 @@ static void unit_edge(void)
         }
         if (dma_pending) {
             dma_pending = 0;
-            if (dma_mdmaen) {
+            if (dma_mdmaen && dma_direct_only()) {
+                /* only writes to VRAM directly (nshvc_ext_vram_direct): no time */
+                dma_run();
+                dma_active = 0;
+            } else if (dma_mdmaen) {
                 unit_align();
                 dma_run();
                 unit_back();

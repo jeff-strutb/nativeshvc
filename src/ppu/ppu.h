@@ -112,6 +112,11 @@ void ppu_ext_sprite_limits(int on);
 void ppu_ext_vram(int kb);
 void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
+void ppu_ext_vram_copy(int to_page, int from_page);
+void ppu_ext_vram_direct(int page);
+/* the page the data port's writes go to directly (nshvc_ext_vram_direct),
+   or -1 */
+int ppu_vram_direct(void);
 /* a write to $21C0-$21C5: ignored with no VRAM past 64 KB, else masked to its pages */
 void ppu_ext_page_reg(uint8_t reg, uint8_t v);
 
