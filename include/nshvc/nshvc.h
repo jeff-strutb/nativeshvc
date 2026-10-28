@@ -134,7 +134,7 @@ typedef struct {
 /* The S-CPU's costs, on (1, the default at power on: each access the bus's
    time and its kind's weight from the cost profile) or off (0: its accesses
    take no console time), from the next access: a game's Original mode on,
-   its Enhanced mode off (README.md, Time, Pacing), switched as it runs.
+   its Enhanced mode off (README.md, Enhancement support), switched as it runs.
    Off, the clock still moves in the waits and while a DMA runs; a loop
    that polls the hardware with no wait is fatal, as with interrupts held.
    The SPC700's costs and a chip's own time are not affected. (Since 2.2.) */

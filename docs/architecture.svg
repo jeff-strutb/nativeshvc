@@ -139,7 +139,7 @@
 <rect x="476" y="818" width="195" height="4" rx="2" fill="#2e8b57"/>
 <text x="488" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Renderer · rr.h</text>
 <text x="488" y="862" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">Metal, OpenGL, Vulkan, soft</text>
-<text x="488" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">sharp bilinear, any size</text>
+<text x="488" y="878" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">sharp bilinear, Mode 7 AA</text>
 <rect x="689" y="818" width="195" height="84" rx="8" fill="#ffffff" stroke="#2e8b57" stroke-width="1.5"/>
 <rect x="689" y="818" width="195" height="4" rx="2" fill="#2e8b57"/>
 <text x="701" y="842" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1c6640" text-anchor="start">Native input · input.c</text>

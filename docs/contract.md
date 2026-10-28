@@ -116,7 +116,7 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   access the SPC700's C makes costs its one bus cycle and the weight of its kind from the
   profile (0 with none); its clock also moves in its waits.
 - **Pacing, in two modes.** A game whose pace is how much work fits in a frame has both
-  (README.md, The preservation standard; Time, Pacing): an Original mode, paced on its work
+  (README.md, Enhancement support): an Original mode, paced on its work
   by a cost profile, which approximates the original's processor time, so its slowdown is
   approximate; and an Enhanced mode, made independent of processor speed (its pace set by
   the time that really passes and the display, as a properly built modern game's is, not

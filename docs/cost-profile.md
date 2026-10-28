@@ -12,7 +12,7 @@ nativeshvc is behaviour exact, not cycle exact (README.md, Time). A processor's 
 original's data accesses, but not its instruction fetches or internal cycles. The console
 charges each access the bus's own time for it, as the hardware's memory speeds give it. A
 game whose pace is how much work fits in a frame (slowdown when much happens at once) has
-two modes (README.md, The preservation standard; Time, Pacing), both behaviour correct and
+two modes (README.md, Enhancement support), both behaviour correct and
 both respecting the original game:
 
 1. **Original mode: on its work, approximately, by the cost profile.** The game keeps the original's pacing,
@@ -206,7 +206,7 @@ consistency is the game's own run of its jobs against its recording.
   its share, never hidden;
 - step 2: each kind's count ratio and the frames whose counts differ, or `unchecked`;
 - **acceptance bar: not set** (an Original mode's profile is an approximation: README.md,
-  Time, Pacing); the tool writes `TBD`.
+  Enhancement support); the tool writes `TBD`.
 
 ## 4. In the contract (2.1, 2.2)
 

@@ -12,7 +12,7 @@ the processors are the game's C, each access it makes costing the bus's
 time and its cost profile's weight. A game whose pace is how much work fits
 in a frame has an Original mode, paced on its work by a cost profile
 (approximate), and an Enhanced mode made independent of processor speed
-(exact) (README.md, The preservation standard; Time, Pacing; cost-profile.md).
+(exact) (README.md, Enhancement support; cost-profile.md).
 
 A decompiled game is the cartridge; nativeshvc is the console. The
 processors are the game's own C, written against the machine model
@@ -62,8 +62,10 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 | `none` (the app supplies `src/host/host.h`) | any |
 
 The picture comes from the PPU in C (the implementation the checks hold to
-the reference); the renderers show it at any window size and shape with
-sharp bilinear filtering, and draw the game's overlays over it.
+the reference); the renderers draw it at the window's own resolution, at any
+size and shape: the pixel art with sharp bilinear filtering, the Mode 7
+plane looked up at each window pixel and anti-aliased (The picture, below),
+and the game's overlays over it.
 
 ## The cartridge (`nshvc_cart`)
 
@@ -178,3 +180,22 @@ two map rows a line (the field's), and OBJ interlace draws each sprite in
 half its lines, every other row. These were measured against the reference
 with probe cartridges (`tests/rom/cases.py`'s `probe_*`); nothing is known
 to differ (`tests/README.md`).
+
+On the window, a frame with Mode 7 is drawn at the window's own
+resolution, the same in a game's Original and Enhanced modes. Each window
+pixel over a Mode 7 line looks the plane up through that line's matrix at
+the pixel's own position, and the console pixel under it is composed again
+by its line's rules with that texel (its sprites, windows, colour maths,
+brightness); the sprites, the other backgrounds and the windows stay the
+console pixel's. The plane is anti-aliased by the pixel's footprint on it
+(the texels it spans, from the matrix): within a texel, the texel under the
+pixel's centre, blended with the next only across the one window pixel a
+texel edge falls in, by the part of the pixel's footprint past the edge;
+beyond, 4, 8 or 16 samples at the standard positions. Then the console's
+pixels are blended across their edges with sharp bilinear, as the pixel art
+is. The definition is `src/render/rr_mode7.h`, the software backend's
+drawing; the Metal, OpenGL and Vulkan shaders compute the same, in integers
+but the blends (`NSHVC_RRCHECK` holds each to it). `nshvc_picture` stays the
+console's picture; a headless run's shots are it, or with `NSHVC_SCALE=S`
+(or `SXxSY`) the frame as a window that many pixels a console pixel shows
+it.

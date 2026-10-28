@@ -15,11 +15,9 @@ interrupts, the timers, the sound chip's 32,040 samples a second, held to the re
 its C: it makes every access the original makes, in the original's order, each costing
 what the console's bus takes for it, and waits where the original waited for the hardware.
 So the game does what it did, and sees and plays what it saw and played. How long its
-processors' own work took between accesses is not kept by the C. A game whose pace depends
-on it has two modes: an Original mode paced on its work by a cost profile, which
-approximates the original's processor time, and an Enhanced mode made independent of
-processor speed, which runs exactly (see [The preservation
-standard](#the-preservation-standard) and [Time](#time), Pacing).
+processors' own work took between accesses is not kept by the C; a game whose pace depends
+on it has an Original mode and an Enhanced mode (see [Enhancement
+support](#enhancement-support)).
 
 **A decompiled game is the cartridge; nativeshvc is the console it plugs into.** A game's
 decompiled C, linked against nativeshvc, builds a native program that powers on, runs the
@@ -53,8 +51,8 @@ where the original waits for the hardware; nativeshvc answers each access as the
 does, and runs the hardware at the hardware's time (see [Time](#time)).
 
 Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
-console's numbers are its baseline, and a port may opt out of them (see
-[Extensions](#extensions)).
+console's numbers are its baseline, and a port may opt out of them (see [Enhancement
+support](#enhancement-support)).
 
 ## The preservation standard
 
@@ -75,14 +73,76 @@ played now, and it is built on the C, not instead of it: the original stays, so 
 the game never loses it. nativeshvc holds the C and Enhanced levels to this; a game aligns
 to it and documents how it does (its Enhanced mode's frame rate, screen, and the rest).
 
-**Pacing, in both modes.** Where a game's pace depends on how much work its processors fit
-in a frame (it slows down when much is on screen), the C changes the game's
-code either way, so the standard does both rather than choosing one: the Original mode
-keeps the original's pacing with a cost profile, and the Enhanced mode is made independent
-of processor speed (see [Time](#time), Pacing). Both are behaviour correct, and both respect
-the original game.
+What nativeshvc gives an Enhanced mode, and how a game paces itself in each mode, is in
+[Enhancement support](#enhancement-support).
 
 ![nativeshvc's architecture: the game's decompilation is the cartridge, nativeshvc the console, the host below; numbered steps show how a game plays through it](docs/architecture.svg)
+
+## Enhancement support
+
+A game's Enhanced mode is its C improved ([The preservation
+standard](#the-preservation-standard)); nativeshvc gives it what the console limited, each
+part off until the game asks for it. Original is the console exactly, with every part off.
+A game switches between its modes as it runs, each call taking effect within a frame (the
+S-CPU's costs from the next access, a screen size from the next frame, a VRAM page from the
+next line), so one build plays both and a key or a menu can change it; the game documents
+what its Enhanced mode does.
+
+| For | nativeshvc provides | Calls |
+|---|---|---|
+| a pace independent of processor speed | the S-CPU's accesses taking no console time (see Pacing, below) | `nshvc_set_cpu_costs(0)`, and `(1)` back |
+| a wider or taller screen | any screen up to 1024x480, the console's picture exact at its centre and the rest drawn by the same rules | `nshvc_ext_screen` |
+| sprites past the console's coordinates | sprite X and Y extension bits | `nshvc_ext_sprite_x`, `_y` |
+| more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
+| more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
+| an app's own work in the game's machine | interrupts held | `nshvc_hold_interrupts` |
+
+They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions). The front end
+adds what an Enhanced mode's controls and display are built from: key, touch and frame
+hooks, overlays, buttons the game holds itself, the safe area and the window's size.
+
+The picture on the window is not an enhancement: in both modes nativeshvc draws at the
+window's own resolution, the pixel art with sharp bilinear filtering and the Mode 7 plane
+looked up at each window pixel and anti-aliased (see [Picture](#picture)).
+
+**Pacing: an Original mode and an Enhanced mode.** The C makes the original's data
+accesses but not its instruction fetches or internal cycles, so the time the original's
+processors spent between accesses is not in the C. Most games pace themselves on the
+console's events (waiting for the vertical blank), and do the same whatever their
+processors' speed: one mode is all they need, and it is exact. A game whose pace is how
+much work fits in a frame is different: it drops to a lower update rate when much is on
+screen, because its processors could do no more in a frame.
+That slowdown is a side effect of the chips' speed, not something the game was written to
+do. Making such a game's C changes its code either way, so the standard has it do both
+rather than choose one:
+
+1. **Original mode: paced on its work, by a cost profile.** The game keeps the original's
+   pacing and declares a cost profile (`nshvc_cart.cost_profile`): a weight for each kind
+   of access (a read or a write of work RAM, ROM, cartridge RAM, I/O), and for a chip, a
+   cost for each of its programs, so a frame where more happens costs more time and the
+   game slows where the original slowed. The weights are never set by a person: nativeshvc
+   provides the standard and the tool (`tools/nshvc-profile`,
+   [docs/cost-profile.md](docs/cost-profile.md)) that measures them from the game's own ROM
+   on the reference. The C does the original's work with other accesses than the
+   original's, so the profile approximates the original's processor time, and the slowdown
+   it gives is approximate; its report gives by how much.
+2. **Enhanced mode: independent of processor speed.** The game's code is updated as a
+   properly built modern game's is: its pace is set by the time that really passes and the
+   display, not by how much work fits in a frame (60 Hz, or a frame rate left unlocked).
+   Its behaviour no longer depends on the processors' speed, so nativeshvc runs it exactly
+   with the S-CPU's costs off: `nshvc_set_cpu_costs(0)`, its accesses taking no console
+   time, as a modern CPU's work takes next to none of a frame. The clock still moves in its
+   waits and while a DMA runs, and a loop that polls the hardware with no wait is fatal, as
+   with interrupts held. The game switches as it runs (`nshvc_set_cpu_costs(1)` back to the
+   bus's time and the profile's weights), so one build plays both modes, and a scene that
+   must keep the original's pacing in either (a demo replaying the original's buttons)
+   turns them on for its length. The SPC700 keeps
+   its weights in both: the sound driver runs its own program at its own speed. A
+   cartridge chip is the cartridge's own, so the game makes its jobs independent of the
+   chip's speed itself. Where the original slowed down, it does not.
+
+Both are behaviour correct, and both respect the original game. With no profile declared
+the cost is 0.
 
 ## Using nativeshvc in a decompilation
 
@@ -198,7 +258,7 @@ it into the connector (`cart.h`).
 Version 2.3.0. The game contract, what a game writes against and what the console
 promises it, is in [docs/contract.md](docs/contract.md), at 2.3: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
-costs off in a game's Enhanced mode (see [Time](#time)). A game built against it plays on
+costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
 [docs/cost-profile.md](docs/cost-profile.md); its acceptance bar is not set (an Original
 mode's profile is an approximation, and its report gives the error).
@@ -270,8 +330,13 @@ each one, is in [tests/README.md](tests/README.md).
   the reference's in order and sample, each within 14 samples (0.44 ms) of the
   reference's.
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the test cartridges'
-  frames (one to one and scaled) and draw overlays as the CPU reference does: 1,274
-  cartridges each, none differing.
+  frames (one to one and scaled, and Mode 7 at the window's resolution, anti-aliased) and
+  draw overlays as the CPU reference does: 1,176 cartridges each (70 of them presenting
+  Mode 7), none differing. The anti-aliasing is held to its definition written again in
+  its check, and to the plane's ground truth (`tests/unit/present_check.c`): its error is
+  5.5 to 35 times smaller than point sampling's where the plane is magnified, 4.5 to 6
+  times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
+  a plain frame 0.2 to 0.4.
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
   the iOS simulator, Windows) compiles with no warnings.
@@ -334,9 +399,8 @@ Time is the console's master clock (21.477 MHz NTSC). nativeshvc is behaviour ex
 cycle exact: the hardware runs at the hardware's time. Each access the S-CPU's C makes costs
 what the console's bus takes for it, by the console's memory speeds (6, 8 or 12 clocks),
 and before it the weight of its kind from the game's cost profile (0 with none); the C's
-own arithmetic between accesses costs nothing, and the C states no time. A game's Enhanced
-mode turns the S-CPU's costs off (`nshvc_set_cpu_costs(0)`), and its accesses then take no
-time at all (see Pacing, below). Each access the SPC700's C makes costs its one bus cycle,
+own arithmetic between accesses costs nothing, and the C states no time (a game's Enhanced
+mode may take the S-CPU's costs off: see [Enhancement support](#enhancement-support)). Each access the SPC700's C makes costs its one bus cycle,
 and its kind's weight from the profile. The clock also moves on where the code waits for the hardware, as on the
 console it spends that time in a poll loop: `nshvc_wait_until` (a status bit, a counter, a chip's flag, the sound unit's
 reply), `nshvc_wait_vblank`, WAI and a branch to itself for the S-CPU, `spc_wait_until`
@@ -355,44 +419,7 @@ split, so a handler never sees half of a word or of a read-modify-write. The IRQ
 while the I flag masks it; a handler may itself wait, the I flag holding the IRQ there as
 on the console.
 
-**Pacing: an Original mode and an Enhanced mode.** The C makes the original's data
-accesses but not its instruction fetches or internal cycles, so the time the original's
-processors spent between accesses is not in the C. Most games pace themselves on the
-console's events (waiting for the vertical blank), and do the same whatever their
-processors' speed: one mode is all they need, and it is exact. A game whose pace is how
-much work fits in a frame is different: it drops to a lower update rate when much is on
-screen, because its processors could do no more in a frame.
-That slowdown is a side effect of the chips' speed, not something the game was written to
-do. Making such a game's C changes its code either way, so the standard
-([The preservation standard](#the-preservation-standard)) has it do both:
-
-1. **Original mode: paced on its work, by a cost profile.** The game keeps the original's
-   pacing and declares a cost profile (`nshvc_cart.cost_profile`): a weight for each kind
-   of access (a read or a write of work RAM, ROM, cartridge RAM, I/O), and for a chip, a
-   cost for each of its programs, so a frame where more happens costs more time and the
-   game slows where the original slowed. The weights are never set by a person: nativeshvc
-   provides the standard and the tool (`tools/nshvc-profile`,
-   [docs/cost-profile.md](docs/cost-profile.md)) that measures them from the game's own ROM
-   on the reference. The C does the original's work with other accesses than the
-   original's, so the profile approximates the original's processor time, and the slowdown
-   it gives is approximate; its report gives by how much.
-2. **Enhanced mode: independent of processor speed.** The game's code is updated as a
-   properly built modern game's is: its pace is set by the time that really passes and the
-   display, not by how much work fits in a frame (60 Hz, or a frame rate left unlocked).
-   Its behaviour no longer depends on the processors' speed, so nativeshvc runs it exactly
-   with the S-CPU's costs off: `nshvc_set_cpu_costs(0)`, its accesses taking no console
-   time, as a modern CPU's work takes next to none of a frame. The clock still moves in its
-   waits and while a DMA runs, and a loop that polls the hardware with no wait is fatal, as
-   with interrupts held. The game switches as it runs (`nshvc_set_cpu_costs(1)` back to the
-   bus's time and the profile's weights), so one build plays both modes, and a scene that
-   must keep the original's pacing in either (a demo replaying the original's buttons)
-   turns them on for its length. The SPC700 keeps
-   its weights in both: the sound driver runs its own program at its own speed. A
-   cartridge chip is the cartridge's own, so the game makes its jobs independent of the
-   chip's speed itself. Where the original slowed down, it does not.
-
-Both are behaviour correct, and both respect the original game. With no profile declared
-the cost is 0. The sound driver's beat is its timers', which run at their real time; a
+The sound driver's beat is its timers', which run at their real time; a
 profile's weights give it the real chip's time around each access. The multiplier and
 divider are done when read. The hardware's own time is all kept: a DMA, an HDMA, a line, a
 timer, a chip's job.
@@ -482,11 +509,23 @@ The PPU ([`src/ppu/ppu.c`](src/ppu/ppu.c)) makes the picture in C, a line at a t
 clock passes each line: every background mode, sprites, windows, colour maths, brightness,
 the read side and open bus, with register writes landing mid-line at their own times.
 
-The GPU only presents it. The renderer backends (Metal, OpenGL, Vulkan and software;
-[`rr.h`](src/render/rr.h)) scale the frame to the window with sharp bilinear filtering:
-whole pixels at any size, blended only across the one target pixel each pixel edge falls in.
-They also draw a port's overlays. Each backend's output is checked against the CPU
-reference.
+The renderer backends (Metal, OpenGL, Vulkan and software; [`rr.h`](src/render/rr.h))
+draw it at the window's own resolution. The pixel art is scaled with sharp bilinear
+filtering: whole pixels at any size, blended only across the one window pixel each pixel
+edge falls in. The Mode 7 plane, the one thing the console draws in 3D, is not scaled up
+from the console's pixels: at each window pixel it is looked up again through its line's
+matrix, and the console pixel under it composed again by the console's rules (its sprites,
+windows, colour maths and brightness), so the plane has the window's detail. It is
+anti-aliased by the window pixel's footprint on the plane: where the plane is magnified,
+each texel's edge is covered exactly (the part of the pixel past the edge, sharp bilinear
+on the plane); where it is minified, toward the horizon, it is supersampled, 4, 8 or 16
+samples by how many texels the pixel spans. Sprites, the other backgrounds and the windows
+stay the console pixel's, and nothing filters the frame after it is drawn. A cartridge
+chip's 3D reaches the PPU as tiles already drawn, so it is shown as pixel art; the chip's
+own C would draw it finer. One definition in C ([`rr_mode7.h`](src/render/rr_mode7.h)) is
+the software backend's drawing and what the GPU backends' shaders compute, in integers but
+the blends, so every backend takes the same texels; each backend's output is checked
+against it. The backends also draw a port's overlays.
 
 ### Sound
 
@@ -523,15 +562,6 @@ time, files and the save folder, a window, input, audio.
 - The battery save in the host's save folder, written when it changes.
 - A headless mode with no window and no pacing that runs a script of inputs from power on
   and writes screenshots and memory dumps, for tests and for comparison with the original.
-
-### Extensions
-
-The console's numbers are baselines a port may raise, each off until the port asks for it:
-any screen size up to 1024x480, sprite X and Y extension bits, sprite line limits off, VRAM
-up to 256 KB in pages (pages past the console's written directly, outside its bus and time,
-when a game asks), and held interrupts. The front end adds key, touch
-and frame hooks, overlays, buttons the game holds itself, the safe area and the window's
-size. They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions).
 
 ## Licence
 
