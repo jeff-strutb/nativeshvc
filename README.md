@@ -30,9 +30,8 @@ code.
 **Maintainer:** Jeffrey Wilbur, Strut B, LLC\
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)
 
-nativeshvc was created by Jeffrey Wilbur. It began as the machine layer of the native
-[Stunt Race FX](https://github.com/jeff-strutb/stuntracefx) port, and was lifted out of it so
-that every Super Nintendo decompilation can share one console instead of building its own.
+nativeshvc was created by Jeffrey Wilbur, so that every Super Nintendo decompilation can
+share one console instead of building its own.
 
 ## Project Purpose
 
@@ -77,7 +76,7 @@ the game never loses it. nativeshvc holds the C and Enhanced levels to this; a g
 to it and documents how it does (its Enhanced mode's frame rate, screen, and the rest).
 
 **Pacing, in both modes.** Where a game's pace depends on how much work its processors fit
-in a frame (Stunt Race FX's race slows when much is on screen), the C changes the game's
+in a frame (it slows down when much is on screen), the C changes the game's
 code either way, so the standard does both rather than choosing one: the Original mode
 keeps the original's pacing with a cost profile, and the Enhanced mode is made independent
 of processor speed (see [Time](#time), Pacing). Both are behaviour correct, and both respect
@@ -361,8 +360,8 @@ accesses but not its instruction fetches or internal cycles, so the time the ori
 processors spent between accesses is not in the C. Most games pace themselves on the
 console's events (waiting for the vertical blank), and do the same whatever their
 processors' speed: one mode is all they need, and it is exact. A game whose pace is how
-much work fits in a frame is different: Stunt Race FX's race drops to a lower update rate
-when much is on screen, because the S-CPU and the Super FX could do no more in a frame.
+much work fits in a frame is different: it drops to a lower update rate when much is on
+screen, because its processors could do no more in a frame.
 That slowdown is a side effect of the chips' speed, not something the game was written to
 do. Making such a game's C changes its code either way, so the standard
 ([The preservation standard](#the-preservation-standard)) has it do both:
@@ -376,8 +375,7 @@ do. Making such a game's C changes its code either way, so the standard
    [docs/cost-profile.md](docs/cost-profile.md)) that measures them from the game's own ROM
    on the reference. The C does the original's work with other accesses than the
    original's, so the profile approximates the original's processor time, and the slowdown
-   it gives is approximate (Stunt Race FX: its race 5% to 11% fast, by the profiles
-   measured so far).
+   it gives is approximate; its report gives by how much.
 2. **Enhanced mode: independent of processor speed.** The game's code is updated as a
    properly built modern game's is: its pace is set by the time that really passes and the
    display, not by how much work fits in a frame (60 Hz, or a frame rate left unlocked).

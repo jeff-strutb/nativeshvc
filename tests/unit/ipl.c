@@ -174,8 +174,8 @@ static const nshvc_routine routines[] = { { 0x008000, abi_reset, "reset", 0 } };
 
 static const nshvc_spc_routine spc_routines[] = { { 0x0200, driver_main, "driver", NULL } };
 
-/* a real game's weights: Stunt Race FX's, as tools/nshvc-profile measures
-   them on its attract mode. The S-CPU's in tenths of a clock (a read of
+/* a real game's weights, as tools/nshvc-profile measures them on its
+   attract mode. The S-CPU's in tenths of a clock (a read of
    I/O 72.5, more than three SPC700 cycles); the SPC700's in tenths of its
    cycle */
 static const nshvc_cost_profile profile = {

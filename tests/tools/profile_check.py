@@ -95,8 +95,8 @@ with tempfile.TemporaryDirectory() as d:
         for _ in range(5):
             c = [rng.randrange(1, 50) for _ in ops]
             f.write("job 03C000 %.3f %s\n" % (2.0 * 5 * sum(c), " ".join(map(str, c))))
-        # columns far apart in scale (Stunt Race FX's 01AB13: fixed ~1e3 on
-        # the diagonal, the loads ~1e12, RPIX ~1e5)
+        # columns far apart in scale (as a real chip program's are: fixed
+        # ~1e3 on the diagonal, the loads ~1e12, the pixel reads ~1e5)
         for _ in range(40):
             c = [rng.randrange(100000, 300000), rng.randrange(50000, 400000), rng.randrange(100000, 300000),
                  rng.randrange(0, 120)]

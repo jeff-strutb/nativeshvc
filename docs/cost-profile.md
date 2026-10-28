@@ -23,7 +23,7 @@ both respecting the original game:
    other accesses than the original's (fewer reads, values kept in variables, the console's
    waits where the original polled), and in some code more or fewer than in other code, so
    no set of weights gives each part of its work the original's time: the profile is an
-   approximation (Stunt Race FX: its race 5% to 11% fast, by the profiles measured so far).
+   approximation, and its report gives by how much.
 2. **Enhanced mode: independent of processor speed, exactly.** The game's code is updated
    as a properly built modern game's is: its pace is set by the time that really passes and
    the display, not by how much work fits in a frame (60 Hz, or a frame rate left
@@ -75,8 +75,8 @@ from one access to the next. The boot ROM's work is the console's, with its own 
 ### A cartridge's chip
 
 A chip with a processor is priced the same way, by the chip. The chip names the operation
-kinds it sees, as an enum (the Super FX: `GSU_OP_LOAD`, `STORE`, `FLUSH`, `RPIX`, its
-accesses to the cartridge's RAM by what made them; `GSU_OPS`). The profile gives one row for
+kinds it sees, as an enum (a Super FX's might be its loads, stores, cache flushes and pixel
+reads: its accesses to the cartridge's RAM by what made them). The profile gives one row for
 each program the chip runs, keyed by the program's entry (the Super FX: PBR:R15 at GO):
 
     duration (chip clocks) = fixed + Σ weight[k] × count[k]
