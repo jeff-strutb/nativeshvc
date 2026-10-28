@@ -439,6 +439,93 @@ int console_picture_at(float x, float y, int *dot, int *line)
    shape of pixel; a frame with Mode 7 or a canvas presented by its record
    (rr_mode7: the plane at the window's pixels, anti-aliased by each
    pixel's footprint on it; the canvas's texels) */
+/* ---- the frame-rate meter (NSHVC_FPS=1, NSHVC_FPS_LOG=FILE) ----
+   Over the last whole second of the window's run: frames presented and
+   console frames run a second, the longest time between two presents,
+   and the longest each frame spent running the console, presenting and
+   waiting for its time. NSHVC_FPS=1 draws it at the top left;
+   NSHVC_FPS_LOG=FILE writes a line a presented frame: its number, its
+   present's time from the first (ms), the time since the last present,
+   and the time it spent running, presenting and waiting. */
+static int fps_on = -1;
+static FILE *fps_log;
+static uint64_t fps_first, fps_last_shown, fps_sec, fps_frame_start;
+static long fps_shown, fps_run;                    /* this second's */
+static double fps_worst_gap, fps_worst_run, fps_worst_present, fps_worst_wait;
+static char fps_text[96] = "";                     /* the last second's, as shown */
+static uint64_t fps_ran_ns, fps_present_ns;        /* this frame's */
+
+/* a 3 x 5 font for the meter: a row a 3-bit number, top row first */
+static const struct {
+    char c;
+    uint8_t row[5];
+} fps_font[] = {
+    { '0', { 7, 5, 5, 5, 7 } }, { '1', { 2, 6, 2, 2, 7 } }, { '2', { 7, 1, 7, 4, 7 } }, { '3', { 7, 1, 3, 1, 7 } },
+    { '4', { 5, 5, 7, 1, 1 } }, { '5', { 7, 4, 7, 1, 7 } }, { '6', { 7, 4, 7, 5, 7 } }, { '7', { 7, 1, 1, 1, 1 } },
+    { '8', { 7, 5, 7, 5, 7 } }, { '9', { 7, 5, 7, 1, 7 } }, { '.', { 0, 0, 0, 0, 2 } }, { ' ', { 0, 0, 0, 0, 0 } },
+    { 'a', { 0, 7, 5, 7, 5 } }, { 'e', { 0, 7, 7, 4, 7 } }, { 'f', { 3, 4, 7, 4, 4 } }, { 'g', { 0, 7, 5, 7, 1 } },
+    { 'i', { 2, 0, 2, 2, 2 } }, { 'm', { 0, 7, 7, 5, 5 } }, { 'n', { 0, 6, 5, 5, 5 } }, { 'o', { 0, 7, 5, 5, 7 } },
+    { 'p', { 0, 7, 5, 7, 4 } }, { 'r', { 0, 7, 4, 4, 4 } }, { 's', { 0, 7, 6, 3, 7 } }, { 't', { 2, 7, 2, 2, 3 } },
+    { 'u', { 0, 5, 5, 5, 7 } }, { 'w', { 0, 5, 5, 7, 7 } }, { 'x', { 0, 5, 2, 2, 5 } }, { '/', { 1, 1, 2, 4, 4 } },
+};
+
+static void fps_draw(void)
+{
+    static uint32_t px[7 * (2 + 4 * 96)];
+    size_t n = strlen(fps_text), i, w = 2 + 4 * n;
+    int x, y;
+    float q[6];
+    if (!n)
+        return;
+    for (i = 0; i < 7 * w; i++)
+        px[i] = 0xB0000000u;                       /* a dark panel behind the text */
+    for (i = 0; i < n; i++) {
+        size_t g;
+        for (g = 0; g < sizeof fps_font / sizeof fps_font[0] && fps_font[g].c != fps_text[i]; g++)
+            ;
+        if (g == sizeof fps_font / sizeof fps_font[0])
+            continue;
+        for (y = 0; y < 5; y++)
+            for (x = 0; x < 3; x++)
+                if (fps_font[g].row[y] >> (2 - x) & 1)
+                    px[(size_t)(y + 1) * w + 1 + 4 * i + (size_t)x] = 0xFFFFFF40u;
+    }
+    /* 3 target pixels a font pixel, at the top left */
+    q[0] = 8;
+    q[1] = 8;
+    q[2] = 8 + 3.0f * (float)w;
+    q[3] = 8;
+    q[4] = 8;
+    q[5] = 8 + 3.0f * 7;
+    rr_overlay(px, (int)w, 7, q);
+}
+
+/* a presented frame's times, ns: the meter's second and the log's line */
+static void fps_frame(uint64_t shown, uint64_t ran, uint64_t presented, uint64_t waited)
+{
+    double gap = fps_last_shown ? (double)(shown - fps_last_shown) / 1e6 : 0;
+    if (!fps_first)
+        fps_first = fps_sec = shown;
+    fps_last_shown = shown;
+    fps_shown++;
+    fps_run++;
+    if (gap > fps_worst_gap) fps_worst_gap = gap;
+    if ((double)ran / 1e6 > fps_worst_run) fps_worst_run = (double)ran / 1e6;
+    if ((double)presented / 1e6 > fps_worst_present) fps_worst_present = (double)presented / 1e6;
+    if ((double)waited / 1e6 > fps_worst_wait) fps_worst_wait = (double)waited / 1e6;
+    if (fps_log)
+        fprintf(fps_log, "%ld %.3f %.3f %.3f %.3f %.3f\n", frame_no, (double)(shown - fps_first) / 1e6, gap,
+                (double)ran / 1e6, (double)presented / 1e6, (double)waited / 1e6);
+    if (shown - fps_sec >= 1000000000ull) {
+        double secs = (double)(shown - fps_sec) / 1e9;
+        snprintf(fps_text, sizeof fps_text, "%.1f fps  %.1f run  gap %.1f  ran %.1f  present %.1f  wait %.1f ms",
+                 fps_shown / secs, fps_run / secs, fps_worst_gap, fps_worst_run, fps_worst_present, fps_worst_wait);
+        fps_sec = shown;
+        fps_shown = fps_run = 0;
+        fps_worst_gap = fps_worst_run = fps_worst_present = fps_worst_wait = 0;
+    }
+}
+
 static void show(void)
 {
     int tw, th, w, h, d[4];
@@ -473,6 +560,8 @@ static void show(void)
             rr_image(px, pw, ph, d);
     }
     draw_overlays(tw, th);
+    if (fps_on > 0)
+        fps_draw();
     rr_present();
 }
 
@@ -592,7 +681,20 @@ static void frame(void)
             exit(0);
         return;
     }
-    show();
+    if (fps_on < 0) {
+        const char *lf = getenv("NSHVC_FPS_LOG");
+        fps_on = getenv("NSHVC_FPS") != NULL;
+        if (lf && !(fps_log = fopen(lf, "w")))
+            nshvc_fatal("NSHVC_FPS_LOG: cannot write %s", lf);
+        if (fps_log)
+            setvbuf(fps_log, NULL, _IOLBF, 0);
+    }
+    {
+        uint64_t before = host_ticks_ns();
+        fps_ran_ns = fps_frame_start ? before - fps_frame_start : 0;
+        show();
+        fps_present_ns = host_ticks_ns() - before;
+    }
     {
         host_event e;
         while (host_poll_event(&e, 0)) {
@@ -635,6 +737,12 @@ static void frame(void)
             if (left > 2000000ull)
                 host_sleep_ms((uint32_t)(left / 1000000ull) - 1);
         }
+        if (fps_on > 0 || fps_log) {
+            uint64_t shown = fps_frame_start + fps_ran_ns + fps_present_ns;
+            fps_frame(fps_frame_start ? shown : now, fps_ran_ns, fps_present_ns,
+                      fps_frame_start ? now - shown : 0);
+        }
+        fps_frame_start = now;
     }
 }
 

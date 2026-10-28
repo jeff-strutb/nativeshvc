@@ -561,7 +561,12 @@ time, files and the save folder, a window, input, audio.
 
 ### What a player gets
 
-- A frame each 1/60.0988 s (NTSC), paced against the wall clock.
+- A frame each 1/60.0988 s (NTSC), paced against the wall clock. `NSHVC_FPS=1` shows a
+  meter at the window's top left (frames presented and console frames run a second, and
+  over the last second the longest time between presents and the longest each frame spent
+  running, presenting and waiting); `NSHVC_FPS_LOG=FILE` writes a line a presented frame
+  (its number, its time from the first, the time since the last, and its run, present
+  and wait times, in ms).
 - Two controller ports, with whatever the game plugs in: joypads, a mouse, a multitap, a
   Super Scope or Justifiers. The keyboard and game controllers drive the joypads, the mouse
   drives the mouse, and the pointer or a touch aims the light guns (see "Controllers");
