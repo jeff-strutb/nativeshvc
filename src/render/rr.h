@@ -42,7 +42,8 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4]);
 #define RR_OVERLAYS 16
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]);
 
-/* A frame with Mode 7 presented over the target's rectangle d (rr_mode7.h):
+/* A frame with Mode 7 or a layer's canvas presented over the target's
+   rectangle d (rr_mode7.h):
    its record m and the samples s rr_m7_tables made at d's size. Exactly
    rr_ref_mode7's drawing, but that the blends round as the GPU's (within 1
    a channel, as rr_image's). */

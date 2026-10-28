@@ -94,7 +94,8 @@ static inline int ppu_frame_width(const PpuFrame *f) { return f->hires ? 2 * f->
    as wide as the wider of the two) */
 const uint32_t *ppu_picture(int *width, int *height);
 
-/* The presentation of a frame with Mode 7 (render/rr_mode7.h): m set to
+/* The presentation of a frame with Mode 7 or a layer's canvas
+   (render/rr_mode7.h): m set to
    frame f's record for rr_mode7, pic its picture (ppu_draw_frame's, one
    row a line: not an interlaced weave); valid until the next call. 0 when
    there is no memory for it. */
@@ -107,10 +108,12 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, struct RrMode7 *m);
    by the console's rules for that pixel with the Mode 7 plane under the
    output pixel, filtered by the pixel's footprint on the plane (its
    texels' edges covered where magnified, supersampled where minified; a
-   Mode 7 layer under mosaic keeps its block's texel). */
+   Mode 7 layer under mosaic keeps its block's texel), and a picture pixel
+   of a layer's canvas composed again with the canvas's texel under the
+   output pixel's centre. */
 void ppu_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, int ow, int oh);
-/* whether a line of f shows a Mode 7 layer (else ppu_present is pic
-   scaled, nothing more) */
+/* whether a line of f shows a Mode 7 layer or the frame's canvas (else
+   ppu_present is pic scaled, nothing more) */
 int ppu_frame_mode7(const PpuFrame *f);
 
 /* ---- the console's side ---- */

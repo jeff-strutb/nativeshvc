@@ -313,13 +313,23 @@ static void sound_drain(void)
             fwrite(b, 4, (size_t)n, sound_f);
 }
 
-/* ---- a frame with Mode 7 presented (render/rr_mode7.h) ---- */
+/* the canvas's texels a console pixel along each axis for a picture shown
+   w x h: the window's pixels a console pixel, rounded up (so a canvas at
+   that scale has at least a texel a window pixel) */
+static void canvas_scale(int w, int h)
+{
+    const PpuFrame *f = ppu_frame();
+    int kx = (w + f->width - 1) / f->width, ky = (h + f->screen_height - 1) / f->screen_height;
+    ppu_set_canvas_scale(kx > ky ? kx : ky);
+}
+
+/* ---- a frame with Mode 7 or a canvas presented (render/rr_mode7.h) ---- */
 static int32_t *m7_cols, *m7_rows;
 static int m7_cols_cap, m7_rows_cap;
 
 /* the last frame's record and where it samples drawn at ow x oh; 0 when it
-   is drawn as its picture scaled (no Mode 7 in it, or an interlaced
-   weave) */
+   is drawn as its picture scaled (no Mode 7 or canvas in it, or an
+   interlaced weave) */
 static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
 {
     const PpuFrame *f = ppu_frame();
@@ -416,19 +426,9 @@ int console_picture_at(float x, float y, int *dot, int *line)
 
 /* the frame as large as the window holds, centred, sharp bilinear: the
    console's 256 x 224 at a television's 4:3, a larger screen at the same
-   shape of pixel; a frame with Mode 7 presented by its record (rr_mode7:
-   the plane at the window's pixels, anti-aliased by each pixel's
-   footprint on it) */
-/* the canvas's texels a console pixel along each axis for a picture shown
-   w x h: the window's pixels a console pixel, rounded up (so a canvas at
-   that scale has at least a texel a window pixel) */
-static void canvas_scale(int w, int h)
-{
-    const PpuFrame *f = ppu_frame();
-    int kx = (w + f->width - 1) / f->width, ky = (h + f->screen_height - 1) / f->screen_height;
-    ppu_set_canvas_scale(kx > ky ? kx : ky);
-}
-
+   shape of pixel; a frame with Mode 7 or a canvas presented by its record
+   (rr_mode7: the plane at the window's pixels, anti-aliased by each
+   pixel's footprint on it; the canvas's texels) */
 static void show(void)
 {
     int tw, th, w, h, d[4];
@@ -469,14 +469,14 @@ static void show(void)
 /* NSHVC_RRCHECK=1 (headless, any RENDER): each finished frame shown by the
    renderer one to one and scaled to the target with sharp bilinear, read
    back, against the PPU's picture drawn the same way on the CPU (rr_size.h
-   rr_ref_image); a frame with Mode 7 presented by its record (rr_mode7)
+   rr_ref_image); a frame with Mode 7 or a canvas presented by its record (rr_mode7)
    against rr_ref_mode7; at exit, the frames and pixels
    that differ by more than 1 in a channel (a GPU's filtering rounds) */
 static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames;
 
 static void rr_report(void)
 {
-    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 presented), %ld differ (first at frame %ld), %ld pixels\n",
+    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 or a canvas presented), %ld differ (first at frame %ld), %ld pixels\n",
             rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels);
 }
 

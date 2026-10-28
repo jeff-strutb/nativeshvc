@@ -104,7 +104,8 @@ hooks, overlays, buttons the game holds itself, the safe area and the window's s
 
 The picture on the window is not an enhancement: in both modes nativeshvc draws at the
 window's own resolution, the pixel art with sharp bilinear filtering and the Mode 7 plane
-looked up at each window pixel and anti-aliased (see [Picture](#picture)).
+looked up at each window pixel and anti-aliased (see [Picture](#picture)). A canvas is: an
+Enhanced mode's picture drawn by the game at the window's resolution, which no original drew.
 
 **Pacing: an Original mode and an Enhanced mode.** The C makes the original's data
 accesses but not its instruction fetches or internal cycles, so the time the original's

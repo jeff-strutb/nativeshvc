@@ -463,7 +463,10 @@ void nshvc_overlay_place(int id, float cx, float cy, float scale, float angle_ra
    cartridge chip's among them) and the windows are the console pixel's
    whatever the texel: a sprite's edge over Mode 7 is as over tiles. It is
    not a filter over the frame. The game's overlays go over it.
-   nshvc_picture stays the console's picture, 1 pixel a console pixel. */
+   nshvc_picture stays the console's picture, 1 pixel a console pixel. A
+   layer's canvas (nshvc_ext_canvas_chars, an extension) is drawn the same
+   way: each window pixel over one of its characters takes the canvas's
+   texel under its centre, composed by the console pixel's rules. */
 
 /* A fatal error in the port (the game reached code with no C, a state the
    console cannot be in): reported, then the process exits (status 70). */

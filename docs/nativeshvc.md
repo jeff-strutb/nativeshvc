@@ -64,8 +64,9 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 The picture comes from the PPU in C (the implementation the checks hold to
 the reference); the renderers draw it at the window's own resolution, at any
 size and shape: the pixel art with sharp bilinear filtering, the Mode 7
-plane looked up at each window pixel and anti-aliased (The picture, below),
-and the game's overlays over it.
+plane looked up at each window pixel and anti-aliased, a layer's canvas (an
+extension) at the window's resolution (The picture, below), and the game's
+overlays over it.
 
 ## The cartridge (`nshvc_cart`)
 
@@ -197,6 +198,10 @@ pixels are blended across their edges with sharp bilinear, as the pixel art
 is. The definition is `src/render/rr_mode7.h`, the software backend's
 drawing; the Metal, OpenGL and Vulkan shaders compute the same, in integers
 but the blends (`NSHVC_RRCHECK` holds each to it). `nshvc_picture` stays the
-console's picture; a headless run's shots are it, or with `NSHVC_SCALE=S`
+console's picture. A layer's canvas (`nshvc_ext_canvas_chars`, an
+extension) is drawn the same way: each window pixel over one of its
+characters takes the canvas's texel under its centre in its console pixel,
+composed by that pixel's rules, and `nshvc_picture` takes each pixel's
+centre texel. A headless run's shots are the console's picture, or with `NSHVC_SCALE=S`
 (or `SXxSY`) the frame as a window that many pixels a console pixel shows
 it.
