@@ -3,9 +3,10 @@
 // writes it into both). The prelude before it gives the data's reads:
 //   P_(i) S_(i) PAL_(i) VRAM_(i) PIC_(i) COL_(i) ROW_(i)  the record, the
 //     states' words, palettes, VRAM, the picture and the tables, by index
-//   PLANE_(x, y, layer)  a plane's pixel byte; U_pw U_ph U_d0 U_d1
-//   U_step_u U_step_v U_du(k) U_dv(k)  the presentation; FRAG_X FRAG_Y the
-//   target pixel (top left origin); OUT the colour written
+//   PLANE_(x, y, layer)  a plane's pixel byte; CV_(i) the canvas's texel i;
+//   U_pw U_ph U_d0 U_d1 U_step_u U_step_v U_du(k) U_dv(k) U_cpp U_left
+//   U_cvk U_cvlen  the presentation; FRAG_X FRAG_Y the target pixel (top
+//   left origin); OUT the colour written
 uint m7_direct(uint c) { return (c & 7u) << 2 | ((c & 0x38u) >> 1) << 5 | ((c & 0xC0u) >> 3) << 10; }
 uint m7_finish(uint mc, uint ml, uint sc, uint sl, uint fl, uint adsub, uint wsel, uint fixc, uint bright) {
     bool clip = (fl & 0x80u) != 0u, prevent = (fl & 0x100u) != 0u;
@@ -75,6 +76,36 @@ uint m7_compose(uvec4 p, int g, int pl, uint pix) {
     }
     if ((fl & 4u) != 0u) { uint t = mc; mc = sl == 5u ? PAL_(pl) : sc; sc = t; t = ml; ml = sl; sl = t; }
     return m7_finish(mc, ml, sc, sl, fl, (g4 >> 16) & 0xFFu, g4 >> 24, g5 & 0xFFFFu, (g5 >> 16) & 0xFFu);
+}
+// a canvas pixel's colour with the canvas's texel pix (rr_cv_compose)
+uint cv_direct(uint c, uint pal) {
+    return ((c & 7u) << 2 | (pal & 1u) << 1) | ((c & 0x38u) >> 1 | (pal & 2u)) << 5 | ((c & 0xC0u) >> 3 | (pal & 4u)) << 10;
+}
+uint cv_compose(uvec4 p, int g, int pl, uint pix) {
+    uint fl = p.z & 0xFFFFu, w3 = p.w, g7 = uint(S_(g + 7)), bpp = g7 & 0xFFu, mode = (g7 >> 8) & 7u;
+    uint pal = (w3 >> 22) & 7u, z = (w3 >> 25) & 15u, n = w3 >> 29;
+    uint mc = p.x & 0xFFFFu, sc = p.x >> 16, mz = p.y & 0xFFu, sz = (p.y >> 8) & 0xFFu, ml = (p.y >> 16) & 0xFFu, sl = p.y >> 24;
+    uint g4 = uint(S_(g + 4)), g5 = uint(S_(g + 5));
+    pix &= (1u << bpp) - 1u;
+    if (pix != 0u) {
+        uint col = bpp == 8u ? (((g4 >> 8) & 1u) != 0u ? cv_direct(pix, pal) : PAL_(pl + int(pix))) :
+                   bpp == 4u ? PAL_(pl + int(pal * 16u + pix)) : PAL_(pl + int((mode == 0u ? n * 32u : 0u) + pal * 4u + pix));
+        if ((fl & 0x08u) != 0u && z > mz) { mc = col; mz = z; ml = n; }
+        if ((fl & 0x10u) != 0u && z > sz) { sc = col; sz = z; sl = n; }
+    }
+    return m7_finish(mc, ml, sc, sl, fl, (g4 >> 16) & 0xFFu, g4 >> 24, g5 & 0xFFFFu, (g5 >> 16) & 0xFFu);
+}
+// canvas pixel (i, r) over the output pixel centred at u, v: the canvas's
+// texel under the centre (rr_cv_q)
+uint cv_q(uvec4 p, int i, int r, int u, int v) {
+    int g = int(p.z >> 16) * 8, pl = int(S_(g + 6)) * 256;
+    uint w3 = p.w, k = uint(U_cvk);
+    int h = i / U_cpp - U_left, fu = clamp(u - 1024 * h + 512, 0, 1023), fv = clamp(v - 1024 * r + 512, 0, 1023);
+    uint sx = (uint(fu) * k) >> 10, sy = (uint(fv) * k) >> 10;
+    if (((w3 >> 20) & 1u) != 0u) sx = k - 1u - sx;
+    if (((w3 >> 21) & 1u) != 0u) sy = k - 1u - sy;
+    uint at = (w3 & 0x3FFFu) * 64u * k * k + (((w3 >> 17) & 7u) * k + sy) * 8u * k + ((w3 >> 14) & 7u) * k + sx;
+    return cv_compose(p, g, pl, at < uint(U_cvlen) ? CV_(int(at)) : 0u);
 }
 // picture pixels (i, r) and (i + 1, r) (two) over the output pixel centred
 // at u, v: their Mode 7 plane filtered by the footprint (rr_m7_q). Both are
@@ -155,6 +186,14 @@ uvec2 m7_row(int i, bool two, bool one, int r, int u, int v) {
     return uvec2(r0, split ? 0xFFFFFFFFu : k1);   // split: the second pixel by a second call
 }
 uint m7_pic(int x, int y) { return PIC_(clamp(y, 0, U_ph - 1) * U_pw + clamp(x, 0, U_pw - 1)); }
+// picture pixel (i, r) over the output pixel centred at u, v on its own: a
+// canvas pixel's texel, else as m7_row has it
+uint q_one(int i, int r, int u, int v) {
+    int rr = clamp(r, 0, U_ph - 1), ii = clamp(i, 0, U_pw - 1);
+    uvec4 p = P_(rr * U_pw + ii);
+    if ((p.z & 0x800u) != 0u && (p.z & 3u) == 0u) return cv_q(p, ii, rr, u, v);
+    return m7_row(i, false, false, r, u, v).x;
+}
 // an output pixel: the picture pixels under it blended with sharp
 // bilinear (rr_m7_pixel), a row of them at a time
 void main() {
@@ -166,7 +205,12 @@ void main() {
     uint top = 0u;
     for (int j = 0; j < nr; j++) {
         uint cur;
-        if (m7) {
+        int rj = clamp(ty + j, 0, U_ph - 1);
+        if (m7 && ((P_(rj * U_pw + clamp(tx, 0, U_pw - 1)).z | (two ? P_(rj * U_pw + clamp(tx + 1, 0, U_pw - 1)).z : 0u)) & 0x800u) != 0u) {
+            // a canvas pixel in the pair: each pixel on its own
+            uint a = q_one(tx, ty + j, u, v);
+            cur = two ? m7_mix(a, q_one(tx + 1, ty + j, u, v), fx) : a;
+        } else if (m7) {
             uvec2 q = m7_row(tx, two, false, ty + j, u, v);
             if (q.y == 0xFFFFFFFFu) q.y = m7_row(tx, false, true, ty + j, u, v).x;
             cur = two ? m7_mix(q.x, q.y, fx) : q.x;

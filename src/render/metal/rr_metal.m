@@ -47,7 +47,7 @@ static NSString *const k_src = @
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
 "  return t.sample(s, in.uv); }\n"
 /* a frame with Mode 7 presented (rr_mode7.h, the same arithmetic) */
-"struct M7U { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28]; };\n"
+"struct M7U { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen; };\n"
 "static uint m7_direct(uint c) { return (c & 7u) << 2 | ((c & 0x38u) >> 1) << 5 | ((c & 0xC0u) >> 3) << 10; }\n"
 "static uint m7_finish(uint mc, uint ml, uint sc, uint sl, uint fl, uint adsub, uint wsel, uint fixed, uint bright) {\n"
 "  bool clip = (fl & 0x80u) != 0, prevent = (fl & 0x100u) != 0;\n"
@@ -107,17 +107,43 @@ static NSString *const k_src = @
 "  }\n"
 "  if (fl & 4u) { uint t = mc; mc = sl == 5 ? uint(pl[0]) : sc; sc = t; t = ml; ml = sl; sl = t; }\n"
 "  return m7_finish(mc, ml, sc, sl, fl, (uint(g[4]) >> 16) & 0xFF, uint(g[4]) >> 24, uint(g[5]) & 0xFFFF, (uint(g[5]) >> 16) & 0xFF); }\n"
+/* a canvas pixel's colour with the canvas's texel pix (rr_cv_compose) */
+"static uint cv_direct(uint c, uint pal) {\n"
+"  return ((c & 7u) << 2 | (pal & 1u) << 1) | ((c & 0x38u) >> 1 | (pal & 2u)) << 5 | ((c & 0xC0u) >> 3 | (pal & 4u)) << 10; }\n"
+"static uint cv_compose(uint4 p, const device int *g, const device ushort *pl, uint pix) {\n"
+"  uint fl = p.z & 0xFFFFu, w3 = p.w, bpp = uint(g[7]) & 0xFF, mode = (uint(g[7]) >> 8) & 7;\n"
+"  uint pal = (w3 >> 22) & 7, z = (w3 >> 25) & 15, n = w3 >> 29;\n"
+"  uint mc = p.x & 0xFFFF, sc = p.x >> 16, mz = p.y & 0xFF, sz = (p.y >> 8) & 0xFF, ml = (p.y >> 16) & 0xFF, sl = p.y >> 24;\n"
+"  pix &= (1u << bpp) - 1u;\n"
+"  if (pix) {\n"
+"    uint col = bpp == 8 ? (((uint(g[4]) >> 8) & 1) ? cv_direct(pix, pal) : uint(pl[pix])) :\n"
+"               bpp == 4 ? uint(pl[pal * 16 + pix]) : uint(pl[(mode == 0 ? n * 32 : 0) + pal * 4 + pix]);\n"
+"    if ((fl & 0x08u) && z > mz) { mc = col; mz = z; ml = n; }\n"
+"    if ((fl & 0x10u) && z > sz) { sc = col; sz = z; sl = n; }\n"
+"  }\n"
+"  return m7_finish(mc, ml, sc, sl, fl, (uint(g[4]) >> 16) & 0xFF, uint(g[4]) >> 24, uint(g[5]) & 0xFFFF, (uint(g[5]) >> 16) & 0xFF); }\n"
+/* canvas pixel (i, r) over the output pixel centred at u, v: the canvas's
+   texel under the centre (rr_cv_q) */
+"static uint cv_q(constant M7U &U, uint4 p, const device int *g, const device ushort *pl, const device uchar *cv, int i, int r, int u, int v) {\n"
+"  uint w3 = p.w, k = uint(U.cvk);\n"
+"  int h = i / U.cpp - U.left, fu = clamp(u - 1024 * h + 512, 0, 1023), fv = clamp(v - 1024 * r + 512, 0, 1023);\n"
+"  uint sx = (uint(fu) * k) >> 10, sy = (uint(fv) * k) >> 10;\n"
+"  if ((w3 >> 20) & 1) sx = k - 1 - sx;\n"
+"  if ((w3 >> 21) & 1) sy = k - 1 - sy;\n"
+"  uint at = (w3 & 0x3FFF) * 64u * k * k + (((w3 >> 17) & 7) * k + sy) * 8u * k + ((w3 >> 14) & 7) * k + sx;\n"
+"  return cv_compose(p, g, pl, at < uint(U.cvlen) ? uint(cv[at]) : 0u); }\n"
 /* picture pixel (i, r) over the output pixel centred at u, v: its Mode 7
    plane filtered by the footprint (rr_m7_q); one loop over the texels
    it takes, each composed once (a byte as the last one's: its colour) */
 "static inline __attribute__((always_inline)) uint m7_q(constant M7U &U, const device uint4 *P, const device int *S, const device ushort *pal,\n"
-"                 const device ushort *vram, const device uint *pic, texture2d_array<uint> plane, int i, int r, int u, int v) {\n"
+"                 const device ushort *vram, const device uint *pic, texture2d_array<uint> plane, const device uchar *cv, int i, int r, int u, int v) {\n"
 "  i = clamp(i, 0, U.pw - 1); r = clamp(r, 0, U.ph - 1);\n"
 "  uint4 p = P[r * U.pw + i]; uint fl = p.z & 0xFFFFu;\n"
 "  if (fl & 1u) return pic[r * U.pw + i];\n"
 "  if (fl & 2u) return 0xFF000000u;\n"
 "  const device int *g = S + (p.z >> 16) * 8;\n"
 "  const device ushort *pl = pal + uint(g[6]) * 256u;\n"
+"  if (fl & 0x800u) return cv_q(U, p, g, pl, cv, i, r, u, v);\n"
 "  bool look = (fl & 0x78u) && (fl & 0x600u) != 0x600u;\n"
 "  uint sel = uint(g[4]) & 0xFF;\n"
 "  const device ushort *vr = vram + (uint(g[5]) >> 24) * 0x8000u;\n"
@@ -166,11 +192,15 @@ static NSString *const k_src = @
    (once where their records are the same), each texel's byte composed
    once (a byte as the last one's: its colour). */
 "static inline __attribute__((always_inline)) uint2 m7_row(constant M7U &U, const device uint4 *P, const device int *S, const device ushort *pal,\n"
-"                 const device ushort *vram, const device uint *pic, texture2d_array<uint> plane, int i, bool two, int r, int u, int v) {\n"
+"                 const device ushort *vram, const device uint *pic, texture2d_array<uint> plane, const device uchar *cv, int i, bool two, int r, int u, int v) {\n"
 "  r = clamp(r, 0, U.ph - 1);\n"
 "  int i0 = clamp(i, 0, U.pw - 1), i1 = clamp(i + 1, 0, U.pw - 1);\n"
 "  uint4 p0 = P[r * U.pw + i0], p1 = two ? P[r * U.pw + i1] : p0;\n"
 "  uint fl0 = p0.z & 0xFFFFu, fl1 = p1.z & 0xFFFFu;\n"
+/* a canvas pixel in the pair: each pixel on its own */
+"  if ((fl0 | fl1) & 0x800u) {\n"
+"    uint a = m7_q(U, P, S, pal, vram, pic, plane, cv, i, r, u, v);\n"
+"    return uint2(a, two ? m7_q(U, P, S, pal, vram, pic, plane, cv, i + 1, r, u, v) : a); }\n"
 "  bool same = all(p0 == p1);\n"
 /* a picture pixel not on a Mode 7 line, or a hires line's first half pixel */
 "  uint k0 = (fl0 & 1u) ? pic[r * U.pw + i0] : 0xFF000000u, k1 = (fl1 & 1u) ? pic[r * U.pw + i1] : 0xFF000000u;\n"
@@ -232,7 +262,7 @@ static NSString *const k_src = @
 "  if (!two) return uint2(r0, r0);\n"
 "  if (same) return uint2(r0, r0);\n"
 "  if (m1) return uint2(r0, top1);\n"
-"  if (!(fl1 & 3u)) return uint2(r0, m7_q(U, P, S, pal, vram, pic, plane, i + 1, r, u, v));\n"
+"  if (!(fl1 & 3u)) return uint2(r0, m7_q(U, P, S, pal, vram, pic, plane, cv, i + 1, r, u, v));\n"
 "  return uint2(r0, k1); }\n"
 "static uint m7_pic(constant M7U &U, const device uint *pic, int x, int y) { return pic[clamp(y, 0, U.ph - 1) * U.pw + clamp(x, 0, U.pw - 1)]; }\n"
 /* an output pixel: the picture pixels under it blended with sharp
@@ -240,7 +270,7 @@ static NSString *const k_src = @
 "fragment float4 m7fs(BO in [[stage_in]], constant M7U &U [[buffer(0)]], const device uint4 *P [[buffer(1)]],\n"
 "                     const device int *S [[buffer(2)]], const device ushort *pal [[buffer(3)]], const device ushort *vram [[buffer(4)]],\n"
 "                     const device uint *pic [[buffer(5)]], const device int *cols [[buffer(6)]], const device int *rows [[buffer(7)]],\n"
-"                     texture2d_array<uint> plane [[texture(0)]]) {\n"
+"                     const device uchar *cv [[buffer(8)]], texture2d_array<uint> plane [[texture(0)]]) {\n"
 "  int X = int(in.pos.x) - U.d0, Y = int(in.pos.y) - U.d1;\n"
 "  const device int *col = cols + X * 3, *row = rows + Y * 4;\n"
 "  int tx = col[0], ty = row[0], u = col[2], v = row[3];\n"
@@ -250,7 +280,7 @@ static NSString *const k_src = @
 "  uint top = 0;\n"
 "  for (int j = 0; j < nr; j++) {\n"
 "    uint cur;\n"
-"    if (m7) { uint2 q = m7_row(U, P, S, pal, vram, pic, plane, tx, two, ty + j, u, v); cur = two ? m7_mix(q.x, q.y, fx) : q.x; }\n"
+"    if (m7) { uint2 q = m7_row(U, P, S, pal, vram, pic, plane, cv, tx, two, ty + j, u, v); cur = two ? m7_mix(q.x, q.y, fx) : q.x; }\n"
 "    else cur = two ? m7_mix(m7_pic(U, pic, tx, ty + j), m7_pic(U, pic, tx + 1, ty + j), fx) : m7_pic(U, pic, tx, ty + j);\n"
 "    top = j ? m7_mix(top, cur, fy) : cur;\n"
 "  }\n"
@@ -442,10 +472,10 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
 {
     @autoreleasepool {
-        struct { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28]; } u;
+        struct { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen; } u;
         int ow = d[2] - d[0], oh = d[3] - d[1];
         size_t np = (size_t)m->pw * (size_t)m->ph;
-        id<MTLBuffer> b[7];
+        id<MTLBuffer> b[8];
         long off;
         int i;
         if (!s_enc || ow <= 0 || oh <= 0 || np == 0 || (off = quad(d)) < 0)
@@ -456,6 +486,10 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         u.d1 = d[1];
         u.step_u = s->step_u;
         u.step_v = s->step_v;
+        u.cpp = m->cpp;
+        u.left = m->left;
+        u.cvk = m->cv_k;
+        u.cvlen = (int)m->cv_len;
         /* the supersamples' offsets: 4 from 0, 8 from 4, 16 from 12 */
         memcpy(u.du, s->du4, sizeof s->du4);
         memcpy(u.du + 4, s->du8, sizeof s->du8);
@@ -475,7 +509,13 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         b[4] = [s_dev newBufferWithBytes:m->pic length:np * 4 options:MTLResourceStorageModeShared];
         b[5] = [s_dev newBufferWithBytes:s->cols length:(size_t)ow * 3 * 4 options:MTLResourceStorageModeShared];
         b[6] = [s_dev newBufferWithBytes:s->rows length:(size_t)oh * 4 * 4 options:MTLResourceStorageModeShared];
-        for (i = 0; i < 7; i++)
+        {
+            /* the canvas's texels (a byte where there is none) */
+            static const uint8_t none = 0;
+            b[7] = [s_dev newBufferWithBytes:m->cv && m->cv_len ? (const void *)m->cv : &none length:m->cv && m->cv_len ? m->cv_len : 1
+                                     options:MTLResourceStorageModeShared];
+        }
+        for (i = 0; i < 8; i++)
             if (!b[i])
                 return;
         if (!s_plane || s_planes < m->vrams || s_plane_gen != m->plane_gen) {
@@ -506,7 +546,7 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         [s_enc setFragmentTexture:s_plane atIndex:0];
         [s_enc setVertexBuffer:s_vb[s_pi] offset:(NSUInteger)off atIndex:0];
         [s_enc setFragmentBytes:&u length:sizeof u atIndex:0];
-        for (i = 0; i < 7; i++)
+        for (i = 0; i < 8; i++)
             [s_enc setFragmentBuffer:b[i] offset:0 atIndex:(NSUInteger)i + 1];
         [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }

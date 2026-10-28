@@ -74,6 +74,22 @@ unsigned long ppu_version_overflow;             /* frames that needed more copie
 static const uint16_t *d_vram = vram, *d_cgram = cgram;
 static const uint8_t *d_oam = oam;
 static int d_field;                             /* the field of the frame being drawn */
+/* the frame being drawn from its record, whose canvas its layer shows (the
+   console's own drawing, the live CGRAM target's: none) */
+static const PpuFrame *d_frame;
+
+/* the canvas (nshvc_ext_canvas_chars): a layer's characters in a range of
+   VRAM drawn from the game's texels, k a console pixel along each axis */
+static struct {
+    int on, layer, k;
+    unsigned addr, count;
+    uint8_t *data;
+    size_t len, cap;
+    uint32_t gen;
+} cv_now;
+static uint8_t *cv_kept[2];           /* each frame record's copy of it */
+static size_t cv_kept_cap[2];
+static int cv_scale = 1;              /* the window's texels a console pixel (ppu_set_canvas_scale) */
 
 /* the data ports: where the game's writes of tiles, palette and sprites go */
 static uint8_t bgofs_latch, bghofs_latch;
@@ -186,6 +202,8 @@ void ppu_reset(void)
     h_latch = v_latch = 0;
     h_flip = v_flip = latch_flag = field = 0;
     live_vline = live_n = 0;
+    cv_now.on = 0;
+    cv_now.gen++;
 }
 
 /* ---- registers --------------------------------------------------------------------- */
@@ -649,6 +667,66 @@ void ppu_ext_vram_direct(int page)
 
 int ppu_vram_direct(void) { return direct_page; }
 
+void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
+{
+    size_t len;
+    if (!texels || count <= 0) {
+        cv_now.on = 0;
+        cv_now.gen++;
+        return;
+    }
+    if (layer < 0 || layer > 3 || word_addr > 0x7FFF || k < 1 || k > 64 || count > 4096)
+        snes_fatal("nshvc_ext_canvas_chars(%d, $%04X, %d, k %d): layers 0-3 (BG1-4), a word address below $8000, "
+                   "at most 4,096 characters, k 1 to 64", layer, word_addr, count, k);
+    len = (size_t)count * 64u * (size_t)k * (size_t)k;
+    if (len > cv_now.cap) {
+        uint8_t *n = (uint8_t *)realloc(cv_now.data, len);
+        if (!n)
+            snes_fatal("no memory for the canvas (%zu bytes)", len);
+        cv_now.data = n;
+        cv_now.cap = len;
+    }
+    memcpy(cv_now.data, texels, len);
+    cv_now.on = 1;
+    cv_now.layer = layer;
+    cv_now.addr = word_addr;
+    cv_now.count = (unsigned)count;
+    cv_now.k = k;
+    cv_now.len = len;
+    cv_now.gen++;
+}
+
+void ppu_set_canvas_scale(int k) { cv_scale = k < 1 ? 1 : k > 64 ? 64 : k; }
+int ppu_canvas_scale(void) { return cv_scale; }
+
+/* the frame being made takes the canvas as it stands as the frame begins */
+static void cv_take(void)
+{
+    int slot = making == &frames[0] ? 0 : 1;
+    if (!cv_now.on) {
+        making->cv_on = 0;
+        return;
+    }
+    if (!making->cv_on || making->cv_gen != cv_now.gen) {
+        if (cv_now.len > cv_kept_cap[slot]) {
+            uint8_t *n = (uint8_t *)realloc(cv_kept[slot], cv_now.len);
+            if (!n)
+                snes_fatal("no memory for the canvas (%zu bytes)", cv_now.len);
+            cv_kept[slot] = n;
+            cv_kept_cap[slot] = cv_now.len;
+        }
+        memcpy(cv_kept[slot], cv_now.data, cv_now.len);
+    }
+    making->cv_on = 1;
+    making->cv_layer = cv_now.layer;
+    making->cv_addr = cv_now.addr;
+    making->cv_count = cv_now.count;
+    making->cv_k = cv_now.k;
+    making->cv_len = cv_now.len;
+    making->cv = cv_kept[slot];
+    making->cv_gen = cv_now.gen;
+}
+
 void ppu_ext_sprite_y(int sprite, int on)
 {
     if (sprite < 0 || sprite > 127)
@@ -829,6 +907,49 @@ static uint8_t tile_pixel(uint16_t ca, unsigned y, unsigned x, unsigned bpp)
     return (uint8_t)c;
 }
 
+/* Each pixel's place in the canvas, as draw_bg found it while cv_capture
+   is set (the presentation's records, ppu_mode7): its character's index
+   in the canvas plus 1 (0: its tile is VRAM's), the pixel in the 8 x 8
+   character (flipped), the flips (bit 0 H, bit 1 V), palette and
+   priority. */
+typedef struct {
+    uint16_t ci1;
+    uint8_t px, py, flip, pal, prio;
+} CvAt;
+static int cv_capture;
+static CvAt cv_at[PPU_EXT_WIDTH];
+
+/* the canvas's character for char address ca of layer n at bpp, or -1:
+   d_frame's canvas covers the layer's characters whose data starts in its
+   range (n of them at the layer's colour depth) */
+static long cv_char(int n, unsigned ca, unsigned bpp)
+{
+    unsigned wpc = bpp * 4u;
+    long rel;
+    if (!d_frame || !d_frame->cv_on || d_frame->cv_layer != n)
+        return -1;
+    rel = (long)(ca & 0x7FFFu) - (long)d_frame->cv_addr;
+    if (rel < 0 || rel % (long)wpc || (unsigned long)(rel / (long)wpc) >= d_frame->cv_count)
+        return -1;
+    return rel / (long)wpc;
+}
+
+/* the canvas's texel for a console pixel's centre: character ci, its pixel
+   (px, py) in the character, the flips (bit 0 H, bit 1 V); the texel at the
+   pixel's centre (k / 2 across and down, mirrored where flipped: rr_mode7.h
+   rr_cv_q at the centre) */
+static unsigned cv_centre(const PpuFrame *f, long ci, unsigned px, unsigned py, unsigned flip)
+{
+    unsigned k = (unsigned)f->cv_k, sx = k >> 1, sy = k >> 1;
+    size_t i;
+    if (flip & 1)
+        sx = k - 1 - sx;
+    if (flip & 2)
+        sy = k - 1 - sy;
+    i = (size_t)ci * 64u * k * k + ((size_t)py * k + sy) * 8u * k + (size_t)px * k + sx;
+    return i < f->cv_len ? f->cv[i] : 0u;
+}
+
 /* x rounded down to a multiple of m (mosaic blocks counted from the
    hardware's column 0, either way) */
 static int floor_to(int x, int m) { return x - (((x % m) + m) % m); }
@@ -913,8 +1034,28 @@ static void draw_bg(int n, unsigned line, unsigned mode)
         if (px >= 8) ch += 1;
         if (py >= 8) ch += 16;
         ca = (uint16_t)(nba + (ch & 0x3FF) * (bpp * 4));
-        c = tile_pixel(ca, py & 7, px & 7, bpp);
         pal = (uint8_t)((e >> 10) & 7);
+        {
+            /* a character the canvas covers (not on a hires line, not
+               under mosaic): its texel at the pixel's centre */
+            long ci = hires || msize > 1 ? -1 : cv_char(n, ca, bpp);
+            unsigned flip = (e & 0x4000 ? 1u : 0u) | (e & 0x8000 ? 2u : 0u);
+            if (ci >= 0) {
+                c = cv_centre(d_frame, ci, px & 7, py & 7, flip) & ((1u << bpp) - 1u);
+                if (cv_capture) {
+                    cv_at[x].ci1 = (uint16_t)(ci + 1);
+                    cv_at[x].px = (uint8_t)(px & 7);
+                    cv_at[x].py = (uint8_t)(py & 7);
+                    cv_at[x].flip = (uint8_t)flip;
+                    cv_at[x].pal = pal;
+                    cv_at[x].prio = (uint8_t)((e >> 13) & 1);
+                }
+            } else {
+                c = tile_pixel(ca, py & 7, px & 7, bpp);
+                if (cv_capture && x < PPU_EXT_WIDTH)
+                    cv_at[x].ci1 = 0;
+            }
+        }
         lp[x].opaque = c != 0;
         lp[x].prio = (uint8_t)((e >> 13) & 1);
         if (!c)
@@ -1344,6 +1485,7 @@ static void take_version(void)
 static void record_line(unsigned line)
 {
     if (line == 1) {
+        cv_take();
         making->versions = 0;
         making->hires = 0;
         dirty = 1;
@@ -1440,7 +1582,9 @@ void ppu_render_line(unsigned line)
         d_field = making->field;
         d_vram = vram;
         d_oam = live_oam();
+        d_frame = making;
         draw_recorded(making, line, &picture[(line - 1) * 2 * sw], 2 * sw);
+        d_frame = NULL;
     }
     /* the vertical mosaic: the line the next lines repeat moves on every
        `size` lines */
@@ -1457,6 +1601,7 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
     uint8_t ro = range_over, to = time_over;
     sw = f->width;
     d_field = f->field;
+    d_frame = f;
     sl = (f->width - PPU_WIDTH) / 2;
     for (r = 0; r < f->screen_height; r++) {
         int line = r - top + 1;
@@ -1484,6 +1629,7 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
     /* the sprite flags are the console's, not this drawing's */
     range_over = ro;
     time_over = to;
+    d_frame = NULL;
     mosaic_y = keep;
     s = keep_s;
     sw = keep_sw;
@@ -1723,17 +1869,56 @@ static int pres_is_m7(const PpuScreen *st)
            (((st->tm | st->ts) & 1) || ((st->setini & 0x40) && ((st->tm | st->ts) & 2)));
 }
 
+/* whether a line's state shows frame f's canvas: its layer a background
+   of the mode, shown, not on a hires line nor under mosaic */
+static int pres_is_cv(const PpuFrame *f, const PpuScreen *st)
+{
+    unsigned mode = st->bgmode & 7;
+    int n = f->cv_layer;
+    if (!f->cv_on || (st->inidisp & 0x80) || mode == 7 || !mode_bpp[mode][n] || !(((st->tm | st->ts) >> n) & 1))
+        return 0;
+    return !ppu_line_hires(st) && !((st->mosaic & (1u << n)) && (st->mosaic >> 4));
+}
+
 int ppu_frame_mode7(const PpuFrame *f)
 {
     int line, k;
     for (line = 1; line <= f->height; line++) {
-        if (pres_is_m7(&f->line[line]))
+        if (pres_is_m7(&f->line[line]) || pres_is_cv(f, &f->line[line]))
             return 1;
         for (k = 0; k < f->segs[line]; k++)
-            if (pres_is_m7(&f->seg_line[line][k]))
+            if (pres_is_m7(&f->seg_line[line][k]) || pres_is_cv(f, &f->seg_line[line][k]))
                 return 1;
     }
     return 0;
+}
+
+/* whether background n may show on a screen at column x (its enable bit
+   and windows: put_layer's) */
+static int cv_may(int n, int x, int sub)
+{
+    unsigned on = sub ? s->ts : s->tm, wn = sub ? s->tsw : s->tmw;
+    int inside;
+    if (!(on >> n & 1))
+        return 0;
+    inside = ((s->tmw | s->tsw) >> n & 1) ? win_mask(layer_sel(n), layer_logic(n), x - sl) : 0;
+    return !(inside && (wn >> n & 1));
+}
+
+/* background n's depth for priority bit prio in the state's mode
+   (draw_line's tables) */
+static unsigned cv_depth(int n, unsigned prio)
+{
+    static const uint8_t z0[4][2] = { { 8, 11 }, { 7, 10 }, { 2, 5 }, { 1, 4 } };
+    static const uint8_t z1[3][2] = { { 6, 9 }, { 5, 8 }, { 1, 3 } };
+    static const uint8_t z1p[3][2] = { { 6, 9 }, { 5, 8 }, { 1, 11 } };
+    static const uint8_t z2[2][2] = { { 3, 7 }, { 1, 5 } };
+    unsigned mode = s->bgmode & 7;
+    if (mode == 0)
+        return z0[n][prio];
+    if (mode == 1)
+        return (s->bgmode & 0x08) ? z1p[n][prio] : z1[n][prio];
+    return z2[n][prio];
 }
 
 /* a screen's pixel with the sprites' over the backdrop (put_obj's rule) */
@@ -1812,6 +1997,24 @@ static int m7_state(RrMode7 *m, const PpuScreen *st, const uint16_t *pal, const 
     return m->segs++;
 }
 
+/* a canvas line's state, its palette, as an entry of the segment table */
+static int cv_state(RrMode7 *m, const PpuScreen *st, const uint16_t *pal, int n)
+{
+    RrM7Seg *g = &m7_seg[m->segs];
+    unsigned mode = st->bgmode & 7;
+    int pi = m->pals - 1;
+    if (pi < 0 || memcmp(m7_pal[pi], pal, sizeof m7_pal[pi])) {
+        pi = m->pals++;
+        memcpy(m7_pal[pi], pal, sizeof m7_pal[pi]);
+    }
+    memset(g, 0, sizeof *g);
+    g->s[4] = (int32_t)((uint32_t)(st->cgwsel & 1) << 8 | (uint32_t)st->cgadsub << 16 | (uint32_t)st->cgwsel << 24);
+    g->s[5] = (int32_t)((uint32_t)(st->fixed_r | st->fixed_g << 5 | st->fixed_b << 10) | (uint32_t)(st->inidisp & 0x0F) << 16);
+    g->s[6] = pi;
+    g->s[7] = (int32_t)((uint32_t)mode_bpp[mode][n] | mode << 8);
+    return m->segs++;
+}
+
 /* Mode 7 layer n's pixel byte at console column x under mosaic: its
    block's (draw_m7's sample) */
 static unsigned m7_mosaic_texel(int n, int x, unsigned mosaic_row, const uint16_t *vp)
@@ -1831,6 +2034,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
 {
     int pw = ppu_frame_width(f), ph = f->screen_height, cpp = pw / f->width, top = (ph - f->height) / 2, r;
     int keep_sw = sw, keep_sl = sl, keep_row = draw_row;
+    unsigned keep_my = mosaic_y;
     const PpuScreen *keep_s = s;
     uint8_t ro = range_over, to = time_over;
     size_t need = (size_t)pw * (size_t)ph;
@@ -1871,6 +2075,58 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
             if (x1 > sw) x1 = sw;
             if (x0 >= x1)
                 continue;
+            if (pres_is_cv(f, st)) {
+                /* the canvas's layer: the screens drawn without it, then its
+                   characters' place in the canvas */
+                static uint32_t scratch[2 * PPU_EXT_WIDTH];
+                PpuScreen without = *st;
+                int cn = f->cv_layer;
+                unsigned mode = st->bgmode & 7;
+                without.tm = (uint8_t)(without.tm & ~(1u << cn));
+                without.ts = (uint8_t)(without.ts & ~(1u << cn));
+                g = cv_state(m, st, pal, cn);
+                s = &without;
+                d_cgram = pal;
+                d_oam = oamv;
+                d_vram = vr;
+                draw_row = line - 1;
+                mosaic_y = mosaic;
+                draw_line((unsigned)edge, scratch, sw);
+                s = st;
+                d_vram = vr + ((unsigned)s->page[cn] << 15);
+                d_frame = f;
+                cv_capture = 1;
+                draw_bg(cn, (unsigned)edge, mode);
+                cv_capture = 0;
+                d_frame = NULL;
+                for (x = x0; x < x1; x++) {
+                    const CvAt *a = &cv_at[x];
+                    unsigned flags = RR_CV;
+                    int cw;
+                    if (!a->ci1) {
+                        for (i = x * cpp; i < (x + 1) * cpp; i++)
+                            row[i].w2 = RR_M7_NOT;
+                        continue;
+                    }
+                    m7_row[r] = 1;
+                    cw = win_mask(layer_sel(5), layer_logic(5), x - sl);
+                    if (cv_may(cn, x, 0)) flags |= RR_M7_BG1_MAIN;
+                    if (cv_may(cn, x, 1)) flags |= RR_M7_BG1_SUB;
+                    if (region(s->cgwsel >> 6, cw)) flags |= RR_M7_CLIP;
+                    if (region(s->cgwsel >> 4, cw)) flags |= RR_M7_PREVENT;
+                    for (i = x * cpp; i < (x + 1) * cpp; i++) {
+                        RrM7Px *q = &row[i];
+                        q->w0 = (uint32_t)main_px[x].color | (uint32_t)sub_px[x].color << 16;
+                        q->w1 = (uint32_t)main_px[x].z | (uint32_t)sub_px[x].z << 8 | (uint32_t)main_px[x].layer << 16 |
+                                (uint32_t)sub_px[x].layer << 24;
+                        q->w2 = flags | (uint32_t)g << 16;
+                        q->w3 = (uint32_t)(a->ci1 - 1) | (uint32_t)a->px << 14 | (uint32_t)a->py << 17 |
+                                (uint32_t)(a->flip & 3) << 20 | (uint32_t)a->pal << 22 | cv_depth(cn, a->prio) << 25 |
+                                (uint32_t)cn << 29;
+                    }
+                }
+                continue;
+            }
             if (!pres_is_m7(st)) {
                 for (i = x0 * cpp; i < x1 * cpp; i++)
                     row[i].w2 = RR_M7_NOT;
@@ -1928,6 +2184,10 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     }
     m->plane = m7_plane;
     m->plane_gen = m7_plane_gen;
+    m->cv = f->cv_on ? f->cv : NULL;
+    m->cv_len = f->cv_on ? f->cv_len : 0;
+    m->cv_k = f->cv_on ? f->cv_k : 1;
+    mosaic_y = keep_my;
     range_over = ro;
     time_over = to;
     s = keep_s;

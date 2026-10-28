@@ -62,6 +62,16 @@ typedef struct {
     uint16_t seg_x[PPU_MAX_HEIGHT + 1][PPU_SEGS];
     PpuScreen seg_line[PPU_MAX_HEIGHT + 1][PPU_SEGS];
     uint16_t seg_palette[PPU_MAX_HEIGHT + 1][PPU_SEGS][256];
+    /* the canvas the frame shows (nshvc_ext_canvas_chars), as it stood
+       when the frame began: its layer, the VRAM word address its first
+       character's data starts at, its characters, the texels a console
+       pixel spans along each axis (k), and the texels, each character 8k x
+       8k of them, row by row (cv_len bytes); cv_on 0: none */
+    int cv_on, cv_layer, cv_k;
+    unsigned cv_addr, cv_count;
+    size_t cv_len;
+    const uint8_t *cv;
+    uint32_t cv_gen;
 } PpuFrame;
 
 /* A line's screen state packed for the GPU compositor: PPU_LINE_WORDS
@@ -132,6 +142,11 @@ void ppu_ext_vram(int kb);
 void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
 void ppu_ext_vram_copy(int to_page, int from_page);
+void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
+/* the texels a console pixel spans along each axis at the window's size
+   now (nshvc_ext_canvas_scale): the front end sets it as it presents */
+void ppu_set_canvas_scale(int k);
+int ppu_canvas_scale(void);
 void ppu_ext_vram_direct(int page);
 /* the page the data port's writes go to directly (nshvc_ext_vram_direct),
    or -1 */

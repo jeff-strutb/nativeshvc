@@ -35,6 +35,18 @@
  * then each picture pixel's colour so filtered blended with sharp
  * bilinear across the picture's pixels, as the pixel art is.
  *
+ * A layer's canvas (nshvc_ext_canvas_chars, an extension) is presented the
+ * same way: the PPU gives each picture pixel whose tile the canvas covers
+ * the screens without that layer (the other layers', the sprites' and the
+ * backdrop's pixel, with their depths), whether the layer may show on each
+ * screen, the colour window's regions, and the pixel's place in the canvas
+ * (its character, its pixel in it, the flips, palette and the layer's
+ * depth there: all the console pixel's, as a background's scroll is whole
+ * pixels). At an output pixel the canvas's texel under its centre (k
+ * texels a console pixel along each axis, one sample: the canvas is the
+ * window's resolution) is composed by the console's rules for that pixel
+ * (rr_cv_q).
+ *
  * All of it in 32-bit integers (but the blends, rr_size.h rr_mix): a
  * position is a pixel centre's from tables the CPU computes exactly plus a
  * sample's own offset (rr_m7_tables), the footprint and the edges'
@@ -60,13 +72,17 @@
 #define RR_M7_PREVENT  0x0100u  /* inside its prevent region */
 #define RR_M7_BG1_FIX  0x0200u  /* BG1 under mosaic: its block's texel, fix 0 */
 #define RR_M7_BG2_FIX  0x0400u
+#define RR_CV          0x0800u  /* a canvas pixel (BG1_MAIN, _SUB: its layer may show; w3 its place) */
 
 /* A picture pixel, four words (a GPU's uint4):
      w0  main colour | sub colour << 16 (15-bit BGR, without Mode 7)
      w1  main depth | sub depth << 8 | main layer << 16 | sub layer << 24
          (ppu.c Pixel: 4 or 6 sprites, 5 the backdrop)
      w2  flags (RR_M7_*) | segment << 16
-     w3  BG1's fixed texel | BG2's << 8 (the pixel byte, RR_M7_*_FIX) */
+     w3  BG1's fixed texel | BG2's << 8 (the pixel byte, RR_M7_*_FIX); a
+         canvas pixel (RR_CV): its character in the canvas (14 bits) | the
+         pixel in it, x << 14, y << 17 | the flips, H << 20, V << 21 | its
+         palette << 22 | the layer's depth << 25 (4 bits) | the layer << 29 */
 typedef struct {
     uint32_t w0, w1, w2, w3;
 } RrM7Px;
@@ -78,7 +94,7 @@ typedef struct {
      s4      M7SEL | direct colour << 8 | CGADSUB << 16 | CGWSEL << 24
      s5      the fixed colour | brightness << 16 | VRAM (its index) << 24
      s6      the palette's index
-     s7      0 */
+     s7      0; a canvas line's: the layer's bits a pixel | the mode << 8 */
 typedef struct {
     int32_t s[8];
 } RrM7Seg;
@@ -104,6 +120,9 @@ typedef struct RrMode7 {
     int vrams;
     const uint8_t *plane;
     uint32_t plane_gen;
+    const uint8_t *cv;        /* the canvas's texels (PpuFrame cv), cv_len of them, cv_k a console pixel */
+    size_t cv_len;
+    int cv_k;
 } RrMode7;
 
 static inline int64_t rr_m7_floordiv(int64_t a, int64_t b)
@@ -326,6 +345,66 @@ static inline uint32_t rr_m7_compose(const RrMode7 *m, const RrM7Px *p, const Rr
     return rr_m7_finish(mc, ml, sc, sl, flags, adsub, wsel, fixed, bright);
 }
 
+/* direct colour: a pixel byte and its tile's palette bits (ppu.c direct_color) */
+static inline uint16_t rr_cv_direct(unsigned c, unsigned pal)
+{
+    unsigned r = (c & 7u) << 2 | (pal & 1u) << 1, g = (c & 0x38u) >> 1 | (pal & 2u), b = (c & 0xC0u) >> 3 | (pal & 4u);
+    return (uint16_t)(r | g << 5 | b << 10);
+}
+
+/* A canvas pixel's colour with the canvas's texel pix: its layer's colour
+   by its colour depth (ppu.c draw_bg), at the layer's depth on each screen
+   it may show on, then the console's rules (finish) */
+static inline uint32_t rr_cv_compose(const RrMode7 *m, const RrM7Px *p, const RrM7Seg *g, unsigned pix)
+{
+    unsigned flags = p->w2 & 0xFFFFu, w3 = p->w3;
+    unsigned mc = p->w0 & 0xFFFF, sc = p->w0 >> 16, mz = p->w1 & 0xFF, sz = (p->w1 >> 8) & 0xFF;
+    unsigned ml = (p->w1 >> 16) & 0xFF, sl = p->w1 >> 24;
+    unsigned adsub = ((unsigned)g->s[4] >> 16) & 0xFF, wsel = (unsigned)g->s[4] >> 24;
+    unsigned fixed = (unsigned)g->s[5] & 0xFFFF, bright = ((unsigned)g->s[5] >> 16) & 0xFF;
+    unsigned bpp = (unsigned)g->s[7] & 0xFF, mode = ((unsigned)g->s[7] >> 8) & 7;
+    unsigned pal = (w3 >> 22) & 7, z = (w3 >> 25) & 15, n = w3 >> 29;
+    const uint16_t *cg = m->pal + (size_t)g->s[6] * 256u;
+    pix &= (1u << bpp) - 1u;
+    if (pix) {
+        unsigned col;
+        if (bpp == 8)
+            col = (g->s[4] >> 8 & 1) ? rr_cv_direct(pix, pal) : cg[pix];
+        else if (bpp == 4)
+            col = cg[pal * 16 + pix];
+        else
+            col = cg[(mode == 0 ? n * 32 : 0) + pal * 4 + pix];
+        if ((flags & RR_M7_BG1_MAIN) && z > mz)
+            mc = col, mz = z, ml = n;
+        if ((flags & RR_M7_BG1_SUB) && z > sz)
+            sc = col, sz = z, sl = n;
+    }
+    return rr_m7_finish(mc, ml, sc, sl, flags, adsub, wsel, fixed, bright);
+}
+
+/* Canvas pixel (i, r) over the output pixel whose centre is at screen
+   column u and picture row v (1/1024ths, rr_m7_tables): the canvas's texel
+   under the centre. The centre's place in the console pixel, 0 to 1023
+   across and down, picks one of the pixel's k x k texels (mirrored where
+   the tile is flipped); the console pixel's own centre the texel k / 2
+   across and down (ppu.c cv_centre). */
+static inline uint32_t rr_cv_q(const RrMode7 *m, const RrM7Px *p, const RrM7Seg *g, int i, int r, int32_t u, int32_t v)
+{
+    unsigned w3 = p->w3, k = (unsigned)m->cv_k, sx, sy;
+    int32_t h = i / m->cpp - m->left, fu = u - 1024 * h + 512, fv = v - 1024 * r + 512;
+    size_t at;
+    fu = fu < 0 ? 0 : fu > 1023 ? 1023 : fu;
+    fv = fv < 0 ? 0 : fv > 1023 ? 1023 : fv;
+    sx = ((unsigned)fu * k) >> 10;
+    sy = ((unsigned)fv * k) >> 10;
+    if (w3 >> 20 & 1)
+        sx = k - 1 - sx;
+    if (w3 >> 21 & 1)
+        sy = k - 1 - sy;
+    at = (size_t)(w3 & 0x3FFF) * 64u * k * k + ((size_t)(w3 >> 17 & 7) * k + sy) * 8u * k + (size_t)(w3 >> 14 & 7) * k + sx;
+    return rr_cv_compose(m, p, g, at < m->cv_len ? m->cv[at] : 0u);
+}
+
 /* The weight (1/256ths) of the next texel along an axis: f the position
    past the texel's centre (1/256 texel, 0-255), the output pixel's
    footprint along the axis the parallelogram of spans sa and sb (1/256
@@ -380,6 +459,8 @@ static inline uint32_t rr_m7_q(const RrMode7 *m, const RrM7Samples *s, int i, in
     if (flags & RR_M7_BLACK)
         return 0xFF000000u;
     g = &m->seg[p->w2 >> 16];
+    if (flags & RR_CV)
+        return rr_cv_q(m, p, g, i, r, u, v);
     if (!(flags & (RR_M7_BG1_MAIN | RR_M7_BG1_SUB | RR_M7_BG2_MAIN | RR_M7_BG2_SUB)) ||
         (flags & (RR_M7_BG1_FIX | RR_M7_BG2_FIX)) == (RR_M7_BG1_FIX | RR_M7_BG2_FIX))
         return rr_m7_compose(m, p, g, 0);    /* no texel of the plane shows here */

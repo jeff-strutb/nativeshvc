@@ -53,6 +53,11 @@ void nshvc_ext_vram_page(int page) { ppu_ext_vram_page(page); }
 void nshvc_ext_layer_page(int layer, int page) { ppu_ext_layer_page(layer, page); }
 void nshvc_ext_vram_copy(int to_page, int from_page) { ppu_ext_vram_copy(to_page, from_page); }
 void nshvc_ext_vram_direct(int page) { ppu_ext_vram_direct(page); }
+int nshvc_ext_canvas_scale(void) { return ppu_canvas_scale(); }
+void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
+{
+    ppu_ext_canvas_chars(layer, word_addr, count, texels, k);
+}
 
 void nshvc_fatal(const char *fmt, ...)
 {
@@ -414,6 +419,16 @@ int console_picture_at(float x, float y, int *dot, int *line)
    shape of pixel; a frame with Mode 7 presented by its record (rr_mode7:
    the plane at the window's pixels, anti-aliased by each pixel's
    footprint on it) */
+/* the canvas's texels a console pixel along each axis for a picture shown
+   w x h: the window's pixels a console pixel, rounded up (so a canvas at
+   that scale has at least a texel a window pixel) */
+static void canvas_scale(int w, int h)
+{
+    const PpuFrame *f = ppu_frame();
+    int kx = (w + f->width - 1) / f->width, ky = (h + f->screen_height - 1) / f->screen_height;
+    ppu_set_canvas_scale(kx > ky ? kx : ky);
+}
+
 static void show(void)
 {
     int tw, th, w, h, d[4];
@@ -437,6 +452,7 @@ static void show(void)
     d[3] = d[1] + h;
     memcpy(shown_at, d, sizeof shown_at);
     shown_tw = tw;
+    canvas_scale(w, h);
     rr_begin(0xFF000000u);
     {
         int pw, ph;
@@ -489,6 +505,7 @@ static void rr_check(void)
     d[1] = 0;
     d[2] = tw;
     d[3] = th;
+    canvas_scale(tw, th);
     rr_begin(0xFF000000u);
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;

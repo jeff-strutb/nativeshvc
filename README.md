@@ -95,6 +95,7 @@ what its Enhanced mode does.
 | sprites past the console's coordinates | sprite X and Y extension bits | `nshvc_ext_sprite_x`, `_y` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
+| a picture at the window's resolution | a canvas: a background's characters drawn from the game's own texels at the window's resolution (its pixels a console pixel), placed by the console's own rules | `nshvc_ext_canvas_chars`, `_canvas_scale` |
 | an app's own work in the game's machine | interrupts held | `nshvc_hold_interrupts` |
 
 They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions). The front end
@@ -255,8 +256,8 @@ it into the connector (`cart.h`).
 
 ## Status
 
-Version 2.3.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.3: behaviour exact, each
+Version 2.4.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.4: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -521,8 +522,13 @@ each texel's edge is covered exactly (the part of the pixel past the edge, sharp
 on the plane); where it is minified, toward the horizon, it is supersampled, 4, 8 or 16
 samples by how many texels the pixel spans. Sprites, the other backgrounds and the windows
 stay the console pixel's, and nothing filters the frame after it is drawn. A cartridge
-chip's 3D reaches the PPU as tiles already drawn, so it is shown as pixel art; the chip's
-own C would draw it finer. One definition in C ([`rr_mode7.h`](src/render/rr_mode7.h)) is
+chip's 3D reaches the PPU as tiles already drawn, so it is shown as pixel art. An Enhanced
+mode can draw it finer with a canvas (`nshvc_ext_canvas_chars`, an extension): the game
+hands the characters it would upload as texels at the window's resolution (the window's
+pixels a console pixel, `nshvc_ext_canvas_scale`), drawn by its own code at whatever
+internal resolution it likes, and the console places them by the layer's own rules (map,
+scroll, flips, priority, windows, colour maths), the window pixel in each console pixel
+taking the texel under it. One definition in C ([`rr_mode7.h`](src/render/rr_mode7.h)) is
 the software backend's drawing and what the GPU backends' shaders compute, in integers but
 the blends, so every backend takes the same texels; each backend's output is checked
 against it. The backends also draw a port's overlays.

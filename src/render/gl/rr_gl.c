@@ -69,7 +69,7 @@ static const char *k_over =
 #include "rr_m7_glsl.h"
 
 static GLuint s_copy, s_sharp, s_over, s_m7, s_otex, s_vao, s_vbo, s_fbo, s_col, s_pic;
-static GLuint s_m7buf[7], s_m7tex[7], s_plane;
+static GLuint s_m7buf[8], s_m7tex[8], s_plane;
 static uint32_t s_plane_gen;
 static int s_planes, s_plane_layers;
 static int s_pw, s_ph;
@@ -146,13 +146,13 @@ int rr_open(void)
     if (!s_copy || !s_sharp || !s_over || !s_m7)
         return 0;
     {
-        static const char *names[8] = { "Pb", "Sb", "palb", "vramb", "picb", "colsb", "rowsb", "planet" };
+        static const char *names[9] = { "Pb", "Sb", "palb", "vramb", "picb", "colsb", "rowsb", "planet", "cvb" };
         int i;
         glUseProgram(s_m7);
-        glGenBuffers(7, s_m7buf);
-        glGenTextures(7, s_m7tex);
+        glGenBuffers(8, s_m7buf);
+        glGenTextures(8, s_m7tex);
         glGenTextures(1, &s_plane);
-        for (i = 0; i < 8; i++)
+        for (i = 0; i < 9; i++)
             glUniform1i(glGetUniformLocation(s_m7, names[i]), i + 1);
     }
     glGenTextures(1, &s_otex);
@@ -251,6 +251,7 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
 {
     static const GLenum fmt[7] = { GL_RGBA32UI, GL_R32I, GL_R16UI, GL_R16UI, GL_R32UI, GL_R32I, GL_R32I };
+    static const uint8_t none = 0;
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     int ow = d[2] - d[0], oh = d[3] - d[1], i, du[28], dv[28];
     size_t np = (size_t)m->pw * (size_t)m->ph;
@@ -301,6 +302,13 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         s_plane_gen = m->plane_gen;
         s_planes = m->vrams;
     }
+    /* the canvas's texels (a byte where there is none), on unit 9 */
+    glBindBuffer(GL_TEXTURE_BUFFER, s_m7buf[7]);
+    glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(m->cv && m->cv_len ? m->cv_len : 1),
+                 m->cv && m->cv_len ? (const void *)m->cv : &none, GL_STREAM_DRAW);
+    glActiveTexture(GL_TEXTURE0 + 9);
+    glBindTexture(GL_TEXTURE_BUFFER, s_m7tex[7]);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, s_m7buf[7]);
     /* the supersamples' offsets: 4 from 0, 8 from 4, 16 from 12 */
     memcpy(du, s->du4, sizeof s->du4);
     memcpy(du + 4, s->du8, sizeof s->du8);
@@ -315,6 +323,10 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
     glUniform1i(glGetUniformLocation(s_m7, "U_step_u"), s->step_u);
     glUniform1i(glGetUniformLocation(s_m7, "U_step_v"), s->step_v);
     glUniform1i(glGetUniformLocation(s_m7, "U_rh"), s_rh);
+    glUniform1i(glGetUniformLocation(s_m7, "U_cpp"), m->cpp);
+    glUniform1i(glGetUniformLocation(s_m7, "U_left"), m->left);
+    glUniform1i(glGetUniformLocation(s_m7, "U_cvk"), m->cv_k);
+    glUniform1i(glGetUniformLocation(s_m7, "U_cvlen"), (int)m->cv_len);
     glUniform1iv(glGetUniformLocation(s_m7, "U_du_"), 28, du);
     glUniform1iv(glGetUniformLocation(s_m7, "U_dv_"), 28, dv);
     for (i = 0; i < 6; i++) {

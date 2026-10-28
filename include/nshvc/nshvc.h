@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 3
+#define NSHVC_VERSION_MINOR 4
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -367,6 +367,27 @@ void nshvc_ext_layer_page(int layer, int page);
    a layer is switched to it. (Since 2.3.) */
 void nshvc_ext_vram_copy(int to_page, int from_page);
 void nshvc_ext_vram_direct(int page);
+/* A canvas: a background's characters drawn at the window's resolution
+   from the game's own texels (an Enhanced mode's picture, which no
+   original drew: a 3D scene at the window's resolution in a layer's
+   place). It stands in for layer's (0-3, BG1-4) characters whose data
+   starts in VRAM at word word_addr, count of them at the layer's colour
+   depth (an 8 bpp character 32 words, 4 bpp 16, 2 bpp 8), in the layer's
+   VRAM page: wherever the layer's map names one, the console places it by
+   its own rules (map, scroll, flips, priority, palette, windows, colour
+   maths, brightness) and draws the window's pixels in it from texels, k a
+   console pixel along each axis: each character 8k x 8k texels, row by
+   row, the characters one after the other; a texel is a pixel value as a
+   tile's (0 transparent; 4 bpp with the tile's palette, and so on).
+   nshvc_ext_canvas_scale: k for the window as it is now (its pixels a
+   console pixel, rounded up), the k to draw at. The canvas is copied, and
+   a frame shows the canvas as it stands when the frame begins; a line in a
+   hires mode, or the layer under mosaic, shows the layer's own tiles.
+   texels NULL (or count 0): no canvas. The console's picture (nshvc_picture)
+   takes each console pixel's centre texel. One canvas at a time. (Since
+   2.4.) */
+int nshvc_ext_canvas_scale(void);
+void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
    BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the

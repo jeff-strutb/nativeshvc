@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.3); this page describes the interface
+[the game contract](contract.md) (2.4); this page describes the interface
 around it.
 
 ## What it is
@@ -123,6 +123,7 @@ Each is off by default.
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
 | `nshvc_ext_vram_copy(to, from)`, `_vram_direct(page)` | pages 1-3 written outside the console's bus and time, at any moment, as a board whose extra VRAM is the cartridge's too: a whole page copied, or the data port's writes (by the S-CPU or a DMA) landing in a page at once, while lines are drawn too, a DMA of only those taking no time. Page 0 is the console's, written only through the bus. A change to a page a layer reads shows from the next line drawn; one to a page no layer reads, from when a layer is switched to it (so a game builds its next screen in a page not shown, and switches) |
+| `nshvc_ext_canvas_chars(layer, word_addr, count, texels, k)`, `_canvas_scale()` | a canvas: layer's (BG1-4) characters whose data starts in VRAM at word_addr, count of them at the layer's colour depth, drawn from the game's texels, k a console pixel along each axis (each character 8k x 8k, a texel a pixel value as a tile's, 0 transparent). Wherever the layer's map names one, the console places it by its own rules (map, scroll, flips, priority, palette, windows, colour maths, brightness), and at the window's resolution each window pixel takes the texel under its centre in its console pixel; the console's own picture takes each pixel's centre texel. `_canvas_scale`: the k for the window now (its pixels a console pixel, rounded up). A frame shows the canvas as it stood when the frame began; a hires line or the layer under mosaic shows its tiles. NULL turns it off |
 | `nshvc_hold_interrupts` | no interrupt taken while held (an app's own work in the game's machine, from the frame hook); the console's time does not pass there, so a wait while held is a fatal error |
 
 The game owns what shows past the console's screen: sprites it hides off the
