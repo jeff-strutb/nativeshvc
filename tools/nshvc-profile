@@ -41,7 +41,7 @@ program with too few jobs for a fit of its own.
 Needs NSHVC_ORACLE_CORE (the pinned reference core, tests/README.md);
 NSHVC_ORACLE the oracle (default build/null/tests/oracle).
 """
-import argparse, concurrent.futures, hashlib, os, shlex, subprocess, sys, tempfile
+import argparse, concurrent.futures, hashlib, itertools, os, shlex, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL_VERSION = "1.0"
@@ -86,45 +86,51 @@ def run_reference(rom, frames, play, outdir):
 
 # ---- the fit ---------------------------------------------------------------------------
 
-def nnls(A, b):
-    """min |Ax - b| for x >= 0 (Lawson and Hanson's active set), from the normal
-       equations A (n x n, A'A) and b (A'y)"""
-    n = len(b)
-    x = [0.0] * n
-    passive = set()
-
-    def solve(idx):
-        m = len(idx)
-        M = [[A[i][j] for j in idx] + [b[i]] for i in idx]
-        for c in range(m):
-            p = max(range(c, m), key=lambda r: abs(M[r][c]))
-            M[c], M[p] = M[p], M[c]
-            if abs(M[c][c]) < 1e-12:
-                continue
-            for r in range(m):
-                if r != c:
-                    k = M[r][c] / M[c][c]
-                    M[r] = [u - k * v for u, v in zip(M[r], M[c])]
-        z = [0.0] * n
-        for c, i in enumerate(idx):
-            z[i] = M[c][m] / M[c][c] if abs(M[c][c]) > 1e-12 else 0.0
-        return z
-
-    for _ in range(10 * n + 10):
-        grad = [b[i] - sum(A[i][j] * x[j] for j in range(n)) for i in range(n)]
-        cand = [i for i in range(n) if i not in passive and grad[i] > 1e-9]
-        if not cand:
-            break
-        passive.add(max(cand, key=lambda i: grad[i]))
-        while True:
-            z = solve(sorted(passive))
-            if all(z[i] > 0 for i in passive):
-                x = z
-                break
-            alpha = min(x[i] / (x[i] - z[i]) for i in passive if z[i] <= 0)
-            x = [x[i] + alpha * (z[i] - x[i]) for i in range(n)]
-            passive = {i for i in passive if x[i] > 1e-12}
+def subset_ls(A, b, idx):
+    """least squares on the unknowns in idx alone, from the normal equations;
+       None when they do not fix one answer (columns that move together)"""
+    m = len(idx)
+    M = [[A[i][j] for j in idx] + [b[i]] for i in idx]
+    scale = max([abs(A[i][i]) for i in idx] + [1.0])
+    for c in range(m):
+        p = max(range(c, m), key=lambda r: abs(M[r][c]))
+        if abs(M[p][c]) <= 1e-9 * scale:
+            return None
+        M[c], M[p] = M[p], M[c]
+        for r in range(m):
+            if r != c:
+                k = M[r][c] / M[c][c]
+                M[r] = [u - k * v for u, v in zip(M[r], M[c])]
+    x = [0.0] * len(b)
+    for c, i in enumerate(idx):
+        x[i] = M[c][m] / M[c][c]
     return x
+
+
+def fit_exact(A, b, yy):
+    """min |Xw - y| for w >= 0, from the normal equations A (X'X), b (X'y) and
+       yy (y'y), by exact search over which unknowns are non-zero: the least
+       error; among answers with it, the fewest non-zero unknowns; among those,
+       the first in the unknowns' order. One answer, so the profile is
+       reproducible where the data do not fix one (an op whose count never
+       changes is constant work, and goes to the first unknown, a chip's fixed
+       part)."""
+    n = len(b)
+    best, best_sse = [0.0] * n, yy
+    found = [(yy, 0, (), [0.0] * n)]
+    for size in range(1, n + 1):
+        for idx in itertools.combinations(range(n), size):
+            x = subset_ls(A, b, list(idx))
+            if x is None or any(x[i] < 0 for i in idx):
+                continue
+            sse = yy - 2 * sum(x[i] * b[i] for i in range(n)) + \
+                sum(x[i] * A[i][j] * x[j] for i in range(n) for j in range(n))
+            found.append((sse, size, idx, x))
+    least = min(f[0] for f in found)
+    tol = 1e-9 * max(abs(least), abs(yy), 1.0)
+    tied = [f for f in found if f[0] <= least + tol]
+    tied.sort(key=lambda f: (f[1], f[2]))
+    return tied[0][3]
 
 
 def fit_cpu(frames, measured):
@@ -136,9 +142,11 @@ def fit_cpu(frames, measured):
     k8 = range(8)
     A = [[0.0] * 8 for _ in k8]
     b = [0.0] * 8
+    yy = 0.0
     for n, g, bus in rows:
         default = sum(n[k] * DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in k8 if not measured[k])
         y = g - default
+        yy += y * y
         for i in k8:
             if not measured[i]:
                 continue
@@ -146,12 +154,11 @@ def fit_cpu(frames, measured):
             for j in k8:
                 if measured[j]:
                     A[i][j] += n[i] * n[j]
-    for i in k8:
-        if not measured[i]:
-            A[i] = [0.0] * 8
-            A[i][i] = 1.0
-            b[i] = 0.0
-    w = nnls(A, b)
+    idx = [k for k in k8 if measured[k]]
+    sub = fit_exact([[A[i][j] for j in idx] for i in idx], [b[i] for i in idx], yy)
+    w = [0.0] * 8
+    for i, k in enumerate(idx):
+        w[k] = sub[i]
     return [w[k] if measured[k] else DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in k8], rows
 
 
@@ -207,13 +214,15 @@ def fit_program(jobs, nops):
     n = nops + 1
     A = [[0.0] * n for _ in range(n)]
     b = [0.0] * n
+    yy = 0.0
     for clocks, counts in jobs:
         x = [1.0] + counts
+        yy += clocks * clocks
         for i in range(n):
             b[i] += x[i] * clocks
             for j in range(n):
                 A[i][j] += x[i] * x[j]
-    w = nnls(A, b)
+    w = fit_exact(A, b, yy)
     return w[0], w[1:]
 
 

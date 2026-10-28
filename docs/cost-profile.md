@@ -113,7 +113,12 @@ nativeshvc's script language) as an extra span. On each frame the reference reco
 The fit is fixed, with nothing to tune: non-negative least squares on each frame's error in
 clocks (a frame's time is the sum of its costs, so the slowest frames, where slowdown
 shows, weigh most), over the frames whose CPU worked 5% of the frame or more. The report's
-errors are relative. A kind with fewer than 1,000
+errors are relative. The answer is one answer: the tool searches every set of non-zero
+weights exactly, and where the data leave more than one answer with the least error (a count
+that never changes, two that move together), it takes the one with the fewest non-zero
+weights, and among those the first in order (the kinds' order; for a chip, `fixed` first,
+then the ops in theirs). So work that is the same every time goes to the first: a chip's
+fixed part. A kind with fewer than 1,000
 accesses is not measured, and its weight is 0. More than one ROM gives one profile over all
 of them.
 

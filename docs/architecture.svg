@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1196" viewBox="0 0 1200 1196" role="img" aria-label="nativeshvc architecture: a behaviour-exact console, not an emulator: the game's decompiled C as the cartridge, nativeshvc as the console, the host below">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1196" viewBox="0 0 1200 1196" role="img" aria-label="nativeshvc architecture: a behaviour-exact console, not an emulator: the game's decompiled C as the cartridge, each access costing its bus time and its cost profile's weight, nativeshvc as the console, the host below">
 <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1f2328"/></marker></defs>
 <rect x="0.5" y="0.5" width="1199" height="1195" rx="14" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
 <text x="50" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">nativeshvc: a behaviour-exact console a decompiled game plugs into</text>
-<text x="50" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Not an emulator: the processors are the game's C, untimed; everything else is nativeshvc, at the hardware's own time.</text>
+<text x="50" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Not an emulator: the processors are the game's C, each access its bus time; everything else is nativeshvc, at the hardware's time.</text>
 <rect x="30" y="86" width="1140" height="164" rx="12" fill="#fff6e5" stroke="#c27c0e" stroke-width="1.5"/>
 <text x="46" y="108" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">THE CARTRIDGE  ·  the game's decompilation</text>
 <rect x="50" y="118" width="305" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
@@ -17,7 +17,7 @@
 <text x="387" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">Cartridge description</text>
 <text x="387" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">nshvc_cart: title, region, save</text>
 <text x="387" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">mapping: LoROM, HiROM, Ex…, CHIP</text>
-<text x="387" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">RAM and battery</text>
+<text x="387" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">RAM, battery, cost profile</text>
 <text x="387" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">ROM (data pages only, or whole)</text>
 <text x="387" y="226" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">tables: address → routine's C</text>
 <rect x="640" y="118" width="245" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
@@ -33,7 +33,7 @@
 <text x="917" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">spc_wait_until for its waits</text>
 <text x="917" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">picked by what APU RAM holds</text>
 <rect x="30" y="262" width="1140" height="62" rx="12" fill="#f1ecff" stroke="#6f52c9" stroke-width="1.5"/>
-<text x="110" y="282" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">THE GAME CONTRACT 2.0  ·  docs/contract.md</text>
+<text x="110" y="282" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">THE GAME CONTRACT 2.1  ·  docs/contract.md</text>
 <rect x="50" y="292" width="305" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
 <text x="108" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">machine.h  rd8 wr8 waits</text>
 <rect x="375" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
@@ -79,7 +79,7 @@
 <text x="917" y="630" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">32,040 stereo samples a second</text>
 <rect x="50" y="496" width="835" height="50" rx="6" fill="#1d4fa8" stroke="#1d4fa8" stroke-width="1.5"/>
 <text x="62" y="516" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="start">S-CPU BUS  ·  24-bit address space  ·  every access answered as the hardware answers it, at the hardware's time</text>
-<text x="62" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">MASTER CLOCK 21.477 MHz: moves in waits and DMA</text>
+<text x="62" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">MASTER CLOCK 21.477 MHz: each access, waits, DMA</text>
 <circle cx="440" cy="532" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
 <text x="440" y="536.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
 <text x="456" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">H-blank: line drawn, HDMA</text>
@@ -196,8 +196,8 @@
 <circle cx="61" cy="1128" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
 <text x="61" y="1132.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">3</text>
 <text x="80" y="1132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">The game's C runs</text>
-<text x="80" y="1149" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Each of the original's accesses goes through rd8 / wr8, in its order, taking no</text>
-<text x="80" y="1165" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">time; the clock moves in its waits for the hardware and in DMA.</text>
+<text x="80" y="1149" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Each of the original's accesses goes through rd8 / wr8, in its order, costing its</text>
+<text x="80" y="1165" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">bus time and its cost profile's weight; its waits for the hardware are waits.</text>
 <circle cx="621" cy="1008" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
 <text x="621" y="1012.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
 <text x="640" y="1012" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Each line</text>

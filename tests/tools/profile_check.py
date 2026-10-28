@@ -69,6 +69,10 @@ with tempfile.TemporaryDirectory() as d:
         for _ in range(5):
             c = [rng.randrange(1, 50) for _ in ops]
             f.write("job 03C000 %.3f %s\n" % (2.0 * 5 * sum(c), " ".join(map(str, c))))
+        # every job 4 loads: constant work, which the tie-break puts in fixed
+        for _ in range(40):
+            c = [4] + [rng.randrange(0, 300) for _ in ops[1:]]
+            f.write("job 04D000 %.3f %s\n" % (548.0 * 4 + 2.5 * c[1] + 6.0 * c[2] + 1.5 * c[3], " ".join(map(str, c))))
     name, gops, speed, default, crow = P.fit_chip(jobs)
     got = {r[0]: r for r in crow}
     for entry, (fixed, wts) in progs.items():
@@ -76,6 +80,11 @@ with tempfile.TemporaryDirectory() as d:
         ok = r[3] == "fit" and abs(r[1] - fixed) < 1e-3 and all(abs(a - b) < 1e-4 for a, b in zip(r[2], wts))
         check(ok, "program %06X's fixed and weights come back" % entry, (round(r[1], 3), [round(x, 4) for x in r[2]]),
               (fixed, wts))
+    r = got[0x04D000]
+    check(r[3] == "fit" and abs(r[1] - 2192.0) < 1e-3 and abs(r[2][0]) < 1e-9 and
+          all(abs(a - b) < 1e-6 for a, b in zip(r[2][1:], [2.5, 6.0, 1.5])),
+          "a count the same in every job: its work in fixed (the tie-break)", (round(r[1], 3), [round(x, 4) for x in r[2]]),
+          (2192.0, [0.0, 2.5, 6.0, 1.5]))
     r = got[0x03C000]
     check(r[3] == "multiplier" and all(abs(x - 10.0) < 1e-9 for x in r[2]),
           "a program with too few jobs: its multiplier on the speed", [round(x, 4) for x in r[2]], [10.0] * 4)
@@ -104,7 +113,7 @@ with tempfile.TemporaryDirectory() as d:
         want = []
         for k in range(4):
             want += [str(round(true[k] * 10)), str(round(true[4 + k] * 10))]
-        want += ["4", "3", "1A000", "120", str(round(5.25 * 4096))]
+        want += ["4", "4", "1A000", "120", str(round(5.25 * 4096))]
         check(out == want, "the C table carries the weights", out, want)
 
 print("%d check(s) failed" % fails)
