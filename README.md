@@ -12,10 +12,12 @@ code. The game's own decompiled C runs directly on it, natively.
 console does it, at the console's own time: the picture line by line, DMA and HDMA, the
 interrupts, the timers, the sound chip's 32,040 samples a second, held to the reference
 (bsnes) read for read, pixel for pixel and sample for sample. The game's processors are
-its C, and their work takes no time: the C makes every access the original makes, in the
-original's order, and waits where the original waited for the hardware. So the game does
-what it did, and sees and plays what it saw and played; only how long its own processors
-took is not kept (see [Time](#time)).
+its C: it makes every access the original makes, in the original's order, each costing
+what the console's bus takes for it, and waits where the original waited for the hardware.
+So the game does what it did, and sees and plays what it saw and played. How long its
+processors' own work took between accesses is not kept by the C; a game whose behaviour
+depends on it declares a cost profile, measured from its own ROM by the standard
+nativeshvc provides (see [Time](#time)).
 
 **A decompiled game is the cartridge; nativeshvc is the console it plugs into.** A game's
 decompiled C, linked against nativeshvc, builds a native program that powers on, runs the
@@ -47,8 +49,7 @@ It holds to the standard of the decompilations it serves. It runs no emulated CP
 high-level emulation of the game, and has no per-game fixes. It is behaviour exact: the
 game's own C makes every access the original makes, in the original's order, and waits
 where the original waits for the hardware; nativeshvc answers each access as the hardware
-does, and runs the hardware at the hardware's time. The C's own work takes no time (see
-[Time](#time)).
+does, and runs the hardware at the hardware's time (see [Time](#time)).
 
 Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
 console's numbers are its baseline, and a port may opt out of them (see
@@ -129,7 +130,8 @@ game --headless --frames 600 --script steps.txt --out shots --sound out.raw
 A script plays the controllers and records what happens: `wait N`, `hold B+B N`,
 `press B`, `shot NAME` (the frame, as `DIR/NAME.ppm`), `dump NAME` (work RAM, the
 cartridge's RAM, the PPU's memories and a chip's RAM) and `repeat N ... end`; `--sound`
-writes the DSP's raw output.
+writes the DSP's raw output, and `--counts FILE` each frame's S-CPU accesses by kind (the
+cost profile's step 2, [docs/cost-profile.md](docs/cost-profile.md)).
 
 `save NAME` and `load PATH` keep and return to the machine's state. The running C is part
 of the machine and cannot be copied, so the run forks instead: one process holds the state
@@ -166,10 +168,12 @@ it into the connector (`cart.h`).
 
 ## Status
 
-Version 2.0.0. **The standard is finished:** the game contract, what a game writes against
-and what the console promises it, is in [docs/contract.md](docs/contract.md), at 2.0:
-behaviour exact, the processors' work taking no time (see [Time](#time)). A game built
-against it plays on every later 2.x unchanged; only a 3.0 may change it.
+Version 2.1.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.1: behaviour exact, each
+access costing the bus's time and the game's cost profile's weight (see [Time](#time)). A
+game built against it plays on every later 2.x unchanged; only a 3.0 may change it. The
+cost profile's standard is [docs/cost-profile.md](docs/cost-profile.md); its acceptance
+bar is still to be set, once Stunt Race FX's first report has been seen.
 
 **Platform hosts still to come.** These are separate implementations of the host
 interface, outside the standard; a game written against 2.x needs no change for them:
@@ -188,11 +192,12 @@ each one, is in [tests/README.md](tests/README.md).
 - **Test cartridges:** the reference runs each of the 1,164 console test cartridges and
   records every read and write its S-CPU makes, with the clock it makes it at; nativeshvc
   makes the same accesses at the same clocks, so its hardware is held to the reference's
-  to the clock with the reference's own CPU timing. 1,103 match in every read and every
-  picture. The other 61 differ only where contract 2.0 means them to (see Time): 42 read
-  the multiplier or divider while it works (done when read here), and 19 read the sound
-  boot ROM's reply before the reference's SPC700 makes it. Each is listed in
-  `tests/rom/KNOWN`; none differs in a picture.
+  to the clock with the reference's own CPU timing. 1,108 match in every read and every
+  picture. 42 read the multiplier or divider while it works, which the contract makes done
+  when read (see Time). 14 differ by one read of the latched H counter or one pixel,
+  after an access the replay started 2 clocks late because the work RAM's refresh before
+  it ended 2 clocks later than the reference's; why the reference's refresh starts there
+  is not yet known. Each is listed in `tests/rom/KNOWN`.
 - **Cartridges:** LoROM, HiROM, ExLoROM and ExHiROM mappings, including mirroring for ROM
   sizes that are not a power of two, and cartridge RAM; a board its own chip decodes,
   through the cartridge connector; NTSC and PAL frame lengths.
@@ -298,10 +303,12 @@ registers or board, and no list of chips it supports.
 ### Time
 
 Time is the console's master clock (21.477 MHz NTSC). nativeshvc is behaviour exact, not
-cycle exact: the hardware runs at the hardware's time, and the processors' C, the S-CPU's
-and the SPC700's, takes none. Their accesses are made at the clock as it stands. The clock
-moves on where the code waits for the hardware, as on the console it spends that time in a
-poll loop: `nshvc_wait_until` (a status bit, a counter, a chip's flag, the sound unit's
+cycle exact: the hardware runs at the hardware's time. Each access the S-CPU's C makes costs
+what the console's bus takes for it, by the console's memory speeds (6, 8 or 12 clocks),
+and before it the weight of its kind from the game's cost profile (0 with none); the C's
+own arithmetic between accesses costs nothing, and the C states no time. The SPC700's C
+takes none. The clock also moves on where the code waits for the hardware, as on the
+console it spends that time in a poll loop: `nshvc_wait_until` (a status bit, a counter, a chip's flag, the sound unit's
 reply), `nshvc_wait_vblank`, WAI and a branch to itself for the S-CPU, `spc_wait_until`
 for the SPC700. In a wait the clock moves in steps of a poll loop's few cycles, and each
 change the loop looks for is seen at its own clock: a line's start, the horizontal blank,
@@ -312,19 +319,26 @@ read and the frame's end.
 
 Interrupts are events in the console's time. The NMI, the H/V IRQ and a cartridge's IRQ
 come due at exactly the clock the hardware raises them. One that comes due in a wait is
-taken at that clock, and its handler runs before the wait looks again; one that a DMA's
-time made due is taken at the end of the access that started the DMA. No operation is
+taken at that clock, and its handler runs before the wait looks again; one that comes due
+in an access (or a DMA its write started) is taken at that access's end. No operation is
 split, so a handler never sees half of a word or of a read-modify-write. The IRQ waits
 while the I flag masks it; a handler may itself wait, the I flag holding the IRQ there as
 on the console.
 
-**What this leaves out, on purpose:** how long the processors' own work takes. Where the
-original's work set the pace (a frame its CPU did not finish before the next vertical
-blank, a reply the sound driver made a few hundred cycles after a port changed), the game
-here does not: its work is done at once, and it goes on at its next wait. The multiplier
-and divider are done when read, since no time passes between the write and the read. The
-hardware's own time is all kept: a DMA, an HDMA, a line, a timer, the Super FX's job a
-cartridge's chip runs.
+**The processors' own work, and the cost profile.** The C makes the original's data
+accesses but not its instruction fetches or internal cycles, so the time the original
+spent between accesses is not in the C. A game whose behaviour depends on it (a race whose
+pace is how much work fits in a frame, slowdown when much happens at once) declares a cost
+profile (`nshvc_cart.cost_profile`): a weight for each kind of access (a read or a write of
+work RAM, ROM, cartridge RAM, I/O), and for a chip, a cost for each of its programs. Load
+follows from it: a frame where more happens makes more accesses and costs more time. The
+weights are never set by a person: nativeshvc provides the standard and the tool
+(`tools/nshvc-profile`, [docs/cost-profile.md](docs/cost-profile.md)) that measures them
+from the game's own ROM on the reference, and the game runs it. A game that paces itself on
+the console's clock (waiting for the vertical blank rather than spinning) needs none. The
+sound driver's own work is not reproduced: its beat is its timers', which run at their real
+time. The multiplier and divider are done when read. The hardware's own time is all kept:
+a DMA, an HDMA, a line, a timer, a chip's job.
 
 **The sound.** The DSP makes its 32,040 samples a second at its own clock, and the
 driver's waits on its timers keep its beat exactly. Inside a beat, the writes the

@@ -2,8 +2,9 @@
  * nshvc.h: nativeshvc, a native Super Nintendo for decompiled games.
  *
  * Behaviour exact, not an emulator: the console's hardware does what the
- * console's does, at the console's time, and the processors' work (the
- * game's C) takes none; the C waits where the original waited for the
+ * console's does, at the console's time; the processors are the game's C,
+ * whose accesses cost the bus's time and their cost profile's weight
+ * (docs/cost-profile.md), and which waits where the original waited for the
  * hardware (machine.h nshvc_wait_until, spc.h spc_wait_until).
  *
  * A decompiled game is the cartridge; nativeshvc is the console it plugs
@@ -38,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 0
+#define NSHVC_VERSION_MINOR 1
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -96,6 +97,37 @@ typedef struct {
 /* the cartridge's own hardware, an expansion chip (cart.h) */
 typedef struct nshvc_chip nshvc_chip;
 
+/* ---- the cost profile (docs/cost-profile.md) -------------------------------------- */
+/* The S-CPU's access kinds, by address (the same in every mapping):
+   cartridge RAM is banks $70-$7D and $F0-$FF at $0000-$7FFF, and banks
+   $20-$3F and $A0-$BF at $6000-$7FFF; work RAM banks $7E-$7F, and $0000-
+   $1FFF in banks $00-$3F and $80-$BF; I/O $2000-$5FFF in those banks; ROM
+   the rest. */
+enum { NSHVC_KIND_WRAM, NSHVC_KIND_ROM, NSHVC_KIND_CART_RAM, NSHVC_KIND_IO, NSHVC_KINDS };
+/* the kind of an S-CPU address (since 2.1) */
+int nshvc_access_kind(uint32_t addr);
+
+/* a chip program's cost: fixed + the sum of weight[k] x its op k's count */
+typedef struct {
+    uint32_t entry;                 /* the program's entry, as the chip keys it (the Super FX: PBR:R15) */
+    uint32_t fixed;                 /* whole chip clocks */
+    const uint32_t *weight;         /* one an op kind, the chip's enum order, in 1/4096 of a chip clock */
+} nshvc_chip_program;
+
+/* What the processors' accesses cost besides the bus's time, measured by
+   tools/nshvc-profile from the game's ROM (never set by a person). */
+typedef struct {
+    int version;                                /* NSHVC_COST_PROFILE_VERSION */
+    uint32_t cpu_tenths[2][NSHVC_KINDS];        /* [read, write][kind]: tenths of a master clock */
+    /* the chip's (cart.h), carried to it: its op kinds' count, its programs
+       (sorted by entry) and the row for a program not listed */
+    int chip_ops;
+    const nshvc_chip_program *programs;
+    int program_count;
+    nshvc_chip_program chip_default;
+} nshvc_cost_profile;
+#define NSHVC_COST_PROFILE_VERSION 1
+
 typedef struct nshvc_cart {
     const char *title;          /* the window's and dialogs' */
     const char *save_name;      /* the save folder's and the save file's name (title when NULL) */
@@ -141,6 +173,10 @@ typedef struct nshvc_cart {
     /* What is plugged into the controller ports at power on
        (NSHVC_PORT_*; 0, a joypad, when not set). */
     int ports[2];
+
+    /* The cartridge's cost profile (docs/cost-profile.md), read once at
+       power on; NULL: the console's default. (Since 2.1.) */
+    const nshvc_cost_profile *cost_profile;
 } nshvc_cart;
 
 /* ---- running it -------------------------------------------------------------- */
@@ -266,9 +302,11 @@ uint8_t nshvc_peek(uint32_t addr);
 
 /* Hooks for an app's checks (NULL: none). frame: each finished frame,
    inside the S-CPU's run (before nshvc_run_frame returns); write: each
-   S-CPU write, before it lands. */
+   S-CPU write, before it lands; read: each S-CPU read, as it is made, with
+   the value it read (since 2.1). */
 void nshvc_set_frame_hook(void (*fn)(void));
 void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value));
+void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value));
 
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 

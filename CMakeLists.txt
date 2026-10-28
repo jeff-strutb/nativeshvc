@@ -12,7 +12,7 @@
 #   NSHVC_TESTS   build the tests (tests/)
 #   NSHVC_EXAMPLES build the examples (examples/)
 cmake_minimum_required(VERSION 3.16)
-project(nativeshvc VERSION 2.0.0 LANGUAGES C)
+project(nativeshvc VERSION 2.1.0 LANGUAGES C)
 
 if(APPLE)
   enable_language(OBJC)

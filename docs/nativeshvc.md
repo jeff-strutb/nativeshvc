@@ -1,14 +1,15 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.0); this page describes the interface
+[the game contract](contract.md) (2.1); this page describes the interface
 around it.
 
 ## What it is
 
 nativeshvc is a behaviour-exact implementation of the console, not an
-emulator: the hardware does what the console's does, at the console's time,
-and the processors' work (the game's C) takes none (README.md, Time).
+emulator: the hardware does what the console's does, at the console's time;
+the processors are the game's C, each access it makes costing the bus's
+time and its cost profile's weight (README.md, Time; cost-profile.md).
 
 A decompiled game is the cartridge; nativeshvc is the console. The
 processors are the game's own C, written against the machine model
@@ -89,7 +90,8 @@ the controllers (`nshvc_plug` and `nshvc_plugged` for what is in each port;
 motion this frame and its buttons, `nshvc_set_gun` for where a light gun points
 and its buttons), the memories (`nshvc_wram`,
 `nshvc_sram`, `nshvc_aram`, `nshvc_vram`, `nshvc_cgram`, `nshvc_oam`,
-`nshvc_peek`) and hooks (`nshvc_set_frame_hook`, `nshvc_set_write_hook`).
+`nshvc_peek`) and hooks (`nshvc_set_frame_hook`, `nshvc_set_write_hook`,
+`nshvc_set_read_hook`).
 
 ## The front end's hooks
 
@@ -122,9 +124,13 @@ console's screen may come into view on a larger one.
 
 ## Time
 
-The master clock is the console's (21.477 MHz NTSC). The processors' C
-takes none of it: each access is made at the clock as it stands, and the
-clock moves on in the C's waits (`nshvc_wait_until`, `nshvc_wait_vblank`,
+The master clock is the console's (21.477 MHz NTSC). Each access the
+S-CPU's C makes costs the bus's time for it (8 clocks for SlowROM and work
+RAM, 6 for FastROM and most registers, 12 for $4000-$41FF, a read taking
+its value 4 clocks before its end, a write landing at its end), and before
+it the weight of its kind from the cartridge's cost profile (0 with none:
+cost-profile.md); the SPC700's C takes none. The clock also moves on in the
+C's waits (`nshvc_wait_until`, `nshvc_wait_vblank`,
 `cpu_wai`, `cpu_loop_forever`; `spc_wait_until`), in steps of a poll
 loop's few cycles cut short wherever what a wait looks at changes (a line's
 parts, the horizontal blank, an edge of the joypads' read, an IRQ, a chip's
@@ -132,7 +138,7 @@ IRQ), and in a DMA. The beam's lines are 1,364 clocks,
 dots 323 and 327 6 clocks each (NTSC's line 240 in field 1 1,360 when not
 interlaced; an interlaced frame's field 0 a line longer); the work RAM's
 refresh stops the CPU 40 clocks a line. A DMA starts at its $420B write
-(the C's work taking no time, the S-CPU's next cycle is the write's end);
+(the write's end);
 HDMA (the frame's setup in line 0, a transfer in each shown line's
 horizontal blank) is taken up at the start of a wait's next cycle after it
 comes due and made at the one after, or between a DMA's bytes, where HDMA

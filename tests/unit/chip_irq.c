@@ -11,7 +11,9 @@
  *   in WAI: at that clock
  *
  * and, risen while work RAM's refresh stops the S-CPU (40 clocks a line),
- * at the refresh's end.
+ * at the refresh's end. No cost profile (contract 2.1), so each access is
+ * its bus's time alone: a chip register's 6 clocks, its value 2 in;
+ * the interrupt's four pushes and RTI's four pulls in work RAM 32 each.
  *
  *   chip_irq          runs the checks; exit 0 when every one holds
  */
@@ -25,6 +27,9 @@
 #include "snes.h"
 
 static int fails;
+
+#define REG 6           /* a read of the chip's register */
+#define STACK 32        /* the interrupt's pushes, or RTI's pulls */
 
 static void check(int ok, const char *what, long long d, long long got, long long want)
 {
@@ -161,10 +166,49 @@ static void start(uint16_t d)
     wr8(0x003001, (uint8_t)(d >> 8));
 }
 
+/* the wait's reads of the status: where each began */
+static uint64_t read_at[4096];
+static int reads;
+
 static int stopped(void *ctx)
 {
     (void)ctx;
+    if (reads < 4096)
+        read_at[reads++] = snes_clock;
     return !(rd8(0x003030) & 0x20);
+}
+
+/* the clock after `n` clocks of accesses from t, a refresh in them
+   included (one that falls at its end too: the console makes it as the
+   clock reaches it) */
+static uint64_t pass(uint64_t t, unsigned n)
+{
+    uint64_t r = refresh_of(t + n, snes_clock - snes_line_clock());
+    return r > t && r <= t + n ? t + n + 40 : t + n;
+}
+
+/* the S-CPU's accesses of `n` clocks each, `k` of them, from t */
+static uint64_t accesses(uint64_t t, unsigned n, int k)
+{
+    while (k--)
+        t = pass(t, n);
+    return t;
+}
+
+/* where the S-CPU takes the rise at t: at it (or the refresh's end), or at
+   the end of the wait's read it rises in; *seen 1 when that read took its
+   value (2 clocks in) at or after t, so it saw the chip stopped and the
+   wait ends with it */
+static uint64_t taken_point(uint64_t t, int *seen)
+{
+    int i;
+    *seen = 0;
+    for (i = 0; i < reads; i++)
+        if (read_at[i] < t && t < pass(read_at[i], REG)) {
+            *seen = t <= read_at[i] + 2;
+            return pass(read_at[i], REG);
+        }
+    return seen_at(t);
 }
 
 static void abi_reset(void)
@@ -179,13 +223,28 @@ static void abi_reset(void)
        the handler's acknowledge before the wait sees the chip stopped */
     for (i = 0; i < 300; i++) {
         uint16_t d = (uint16_t)(37 + i * 47);
+        uint64_t at;
         n = taken;
         acked = 0;
+        reads = 0;
         start(d);
         nshvc_wait_until(stopped, NULL);
-        check(taken == n + 1 && taken_at == seen_at(stop_at) && snes_clock == taken_at && acked,
+        /* taken at the rise (the handler after the pushes); then its
+           acknowledge, RTI's pulls, and the wait's read that sees it */
+        {
+            int seen;
+            uint64_t back;
+            at = accesses(taken_point(stop_at, &seen), 8, 4);
+            back = accesses(pass(taken_at, REG), 8, 4);
+            if (!seen)
+                back = pass(back, REG);
+            check(taken == n + 1 && taken_at == at && snes_clock == back && acked,
+                  "waiting, unmasked: the wait ends after the handler", d, (long long)(snes_clock - started),
+                  (long long)(back - started));
+        }
+        check(taken == n + 1 && taken_at == at && acked,
               "waiting, unmasked: taken at the chip's clock, then the wait ends", d, (long long)(taken_at - started),
-              (long long)(seen_at(stop_at) - started));
+              (long long)(at - started));
     }
 
     /* masked: the wait sees the chip stopped at its clock; none taken */
@@ -193,10 +252,18 @@ static void abi_reset(void)
     for (i = 0; i < 300; i++) {
         uint16_t d = (uint16_t)(41 + i * 53);
         n = taken;
+        reads = 0;
         start(d);
         nshvc_wait_until(stopped, NULL);
-        check(taken == n && snes_clock == seen_at(stop_at), "waiting, masked: the wait ends at the chip's clock", d,
-              (long long)(snes_clock - started), (long long)(seen_at(stop_at) - started));
+        /* the wait ends with the first of its reads that takes its value
+           (2 clocks in) at or after the chip stopped */
+        {
+            int last = reads - 1;
+            int ok = last >= 0 && read_at[last] + 2 >= stop_at && (last == 0 || read_at[last - 1] + 2 < stop_at) &&
+                     snes_clock == pass(read_at[last], REG);
+            check(taken == n && ok, "waiting, masked: the wait ends with the first read after the chip's clock", d,
+                  (long long)(last >= 0 ? read_at[last] + 2 - started : 0), (long long)(stop_at - started));
+        }
         rd8(0x003031);
     }
     /* taken once the I flag is clear, at the next point between two of
@@ -205,8 +272,12 @@ static void abi_reset(void)
     nshvc_wait_until(stopped, NULL);
     n = taken;
     cpu.p = (uint8_t)(cpu.p & ~P_I);
-    rd8(0x7E0000);
-    check(taken == n + 1 && taken_at == snes_clock, "unmasked: taken at once", 200, taken - n, 1);
+    {
+        uint64_t before = snes_clock;
+        rd8(0x7E0000);
+        check(taken == n + 1 && taken_at == accesses(pass(before, 8), 8, 4), "unmasked: taken at the next read's end",
+              200, (long long)(taken_at - before), (long long)(accesses(pass(before, 8), 8, 4) - before));
+    }
 
     /* WAI: on at the chip's clock, taken there */
     for (i = 0; i < 100; i++) {
@@ -214,8 +285,8 @@ static void abi_reset(void)
         n = taken;
         start(d);
         cpu_wai(0x008200);
-        check(taken == n + 1 && taken_at == seen_at(stop_at), "WAI: taken at the chip's clock", d,
-              (long long)(taken_at - started), (long long)(seen_at(stop_at) - started));
+        check(taken == n + 1 && taken_at == accesses(seen_at(stop_at), 8, 4), "WAI: taken at the chip's clock", d,
+              (long long)(taken_at - started), (long long)(accesses(seen_at(stop_at), 8, 4) - started));
     }
 
     printf("%d check(s) failed\n", fails);

@@ -1,8 +1,9 @@
-# The game contract, version 2.0
+# The game contract, version 2.1
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.0: the console is behaviour exact, and the game's C states no time
+contract is at 2.1: the console is behaviour exact, the game's C states no time, and each
+access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
 
@@ -104,12 +105,13 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
   The reference is bsnes with its accuracy options. Where nativeshvc's hardware differs
   from it, that's a defect in nativeshvc, fixed in a patch release.
-- **The processors' work takes no time.** The S-CPU's and the SPC700's C are made at the
-  clock as it stands. The clock moves on where they wait for the hardware (the waits
-  above, WAI, a branch to itself) and while a DMA (a `$420B` write) stops the S-CPU, for
-  the DMA unit's real time. The multiplier and divider are done when read. Where the
-  original's own work set the pace (a frame its CPU did not finish in time), the game does
-  not: that is the processors' time, which the C does not keep.
+- **The S-CPU's time is its accesses'.** Each access the S-CPU's C makes takes the bus's
+  time for it, as the console's memory speeds give it, and before it the weight of its
+  kind from the cartridge's cost profile (`nshvc_cart.cost_profile`, docs/cost-profile.md),
+  0 with none. The C states nothing; its own arithmetic between accesses takes no time. The
+  clock also moves on in its waits (the waits above, WAI, a branch to itself) and while a
+  DMA (a `$420B` write) stops it, for the DMA unit's real time. The multiplier and divider
+  are done when read. The SPC700's C takes no time: its clock moves in its waits.
 - **The sound as the original's.** After a KON or KOFF write, the SPC700's next DSP write
   waits until the DSP has taken that key event (every other sample), so every note the
   driver keys on or off reaches the DSP, in order, with the voice's registers as the
@@ -122,16 +124,26 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   IRQ waits while `cpu`'s I flag masks it, and a handler may wait too (an NMI can still
   come in an IRQ's handler, as on the console).
 - **A fatal error, never a guess,** when the game reaches something the contract doesn't
-  cover: an address with no C (a vector's included), a loop that waits for the hardware
-  with no wait (20,000,000 reads with no write between), or a wait while interrupts are
-  held. It's reported, then the process exits with status 70.
+  cover: an address with no C (a vector's included), a wait while interrupts are held, or,
+  with interrupts held (where no time passes), a loop that waits for the hardware
+  (20,000,000 reads with no write between); the SPC700's loop that waits with no wait
+  likewise. It's reported, then the process exits with status 70.
 - **The console's numbers by default.** Every extension (`nshvc_ext_*`,
-  `nshvc_hold_interrupts`) is off until the game asks for it.
+  `nshvc_hold_interrupts`) is off until the game asks for it, and with no cost profile an
+  access costs the bus's time alone.
 - **The same run on every host.** One thread, a deterministic schedule: the same input
   gives the same machine.
 
 ## Changes
 
+- **2.1:** each S-CPU access costs the bus's time for it, as the console's memory speeds
+  give it, and the weight of its kind from the cartridge's cost profile: `nshvc_cart`'s
+  `cost_profile` field (a zeroed description has none: the bus's time alone),
+  `nshvc_cost_profile`, `nshvc_chip_program`, `NSHVC_KIND_*` and `nshvc_access_kind`
+  (`nshvc.h`, docs/cost-profile.md, measured by `tools/nshvc-profile`). A loop that waits
+  for the hardware with no wait sees the clock move, and is no longer fatal (but with
+  interrupts held). `nshvc_set_read_hook`: each S-CPU read as it is made, with its value.
+  The SPC700's boot ROM keeps its own instruction time, as the console's firmware does.
 - **2.0:** behaviour exact, not cycle exact. The S-CPU's and the SPC700's C state no time:
   `cyc`, `cycs`, `cyc_then`, `cyc_loop`, `cycs_then`, `cycs_loop`, `cpu_idle`, `spc_cyc` and
   `spc_wr_cyc` are gone, and `spc_call` and `spc_ret` take no cycles. Their waits are

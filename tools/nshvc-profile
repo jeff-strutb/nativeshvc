@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""
+nshvc-profile: a decompiled game's cost profile, measured (docs/cost-profile.md).
+
+nativeshvc charges each access the S-CPU's C makes the bus's time and a weight
+for the CPU work around an access of its kind, which the C does not make. This
+tool measures those weights from a game's own ROM on the reference, by one fixed
+method, so no person sets them.
+
+  nshvc-profile measure ROM [ROM...] --out DIR [--frames N] [--span PLAY]...
+                        [--chip-jobs FILE] [--decomp BUILD [--source DIR]]
+                        [--name NAME]
+      Step 1: each ROM runs on the reference with no input for N frames (3,600,
+      its attract mode), and on each PLAY given (an input-only script in
+      nativeshvc's script language) as an extra span. Each frame's CPU work and
+      its data accesses by kind are fitted, and the profile, its C table and the
+      report are written to DIR. More than one ROM: one profile over all of
+      them.
+      --chip-jobs: a cartridge chip's jobs as the game recorded them on the
+      reference (the format below); each program's cost is fitted from them.
+      Step 2, --decomp: the game's own build (a command line: the program and
+      any arguments it needs) runs the same frames under nativeshvc (its
+      --counts measuring mode), and its accesses by kind are
+      held to the original's; --source names the decomp's source, whose hash the
+      profile records.
+
+  nshvc-profile check PROFILE --source DIR
+      Whether the decomp's source is still the one the profile was checked
+      against (step 2's source-sha256); exit 1 with a warning when not.
+
+A chip's jobs (the game's recording, one file):
+
+  nshvc-chip-jobs 1 NAME ops KIND KIND ... speed CLOCKS
+  job ENTRY CLOCKS COUNT COUNT ...
+
+ENTRY the program's entry (hex, as the chip keys it), CLOCKS the job's own time
+in chip clocks (waits the chip makes for the S-CPU taken out), a COUNT for each
+op kind in the order named; speed the chip clocks an access of its takes, for a
+program with too few jobs for a fit of its own.
+
+Needs NSHVC_ORACLE_CORE (the pinned reference core, tests/README.md);
+NSHVC_ORACLE the oracle (default build/null/tests/oracle).
+"""
+import argparse, concurrent.futures, hashlib, os, shlex, subprocess, sys, tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOOL_VERSION = "1.0"
+FORMAT_VERSION = 1
+FRAME = 357368                  # master clocks an NTSC frame
+ACTIVE = 0.05                   # a frame counts when its CPU worked this share of it or more
+MIN_ACCESSES = 1000             # a kind with fewer is not measured: weight 0
+CHIP_MIN_JOBS = 20              # a program with fewer: a multiplier on the chip's speed
+ONE = 4096                      # a chip weight's unit: 1/4096 of a chip clock
+KINDS = ["wram", "rom", "cart-ram", "io"]
+# the console's default with no profile declared: 0, the bus's time alone
+DEFAULT_TENTHS = [[0, 0, 0, 0], [0, 0, 0, 0]]
+
+
+# ---- the reference's measure ----------------------------------------------------------
+
+def oracle_path():
+    return os.environ.get("NSHVC_ORACLE", os.path.join(ROOT, "build", "null", "tests", "oracle"))
+
+
+def run_reference(rom, frames, play, outdir):
+    """the oracle's --cpustats of one span: each frame's (reads[4], writes[4],
+       gap clocks, bus clocks)"""
+    core = os.environ.get("NSHVC_ORACLE_CORE")
+    if not core:
+        sys.exit("nshvc-profile: set NSHVC_ORACLE_CORE (the reference core, tests/README.md)")
+    stats = os.path.join(outdir, "stats.txt")
+    cmd = [oracle_path(), "--core", core, "--rom", rom, "--out", outdir, "--cpustats", stats]
+    cmd += ["--script", play] if play else ["--frames", str(frames)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        sys.exit("nshvc-profile: the reference failed on %s: %s" % (rom, r.stderr.strip()[-300:]))
+    out = []
+    for line in open(stats):
+        if not line.startswith("F "):
+            continue
+        w = list(map(int, line.split()[1:]))
+        n, g = w[1:17:2], w[2:17:2]
+        out.append((w[0], n, sum(g), w[17]))
+    return out
+
+
+# ---- the fit ---------------------------------------------------------------------------
+
+def nnls(A, b):
+    """min |Ax - b| for x >= 0 (Lawson and Hanson's active set), from the normal
+       equations A (n x n, A'A) and b (A'y)"""
+    n = len(b)
+    x = [0.0] * n
+    passive = set()
+
+    def solve(idx):
+        m = len(idx)
+        M = [[A[i][j] for j in idx] + [b[i]] for i in idx]
+        for c in range(m):
+            p = max(range(c, m), key=lambda r: abs(M[r][c]))
+            M[c], M[p] = M[p], M[c]
+            if abs(M[c][c]) < 1e-12:
+                continue
+            for r in range(m):
+                if r != c:
+                    k = M[r][c] / M[c][c]
+                    M[r] = [u - k * v for u, v in zip(M[r], M[c])]
+        z = [0.0] * n
+        for c, i in enumerate(idx):
+            z[i] = M[c][m] / M[c][c] if abs(M[c][c]) > 1e-12 else 0.0
+        return z
+
+    for _ in range(10 * n + 10):
+        grad = [b[i] - sum(A[i][j] * x[j] for j in range(n)) for i in range(n)]
+        cand = [i for i in range(n) if i not in passive and grad[i] > 1e-9]
+        if not cand:
+            break
+        passive.add(max(cand, key=lambda i: grad[i]))
+        while True:
+            z = solve(sorted(passive))
+            if all(z[i] > 0 for i in passive):
+                x = z
+                break
+            alpha = min(x[i] / (x[i] - z[i]) for i in passive if z[i] <= 0)
+            x = [x[i] + alpha * (z[i] - x[i]) for i in range(n)]
+            passive = {i for i in passive if x[i] > 1e-12}
+    return x
+
+
+def fit_cpu(frames, measured):
+    """each kind's weight in clocks: non-negative least squares on each frame's
+       error in clocks (a frame's time is the sum of its costs, so its slowest
+       frames weigh most), over the frames with real work; a kind not measured
+       is 0"""
+    rows = [(f[1], f[2], f[3]) for f in frames if f[2] + f[3] >= ACTIVE * FRAME]
+    k8 = range(8)
+    A = [[0.0] * 8 for _ in k8]
+    b = [0.0] * 8
+    for n, g, bus in rows:
+        default = sum(n[k] * DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in k8 if not measured[k])
+        y = g - default
+        for i in k8:
+            if not measured[i]:
+                continue
+            b[i] += n[i] * y
+            for j in k8:
+                if measured[j]:
+                    A[i][j] += n[i] * n[j]
+    for i in k8:
+        if not measured[i]:
+            A[i] = [0.0] * 8
+            A[i][i] = 1.0
+            b[i] = 0.0
+    w = nnls(A, b)
+    return [w[k] if measured[k] else DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in k8], rows
+
+
+def errors(rows, weights):
+    """bias, mean |error|, 95th percentile, worst; the slowest 5% of frames' bias
+       and worst: (predicted - real) / real, real the CPU's work in the frame"""
+    def rel(r):
+        n, g, bus = r
+        pred = bus + sum(w * c for w, c in zip(weights, n))
+        return (pred - (g + bus)) / (g + bus)
+    if not rows:
+        return None
+    e = [rel(r) for r in rows]
+    a = sorted(abs(x) for x in e)
+    heavy = sorted(rows, key=lambda r: r[1] + r[2])[-max(1, len(rows) // 20):]
+    he = [rel(r) for r in heavy]
+    return (sum(e) / len(e), sum(a) / len(a), a[int(0.95 * (len(a) - 1))], a[-1],
+            sum(he) / len(he), max(abs(x) for x in he))
+
+
+def fmt_err(e):
+    if e is None:
+        return "no frames with work"
+    return ("bias %+.1f%%, mean |error| %.1f%%, p95 %.1f%%, worst %.1f%%; slowest 5%%: bias %+.1f%%, worst %.1f%%"
+            % tuple(100 * x for x in e))
+
+
+# ---- a chip's programs ---------------------------------------------------------------
+
+def read_jobs(path):
+    jobs, head = {}, None
+    for line in open(path):
+        w = line.split()
+        if not w:
+            continue
+        if w[0] == "nshvc-chip-jobs":
+            if int(w[1]) != 1:
+                sys.exit("nshvc-profile: %s: chip jobs format %s, this tool reads 1" % (path, w[1]))
+            ops = w[w.index("ops") + 1:w.index("speed")]
+            head = (w[2], ops, float(w[w.index("speed") + 1]))
+        elif w[0] == "job":
+            if not head:
+                sys.exit("nshvc-profile: %s: no nshvc-chip-jobs line first" % path)
+            jobs.setdefault(int(w[1], 16), []).append((float(w[2]), [int(x) for x in w[3:3 + len(head[1])]]))
+    if not head:
+        sys.exit("nshvc-profile: %s: not a chip jobs file" % path)
+    return head, jobs
+
+
+def fit_program(jobs, nops):
+    """fixed + weights, non-negative least squares on each job's error in
+       clocks (the long jobs, the slow frames', weigh most)"""
+    n = nops + 1
+    A = [[0.0] * n for _ in range(n)]
+    b = [0.0] * n
+    for clocks, counts in jobs:
+        x = [1.0] + counts
+        for i in range(n):
+            b[i] += x[i] * clocks
+            for j in range(n):
+                A[i][j] += x[i] * x[j]
+    w = nnls(A, b)
+    return w[0], w[1:]
+
+
+def chip_errors(jobs, fixed, weights):
+    def rel(j):
+        clocks, counts = j
+        return (fixed + sum(w * c for w, c in zip(weights, counts)) - clocks) / max(clocks, 1.0)
+    e = [rel(j) for j in jobs]
+    a = sorted(abs(x) for x in e)
+    long5 = sorted(jobs, key=lambda j: j[0])[-max(1, len(jobs) // 20):]
+    le = [abs(rel(j)) for j in long5]
+    return (sum(e) / len(e), sum(a) / len(a), a[int(0.95 * (len(a) - 1))], a[-1], sum(le) / len(le))
+
+
+def fit_chip(path):
+    (name, ops, speed), jobs = read_jobs(path)
+    total = sum(c for js in jobs.values() for c, _ in js) or 1.0
+    every = [j for js in jobs.values() for j in js]
+    mult = sum(c for c, _ in every) / max(1, sum(speed * sum(n) for _, n in every))
+    default = (0.0, [mult * speed] * len(ops))
+    rows = []
+    for entry in sorted(jobs):
+        js = jobs[entry]
+        if len(js) >= CHIP_MIN_JOBS:
+            fixed, weights = fit_program(js, len(ops))
+            how = "fit"
+        else:
+            m = sum(c for c, _ in js) / max(1, sum(speed * sum(n) for _, n in js))
+            fixed, weights, how = 0.0, [m * speed] * len(ops), "multiplier"
+        rows.append((entry, fixed, weights, how, len(js), sum(c for c, _ in js) / total,
+                     chip_errors(js, fixed, weights)))
+    return name, ops, speed, default, rows
+
+
+# ---- step 2: the decomp ---------------------------------------------------------------
+
+def run_decomp(build, frames, play, outdir):
+    counts = os.path.join(outdir, "counts.txt")
+    cmd = shlex.split(build) + ["--headless", "--out", outdir, "--counts", counts]
+    cmd += ["--script", play] if play else ["--frames", str(frames)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        sys.exit("nshvc-profile: the decomp's build failed: %s" % r.stderr.strip()[-300:])
+    out = {}
+    for line in open(counts):
+        w = line.split()
+        if w and w[0] == "F":
+            out[int(w[1])] = list(map(int, w[2:10]))
+    return out
+
+
+def source_hash(d):
+    h = hashlib.sha256()
+    for root, dirs, files in sorted(os.walk(d)):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            h.update(os.path.relpath(p, d).encode() + b"\0")
+            h.update(open(p, "rb").read())
+    return h.hexdigest()
+
+
+# ---- the outputs --------------------------------------------------------------------
+
+def tenths(w):
+    return int(round(w * 10))
+
+
+def write_profile(path, roms, weights, chip, checked, ratios, src):
+    with open(path, "w") as f:
+        f.write("nshvc-cost-profile %d\n" % FORMAT_VERSION)
+        f.write("tool nshvc-profile %s\n" % TOOL_VERSION)
+        f.write("reference bsnes %s\n" % os.path.basename(os.environ.get("NSHVC_ORACLE_CORE", "?")))
+        for r in roms:
+            f.write("rom-sha256 %s\n" % hashlib.sha256(open(r, "rb").read()).hexdigest())
+        f.write("source-sha256 %s\n" % (src or "-"))
+        f.write("checked %s\n" % ("yes" if checked else "unchecked"))
+        if ratios:
+            f.write("counts %s\n" % " ".join("%s %s" % kv for kv in ratios))
+        for wi, wname in enumerate(("read", "write")):
+            f.write("cpu %-5s %s\n" % (wname, " ".join("%s %.1f" % (KINDS[k], tenths(weights[4 * wi + k]) / 10)
+                                                         for k in range(4))))
+        if chip:
+            name, ops, speed, default, rows = chip
+            f.write("chip %s ops %s speed %g\n" % (name, " ".join(ops), speed))
+            for entry, fixed, weights_, how, _, _, _ in rows:
+                f.write("program %06X fixed %d weights %s\n" % (entry, round(fixed),
+                                                                " ".join(str(round(w * ONE)) for w in weights_)))
+            f.write("default fixed %d weights %s\n" % (round(default[0]),
+                                                       " ".join(str(round(w * ONE)) for w in default[1])))
+
+
+def write_c(path, name, weights, chip):
+    with open(path, "w") as f:
+        f.write("/* %s's cost profile: written by tools/nshvc-profile %s (docs/cost-profile.md) */\n"
+                % (name, TOOL_VERSION))
+        f.write('#include "nshvc/nshvc.h"\n\n')
+        progs, count, dflt, nops = "NULL", 0, "{ 0, 0, NULL }", 0
+        if chip:
+            cname, ops, speed, default, rows = chip
+            nops = len(ops)
+            for i, (entry, fixed, w, _, _, _, _) in enumerate(rows):
+                f.write("static const uint32_t w%d[%d] = { %s };\n" % (i, nops, ", ".join(str(round(x * ONE)) for x in w)))
+            f.write("static const uint32_t w_default[%d] = { %s };\n" % (nops, ", ".join(str(round(x * ONE)) for x in default[1])))
+            f.write("static const nshvc_chip_program programs[%d] = {\n" % len(rows))
+            for i, (entry, fixed, w, _, _, _, _) in enumerate(rows):
+                f.write("    { 0x%06X, %d, w%d },\n" % (entry, round(fixed), i))
+            f.write("};\n\n")
+            progs, count = "programs", len(rows)
+            dflt = "{ 0, %d, w_default }" % round(default[0])
+        f.write("const nshvc_cost_profile %s_cost_profile = {\n" % name)
+        f.write("    NSHVC_COST_PROFILE_VERSION,\n")
+        f.write("    { { %s }, { %s } },\n" % (", ".join(str(tenths(weights[k])) for k in range(4)),
+                                              ", ".join(str(tenths(weights[4 + k])) for k in range(4))))
+        f.write("    %d, %s, %d, %s,\n};\n" % (nops, progs, count, dflt))
+
+
+# ---- the commands -------------------------------------------------------------------
+
+def measure(a):
+    os.makedirs(a.out, exist_ok=True)
+    spans = [None] + list(a.span or [])
+    frames, per_rom = [], {}
+    work = tempfile.mkdtemp(prefix="nshvc-profile-", dir=a.out)
+    runs = [(ri, rom, si, play) for ri, rom in enumerate(a.rom) for si, play in enumerate(spans)]
+
+    def one(r):
+        ri, rom, si, play = r
+        d = os.path.join(work, "%d_%d" % (ri, si))
+        os.makedirs(d)
+        return run_reference(rom, a.frames, play, d)
+
+    with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as ex:
+        for (ri, rom, si, play), got in zip(runs, ex.map(one, runs)):
+            frames += got
+            per_rom[(rom, play)] = got
+    totals = [sum(f[1][k] for f in frames) for k in range(8)]
+    measured = [t >= MIN_ACCESSES for t in totals]
+    weights, rows = fit_cpu(frames, measured)
+    default_w = [DEFAULT_TENTHS[k // 4][k % 4] / 10 for k in range(8)]
+    chip = fit_chip(a.chip_jobs) if a.chip_jobs else None
+
+    checked, ratios, mism, src = False, None, [], None
+    if a.decomp:
+        checked = True
+        tot_d = [0] * 8
+        tot_r = [0] * 8
+        for si, play in enumerate(spans):
+            d = os.path.join(work, "decomp_%d" % si)
+            os.makedirs(d)
+            dec = run_decomp(a.decomp, a.frames, play, d)
+            for fr, n, _, _ in per_rom[(a.rom[0], play)]:
+                mine = dec.get(fr)
+                if mine is None:
+                    continue
+                for k in range(8):
+                    tot_d[k] += mine[k]
+                    tot_r[k] += n[k]
+                if mine != n:
+                    mism.append((play or "attract", fr, n, mine))
+        ratios = [("%s-%s" % ("read" if k < 4 else "write", KINDS[k % 4]),
+                   "%.4f" % (tot_d[k] / tot_r[k]) if tot_r[k] else ("n/a" if not tot_d[k] else "none-in-original"))
+                  for k in range(8)]
+        src = source_hash(a.source) if a.source else None
+
+    name = a.name or os.path.splitext(os.path.basename(a.rom[0]))[0].replace(" ", "_").lower()
+    name = "".join(c if c.isalnum() else "_" for c in name)
+    write_profile(os.path.join(a.out, "profile.txt"), a.rom, weights, chip, checked, ratios, src)
+    write_c(os.path.join(a.out, "profile.c"), name, weights, chip)
+
+    with open(os.path.join(a.out, "report.txt"), "w") as f:
+        f.write("nshvc-profile %s report\n\n" % TOOL_VERSION)
+        f.write("ROMs: %s\n" % ", ".join(os.path.basename(r) for r in a.rom))
+        f.write("spans: attract (%d frames, no input)%s\n" % (a.frames, "".join(", " + p for p in (a.span or []))))
+        f.write("frames: %d, of them with work (the CPU busy %d%% of the frame or more): %d\n\n"
+                % (len(frames), round(100 * ACTIVE), len(rows)))
+        f.write("S-CPU: the weight of each access kind, in master clocks besides the bus's time\n")
+        for k in range(8):
+            f.write("  %-5s %-8s %6.1f   (%d accesses%s)\n" % ("read" if k < 4 else "write", KINDS[k % 4],
+                                                             tenths(weights[k]) / 10, totals[k],
+                                                             "" if measured[k] else "; too few to measure: 0"))
+        f.write("\n  this profile:          %s\n" % fmt_err(errors(rows, weights)))
+        f.write("  no profile (bus only): %s\n" % fmt_err(errors(rows, default_w)))
+        f.write("\nacceptance bar: TBD\n")
+        if chip:
+            cname, ops, speed, default, crows = chip
+            f.write("\nchip %s: ops %s, speed %g; per program: jobs, share of time, model, error "
+                    "(bias, mean |error|, p95, worst, mean on the 5%% longest)\n" % (cname, " ".join(ops), speed))
+            poor = []
+            for entry, fixed, w, how, nj, share, e in crows:
+                f.write("  %06X  %5d jobs  %5.2f%%  %-10s fixed %8.1f  weights %s  %+.1f%% %.1f%% %.1f%% %.1f%% %.1f%%\n"
+                        % (entry, nj, 100 * share, how, fixed, " ".join("%.3f" % x for x in w),
+                           100 * e[0], 100 * e[1], 100 * e[2], 100 * e[3], 100 * e[4]))
+                if e[1] > 0.10 or e[2] > 0.25:
+                    poor.append((entry, share, e))
+            f.write("  default (a program not listed): multiplier %.3f on %g clocks an op\n"
+                    % (default[1][0] / speed if speed else 0, speed))
+            for entry, share, e in poor:
+                f.write("  POOR %06X: %.2f%% of the time, mean %.1f%%, p95 %.1f%%\n"
+                        % (entry, 100 * share, 100 * e[1], 100 * e[2]))
+        f.write("\nstep 2: %s\n" % ("the decomp's accesses against the original's" if checked else "unchecked"))
+        if checked:
+            for kind, r in ratios:
+                f.write("  %-15s decomp / original %s\n" % (kind, r))
+            f.write("  frames whose counts differ: %d\n" % len(mism))
+            for span, fr, n, mine in mism[:20]:
+                f.write("    %s frame %d: original %s, decomp %s\n" % (span, fr, n, mine))
+    print(open(os.path.join(a.out, "report.txt")).read(), end="")
+
+
+def check(a):
+    want = None
+    for line in open(a.profile):
+        w = line.split()
+        if w and w[0] == "source-sha256":
+            want = w[1]
+    if not want or want == "-":
+        print("nshvc-profile: %s was not checked against a decomp's source (step 2)" % a.profile)
+        return 0
+    if source_hash(a.source) != want:
+        print("nshvc-profile: warning: %s is stale: the decomp's source has changed since it was checked"
+              % a.profile)
+        return 1
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="nshvc-profile", description=__doc__.split("\n\n")[1])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    m = sub.add_parser("measure")
+    m.add_argument("rom", nargs="+")
+    m.add_argument("--out", required=True)
+    m.add_argument("--frames", type=int, default=3600)
+    m.add_argument("--span", action="append")
+    m.add_argument("--chip-jobs")
+    m.add_argument("--decomp")
+    m.add_argument("--source")
+    m.add_argument("--name")
+    c = sub.add_parser("check")
+    c.add_argument("profile")
+    c.add_argument("--source", required=True)
+    a = p.parse_args()
+    if a.cmd == "measure":
+        measure(a)
+    else:
+        sys.exit(check(a))
+
+
+if __name__ == "__main__":
+    main()

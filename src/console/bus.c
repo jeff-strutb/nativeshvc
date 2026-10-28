@@ -42,6 +42,7 @@ void (*snes_interrupt_hook)(int nmi);
 int (*snes_irq_masked)(void);
 void (*snes_frame_hook)(void);
 void (*snes_write_hook)(uint32_t addr, uint8_t value);
+void (*snes_read_hook)(uint32_t addr, uint8_t value);
 
 static uint8_t wram[0x20000];
 static uint32_t wram_port;
@@ -146,6 +147,7 @@ static int dma_pending, hdma_pending, hdma_mode, dma_active;
 static unsigned unit_cc;        /* the CPU's cycle the unit's work comes in, its clocks */
 
 static unsigned dbg_irqs, dbg_nmis;          /* for NSHVC_DEBUG */
+static unsigned interrupts_taken;            /* every one taken: a wait's look again */
 static uint32_t dbg_last_read;                /* for NSHVC_DEBUG */
 
 void snes_fatal(const char *fmt, ...)
@@ -579,6 +581,7 @@ static int check_interrupts(void)
     if (nmi_pending && nmi_at <= snes_clock) {
         nmi_pending = 0;
         dbg_nmis++;
+        interrupts_taken++;
         if (snes_interrupt_hook)
             snes_interrupt_hook(1);
         return 1;
@@ -586,6 +589,7 @@ static int check_interrupts(void)
     if (((timeup_flag && timeup_at <= snes_clock) || (cart_irq && cart_irq_at <= snes_clock)) && snes_interrupt_hook &&
         !masked) {
         dbg_irqs++;
+        interrupts_taken++;
         snes_interrupt_hook(0);
         return 1;
     }
@@ -1054,22 +1058,133 @@ uint8_t snes_peek(uint32_t addr)
 }
 
 /* ---- the decomp's bus -------------------------------------------------------------- */
-/* The S-CPU's C takes no time, so a loop of it that waits for the
-   hardware (a status bit, a counter, the sound unit's reply) without
-   nshvc_wait_until never ends; such a loop reads and does not write.
-   20,000,000 reads with no write or wait between them are taken for one. */
+/* What an access costs the S-CPU (contract 2.1): the bus's time for it, as
+   the console's memory speeds give it (8 clocks for work RAM, the
+   cartridge's RAM and ROM, 6 for ROM in banks $80-$FF when MEMSEL selects
+   FastROM, 6 for most registers, 12 for $4000-$41FF), and before it the
+   allowance: the CPU's own work around an access of that kind (its
+   instruction fetches and internal cycles, which the C does not make),
+   the same for every game. Neither is the game's to state.
+
+   The allowance by kind (nshvc.h NSHVC_KIND_*: a read or a write of work
+   RAM, ROM, cartridge RAM, I/O), in tenths of a master clock: the
+   cartridge's cost profile (nshvc_cart.cost_profile, docs/cost-profile.md)
+   or, with none, 0: the bus's time alone. The tenths carry from one access
+   to the next. NSHVC_CPU_ALLOWANCE overrides them, for
+   measuring only: one value in clocks for every kind, or eight,
+   comma-separated, the reads' four then the writes'. */
+static uint32_t allowance[2][NSHVC_KINDS];
+static uint32_t allowance_carry;          /* tenths not yet spent */
+
+int nshvc_access_kind(uint32_t addr)
+{
+    uint8_t bank = (uint8_t)(addr >> 16), b = bank & 0x7F;
+    uint16_t off = (uint16_t)addr;
+    if ((b >= 0x70 && b <= 0x7D && off < 0x8000) || (bank >= 0xF0 && off < 0x8000) ||
+        (b >= 0x20 && b <= 0x3F && off >= 0x6000 && off < 0x8000))
+        return NSHVC_KIND_CART_RAM;
+    if (bank == 0x7E || bank == 0x7F || (!(bank & 0x40) && off < 0x2000))
+        return NSHVC_KIND_WRAM;
+    if (!(bank & 0x40) && off < 0x6000)
+        return NSHVC_KIND_IO;
+    return NSHVC_KIND_ROM;
+}
+
+/* the cartridge's profile, NSHVC_CPU_ALLOWANCE, or the console's own */
+static void allowance_set(void)
+{
+    const char *e = getenv("NSHVC_CPU_ALLOWANCE");
+    const nshvc_cost_profile *p = snes_cart.cost_profile;
+    double v[2 * NSHVC_KINDS];
+    int n = 0, w, k;
+    memset(allowance, 0, sizeof allowance);
+    allowance_carry = 0;
+    if (p) {
+        if (p->version != NSHVC_COST_PROFILE_VERSION)
+            snes_fatal("the cartridge's cost profile is version %d; this console reads version %d", p->version,
+                       NSHVC_COST_PROFILE_VERSION);
+        memcpy(allowance, p->cpu_tenths, sizeof allowance);
+    }
+    if (!e)
+        return;
+    while (n < 2 * NSHVC_KINDS && sscanf(e, "%lf", &v[n]) == 1) {
+        n++;
+        e = strchr(e, ',');
+        if (!e)
+            break;
+        e++;
+    }
+    if (n != 1 && n != 2 * NSHVC_KINDS)
+        snes_fatal("NSHVC_CPU_ALLOWANCE: one value in clocks, or eight (reads of work RAM, ROM, cartridge RAM, "
+                   "I/O, then writes)");
+    for (w = 0; w < 2; w++)
+        for (k = 0; k < NSHVC_KINDS; k++)
+            allowance[w][k] = (uint32_t)(v[n == 1 ? 0 : NSHVC_KINDS * w + k] * 10 + 0.5);
+}
+
+/* the bus's time for an access */
+static unsigned access_clocks(uint32_t addr)
+{
+    uint8_t bank = (uint8_t)(addr >> 16);
+    uint16_t off = (uint16_t)addr;
+    int fast = (memsel & 1) && (bank & 0x80);
+    if (bank & 0x40)
+        return fast && bank >= 0xC0 ? 6 : 8;
+    if (off >= 0x8000)
+        return fast ? 6 : 8;
+    if (off < 0x2000 || off >= 0x6000)
+        return 8;
+    if (off >= 0x4000 && off < 0x4200)
+        return 12;
+    return 6;
+}
+
+/* Code run with interrupts held (an app's, outside the console's time)
+   costs nothing, so a loop of it that waits for the hardware never ends;
+   such a loop reads and does not write. 20,000,000 reads with no write or
+   wait between them are taken for one. */
 static uint32_t spin_reads;
 
-static uint8_t access_rd(uint32_t addr)
+/* the time before an access: the allowance (the C's own, by the access's
+   kind, `write`; none for the console's interrupt sequence, `game` 0),
+   then the cycle's start, where the DMA unit may take the bus */
+static int access_begins(uint32_t addr, unsigned cc, int game, int write)
+{
+    if (interrupts_held) {
+        if (++spin_reads >= 20000000u)
+            snes_fatal("with interrupts held, the S-CPU made 20,000,000 reads and no write (the last of $%06X): a "
+                       "loop that waits for the console's time, which does not pass held", (unsigned)addr);
+        return 0;
+    }
+    if (game) {
+        allowance_carry += allowance[write][nshvc_access_kind(addr)];
+        if (allowance_carry >= 10) {
+            snes_tick(allowance_carry / 10);
+            allowance_carry %= 10;
+        }
+    }
+    cycle_begins(cc);
+    return 1;
+}
+
+/* a read: its value 4 clocks before its cycle ends */
+static uint8_t access_rd(uint32_t addr, int game)
 {
     uint8_t v;
+    unsigned cc;
     addr &= 0xFFFFFF;
-    if (++spin_reads >= 20000000u)
-        snes_fatal("the S-CPU made 20,000,000 reads and no write (the last of $%06X): a loop that waits for the "
-                   "hardware with no wait (machine.h nshvc_wait_until)", (unsigned)addr);
+    cc = access_clocks(addr);
     dbg_last_read = addr;
-    v = bus_read(addr, 0);
+    if (access_begins(addr, cc, game, 0)) {
+        snes_tick(cc - 4);
+        v = bus_read(addr, 0);
+        snes_tick(4);
+    } else {
+        v = bus_read(addr, 0);
+    }
     snes_mdr = v;
+    if (snes_read_hook)
+        snes_read_hook(addr, v);
     return v;
 }
 
@@ -1115,7 +1230,7 @@ static uint8_t c_rd(uint32_t addr)
 {
     if (rmw_open)
         snes_fatal("rd8_rmw at $%06X: a read of $%06X before its write", (unsigned)rmw_at, (unsigned)(addr & 0xFFFFFF));
-    return access_rd(addr);
+    return access_rd(addr, 1);
 }
 
 uint8_t rd8(uint32_t addr)
@@ -1159,10 +1274,15 @@ uint16_t rd16_rmw(uint32_t addr)
     return v;
 }
 
-static void access_wr(uint32_t addr, uint8_t value)
+/* a write: it lands at its cycle's end */
+static void access_wr(uint32_t addr, uint8_t value, int game)
 {
+    unsigned cc;
     addr &= 0xFFFFFF;
+    cc = access_clocks(addr);
     spin_reads = 0;
+    if (access_begins(addr, cc, game, 1))
+        snes_tick(cc);
     snes_mdr = value;
     if (snes_write_hook)
         snes_write_hook(addr, value);
@@ -1172,29 +1292,31 @@ static void access_wr(uint32_t addr, uint8_t value)
 /* a write ends the read-modify-write whose read came before it */
 void wr8(uint32_t addr, uint8_t value)
 {
-    access_wr(addr, value);
+    access_wr(addr, value, 1);
     rmw_open = 0;
     between();
 }
 
 void wr16(uint32_t addr, uint16_t value)
 {
-    access_wr(addr, (uint8_t)value);
-    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8));
+    access_wr(addr, (uint8_t)value, 1);
+    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), 1);
     rmw_open = 0;
     between();
 }
 
 void wr16_rmw(uint32_t addr, uint16_t value)
 {
-    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8));
-    access_wr(addr, (uint8_t)value);
+    access_wr((addr + 1) & 0xFFFFFF, (uint8_t)(value >> 8), 1);
+    access_wr(addr, (uint8_t)value, 1);
     rmw_open = 0;
     between();
 }
 
-void snes_interrupt_push(uint32_t addr, uint8_t value) { access_wr(addr, value); }
-uint8_t snes_cpu_read_within(uint32_t addr) { return access_rd(addr); }
+/* the interrupt sequence's pushes and RTI's pulls: the console's own
+   accesses, their bus time and no allowance */
+void snes_interrupt_push(uint32_t addr, uint8_t value) { access_wr(addr, value, 0); }
+uint8_t snes_cpu_read_within(uint32_t addr) { return access_rd(addr, 0); }
 
 /* ---- the S-CPU's waits ----
    A wait is the original's poll loop: the clock moves on in steps of up to
@@ -1269,8 +1391,16 @@ uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx)
     wait_allowed("nshvc_wait_until");
     if (rmw_open)
         snes_fatal("nshvc_wait_until between rd8_rmw at $%06X and its write", (unsigned)rmw_at);
-    while (!ready(ctx))
+    for (;;) {
+        unsigned taken = interrupts_taken;
+        if (ready(ctx))
+            break;
+        /* an interrupt taken in the condition's reads: the loop's next
+           turn looks again at once, at what its handler did */
+        if (interrupts_taken != taken)
+            continue;
         wait_step(WAIT_STEP);
+    }
     spin_reads = 0;
     return snes_clock - from;
 }
@@ -1367,6 +1497,7 @@ void snes_power(void)
     frames = vblanks = 0;
     interrupts_held = 0;
     spin_reads = 0;
+    allowance_set();
     line_done_hblank = line_done_refresh = 0;
     irq_at = NEVER;
     ppu_reset();

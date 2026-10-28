@@ -1,16 +1,21 @@
 /*
- * waits.c: the S-CPU's time (machine.h): the C's work takes none; the
- * clock moves on in its waits, each change the wait looks for seen at its
- * own clock, the interrupts taken at theirs, and in a DMA, for the DMA
- * unit's real time; the multiplier and divider done when read. Checked on
- * a cartridge of a few lines of C, against clocks worked out here from
- * the console's timing (src/console/bus.c).
+ * waits.c: the S-CPU's time (machine.h, contract 2.1): each access the
+ * bus's time for it and the allowance for its kind; the clock moving on in
+ * a wait, each change the wait looks for seen at its own clock, the
+ * interrupts taken at theirs, and in a DMA, for the DMA unit's real time;
+ * the multiplier and divider done when read. Checked on a cartridge of a
+ * few lines of C, against clocks worked out here from the console's timing
+ * (src/console/bus.c). With no cost profile, the console's default, each
+ * clock is the bus's alone: a read of $4212 is 6 clocks, its value 2 in;
+ * an interrupt's four pushes to the stack in work RAM 32.
  *
- *   waits             runs the checks; exit 0 when every one holds
- *   waits --poll      a loop polling a status bit with no wait: must stop
- *                     the run (exit 70)
- *   waits --held      a wait with interrupts held: must stop the run
- *                     (exit 70)
+ *   waits              runs the checks; exit 0 when every one holds
+ *   waits --allowance  a cartridge's cost profile (nshvc_cart.cost_profile):
+ *                      each kind's weight, over 10,000 accesses
+ *   waits --held       a wait with interrupts held: must stop the run
+ *                      (exit 70)
+ *   waits --heldpoll   a loop polling a status bit with interrupts held,
+ *                      where no time passes: must stop the run (exit 70)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,10 +28,40 @@
 static int fails;
 static const char *mode = "";
 
+#define READ_4212 6     /* a read of $4212: its cycle */
+#define PUSHES 32       /* an interrupt's four pushes, 8 clocks each */
+
 static void check(int ok, const char *what, long long got, long long want)
 {
     printf("%s %s (%lld, want %lld)\n", ok ? "ok  " : "FAIL", what, got, want);
     fails += !ok;
+}
+
+/* the refreshes (40 clocks each) an access passed, from the clocks before
+   and after it: each line's at 534 clocks in, less the DMA unit's clock as
+   the line begins (bus.c REFRESH_AT) */
+static uint64_t refreshes(uint64_t before, uint32_t before_lc, uint64_t after)
+{
+    uint64_t ls = before - before_lc, n = 0;
+    while (ls <= after) {
+        uint64_t r = ls + 534 - (ls & 7);
+        if (r >= before && r < after)
+            n++;
+        ls += 1364;
+    }
+    return n;
+}
+
+/* an access, and the refreshes it passed */
+static uint64_t timed(uint32_t addr, int write)
+{
+    uint64_t b = snes_clock;
+    uint32_t lc = snes_line_clock();
+    if (write)
+        wr8(addr, 0);
+    else
+        rd8(addr);
+    return refreshes(b, lc, snes_clock);
 }
 
 /* the line's start, the clock now less the line's clocks */
@@ -73,23 +108,67 @@ static void abi_reset(void)
     cpu.e = 0;
     wr8(0x004200, 0x00);
 
-    if (!strcmp(mode, "--poll")) {
-        /* no wait: the vertical blank never comes */
-        while (!(rd8(0x004212) & 0x80))
-            ;
-    }
     if (!strcmp(mode, "--held")) {
         nshvc_hold_interrupts(1);
         nshvc_wait_vblank();
     }
+    if (!strcmp(mode, "--heldpoll")) {
+        nshvc_hold_interrupts(1);
+        while (!(rd8(0x004212) & 0x80))
+            ;
+    }
+    if (!strcmp(mode, "--allowance")) {
+        /* each kind's weight from the profile (main), the bus's time with
+           it, over 10,000 accesses, the refreshes they pass (40 clocks a
+           line) taken out: tenths of a clock carry, so 10,000 of a kind are
+           exactly 1,000 times its tenths */
+        static const struct {
+            const char *what;
+            uint32_t addr;
+            int write;
+            unsigned bus, tenths;
+        } k[] = {
+            { "reads of work RAM", 0x7E2000, 0, 8, 80 },        { "reads of ROM", 0x008000, 0, 8, 280 },
+            { "reads of cartridge RAM", 0x700000, 0, 8, 123 },  { "reads of I/O", 0x00213F, 0, 6, 347 },
+            { "writes of work RAM", 0x7E2000, 1, 8, 316 },      { "writes of cartridge RAM", 0x700000, 1, 8, 457 },
+            { "writes of I/O", 0x002180, 1, 6, 333 },
+        };
+        unsigned j;
+        for (j = 0; j < sizeof k / sizeof k[0]; j++) {
+            uint64_t a, lines;
+            a = snes_clock;
+            lines = 0;
+            for (i = 0; i < 10000; i++)
+                lines += timed(k[j].addr, k[j].write);
+            check(snes_clock - a - 40 * lines == 10000ull * k[j].bus + 1000ull * k[j].tenths, k[j].what,
+                  (long long)(snes_clock - a - 40 * lines), (long long)(10000ull * k[j].bus + 1000ull * k[j].tenths));
+        }
+        printf("%d check(s) failed\n", fails);
+        exit(fails ? 1 : 0);
+    }
 
-    /* the C's work takes no time, and its writes land */
+    /* with no profile, each access takes its bus's time alone, a frame
+       passing in enough of them, and the writes land */
     t0 = snes_clock;
     f0 = nshvc_frames();
-    for (i = 0; i < 100000; i++)
-        wr8(0x7E2000u + (unsigned)(i & 0xFFF), (uint8_t)(i ^ 0x5A));
-    check(snes_clock == t0, "100,000 writes take no time", (long long)(snes_clock - t0), 0);
-    check(nshvc_frames() == f0, "no frame passes in them", nshvc_frames() - f0, 0);
+    {
+        uint64_t lines = 0;
+        for (i = 0; i < 100000; i++) {
+            uint64_t b = snes_clock;
+            uint32_t lc = snes_line_clock();
+            wr8(0x7E2000u + (unsigned)(i & 0xFFF), (uint8_t)(i ^ 0x5A));
+            lines += refreshes(b, lc, snes_clock);
+        }
+        check(snes_clock - t0 - 40 * lines == 800000, "100,000 writes of work RAM: 8 clocks each, and the refreshes",
+              (long long)(snes_clock - t0 - 40 * lines), 800000);
+    }
+    check(nshvc_frames() == f0 + 2, "two frames pass in them", nshvc_frames() - f0, 2);
+    /* a loop polling with no wait sees the clock move: the vertical blank
+       comes */
+    while (!(rd8(0x004212) & 0x80))
+        ;
+    check(snes_vcounter() == 225 && snes_line_clock() < READ_4212 + 16,
+          "a loop polling $4212 with no wait ends in the vertical blank's first line", snes_line_clock(), 0);
     check(rd8(0x7E2000 + 7) == ((4096 * 24 + 7) ^ 0x5A) % 256, "the writes land", rd8(0x7E2007),
           ((4096 * 24 + 7) ^ 0x5A) % 256);
 
@@ -108,11 +187,14 @@ static void abi_reset(void)
     nshvc_wait_until(not_hblank, NULL);
     t0 = snes_clock;
     w = nshvc_wait_until(hblank, NULL);
-    check(snes_line_clock() == 1092, "a wait for the horizontal blank ends at its start", snes_line_clock(), 1092);
+    /* the first read that takes its value (2 clocks in) at or after 1,092
+       sees it: the wait ends 4 clocks after that, 1,096 to 1,098 */
+    check(snes_line_clock() >= 1096 && snes_line_clock() <= 1098,
+          "a wait for the horizontal blank ends with the first read in it", snes_line_clock(), 1096);
     check(w == snes_clock - t0, "nshvc_wait_until returns the clocks waited", (long long)w,
           (long long)(snes_clock - t0));
     w = nshvc_wait_until(hblank, NULL);
-    check(w == 0, "a condition that holds already: no wait", (long long)w, 0);
+    check(w == READ_4212, "a condition that holds already: only its read", (long long)w, READ_4212);
 
     /* the joypads' read: it starts on its step of 256 in dots 130-384 of
        line 225 and runs 33 edges of 128 clocks; the wait for its end ends
@@ -122,7 +204,7 @@ static void abi_reset(void)
     ls = line_start();
     {
         uint64_t h0 = 130 + ((256 - ((ls + 130) & 255)) & 255);
-        want = ls - 4 + h0 + 33 * 128;
+        want = ls - 4 + h0 + 33 * 128 + READ_4212;
     }
     nshvc_wait_until(joy_busy, NULL);
     nshvc_wait_until(joy_done, NULL);
@@ -136,8 +218,9 @@ static void abi_reset(void)
     nmis = 0;
     cpu.unwound = 1;                /* as code that left through its caller's frame and goes on */
     nshvc_wait_until(flag_set, &nmis);
-    check(snes_vcounter() == 225 && nmi_at == line_start() + 2, "the NMI is taken in a wait at its clock",
-          (long long)(nmi_at - line_start()), 2);
+    check(snes_vcounter() == 225 && nmi_at == line_start() + 2 + PUSHES,
+          "the NMI is taken in a wait at its clock (its handler after the pushes)", (long long)(nmi_at - line_start()),
+          2 + PUSHES);
     check(cpu.unwound == 1, "an interrupt in code that left through its caller's frame: no fatal, the flag kept",
           cpu.unwound, 1);
     cpu.unwound = 0;
@@ -151,8 +234,8 @@ static void abi_reset(void)
     irqs = 0;
     wr8(0x004200, 0x10);
     nshvc_wait_until(flag_set, &irqs);
-    check(irq_at == line_start() + 4 * 100 + 14, "the H IRQ is taken in a wait at its clock",
-          (long long)(irq_at - line_start()), 4 * 100 + 14);
+    check(irq_at == line_start() + 4 * 100 + 14 + PUSHES, "the H IRQ is taken in a wait at its clock",
+          (long long)(irq_at - line_start()), 4 * 100 + 14 + PUSHES);
     wr8(0x004200, 0x00);
 
     /* a wait in the NMI's handler: the horizontal blank seen at its clock,
@@ -169,10 +252,12 @@ static void abi_reset(void)
     nshvc_wait_until(flag_set, &irqs);
     nmi_wait = 0;
     wr8(0x004200, 0x00);
-    check(nmis == 1 && nmi_waited_to == nmi_at - 2 + 1092, "a wait in the NMI's handler ends at the horizontal blank",
-          (long long)(nmi_waited_to - (nmi_at - 2)), 1092);
+    check(nmis == 1 && nmi_waited_to - (nmi_at - 2 - PUSHES) >= 1096 && nmi_waited_to - (nmi_at - 2 - PUSHES) <= 1098,
+          "a wait in the NMI's handler ends with the horizontal blank's first read",
+          (long long)(nmi_waited_to - (nmi_at - 2 - PUSHES)), 1096);
     check(nmi_irq_seen == 0, "the IRQ is held in the handler's wait", (long long)nmi_irq_seen, 0);
-    check(irq_at == nmi_waited_to, "and taken as the handler returns", (long long)(irq_at - nmi_waited_to), 0);
+    check(irq_at == nmi_waited_to + 2 * PUSHES, "and taken as the handler returns (RTI's pulls, then its pushes)",
+          (long long)(irq_at - nmi_waited_to), 2 * PUSHES);
 
     /* WAI: on at the interrupt, taken there */
     wr8(0x004207, 50);
@@ -180,8 +265,8 @@ static void abi_reset(void)
     irqs = 0;
     wr8(0x004200, 0x10);
     cpu_wai(0x008000);
-    check(irqs == 1 && irq_at == line_start() + 4 * 50 + 14 && snes_clock == irq_at,
-          "WAI ends at the IRQ, taken at its clock", (long long)(irq_at - line_start()), 4 * 50 + 14);
+    check(irqs == 1 && irq_at == line_start() + 4 * 50 + 14 + PUSHES, "WAI ends at the IRQ, taken at its clock",
+          (long long)(irq_at - line_start()), 4 * 50 + 14 + PUSHES);
     wr8(0x004200, 0x00);
     /* masked: WAI ends, nothing taken */
     cpu.p = (uint8_t)(cpu.p | P_I);
@@ -214,14 +299,14 @@ static void abi_reset(void)
     t1 = snes_clock;
     {
         /* the refreshes passed: one each line whose refresh falls in it */
-        uint64_t moved = 8 + 8 + 2000 * 8, refresh = 0, l;
+        uint64_t moved = 6 + 8 + 8 + 2000 * 8, refresh = 0, l;   /* the $420B write's own 6 first */
         for (l = ls; l < t1; l += 1364)
             if (l + 534 - ((l - 4 + 4) & 7) >= t0 && l + 534 - ((l - 4 + 4) & 7) < t1)
                 refresh += 40;
         /* aligned (1-8 clocks to the unit's next step of 8) and given back
            on the cycle (the rest of 8, or 8 when none is left): 8 or 16 */
         uint64_t extra = t1 - t0 - refresh - moved;
-        check(extra == 8 || extra == 16, "a DMA of 2,000 bytes: 16,016 clocks, 8 or 16 aligning, the refreshes",
+        check(extra == 8 || extra == 16, "a DMA of 2,000 bytes after its write: 16,016 clocks, 8 or 16 aligning, the refreshes",
               (long long)extra, 8);
     }
 
@@ -241,6 +326,10 @@ static void abi_reset(void)
     exit(fails ? 1 : 0);
 }
 
+static const nshvc_cost_profile profile = {
+    NSHVC_COST_PROFILE_VERSION, { { 80, 280, 123, 347 }, { 316, 544, 457, 333 } }, 0, NULL, 0, { 0, 0, NULL },
+};
+
 static const uint8_t rom[0x8000] = { [0x7FFC] = 0x00, [0x7FFD] = 0x80, [0x7FEA] = 0x00, [0x7FEB] = 0x90,
                                       [0x7FEE] = 0x00, [0x7FEF] = 0xA0, [0x7FD5] = 0x20 };
 static const nshvc_routine routines[] = {
@@ -256,6 +345,12 @@ int main(int argc, char **argv)
         mode = argv[1];
     memset(&cart, 0, sizeof cart);
     cart.title = "waits";
+    /* --allowance: a profile, weights in tenths of a clock by kind (reads
+       of work RAM, ROM, cartridge RAM, I/O, then writes); else none, the
+       console's default */
+    if (!strcmp(mode, "--allowance"))
+        cart.cost_profile = &profile;
+    cart.sram_size = 0x2000;
     cart.map = NSHVC_LOROM;
     cart.rom = rom;
     cart.rom_size = sizeof rom;

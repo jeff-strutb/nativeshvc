@@ -20,7 +20,9 @@
    optional (NULL). */
 struct nshvc_chip {
     const char *name;
-    /* power on, before the S-CPU starts: the cartridge it is on */
+    /* power on, before the S-CPU starts: the cartridge it is on (its cost
+       profile's rows for the chip's programs, cart->cost_profile, are the
+       chip's to price its jobs by: docs/cost-profile.md) */
     void (*power)(const nshvc_cart *cart);
     /* An S-CPU access to an address the chip decodes (bank:offset, 24
        bits): 1 when the chip answers it (*v the byte read), 0 when it is the

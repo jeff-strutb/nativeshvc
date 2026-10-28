@@ -30,7 +30,18 @@
  * its end), the address (32 bits), 0 for a read of data, 1 for a write, 2
  * for a fetch of code (the open bus holds what it fetched), 3 for a DMA's
  * or HDMA's write, the value, 2 bytes of 0; little-endian
- * (tests/rom/replay.c plays it back on nativeshvc). --voices: at
+ * (tests/rom/replay.c plays it back on nativeshvc). --cpustats FILE
+ * [--cpustats-after SHOT]: the CPU's own time around its accesses, the
+ * work the game's C does not reproduce: for each S-CPU read of data and
+ * each write, the clocks its CPU spent since the one before on code
+ * fetches and internal cycles (not WAI's, not DMA's or refresh's), a
+ * histogram (GAP COUNT lines, then totals), from the script's shot SHOT
+ * on when given; a stretch of more than 64 reads with no write is a poll
+ * loop (the console's waits stand for those) and is left out, as is a gap
+ * past 1,024 clocks (a branch to itself). And a line a frame: "F frame",
+ * then for reads and for writes of work RAM, ROM, cartridge RAM and I/O
+ * (nshvc.h NSHVC_KIND_*: the same addresses), each the accesses and their
+ * gaps' clocks, then the accesses' own bus clocks. --voices: at
  * each sample, each voice's envelope level, its stage, pitch counter, BRR
  * block and byte, as the core's DSP holds them (40 32-bit values).
  *
@@ -358,6 +369,10 @@ static void shot(const char *dir, long n)
 /* ---- --script ---- */
 static void *core;
 static long runs;                      /* frames the core has run */
+/* --cpustats: counting from the script's shot named this (NULL: from power on), and
+   whether it is now */
+static const char *cpustats_after;
+static int cpustats_on;
 
 static uint8_t *memory(const char *name, size_t *size)
 {
@@ -679,6 +694,8 @@ static void takes(const char *dir)
         case S_SHOT:
             snprintf(path, sizeof path, "%s/%s.ppm", dir, st->name);
             shot_to(path);
+            if (cpustats_after && !strcmp(st->name, cpustats_after))
+                cpustats_on = 1;
             break;
         case S_DUMP:
             write_mem(dir, st->name, ".wram", "wram");
@@ -787,6 +804,132 @@ static void cpulog_put(uint32_t addr, int write, uint8_t value)
     fwrite(rec, 1, 16, cpulog_f);
 }
 
+/* --cpustats */
+static FILE *cpustats_f;
+static uint8_t *core_opcode;
+#define GAP_MAX 1024
+static uint64_t gap_hist[GAP_MAX + 1], gap_reads[65], gap_fetches, gap_idles;
+static uint32_t gap_now, gap_fetch_now, gap_idle_now;
+static uint32_t pending[65], pending_n;      /* the reads since the last write */
+static uint8_t pending_kind[65];
+static uint32_t pending_bus[65];
+/* this frame's: by kind (read or write x work RAM, ROM, I/O) the accesses
+   and their gaps, and the bus clocks */
+static uint64_t frame_n[8], frame_gap[8], frame_bus;
+static uint32_t access_kind, access_bus;     /* the access being counted */
+
+/* the access kinds of nshvc.h (NSHVC_KIND_*): work RAM 0, ROM 1,
+   cartridge RAM 2, I/O 3 */
+static int region(uint32_t addr)
+{
+    uint8_t bank = (uint8_t)(addr >> 16), b = bank & 0x7F;
+    uint16_t off = (uint16_t)addr;
+    if ((b >= 0x70 && b <= 0x7D && off < 0x8000) || (bank >= 0xF0 && off < 0x8000) ||
+        (b >= 0x20 && b <= 0x3F && off >= 0x6000 && off < 0x8000))
+        return 2;
+    if (bank == 0x7E || bank == 0x7F || (!(bank & 0x40) && off < 0x2000))
+        return 0;
+    if (!(bank & 0x40) && off < 0x6000)
+        return 3;
+    return 1;
+}
+static uint64_t poll_reads, long_gaps;
+
+static void gap_count_kind(uint32_t g, unsigned kind, uint32_t bus)
+{
+    frame_n[kind]++;
+    frame_gap[kind] += g;
+    frame_bus += bus;
+}
+
+static void gap_count(uint32_t g)
+{
+    if (g > GAP_MAX) {
+        long_gaps++;
+        return;
+    }
+    gap_hist[g]++;
+}
+
+/* an access of data: its gap, held with the reads before it until a write
+   shows they were not a poll loop */
+static void gap_access(int write)
+{
+    uint32_t k;
+    if (!cpustats_on)
+        goto done;
+    if (!write) {
+        if (pending_n < 65) {
+            pending[pending_n] = gap_now;
+            pending_kind[pending_n] = (uint8_t)access_kind;
+            pending_bus[pending_n] = access_bus;
+        }
+        pending_n++;
+        goto done;
+    }
+    if (pending_n <= 64)
+        for (k = 0; k < pending_n; k++) {
+            gap_count(pending[k]);
+            if (pending[k] <= GAP_MAX)
+                gap_count_kind(pending[k], pending_kind[k], pending_bus[k]);
+        }
+    else
+        poll_reads += pending_n;
+    pending_n = 0;
+    gap_count(gap_now);
+    if (gap_now <= GAP_MAX)
+        gap_count_kind(gap_now, access_kind, access_bus);
+done:
+    gap_now = 0;
+}
+
+static void core_timing(int kind, int clocks, uint32_t addr)
+{
+    if (kind == 1 || kind == 2) {
+        access_kind = (kind == 2 ? 4u : 0u) + (unsigned)region(addr);
+        access_bus = (uint32_t)clocks;
+    }
+    if (kind == 1 && *core_who == 0)
+        gap_access(0);
+    else if (kind == 1 && (*core_who == 1 || *core_who == 2))
+        gap_now += (uint32_t)clocks, gap_fetches += cpustats_on;
+    else if (kind == 2)
+        gap_access(1);
+    else if (kind == 3 && *core_opcode != 0xCB && *core_opcode != 0xDB)
+        gap_now += (uint32_t)clocks, gap_idles += cpustats_on;
+}
+
+/* the frame's line (--cpustats), at its end */
+static void cpustats_frame(long frame)
+{
+    int k;
+    if (!cpustats_f || !cpustats_on)
+        return;
+    fprintf(cpustats_f, "F %ld", frame);
+    for (k = 0; k < 8; k++)
+        fprintf(cpustats_f, " %llu %llu", (unsigned long long)frame_n[k], (unsigned long long)frame_gap[k]);
+    fprintf(cpustats_f, " %llu\n", (unsigned long long)frame_bus);
+    memset(frame_n, 0, sizeof frame_n);
+    memset(frame_gap, 0, sizeof frame_gap);
+    frame_bus = 0;
+}
+
+static void cpustats_write(void)
+{
+    uint64_t n = 0, sum = 0;
+    int g;
+    for (g = 0; g <= GAP_MAX; g++) {
+        if (gap_hist[g])
+            fprintf(cpustats_f, "%d %llu\n", g, (unsigned long long)gap_hist[g]);
+        n += gap_hist[g];
+        sum += gap_hist[g] * (uint64_t)g;
+    }
+    fprintf(cpustats_f, "accesses %llu clocks %llu fetches %llu idles %llu poll_reads %llu long_gaps %llu\n",
+            (unsigned long long)n, (unsigned long long)sum, (unsigned long long)gap_fetches,
+            (unsigned long long)gap_idles, (unsigned long long)poll_reads, (unsigned long long)long_gaps);
+    fclose(cpustats_f);
+}
+
 static void core_read(uint32_t addr, uint8_t value)
 {
     if (cpulog_f && *core_who <= 2)
@@ -847,6 +990,11 @@ int main(int argc, char **argv)
             }
         }
         else if (!strcmp(argv[i], "--wram") && i + 1 < argc) wram_path = argv[++i];
+        else if (!strcmp(argv[i], "--cpustats") && i + 1 < argc) {
+            if (!(cpustats_f = fopen(argv[++i], "w")))
+                die("cannot write ", argv[i]);
+        } else if (!strcmp(argv[i], "--cpustats-after") && i + 1 < argc)
+            cpustats_after = argv[++i];
         else if (!strcmp(argv[i], "--cpulog") && i + 1 < argc) {
             if (!(cpulog_f = fopen(argv[++i], "wb")))
                 die("cannot write ", argv[i]);
@@ -921,13 +1069,21 @@ int main(int argc, char **argv)
     fclose(f);
     if (!p_load_game(&gi))
         die("the core did not load ", rom);
-    if (watch_set || spclog_f || cpulog_f) {
+    if (watch_set || spclog_f || cpulog_f || cpustats_f) {
         static struct sfxbox_callbacks cb;
         void (*set)(const struct sfxbox_callbacks *) =
             (void (*)(const struct sfxbox_callbacks *))dlsym(core, "sfxbox_set_callbacks");
         if (!set)
             die("the core has no write hook", NULL);
         cb.write = core_write;
+        if (cpustats_f) {
+            core_who = (int *)dlsym(core, "sfxbox_cpu_who");
+            core_opcode = (uint8_t *)dlsym(core, "sfxbox_cpu_opcode");
+            if (!core_who || !core_opcode)
+                die("the core has no CPU hooks", NULL);
+            cpustats_on = !cpustats_after;
+            cb.timing = core_timing;
+        }
         if (cpulog_f) {
             *(void **)&core_clock = dlsym(core, "sfxbox_core_clock");
             core_who = (int *)dlsym(core, "sfxbox_cpu_who");
@@ -948,11 +1104,14 @@ int main(int argc, char **argv)
             for (;;) {
                 p_run();
                 runs++;
+                cpustats_frame(runs);
                 /* a mouse's motion is the frame's */
                 mouse_m[0][0] = mouse_m[0][1] = mouse_m[1][0] = mouse_m[1][1] = 0;
                 if (!script_frame(out))
                     break;
             }
+        if (cpustats_f)
+            cpustats_write();
         return 0;
     }
     for (n = 1; n <= frames; n++) {
@@ -960,6 +1119,7 @@ int main(int argc, char **argv)
         const char *p;
         size_t k;
         p_run();
+        cpustats_frame(n);
         snprintf(key, sizeof key, ",%ld,", n);
         k = strlen(shots);
         {
@@ -979,6 +1139,8 @@ int main(int argc, char **argv)
         fclose(spclog_f);
     if (cpulog_f)
         fclose(cpulog_f);
+    if (cpustats_f)
+        cpustats_write();
     if (wram_path) {
         /* work RAM after the last frame (libretro's system RAM, id 2) */
         uint8_t *m = (uint8_t *)p_get_memory_data(2);

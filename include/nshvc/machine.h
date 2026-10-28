@@ -9,11 +9,13 @@
  * of the contract (docs/contract.md); it changes only with nativeshvc's
  * major version.
  *
- * The C's work takes none of the console's time: its accesses are made at
- * the clock as it stands, and the clock moves on only where the code waits
- * for the hardware (the waits below) and while a DMA its write starts
- * stops the S-CPU. The machine is exact in what it does, not in how long
- * the C's own work takes (README.md, Time).
+ * The C states no time. Each access it makes costs what the console's bus
+ * takes for it, and the weight of its kind from the cartridge's cost
+ * profile (nshvc.h nshvc_cart.cost_profile, 0 with none); its own
+ * arithmetic between accesses costs nothing. The clock also moves on where
+ * the code waits for the hardware (the waits below) and while a DMA its
+ * write starts stops the S-CPU. The machine is exact in what it does, not
+ * in how long the C's own work takes (README.md, Time).
  *
  * Routines that assembly still calls also need the register file: each such
  * routine has an abi_ wrapper that takes its inputs from `cpu` and leaves its
@@ -45,10 +47,10 @@ uint16_t rd16_rmw(uint32_t addr);
 void wr16_rmw(uint32_t addr, uint16_t value);
 
 /* Interrupts: the CPU takes one between two of its operations, never in
-   one, the IRQ unless the I flag in `cpu` masks it. With the C's work
-   taking no time, one comes due in a wait, and is taken there at the clock
-   it comes due, its handler run before the wait looks again; or in a DMA,
-   and is taken at the end of the write that started it. A handler may
+   one, the IRQ unless the I flag in `cpu` masks it. One that comes due in
+   an access (or a DMA its write started) is taken at that operation's end;
+   one that comes due in a wait is taken there at the clock it comes due,
+   its handler run before the wait looks again. A handler may
    wait too: the I flag the interrupt sets holds the IRQ, as on the
    console, and an NMI may still come in an IRQ's handler. */
 

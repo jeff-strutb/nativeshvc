@@ -177,6 +177,46 @@ static void draw_overlays(int tw, int th)
 
 /* ---- the application ---- */
 static int headless;
+
+/* --counts FILE (headless): each frame's S-CPU accesses by kind, for
+   tools/nshvc-profile's step 2: "F frame" and the reads of each kind
+   (nshvc.h NSHVC_KIND_*), then the writes. A stretch of more than 64 reads
+   with no write (a poll loop, a wait's reads) is left out, as the
+   profile's measure of the original leaves it out. */
+static FILE *counts_f;
+static uint64_t counts[2][NSHVC_KINDS];
+static uint8_t pending_kind[65];
+static unsigned pending_n;
+
+static void count_read(uint32_t addr, uint8_t value)
+{
+    (void)value;
+    if (pending_n < 65)
+        pending_kind[pending_n] = (uint8_t)nshvc_access_kind(addr);
+    pending_n++;
+}
+
+static void count_write(uint32_t addr, uint8_t value)
+{
+    unsigned k;
+    (void)value;
+    if (pending_n <= 64)
+        for (k = 0; k < pending_n; k++)
+            counts[0][pending_kind[k]]++;
+    pending_n = 0;
+    counts[1][nshvc_access_kind(addr)]++;
+}
+
+static void counts_frame(long n)
+{
+    int w, k;
+    fprintf(counts_f, "F %ld", n);
+    for (w = 0; w < 2; w++)
+        for (k = 0; k < NSHVC_KINDS; k++)
+            fprintf(counts_f, " %llu", (unsigned long long)counts[w][k]);
+    fprintf(counts_f, "\n");
+    memset(counts, 0, sizeof counts);
+}
 static long max_frames = -1;
 static long frame_no;
 static FILE *sound_f;
@@ -399,6 +439,8 @@ static void frame(void)
     if (headless) {
         static int rc = -1;
         int more;
+        if (counts_f)
+            counts_frame(frame_no);
         if (rc < 0)
             rc = getenv("NSHVC_RRCHECK") != NULL;
         if (rc)
@@ -485,7 +527,13 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
             out_dir = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc)
             max_frames = atol(argv[++i]);
-        else if (!strcmp(argv[i], "--sound") && i + 1 < argc) {
+        else if (!strcmp(argv[i], "--counts") && i + 1 < argc) {
+            if (!(counts_f = fopen(argv[++i], "w"))) {
+                fprintf(stderr, "nativeshvc: cannot write %s\n", argv[i]);
+                return 2;
+            }
+            setvbuf(counts_f, NULL, _IOFBF, 1 << 16);
+        } else if (!strcmp(argv[i], "--sound") && i + 1 < argc) {
             /* a new copy of the program going on from a replay adds to it */
             if (!(sound_f = fopen(argv[++i], getenv("NSHVC_SCRIPT_PLAN") ? "ab" : "wb"))) {
                 fprintf(stderr, "nativeshvc: cannot write %s\n", argv[i]);
@@ -499,6 +547,10 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     if (script)
         script_load(script, out_dir);
     nshvc_power(cart);
+    if (counts_f) {
+        nshvc_set_read_hook(count_read);
+        nshvc_set_write_hook(count_write);
+    }
     save_load();
     if (headless && script) {
         /* A step's first frame has its buttons before that frame runs: set

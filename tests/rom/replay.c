@@ -12,8 +12,11 @@
  * open bus holds the last byte on it, a fetch's as much as data's.
  *
  * Built on the console's public calls only: the cartridge's own chip
- * raises the IRQ line at the next access's clock, masked, and a wait
- * (machine.h nshvc_wait_until) stops at a rise of it. The S-CPU takes no
+ * raises the IRQ line at the next access's start, masked, and a wait
+ * (machine.h nshvc_wait_until) stops at a rise of it. Each access takes
+ * its bus's time (contract 2.1; no cost profile here, so nothing more): it
+ * starts a cycle before the reference's clock for it, so a read takes its
+ * value, and a write lands, at that clock. The S-CPU takes no
  * interrupt here (the I flag held set; the NMI's enable taken out of each
  * $4200 write: RDNMI's flag is the console's still), since the reference's
  * interrupt sequences are in the record as its accesses.
@@ -38,7 +41,7 @@
 #define CLOCK_OFFSET 4
 /* the reset's own accesses (its stack and vector reads) come before the
    CPU's first instruction, where the console starts its C (src/console
-   snes.h SNES_POWER_CLOCK): made, their time not held */
+   snes.h SNES_POWER_CLOCK): not made here */
 #define POWER_CLOCK 182
 /* The DMA unit takes the bus at the CPU's cycles: a DMA starts at the
    CPU's second cycle after its $420B write, an HDMA at the start of the
@@ -56,7 +59,10 @@
    over the suite: -6, -4, -2, 0), so a byte (8 clocks) more or less shows.
    Not with HDMA on (HDMAEN set as it is written): an HDMA in the DMA ends
    with its table's reads, which write nothing to measure by; its bytes
-   and what it does are held as the rest are. */
+   and what it does are held as the rest are. Nor when the $420B write
+   itself started late (within the CPU's cycles, above: the unit's start
+   then falls on another of its steps of 8); those are counted as not
+   measured. */
 #define DMA_START_CLOCKS 24
 #define CYCLES_LATE 36
 #define DMA_END_FROM (-6)
@@ -69,14 +75,14 @@ typedef struct {
 } Access;
 
 static Access *log_;
-static size_t log_n, done, reads, differ, late, dma_start, aligned, dma_short;
+static size_t log_n, done, reads, differ, late, dma_start, aligned, dma_short, dma_unmeasured;
 
 static void report(void)
 {
     fprintf(stderr,
             "replay: %zu of %zu accesses, %zu reads, %zu differ, %zu late, %zu DMAs' lengths differ (%zu before a DMA's start, "
-            "%zu within the CPU's cycles)\n",
-            done, log_n, reads, differ, late, dma_short, dma_start, aligned);
+            "%zu within the CPU's cycles, %zu DMAs not measured)\n",
+            done, log_n, reads, differ, late, dma_short, dma_start, aligned, dma_unmeasured);
 }
 
 static void finish(void)
@@ -94,6 +100,26 @@ static const nshvc_chip clock_chip = { .name = "replay", .read = no_read, .write
 
 static int reached(void *ctx) { return nshvc_cart_clock() >= *(uint64_t *)ctx; }
 
+/* MEMSEL as last written: FastROM's 6-clock cycles in banks $80-$FF */
+static uint8_t memsel;
+
+/* an access's cycle, by the console's memory speeds (src/console/bus.c) */
+static unsigned cycle(uint32_t addr)
+{
+    uint8_t bank = (uint8_t)(addr >> 16);
+    uint16_t off = (uint16_t)addr;
+    int fast = (memsel & 1) && (bank & 0x80);
+    if (bank & 0x40)
+        return fast && bank >= 0xC0 ? 6 : 8;
+    if (off >= 0x8000)
+        return fast ? 6 : 8;
+    if (off < 0x2000 || off >= 0x6000)
+        return 8;
+    if (off >= 0x4000 && off < 0x4200)
+        return 12;
+    return 6;
+}
+
 /* the reference's clock of the last $420B write that started a DMA,
    nativeshvc's when its DMA ended (0: the access after it not yet seen),
    and the reference's last DMA byte since */
@@ -106,13 +132,18 @@ static void abi_reset(void)
     cpu.p = (uint8_t)(cpu.p | P_I);
     for (done = 0; done < log_n; done++) {
         const Access *a = &log_[done];
-        uint64_t at = a->at - CLOCK_OFFSET;
-        if (nshvc_cart_clock() < at) {
+        uint64_t at = a->at - CLOCK_OFFSET, start;
+        /* its cycle's start: a read's value 4 clocks before its end, a
+           write's landing at its end */
+        start = at - (a->kind == 1 ? cycle(a->addr) : cycle(a->addr) - 4);
+        if (nshvc_cart_clock() < start) {
             nshvc_cart_irq_at(0, 0);
-            nshvc_cart_irq_at(1, at);
-            nshvc_wait_until(reached, &at);
+            nshvc_cart_irq_at(1, start);
+            nshvc_wait_until(reached, &start);
             nshvc_cart_irq_at(0, 0);
         }
+        if (at < POWER_CLOCK)
+            continue;               /* the reset's own: before the CPU's first instruction */
         if (a->kind == 3) {
             /* the reference's DMA and HDMA: nativeshvc's own makes them */
             dma_last_byte = at;
@@ -138,27 +169,31 @@ static void abi_reset(void)
                         (unsigned long long)dma_last_byte);
             dma_ended = 0;
         }
-        if (nshvc_cart_clock() != at && at >= POWER_CLOCK && dma_written != UINT64_MAX &&
+        if (nshvc_cart_clock() != start && at >= POWER_CLOCK && dma_written != UINT64_MAX &&
             at <= dma_written + DMA_START_CLOCKS) {
             dma_start++;
-        } else if (nshvc_cart_clock() > at && nshvc_cart_clock() <= at + CYCLES_LATE && at >= POWER_CLOCK) {
+        } else if (nshvc_cart_clock() > start && nshvc_cart_clock() <= start + CYCLES_LATE && at >= POWER_CLOCK) {
             aligned++;
-        } else if (nshvc_cart_clock() != at && at >= POWER_CLOCK) {
+        } else if (nshvc_cart_clock() != start && at >= POWER_CLOCK) {
             if (late++ < 20)
-                fprintf(stderr, "replay: access %zu ($%06X) at clock %llu, the reference's %llu\n", done,
-                        (unsigned)a->addr, (unsigned long long)nshvc_cart_clock(), (unsigned long long)at);
+                fprintf(stderr, "replay: access %zu ($%06X) started at clock %llu, the reference's at %llu\n", done,
+                        (unsigned)a->addr, (unsigned long long)nshvc_cart_clock(), (unsigned long long)start);
         }
         cpu.p = (uint8_t)(cpu.p | P_I);
         if (a->kind == 1) {
             uint8_t v = a->value;
+            int on_time = nshvc_cart_clock() == start;
             if ((a->addr & 0x40FFFF) == 0x4200)
                 v &= 0x7F;
             wr8(a->addr, v);
             if ((a->addr & 0x40FFFF) == 0x420C)
                 hdmaen = v;
+            if ((a->addr & 0x40FFFF) == 0x420D)
+                memsel = v;
             if ((a->addr & 0x40FFFF) == 0x420B && v) {
                 dma_written = at;
-                dma_ended = hdmaen ? 0 : nshvc_cart_clock();
+                dma_ended = hdmaen || !on_time ? 0 : nshvc_cart_clock();
+                dma_unmeasured += !hdmaen && !on_time;
             }
         } else {
             uint8_t v = rd8(a->addr);

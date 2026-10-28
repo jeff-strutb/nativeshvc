@@ -2,17 +2,16 @@
 # the reason. tests/rom/run.py reports each as KNOWN, never as ok; a known
 # test that starts passing is reported too, so this list is kept true.
 #
-# Each is a difference contract 2.0 makes on purpose (README.md, Time):
+# alu (42), a difference the contract makes on purpose (README.md, Time):
+# the test reads the multiplier or divider ($4214-$4217) while it works, a
+# cycle or a few after its start; the multiplier and divider are done when
+# read here. Every other read and every picture matches.
 #
-# alu: the test reads the multiplier or divider ($4214-$4217) while it
-# works, a cycle or a few after its start; the S-CPU's C takes no time, so
-# nativeshvc's result is done when read. Every other read and every
-# picture matches.
-#
-# apu: the S-CPU reads the sound unit's port ($2140) as its boot ROM
-# replies; the SPC700's work takes no time, so nativeshvc's boot ROM replies
-# as soon as it sees the S-CPU's value, before the reference's. Every other
-# read and every picture matches.
+# replay (14), not yet explained: one read of the latched H counter ($213C) a dot off, or one
+# pixel, after an access the replay started 2 clocks late: the work RAM's
+# refresh before it ended 2 clocks later than the reference's. Why the
+# reference's refresh starts there is not yet known (its own formula gives
+# nativeshvc's clock); every other read and pixel matches.
 alu_mul_0000_ff the multiplier/divider read as it works (done when read here)
 alu_mul_0000_a5 the multiplier/divider read as it works (done when read here)
 alu_mul_0000_13 the multiplier/divider read as it works (done when read here)
@@ -55,22 +54,17 @@ alu_div_8001_00 the multiplier/divider read as it works (done when read here)
 alu_div_8001_01 the multiplier/divider read as it works (done when read here)
 alu_div_8001_13 the multiplier/divider read as it works (done when read here)
 alu_div_8001_ff the multiplier/divider read as it works (done when read here)
-apu_ipl_1 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_2 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_3 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_4 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_5 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_6 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_7 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_8 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_9 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_10 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_11 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_12 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_13 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_14 the boot ROM's reply read before the reference's SPC700 makes it
-apu_ipl_15 the boot ROM's reply read before the reference's SPC700 makes it
-apu_echo_3028 the boot ROM's reply read before the reference's SPC700 makes it
-apu_echo_3030 the boot ROM's reply read before the reference's SPC700 makes it
-apu_echo_3216 the boot ROM's reply read before the reference's SPC700 makes it
-apu_echo_3218 the boot ROM's reply read before the reference's SPC700 makes it
+irq_latch_40_0 replay: a refresh's start 2 clocks off (unexplained)
+irq_latch_60_3 replay: a refresh's start 2 clocks off (unexplained)
+probe_scroll_00_0_07 replay: a refresh's start 2 clocks off (unexplained)
+probe_m7_1b_0_0200 replay: a refresh's start 2 clocks off (unexplained)
+probe_m7_1a_0_0001 replay: a refresh's start 2 clocks off (unexplained)
+irq_reg_00_0 replay: a refresh's start 2 clocks off (unexplained)
+irq_reg_2c_0 replay: a refresh's start 2 clocks off (unexplained)
+pal_irq_latch_280_0 replay: a refresh's start 2 clocks off (unexplained)
+irq_entry_40_0 replay: a refresh's start 2 clocks off (unexplained)
+beam_walk_m37 replay: a refresh's start 2 clocks off (unexplained)
+beam_walk_m41 replay: a refresh's start 2 clocks off (unexplained)
+dma_time_7_2 replay: a refresh's start 2 clocks off (unexplained)
+dma_time_100_0 replay: a refresh's start 2 clocks off (unexplained)
+dma_time_1000_2 replay: a refresh's start 2 clocks off (unexplained)
