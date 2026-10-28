@@ -11,18 +11,27 @@ person sets a number: anyone can give the tool a ROM and get the same numbers ba
 nativeshvc is behaviour exact, not cycle exact (README.md, Time). A processor's C makes the
 original's data accesses, but not its instruction fetches or internal cycles. The console
 charges each access the bus's own time for it, as the hardware's memory speeds give it. A
-game whose behaviour depends on how long its processors take (a race whose pace is how much
-work fits in a frame, slowdown when much happens at once) also needs the CPU work around
-each access, which the console cannot see. The profile gives it: a **weight** for each kind
-of access, measured on the original, charged on top of the bus's time. Load follows from
-that: a frame where more happens makes more accesses and costs more time, so the game slows
-where the original slowed.
+game whose pace is how much work fits in a frame (slowdown when much happens at once) is
+paced one of two ways, the decomper's choice (README.md, Time, Pacing), and both are
+behaviour exact to the original's code:
 
-**Who needs one.** A decompiled original whose behaviour depends on processor time (Stunt
-Race FX, for one). A game written against nativeshvc that paces itself on the console's
-clock needs none, and behaves the same at any CPU cost, zero included: it waits for the
-vertical blank (or another event) through the console's waits rather than spinning, and
-scales motion by the frames that actually passed.
+1. **Independent of processor speed, exactly.** The decomp's code is updated as a properly
+   built modern game's is: its pace is set by the time that really passes and the
+   console's display, not by how much work fits in a frame (waiting for the vertical blank
+   through the console's waits, or moving things by the frames that passed, are ways to
+   get there). It behaves the same at any CPU cost, zero included, and needs no profile. Where the original slowed down, it does not: that
+   slowdown was a side effect of the chips' speed, not something the game was written to do.
+2. **On its work, approximately: the cost profile.** The game keeps the original's pacing,
+   and the profile gives the CPU work around each access, which the console cannot see: a
+   **weight** for each kind of access, measured on the original, charged on top of the
+   bus's time. A frame where more happens makes more accesses and costs more time, so the
+   game slows where the original slowed. The decomp's C does the original's work with
+   other accesses than the original's (fewer reads, values kept in variables, the console's
+   waits where the original polled), and in some code more or fewer than in other code, so
+   no set of weights gives each part of its work the original's time: the profile is an
+   approximation (Stunt Race FX: its race within about 5%, by the frame-total fit).
+
+**Who needs one.** Only a game that takes the second way.
 
 **With none declared, the cost is 0:** each access takes the bus's time alone.
 

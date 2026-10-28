@@ -15,9 +15,10 @@ interrupts, the timers, the sound chip's 32,040 samples a second, held to the re
 its C: it makes every access the original makes, in the original's order, each costing
 what the console's bus takes for it, and waits where the original waited for the hardware.
 So the game does what it did, and sees and plays what it saw and played. How long its
-processors' own work took between accesses is not kept by the C; a game whose behaviour
-depends on it declares a cost profile, measured from its own ROM by the standard
-nativeshvc provides (see [Time](#time)).
+processors' own work took between accesses is not kept by the C. A game whose pace depends
+on it is paced one of two ways, the decomper's choice: made independent of processor speed,
+exactly, or on its work, by a cost profile that approximates the original's processor time (see
+[Time](#time), Pacing).
 
 **A decompiled game is the cartridge; nativeshvc is the console it plugs into.** A game's
 decompiled C, linked against nativeshvc, builds a native program that powers on, runs the
@@ -325,19 +326,35 @@ split, so a handler never sees half of a word or of a read-modify-write. The IRQ
 while the I flag masks it; a handler may itself wait, the I flag holding the IRQ there as
 on the console.
 
-**The processors' own work, and the cost profile.** The C makes the original's data
-accesses but not its instruction fetches or internal cycles, so the time the original
-spent between accesses is not in the C. A game whose behaviour depends on it (a race whose
-pace is how much work fits in a frame, slowdown when much happens at once) declares a cost
-profile (`nshvc_cart.cost_profile`): a weight for each kind of access (a read or a write of
-work RAM, ROM, cartridge RAM, I/O), and for a chip, a cost for each of its programs. Load
-follows from it: a frame where more happens makes more accesses and costs more time. The
-weights are never set by a person: nativeshvc provides the standard and the tool
-(`tools/nshvc-profile`, [docs/cost-profile.md](docs/cost-profile.md)) that measures them
-from the game's own ROM on the reference, and the game runs it. A game that paces itself on
-the console's clock (waiting for the vertical blank rather than spinning) needs none. The
-sound driver's beat is its timers', which run at their real time; its profile's weights give
-it the real chip's time around each access. The multiplier and divider are done when read. The hardware's own time is all kept:
+**Pacing: the decomper's choice.** The C makes the original's data accesses but not its
+instruction fetches or internal cycles, so the time the original's processors spent
+between accesses is not in the C. Most games pace themselves on the console's events
+(waiting for the vertical blank), and do the same whatever their processors' speed. A game
+whose pace is how much work fits in a frame does not: Stunt Race FX's race drops to a lower
+update rate when much is on screen, because the S-CPU and the Super FX could do no more in a
+frame. That slowdown is a side effect of the chips' speed, not something the game was
+written to do. So the decomper chooses how such a game is behaviour exact to the original's
+code, and both ways are:
+
+1. **Independent of processor speed.** The decomp's code is updated as a properly built
+   modern game's is: its pace is set by the time that really passes and the console's
+   display, not by how much work fits in a frame (waiting for the vertical blank, or
+   moving things by the frames that passed, are ways to get there). Its behaviour no
+   longer depends on the processors' speed, so nativeshvc runs it exactly, at the default
+   cost of 0, with no profile. Where the original slowed down, it does not.
+2. **Paced on its work, approximately.** The game keeps the original's pacing and declares
+   a cost profile (`nshvc_cart.cost_profile`): a weight for each kind of access (a read or a
+   write of work RAM, ROM, cartridge RAM, I/O), and for a chip, a cost for each of its
+   programs, so a frame where more happens costs more time. The weights are never set by a
+   person: nativeshvc provides the standard and the tool (`tools/nshvc-profile`,
+   [docs/cost-profile.md](docs/cost-profile.md)) that measures them from the game's own ROM
+   on the reference. The C does the original's work with other accesses than the
+   original's, so the profile approximates the original's processor time, and the slowdown
+   it gives is approximate (Stunt Race FX: its race within about 5%).
+
+nativeshvc does not choose for the game; with no profile declared the cost is 0. The sound
+driver's beat is its timers', which run at their real time; a profile's weights give it the
+real chip's time around each access. The multiplier and divider are done when read. The hardware's own time is all kept:
 a DMA, an HDMA, a line, a timer, a chip's job.
 
 **The sound.** The DSP makes its 32,040 samples a second at its own clock, and the

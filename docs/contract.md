@@ -113,6 +113,14 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   DMA (a `$420B` write) stops it, for the DMA unit's real time. The multiplier and divider
   are done when read. Each access the SPC700's C makes costs its one bus cycle and the
   weight of its kind from the profile (0 with none); its clock also moves in its waits.
+- **Pacing, the game's choice.** A game whose pace is how much work fits in a frame is
+  behaviour exact to the original's code one of two ways, the decomper's choice (README.md,
+  Time, Pacing): made independent of processor speed (its pace set by the time that really
+  passes and the console's display, as a properly built modern game's is, not by how much
+  work fits in a frame), which nativeshvc runs exactly at any CPU cost; or
+  paced on its work, by a cost profile, which approximates the original's processor time,
+  so its slowdown is approximate. The original's slowdown was a side effect of the chips'
+  speed, not something the game was written to do.
 - **The sound as the original's.** After a KON or KOFF write, the SPC700's next DSP write
   waits until the DSP has taken that key event (every other sample), so every note the
   driver keys on or off reaches the DSP, in order, with the voice's registers as the
