@@ -63,6 +63,7 @@ static int noise;                         /* 15 bits */
 static int phase;                         /* the clock to run next, 0-31 */
 /* the shared settings as taken at clocks 27-30 */
 static uint8_t pmon_now, non_now, eon_now, dir_now, koff_now, kon_now, kon_pending;
+static int key_unread;        /* a KON or KOFF written, not yet taken (mix_key_unread) */
 /* ENDX, and the values ENDX, OUTX and ENVX are next given (a write to one
    1-2 clocks before is overwritten) */
 static uint8_t endx, endx_next, outx_next, envx_next;
@@ -155,6 +156,7 @@ void mix_init(uint8_t *memory)
     noise = 0x4000;                        /* -4000h */
     phase = 0;
     pmon_now = non_now = eon_now = dir_now = koff_now = kon_now = kon_pending = 0;
+    key_unread = 0;
     endx = endx_next = outx_next = envx_next = 0;
     memset(main_sum, 0, sizeof main_sum);
     memset(echo_sum, 0, sizeof echo_sum);
@@ -180,8 +182,9 @@ void mix_voice_envelope(int v, int adsr, int attack, int decay, int sustain_leve
 }
 
 void mix_voice_gain(int v, uint8_t gain) { voice[v & 7].gain = gain; }
-void mix_key_on(uint8_t voices) { kon_pending = voices; }
-void mix_key_off(uint8_t voices) { released = voices; }
+void mix_key_on(uint8_t voices) { kon_pending = voices; key_unread = 1; }
+void mix_key_off(uint8_t voices) { released = voices; key_unread = 1; }
+int mix_key_unread(void) { return key_unread; }
 void mix_pitch_modulation(uint8_t voices) { pmon = voices; }
 void mix_noise(uint8_t voices) { non = voices; }
 void mix_echo_voices(uint8_t voices) { eon = voices; }
@@ -598,6 +601,7 @@ static void shared_clock(int c)
         if (every_other) {
             kon_now = kon_pending;
             koff_now = released;
+            key_unread = 0;
         }
         if (--counter < 0)
             counter = COUNTER_PERIOD - 1;

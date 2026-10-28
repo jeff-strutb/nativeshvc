@@ -2,19 +2,16 @@
  * chip_irq.c: a chip's IRQ seen at the chip's own clock (cart.h
  * nshvc_cart_irq_at). The chip runs its C on a coroutine of its own, a
  * master clock a step, and stops at a clock the S-CPU sets, raising its
- * IRQ there, as a Super FX does at its STOP. The S-CPU takes it:
+ * IRQ there, as a Super FX does at its STOP. The S-CPU, waiting for it
+ * (machine.h nshvc_wait_until on its status, cpu_wai), takes it:
  *
- *   in a stretch of its time (cyc, cpu_idle): at that clock itself
- *   polling the chip's status: at the clock, inside the stretch between
- *       the reads, or at the end of the read it rises in
- *   in WAI: at the end of the cycle after the one that begins with it up
- *   masked: not at all, until the I flag is clear
+ *   unmasked: at that clock, its handler run before the wait looks again
+ *   masked: not at all, the wait seeing the chip stopped at that clock;
+ *       taken once the I flag is clear
+ *   in WAI: at that clock
  *
  * and, risen while work RAM's refresh stops the S-CPU (40 clocks a line),
  * at the refresh's end.
- *
- * The clock it is taken at is the console's as its interrupt sequence
- * begins (snes.h snes_interrupt_hook, wrapped here).
  *
  *   chip_irq          runs the checks; exit 0 when every one holds
  */
@@ -34,7 +31,6 @@ static void check(int ok, const char *what, long long d, long long got, long lon
     printf("%s %s (D %lld: %lld, want %lld)\n", ok ? "ok  " : "FAIL", what, d, got, want);
     fails += !ok;
 }
-
 /* ---- the chip: $3000/$3001 the clocks to its stop (the write to $3001
    starts it), $3030 bit 5 while it runs, a read of $3031 takes its IRQ
    back ---- */
@@ -126,23 +122,17 @@ static const nshvc_chip toy = {
 };
 
 /* ---- the code ---- */
-static int taken;
-static uint64_t taken_at, taken_line;     /* the clock, and its line's start */
-static void (*take)(int nmi);
+static int taken, acked;
+static uint64_t taken_at;
 
-static void took_it(int nmi)
+/* the clock the S-CPU's refresh in the line of clock t starts at (src/
+   console/bus.c: REFRESH_AT 534, less the DMA unit's clock, DMA_PHASE 4,
+   as the line begins; lines of 1364 clocks, line 0 at clock 0 of a frame
+   whose lines are all 1364 long here, NTSC not interlaced, the short
+   line 240 of field 1 aside) */
+static uint64_t refresh_of(uint64_t t, uint64_t line_now)
 {
-    taken_at = snes_clock;
-    taken_line = snes_clock - snes_line_clock();
-    take(nmi);
-}
-
-/* ---- the time the S-CPU's clock passes, refresh and all, as the
-   console's is (src/console/bus.c: REFRESH_AT 534, less the DMA unit's
-   clock, DMA_PHASE 4, as the line begins; lines of 1364 clocks) ---- */
-static uint64_t refresh_of(uint64_t t)
-{
-    uint64_t ls = taken_line;
+    uint64_t ls = line_now;
     while (ls > t)
         ls -= 1364;
     while (ls + 1364 <= t)
@@ -150,29 +140,19 @@ static uint64_t refresh_of(uint64_t t)
     return ls + 534 - ((ls - 4 + 4) & 7);
 }
 
-/* an S-CPU cycle of c clocks from t: the refresh, when it falls in it,
-   after it */
-static uint64_t cycle_end(uint64_t t, unsigned c)
+/* a rise at t: seen there, or at the end of the refresh it falls in */
+static uint64_t seen_at(uint64_t t)
 {
-    uint64_t r = refresh_of(t), u = t + c;
-    if (t < r && r <= u)
-        u += 40;
-    return u;
-}
-
-/* a rise at t inside a stretch: taken there, or at the end of the refresh
-   it falls in */
-static uint64_t in_stretch(uint64_t t)
-{
-    uint64_t r = refresh_of(t);
+    uint64_t r = refresh_of(t, snes_clock - snes_line_clock());
     return t >= r && t < r + 40 ? r + 40 : t;
 }
 
 static void abi_irq(void)
 {
     taken++;
+    taken_at = snes_clock;
     rd8(0x003031);
-    cyc(6);
+    acked = 1;
 }
 
 static void start(uint16_t d)
@@ -181,96 +161,62 @@ static void start(uint16_t d)
     wr8(0x003001, (uint8_t)(d >> 8));
 }
 
-/* the clock the S-CPU took the IRQ at */
-static long long took(void) { return (long long)taken_at; }
+static int stopped(void *ctx)
+{
+    (void)ctx;
+    return !(rd8(0x003030) & 0x20);
+}
 
 static void abi_reset(void)
 {
-    static const uint16_t ds[] = { 40, 41, 47, 100, 123, 333, 640, 999, 1200, 1777, 2400 };
     unsigned i;
     int n;
 
-    take = snes_interrupt_hook;
-    snes_interrupt_hook = took_it;
     cpu.e = 0;
     cpu.p = (uint8_t)(cpu.p & ~P_I);
 
-    /* in a stretch: at the chip's clock */
-    for (i = 0; i < sizeof ds / sizeof ds[0]; i++) {
+    /* waiting on the status, the IRQ unmasked: taken at the chip's clock,
+       the handler's acknowledge before the wait sees the chip stopped */
+    for (i = 0; i < 300; i++) {
+        uint16_t d = (uint16_t)(37 + i * 47);
         n = taken;
-        start(ds[i]);
-        cyc(3000);
-        check(taken == n + 1 && took() == (long long)in_stretch(stop_at), "in cyc(3000): taken at the chip's clock",
-              ds[i], took(), (long long)in_stretch(stop_at));
-    }
-    for (i = 0; i < sizeof ds / sizeof ds[0]; i++) {
-        n = taken;
-        start(ds[i]);
-        cpu_idle(3000);
-        check(taken == n + 1 && took() == (long long)in_stretch(stop_at),
-              "in cpu_idle(3000): taken at the chip's clock", ds[i], took(), (long long)in_stretch(stop_at));
-    }
-
-    /* polling the status: at the chip's clock in the stretch between two
-       reads, or at the end of the read it rises in (a read of $3030 is 6
-       clocks; the hardware's line, seen at its clock) */
-    for (i = 0; i < 40; i++) {
-        uint16_t d = (uint16_t)(60 + i);
-        uint64_t read_at[64], end = 0;
-        int k = 0, in_read = -1, j;
-        uint8_t v;
-        n = taken;
+        acked = 0;
         start(d);
-        do {
-            read_at[k] = nshvc_cart_clock();
-            v = rd8(0x003030);
-            if (taken == n)
-                cyc(14);
-            k++;
-        } while ((v & 0x20) && taken == n && k < 64);
-        if (taken == n)
-            cyc(14);
-        for (j = 0; j < k; j++)
-            if (stop_at > read_at[j] && stop_at <= cycle_end(read_at[j], 6)) {
-                in_read = j;
-                end = cycle_end(read_at[j], 6);
-            }
-        if (in_read >= 0)
-            check(taken == n + 1 && took() == (long long)end, "polling, rising in a read: taken at its end", d, took(),
-                  (long long)end);
-        else
-            check(taken == n + 1 && took() == (long long)in_stretch(stop_at),
-                  "polling, rising between reads: taken at its clock", d, took(), (long long)in_stretch(stop_at));
+        nshvc_wait_until(stopped, NULL);
+        check(taken == n + 1 && taken_at == seen_at(stop_at) && snes_clock == taken_at && acked,
+              "waiting, unmasked: taken at the chip's clock, then the wait ends", d, (long long)(taken_at - started),
+              (long long)(seen_at(stop_at) - started));
     }
 
-    /* WAI: each internal cycle begins with the line looked at; the one that
-       finds it up is the last but one */
-    for (i = 0; i < 12; i++) {
-        uint16_t d = (uint16_t)(30 + 5 * i);
-        uint64_t a, t;
-        n = taken;
-        start(d);
-        a = nshvc_cart_clock();
-        cpu_wai(0x008200);
-        /* the opcode's fetch (8), then cycles of 6 until one begins with the
-           line up, then two more */
-        t = cycle_end(a, 8);
-        while (t < stop_at)
-            t = cycle_end(t, 6);
-        t = cycle_end(cycle_end(t, 6), 6);
-        check(taken == n + 1 && took() == (long long)t, "WAI: taken two cycles after the one it is seen in", d, took(),
-              (long long)t);
-    }
-
-    /* masked: not taken; taken once the I flag is clear */
+    /* masked: the wait sees the chip stopped at its clock; none taken */
     cpu.p = (uint8_t)(cpu.p | P_I);
-    n = taken;
+    for (i = 0; i < 300; i++) {
+        uint16_t d = (uint16_t)(41 + i * 53);
+        n = taken;
+        start(d);
+        nshvc_wait_until(stopped, NULL);
+        check(taken == n && snes_clock == seen_at(stop_at), "waiting, masked: the wait ends at the chip's clock", d,
+              (long long)(snes_clock - started), (long long)(seen_at(stop_at) - started));
+        rd8(0x003031);
+    }
+    /* taken once the I flag is clear, at the next point between two of
+       the C's operations */
     start(200);
-    cyc(3000);
-    check(taken == n, "masked: not taken", 200, taken - n, 0);
+    nshvc_wait_until(stopped, NULL);
+    n = taken;
     cpu.p = (uint8_t)(cpu.p & ~P_I);
-    cyc(6);
-    check(taken == n + 1, "unmasked: taken", 200, taken - n, 1);
+    rd8(0x7E0000);
+    check(taken == n + 1 && taken_at == snes_clock, "unmasked: taken at once", 200, taken - n, 1);
+
+    /* WAI: on at the chip's clock, taken there */
+    for (i = 0; i < 100; i++) {
+        uint16_t d = (uint16_t)(30 + 97 * i);
+        n = taken;
+        start(d);
+        cpu_wai(0x008200);
+        check(taken == n + 1 && taken_at == seen_at(stop_at), "WAI: taken at the chip's clock", d,
+              (long long)(taken_at - started), (long long)(seen_at(stop_at) - started));
+    }
 
     printf("%d check(s) failed\n", fails);
     exit(fails ? 1 : 0);

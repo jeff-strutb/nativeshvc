@@ -10,7 +10,7 @@
 <text x="62" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">The S-CPU's code (65816), as C</text>
 <text x="62" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">every bus access through rd8 / wr8,</text>
 <text x="62" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">in the original's order</text>
-<text x="62" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">cyc / cycs: the original's time between</text>
+<text x="62" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">its waits for the hardware as waits</text>
 <text x="62" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">abi_ wrappers for vectors and calls</text>
 <rect x="375" y="118" width="245" height="118" rx="8" fill="#ffffff" stroke="#c27c0e" stroke-width="1.5"/>
 <rect x="375" y="118" width="245" height="4" rx="2" fill="#c27c0e"/>
@@ -30,18 +30,18 @@
 <rect x="905" y="118" width="245" height="4" rx="2" fill="#c27c0e"/>
 <text x="917" y="142" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#8a5300" text-anchor="start">The SPC700's sound driver, as C</text>
 <text x="917" y="162" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">every access via spc_rd / spc_wr,</text>
-<text x="917" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">spc_cyc for the original's time</text>
+<text x="917" y="178" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">spc_wait_until for its waits</text>
 <text x="917" y="194" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">picked by what APU RAM holds</text>
 <rect x="30" y="262" width="1140" height="62" rx="12" fill="#f1ecff" stroke="#6f52c9" stroke-width="1.5"/>
-<text x="110" y="282" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">THE GAME CONTRACT 1.1  ·  docs/contract.md</text>
+<text x="110" y="282" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">THE GAME CONTRACT 2.0  ·  docs/contract.md</text>
 <rect x="50" y="292" width="305" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
-<text x="108" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">machine.h  rd8 wr8 cyc cycs</text>
+<text x="108" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="start">machine.h  rd8 wr8 nshvc_wait_until</text>
 <rect x="375" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
 <text x="497.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">nshvc_main(&amp;cart)</text>
 <rect x="640" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
 <text x="762.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">cart.h  nshvc_chip</text>
 <rect x="905" y="292" width="245" height="24" rx="12" fill="#ffffff" stroke="#6f52c9" stroke-width="1.2"/>
-<text x="1027.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">spc.h  spc_rd spc_wr spc_cyc</text>
+<text x="1027.5" y="308.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="bold" font-style="normal" fill="#4b2fa6" text-anchor="middle">spc.h  spc_rd spc_wr spc_wait_until</text>
 <rect x="30" y="336" width="1140" height="430" rx="12" fill="#eaf2ff" stroke="#2f6fdb" stroke-width="1.5"/>
 <text x="110" y="360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1d4fa8" text-anchor="start">THE CONSOLE  ·  nativeshvc: native C, one thread</text>
 <rect x="110" y="392" width="245" height="88" rx="8" fill="#ffffff" stroke="#2f6fdb" stroke-width="1.5"/>
@@ -79,7 +79,7 @@
 <text x="917" y="630" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#1f2328" text-anchor="start">32,040 stereo samples a second</text>
 <rect x="50" y="496" width="835" height="50" rx="6" fill="#1d4fa8" stroke="#1d4fa8" stroke-width="1.5"/>
 <text x="62" y="516" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="start">S-CPU BUS  ·  24-bit address space  ·  every access answered as the hardware answers it, at the hardware's time</text>
-<text x="62" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">MASTER CLOCK 21.477 MHz: each access and each cyc moves it</text>
+<text x="62" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">MASTER CLOCK 21.477 MHz: the C's waits and DMA move it; the C's work takes none</text>
 <circle cx="440" cy="532" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
 <text x="440" y="536.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
 <text x="456" y="536" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#dbe7ff" text-anchor="start">H-blank: line drawn, HDMA</text>
@@ -196,8 +196,8 @@
 <circle cx="61" cy="1128" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
 <text x="61" y="1132.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">3</text>
 <text x="80" y="1132" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">The game's C runs</text>
-<text x="80" y="1149" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Each of the original's accesses goes through rd8 / wr8, in its order, and cyc</text>
-<text x="80" y="1165" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">states the time between them; the bus answers each at the hardware's time.</text>
+<text x="80" y="1149" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">Each of the original's accesses goes through rd8 / wr8, in its order, and its</text>
+<text x="80" y="1165" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606a" text-anchor="start">waits are waits; the bus answers each as the hardware does.</text>
 <circle cx="621" cy="1008" r="10.5" fill="#cf3a4b" stroke="#ffffff" stroke-width="2"/>
 <text x="621" y="1012.2" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="bold" font-style="normal" fill="#ffffff" text-anchor="middle">4</text>
 <text x="640" y="1012" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1f2328" text-anchor="start">Each line</text>

@@ -375,7 +375,6 @@ static int child_status(pid_t p)
 /* the main script from step `at` */
 static void begin_main(int at)
 {
-    snes_cyclog_quiet = 0;
     cur = &main_list;
     step_at = at;
     step_left = 0;
@@ -475,7 +474,6 @@ static void begin_replay(const char *name, int resume)
     cur = &replay_list;
     step_at = 0;
     step_left = 0;
-    snes_cyclog_quiet = 1;
 }
 #endif
 
@@ -579,7 +577,6 @@ static void plan_begin(const char *plan, int resume)
     cur = &replay_list;
     step_at = 0;
     step_left = 0;
-    snes_cyclog_quiet = 1;
 }
 
 /* the replay done: the main script from where it goes on */
@@ -724,10 +721,6 @@ static void hold(const char *have, int at)
 static int started;
 static int counting;        /* the frame just run is one of the script's own */
 
-/* NSHVC_CYCLOG's frame: the script's frames counted as the reference's
-   harness counts them, on across loads (a replay's not counted) */
-static uint32_t cyclog_frame(void) { return shared->frames + 1; }
-
 static void start(void)
 {
     if (started)
@@ -738,7 +731,6 @@ static void start(void)
                    *sv = getenv("NSHVC_SCRIPT_SAVED"), *r = getenv("NSHVC_SCRIPT_RESUME");
         shared = &own_shared;
         shared->frames = f ? (uint32_t)strtoul(f, NULL, 10) : 0;
-        snes_cyclog_frame = cyclog_frame;
         saved = str_cat(sv ? sv : "", "");
         history = str_cat("", "");
         if (plan)
@@ -751,7 +743,6 @@ static void start(void)
         shared = (Shared *)mmap(NULL, sizeof *shared, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
         if (shared == MAP_FAILED)
             nshvc_fatal("mmap: %s", strerror(errno));
-        snes_cyclog_frame = cyclog_frame;
         for (i = 0; i < main_list.n; i++)
             need |= main_list.s[i].kind == S_SAVE || main_list.s[i].kind == S_LOAD;
         if (need)

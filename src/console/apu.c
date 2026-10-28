@@ -4,21 +4,22 @@
  * the three timers), the bus its C uses (spc.h), and the boot ROM's work.
  *
  * The SPC700's C runs on a coroutine of its own with its own clock
- * (1,025,280 Hz: 32,040 DSP samples a second, a real console's rate), which
- * the time the C states moves on (spc_cyc: the original's cycles up to and
- * including each access's own). The S-CPU brings it up to its
- * own time before it touches the ports and once a line (apu_sync); the
- * SPC700 hands back when it gets there. The DSP runs a clock a cycle, as
+ * (1,025,280 Hz: 32,040 DSP samples a second, a real console's rate). The
+ * C's work takes none of it; the clock moves on in the C's waits
+ * (spc_wait_until) and where a DSP write waits for a key event to be taken
+ * (spc.h). The S-CPU brings it up to its own time before it touches the
+ * ports and once a line (apu_sync); the SPC700 hands back when it gets
+ * there. The DSP runs a clock a cycle, as
  * the chip does, and makes a sample every 32, into a ring the host's audio
  * thread drains (snes_audio_take).
  *
  * At power on the SPC700 runs its boot ROM: it clears its zero page, puts
  * $AA, $BB on ports 0 and 1, and takes the blocks the S-CPU sends by the
  * ROM's protocol, then jumps where the S-CPU says. The ROM's own bytes are
- * not here: ipl() does what that code does, instruction for instruction,
- * its accesses and its cycles as the decomp's SPC700 C states them, so the
- * S-CPU's upload sees the same replies at the same pace. Code the S-CPU
- * uploads and starts is the game's C (the runtime's snes_spc_hooks).
+ * not here: ipl() does what that code does, its accesses as the code makes
+ * them and its poll loops as waits, so the S-CPU's upload sees the same
+ * replies. Code the S-CPU uploads and starts is the game's C (the
+ * runtime's snes_spc_hooks).
  */
 #include <stdatomic.h>
 #include <stdio.h>
@@ -223,11 +224,21 @@ uint8_t spc_rd(uint16_t addr);
 void spc_wr(uint16_t addr, uint8_t v);
 void spc_restart(uint16_t at, void (*entry)(void));
 void spc_boot_rom(void);
-void spc_cyc(unsigned n);
 
-/* The time the C states: the clock moves on, and the SPC700 hands back to
-   the S-CPU there when it reaches the S-CPU's time, before the access. */
-void spc_cyc(unsigned n) { spc_advance(n); }
+/* The C's work takes no time, so a loop of it that waits for the hardware
+   without spc_wait_until never ends; such a loop reads the registers and
+   writes nothing. 20,000,000 such reads with no write or wait between
+   them are taken for one. */
+static uint32_t spin_reads;
+
+uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx)
+{
+    uint64_t from = spc_cycles;
+    while (!ready(ctx))
+        spc_advance(1);
+    spin_reads = 0;
+    return (uint32_t)(spc_cycles - from);
+}
 
 static uint8_t spc_rd_reg(uint16_t addr);
 
@@ -237,6 +248,9 @@ uint8_t spc_rd(uint16_t addr)
     dbg_last = addr;
     if (addr < 0xF0 || addr > 0xFF)
         return aram[addr];
+    if (++spin_reads >= 20000000u)
+        snes_fatal("the SPC700 made 20,000,000 reads of its registers and no write (the last of $%04X): a loop "
+                   "that waits for the hardware with no wait (spc.h spc_wait_until)", addr);
     if (spclog) {
         v = spc_rd_reg(addr);
         spclog_put(0, addr, v);
@@ -263,6 +277,12 @@ static uint8_t spc_rd_reg(uint16_t addr)
 
 void spc_wr(uint16_t addr, uint8_t v)
 {
+    spin_reads = 0;
+    /* a key event the DSP has not taken yet: the next write to the DSP
+       waits for it (spc.h) */
+    if (addr == 0xF3 && dsp_addr < 0x80)
+        while (mix_key_unread())
+            spc_advance(1);
     if (spclog)
         spclog_put(1, addr, v);
     /* a write to a register lands in the RAM under it too, where the DSP,
@@ -317,156 +337,102 @@ void spc_boot_rom(void)
 
 const uint8_t *snes_aram(void) { return aram; }
 
-/* the boot ROM's work (see the file's comment): its 64 bytes at $FFC0, an
-   instruction at a time, each with the cycles the decomp's SPC700 C states
-   for that form (spc.h's spc_cyc: up to and including each access) */
-static int ipl_n, ipl_z;
-static uint8_t ipl_nz(uint8_t v)
+/* the boot ROM's work (see the file's comment): its 64 bytes at $FFC0,
+   their accesses in order, their poll loops waits */
+static int port0_is(void *v) { return spc_rd(0xF4) == *(uint8_t *)v; }
+
+/* the transfer loop's poll at $FFDA (cmp y,$F4; bne; bpl): it goes on when
+   port 0 reaches the index, or passes it (the block's end) */
+typedef struct {
+    uint8_t y, port0;
+} IplPoll;
+
+static int ipl_byte_ready(void *ctx)
 {
-    ipl_z = v == 0;
-    ipl_n = v >> 7;
-    return v;
-}
-static void ipl_cmp(uint8_t x, uint8_t y) { ipl_nz((uint8_t)(x - y)); }
-/* a store: the dummy read, then the write */
-static void ipl_st(uint16_t addr, uint8_t v, unsigned before_read, unsigned before_write)
-{
-    spc_cyc(before_read);
-    spc_rd(addr);
-    spc_cyc(before_write);
-    spc_wr(addr, v);
+    IplPoll *p = (IplPoll *)ctx;
+    p->port0 = spc_rd(0xF4);
+    return p->port0 == p->y || ((uint8_t)(p->y - p->port0) & 0x80);
 }
 
 static void ipl(void)
 {
     uint8_t a, x, y;
-    uint16_t p;
-    /* FFC0 mov x,#$EF; FFC2 mov sp,x; FFC3 mov a,#$00 */
-    x = ipl_nz(0xEF);
-    spc_cyc(2);
-    spc.sp = x;
-    spc_cyc(2);
-    a = ipl_nz(0x00);
-    spc_cyc(2);
-    do {
-        /* FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5 */
-        ipl_st(x, a, 3, 1);
-        x = ipl_nz((uint8_t)(x - 1));
-        spc_cyc(2);
-        spc_cyc(ipl_z ? 2 : 4);
-    } while (!ipl_z);
+    uint16_t ptr;
+    IplPoll poll;
+    /* FFC0-FFC7: the stack at $EF, the zero page cleared from $EF down */
+    spc.sp = 0xEF;
+    for (x = 0xEF; x; x--) {
+        spc_rd(x);
+        spc_wr(x, 0);
+    }
     /* FFC9 mov $F4,#$AA; FFCC mov $F5,#$BB */
-    ipl_st(0xF4, 0xAA, 4, 1);
-    ipl_st(0xF5, 0xBB, 4, 1);
-    do {
-        /* FFCF cmp $F4,#$CC; FFD2 bne $FFCF */
-        spc_cyc(4);
-        ipl_cmp(spc_rd(0xF4), 0xCC);
-        spc_cyc(1);
-        spc_cyc(ipl_z ? 2 : 4);
-    } while (!ipl_z);
-    /* FFD4 bra $FFEF */
-    spc_cyc(4);
-    goto block;
-next:
-    /* FFD6 mov y,$F4; FFD8 bne $FFD6 */
-    spc_cyc(3);
-    y = ipl_nz(spc_rd(0xF4));
-    if (!ipl_z) {
-        spc_cyc(4);
-        goto next;
+    spc_rd(0xF4);
+    spc_wr(0xF4, 0xAA);
+    spc_rd(0xF5);
+    spc_wr(0xF5, 0xBB);
+    /* FFCF cmp $F4,#$CC; bne: the S-CPU's $CC */
+    a = 0xCC;
+    spc_wait_until(port0_is, &a);
+    for (;;) {
+        /* FFEF movw ya,$F6; movw $00,ya: the block's address */
+        a = spc_rd(0xF6);
+        y = spc_rd(0xF7);
+        spc_rd(0x00);
+        spc_wr(0x00, a);
+        spc_wr(0x01, y);
+        /* FFF3 movw ya,$F4; mov $F4,a: the S-CPU's index echoed */
+        a = spc_rd(0xF4);
+        y = spc_rd(0xF5);
+        spc_rd(0xF4);
+        spc_wr(0xF4, a);
+        /* FFF7 mov a,y; mov x,a; bne $FFD6: a block, or the jump */
+        a = x = y;
+        if (!x) {
+            /* FFFB jmp [$0000+x] */
+            ptr = spc_rd(x);
+            ptr = (uint16_t)(ptr | spc_rd((uint8_t)(x + 1)) << 8);
+            spc.a = a;
+            spc.x = x;
+            spc.y = y;
+            spc.n = 0;
+            spc.z = 1;
+            jump_to = ptr;
+            jump_entry = NULL;
+            port_longjmp(jb);
+        }
+        /* FFD6 mov y,$F4; bne: the S-CPU's index 0 */
+        a = 0;
+        spc_wait_until(port0_is, &a);
+        y = 0;
+        for (;;) {
+            /* FFDA cmp y,$F4; bne $FFE9; FFE9 bpl $FFDA */
+            poll.y = y;
+            spc_wait_until(ipl_byte_ready, &poll);
+            if (poll.port0 == y) {
+                uint8_t n;
+                /* FFDE mov a,$F5; mov $F4,y; mov [$00]+y,a */
+                a = spc_rd(0xF5);
+                spc_rd(0xF4);
+                spc_wr(0xF4, y);
+                ptr = spc_rd(0x00);
+                ptr = (uint16_t)(ptr | spc_rd(0x01) << 8);
+                spc_rd((uint16_t)(ptr + y));
+                spc_wr((uint16_t)(ptr + y), a);
+                /* FFE4 inc y; bne $FFDA */
+                if (++y)
+                    continue;
+                /* FFE7 inc $01; FFE9 bpl $FFDA (the page's sign) */
+                n = (uint8_t)(spc_rd(0x01) + 1);
+                spc_wr(0x01, n);
+                if (!(n & 0x80))
+                    continue;
+            }
+            /* FFEB cmp y,$F4; bpl $FFDA: past the index, the block ends */
+            if (!((uint8_t)(y - spc_rd(0xF4)) & 0x80))
+                continue;
+            break;
+        }
     }
-    spc_cyc(2);
-byte:
-    /* FFDA cmp y,$F4; FFDC bne $FFE9 */
-    spc_cyc(3);
-    ipl_cmp(y, spc_rd(0xF4));
-    if (!ipl_z) {
-        spc_cyc(4);
-        goto skip;
-    }
-    spc_cyc(2);
-    /* FFDE mov a,$F5; FFE0 mov $F4,y */
-    spc_cyc(3);
-    a = ipl_nz(spc_rd(0xF5));
-    ipl_st(0xF4, y, 3, 1);
-    /* FFE2 mov [$00]+y,a */
-    spc_cyc(3);
-    p = spc_rd(0x00);
-    spc_cyc(1);
-    p = (uint16_t)(p | spc_rd(0x01) << 8);
-    ipl_st((uint16_t)(p + y), a, 2, 1);
-    /* FFE4 inc y; FFE5 bne $FFDA */
-    y = ipl_nz((uint8_t)(y + 1));
-    spc_cyc(2);
-    if (!ipl_z) {
-        spc_cyc(4);
-        goto byte;
-    }
-    spc_cyc(2);
-    /* FFE7 inc $01 */
-    spc_cyc(3);
-    {
-        uint8_t v = ipl_nz((uint8_t)(spc_rd(0x01) + 1));
-        spc_cyc(1);
-        spc_wr(0x01, v);
-    }
-skip:
-    /* FFE9 bpl $FFDA */
-    if (!ipl_n) {
-        spc_cyc(4);
-        goto byte;
-    }
-    spc_cyc(2);
-    /* FFEB cmp y,$F4; FFED bpl $FFDA */
-    spc_cyc(3);
-    ipl_cmp(y, spc_rd(0xF4));
-    if (!ipl_n) {
-        spc_cyc(4);
-        goto byte;
-    }
-    spc_cyc(2);
-block:
-    /* FFEF movw ya,$F6; FFF1 movw $00,ya */
-    spc_cyc(3);
-    a = spc_rd(0xF6);
-    spc_cyc(2);
-    y = spc_rd(0xF7);
-    spc_cyc(3);
-    spc_rd(0x00);
-    spc_cyc(1);
-    spc_wr(0x00, a);
-    spc_cyc(1);
-    spc_wr(0x01, y);
-    /* FFF3 movw ya,$F4; FFF5 mov $F4,a */
-    spc_cyc(3);
-    a = spc_rd(0xF4);
-    spc_cyc(2);
-    y = spc_rd(0xF5);
-    ipl_st(0xF4, a, 3, 1);
-    /* FFF7 mov a,y; FFF8 mov x,a; FFF9 bne $FFD6 */
-    a = ipl_nz(y);
-    spc_cyc(2);
-    x = ipl_nz(a);
-    spc_cyc(2);
-    if (!ipl_z) {
-        spc_cyc(4);
-        goto next;
-    }
-    spc_cyc(2);
-    /* FFFB jmp [$0000+x] */
-    spc_cyc(5);
-    p = spc_rd(x);
-    spc_cyc(1);
-    p = (uint16_t)(p | spc_rd((uint8_t)(x + 1)) << 8);
-    spc.a = a;
-    spc.x = x;
-    spc.y = y;
-    spc.n = (uint8_t)ipl_n;
-    spc.z = (uint8_t)ipl_z;
-    jump_to = p;
-    jump_entry = NULL;
-    port_longjmp(jb);
 }
 
 static void spc_main(void *arg)

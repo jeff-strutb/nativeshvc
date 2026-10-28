@@ -12,7 +12,7 @@
  * controllers, the battery save, the frame's pace. The processors are the
  * game's own C, written against the machine model in machine.h (the
  * S-CPU) and spc.h (the SPC700): every access the original makes, through
- * rd8/wr8 and spc_rd/spc_wr, and the time between them (cyc, spc_cyc).
+ * rd8/wr8 and spc_rd/spc_wr, and their waits for the hardware.
  *
  * A game describes its cartridge (nshvc_cart: its ROM and mapping, its RAM,
  * the routines with C by address) and calls nshvc_main, which runs it as
@@ -32,8 +32,8 @@ extern "C" {
 #endif
 
 /* the game contract's version (docs/contract.md) */
-#define NSHVC_VERSION_MAJOR 1
-#define NSHVC_VERSION_MINOR 1
+#define NSHVC_VERSION_MAJOR 2
+#define NSHVC_VERSION_MINOR 0
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -267,21 +267,6 @@ void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 
-/* Untimed: the S-CPU's code runs without spending the console's time (its
-   accesses and stated cycles take none), so a stretch of the game's work
-   takes no frames at all; interrupt handlers stay timed, but for code run
-   in one with interrupts held (nshvc_hold_interrupts: from the frame hook).
-   The master clock stands still meanwhile (nshvc_cart_clock), for the
-   cartridge's chip as for the console. A restart (machine.h cpu_restart: the stack reset, every
-   call dropped) ends it. Waiting on time while untimed is a fatal error:
-   20,000,000 reads with no write between, a loop for ever. Off (the default), the console is exact. */
-void nshvc_set_untimed(int on);
-int nshvc_untimed(void);   /* untimed as it stands now */
-/* The clock run on, timed, to the next vertical blank's start (the NMI,
-   the joypads' read and the frame's end come on the way as they would),
-   then untimed put back as it was. */
-void nshvc_wait_vblank(void);
-
 /* The screen the game asks for, from the next frame: width 256 to 1024 and
    height 224 to 480, both even; 256 x 224 (or 239 with SETINI's overscan)
    is the console's own. The console's picture sits at its centre (its
@@ -328,7 +313,9 @@ void nshvc_ext_layer_page(int layer, int page);
    game's own flow (from the frame hook: an in-between frame drawn, the
    machine put back after), which the game's handlers must not see. The
    cartridge's chip is told (nshvc_chip.hold), so it can put its own
-   interrupt back as the hold ends to what it was as the hold began. */
+   interrupt back as the hold ends to what it was as the hold began. The
+   console's time does not pass in code run held: a wait there (machine.h
+   nshvc_wait_until and the rest) is a fatal error. */
 void nshvc_hold_interrupts(int on);
 
 /* ---- the front end's hooks, for the game's own additions ------------------------- */

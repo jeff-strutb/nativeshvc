@@ -24,10 +24,7 @@ static void abi_reset(void)
 {
     cpu.e = 0;
     wr8(0x004200, 0x81);             /* the NMI and the joypads' read */
-    for (;;) {
-        rd8(0x000104);
-        cyc(16);
-    }
+    cpu_loop_forever(0x008010);
 }
 
 static uint8_t rom[0x8000];

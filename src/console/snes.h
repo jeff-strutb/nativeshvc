@@ -4,21 +4,20 @@
  * Not for games: a game sees nshvc.h and the machine model (machine.h,
  * spc.h).
  *
- * Time. Each access the S-CPU's C makes takes the time that access takes on
- * the bus, and between two accesses the clock moves on by the time the C
- * states (cyc: the original's fetches and internal cycles), in master
- * clocks (21.477 MHz). The picture is drawn a line at a time as that clock
- * passes each line's horizontal blank, HDMA runs there, and the interrupts
- * the game asks for are raised when the clock reaches them. The SPC700 (and
- * a cartridge's chip, cart.h) runs its C on a coroutine of its own with its
- * own clock, and is brought up to the S-CPU's time whenever the S-CPU could
- * see what it does (the sound ports; a chip's registers and RAM) and once a
- * line.
+ * Time. The S-CPU's C takes none: the master clock (21.477 MHz) moves on
+ * where the S-CPU waits for the hardware (machine.h nshvc_wait_until and
+ * the waits beside it) and while a DMA stops it. The picture is drawn a
+ * line at a time as that clock passes each line's horizontal blank, HDMA
+ * runs there, and the interrupts the game asks for are raised when the
+ * clock reaches them. The SPC700 (and a cartridge's chip, cart.h) runs its
+ * C on a coroutine of its own with its own clock, and is brought up to the
+ * S-CPU's time whenever the S-CPU could see what it does (the sound ports;
+ * a chip's registers and RAM) and once a line; its C takes no time either,
+ * and its clock moves on in its own waits (spc.h spc_wait_until).
  *
- * Interrupts are taken where the S-CPU's C reads or writes the bus (never
- * between the two bytes of one word, nor between a read and its write
- * back), as an instruction boundary is the only place the hardware takes
- * them.
+ * Interrupts are taken in a wait at the clock they come due, or after the
+ * access whose DMA made them due (never between the two bytes of one word,
+ * nor between a read and its write back).
  */
 #ifndef NSHVC_SNES_H
 #define NSHVC_SNES_H
@@ -85,10 +84,6 @@ extern void (*snes_dma_hook)(uint32_t a, uint8_t b, uint8_t v);
    jump); never returns. */
 extern void (*snes_spc_run_hook)(uint16_t addr);
 
-/* ---- untimed (nshvc_set_untimed) ---- */
-extern int snes_untimed_on;
-int snes_untimed(void);
-extern int snes_in_interrupt;              /* an interrupt handler runs (timed even untimed) */
 /* vertical blanks begun since power on */
 uint32_t snes_vblanks(void);
 
@@ -109,32 +104,17 @@ uint8_t *snes_wram_rw(void);
 /* ---- for the dispatcher ---- */
 void snes_fatal(const char *fmt, ...);
 uint8_t snes_peek(uint32_t addr);
-/* the clocks one S-CPU access to addr takes on the bus */
-unsigned snes_access_clocks(uint32_t addr);
-/* the end of an instruction the console runs (WAI, a branch to itself):
-   the interrupt the CPU decided on as its last cycle began */
-void snes_cpu_boundary(void);
-/* a byte the interrupt sequence pushes (NSHVC_CYCLOG's P line) */
+/* a byte the interrupt sequence pushes */
 void snes_interrupt_push(uint32_t addr, uint8_t value);
-/* a read of an instruction the console runs (a pull): not audited */
+/* a read of the interrupt's return (RTI's pulls) */
 uint8_t snes_cpu_read_within(uint32_t addr);
 /* whether an interrupt is due: the NMI, or the IRQ line (masked or not) */
 int snes_interrupt_due(void);
-/* an interrupt would be taken now (due, and the IRQ not masked) */
-/* clocks with no access: the console's own wait, no interrupt taken in
-   it (snes_cpu_wait); the C's (cpu_idle), each taken as it comes due */
-void snes_cpu_wait(uint32_t clocks);
-void snes_cpu_idle(uint32_t clocks);
-/* time the S-CPU spends between two of its accesses: the decomp's cyc() */
-void snes_cpu_clocks(uint32_t clocks);
-void snes_cpu_stated(uint32_t clocks, void *site);   /* cyc from the C's `site` (NSHVC_AUDIT) */
-void snes_cpu_cycle(unsigned cc);                     /* one S-CPU cycle of cc clocks */
-void snes_cpu_cycle_c(unsigned cc);                   /* one of the C's (cycs), an interrupt after it */
-void snes_cyclog_cycs(void *site, uint64_t lengths);  /* NSHVC_CYCLOG's cycs line */
-void snes_cyclog_mark(uint32_t id);                   /* NSHVC_CYCLOG's M line (nshvc_mark) */
-extern int snes_cyclog_quiet;                         /* NSHVC_CYCLOG writes nothing while set */
-extern uint32_t (*snes_cyclog_frame)(void);           /* its frame number (default: frames run + 1) */
-void snes_cpu_cycle_k(unsigned cc);                   /* a cycle the console states for the C */
+/* WAI: the clock on until an interrupt is due, then that one taken unless
+   masked */
+void snes_wai(void);
+/* a branch to itself: the clock on, the interrupts taken, for ever */
+void snes_loop_forever(void);
 
 #ifdef __cplusplus
 }

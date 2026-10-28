@@ -1,17 +1,17 @@
-# The game contract, version 1.1
+# The game contract, version 2.0
 
 This is what a decompiled game writes against and what nativeshvc promises in return. It is
-at 1.1: 1.0 and one addition (Changes, below). A game written to it plays on every later 1.x
-without a change.
+at 2.0: the console is behaviour exact, and the game's C states no time (Changes, below). A
+game written to it plays on every later 2.x without a change.
 
 ## How it changes
 
-- **Major version (2.0):** the only kind of release that may change or remove anything a
+- **Major version (3.0):** the only kind of release that may change or remove anything a
   game writes or relies on below.
-- **Minor version (1.1):** may only add things: a new call, a new extension, or a new field
-  at the end of a struct that a zeroed struct leaves off. A 1.0 game builds and plays the
+- **Minor version (2.1):** may only add things: a new call, a new extension, or a new field
+  at the end of a struct that a zeroed struct leaves off. A 2.0 game builds and plays the
   same.
-- **Patch version (1.0.1):** brings the console closer to the hardware where it differed
+- **Patch version (2.0.1):** brings the console closer to the hardware where it differed
   from the reference (bsnes, accuracy profile). The contract is the hardware's behaviour,
   so this is a fix, not a change of contract.
 - `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` in `nshvc.h` say which version a build is.
@@ -28,11 +28,9 @@ without a change.
 
 Not in the contract (they may change in a minor version):
 
-- [`tooling.h`](../include/nshvc/tooling.h) (`nshvc_mark`). A game plays the same
-  without it.
 - The headless script's steps (`src/front/script.h`).
-- The environment options (`NSHVC_AUDIT`, `NSHVC_CYCLOG`, `NSHVC_STATES`,
-  `NSHVC_SCRIPT_NOFORK`, `NSHVC_DEBUG`).
+- The environment options (`NSHVC_STATES`, `NSHVC_SCRIPT_NOFORK`, `NSHVC_DEBUG`,
+  `NSHVC_SPCLOG`).
 - The host interface for `NSHVC_HOST=none` (`src/host/host.h`).
 - Everything under `src/`.
 
@@ -43,28 +41,21 @@ Not in the contract (they may change in a minor version):
    read-modify-write instruction is `rd8_rmw` then `wr8`, or `rd16_rmw` then `wr16_rmw`
    (high byte written first). Dummy reads and the stack's pushes and pulls are accesses
    like any other.
-2. **The time between accesses.** `cyc(clocks)` gives the master clocks the original spends
-   between two accesses, besides the accesses' own: its fetches and internal cycles. Where
-   the statement can't stand on its own (inside an expression, or at a loop's test),
-   `cyc_then` and `cyc_loop` do the same.
-3. **Cycle by cycle where a DMA or HDMA starts.** If a DMA (from a `$420B` write) or an HDMA
-   (each shown line's horizontal blank, while HDMA is on) starts inside a stretch of time,
-   that stretch is given as `cycs` instead of `cyc`: one hex digit per cycle (6, 8 or C).
-   The console then starts the transfer on the right cycle edge. The S-CPU's time is exact
-   only when this holds. `NSHVC_AUDIT=1` names every `cyc` stretch on a run where a
-   transfer started inside one.
-4. **Time with no access of the C's.** For example, a delay loop, given as
-   `cpu_idle(clocks)`.
-5. **The register file at a routine's entry and exit.** A routine entered from an address
+2. **Its waits for the hardware, as waits.** A loop that waits for the hardware (a status
+   bit, a counter, a chip's flag, the sound unit's reply) is `nshvc_wait_until(ready,
+   ctx)`: `ready` makes the loop's reads and says whether it ends. The wait for the
+   vertical blank is `nshvc_wait_vblank`. The clocks a wait returns let the C keep a
+   counter the original ticked in each turn of the loop. The C states no other time.
+3. **The register file at a routine's entry and exit.** A routine entered from an address
    (an interrupt vector, a computed call or jump, a chip's program) has an `abi_` wrapper
    that takes its inputs from `cpu` and leaves its outputs there. `cpu.unwound` says when
    C leaves through its caller's frame.
-6. **The routine table** (`nshvc_cart.routines`, sorted by address). It lists every
+4. **The routine table** (`nshvc_cart.routines`, sorted by address). It lists every
    routine an address reaches: the reset and interrupt vectors' code (a stub in RAM
    included), every computed call's and jump's target, and any routine a chip runs by
    address. Reaching an address with no C is a fatal error; nativeshvc runs no machine
    code.
-7. **Control the original's machine code has and C doesn't:**
+5. **Control the original's machine code has and C doesn't:**
    - `call_routine` and `jump_routine` (or `jump_routine_pushed`) for computed calls and
      jumps;
    - `cpu_loop_forever` for a branch to itself;
@@ -78,10 +69,9 @@ belongs to.
 
 1. **Every APU RAM and I/O access the driver makes, in its order.** These go through
    `spc_rd` and `spc_wr`.
-2. **The SPC700 cycles before each access**, besides the access's own: `spc_cyc(n)`, or
-   `spc_wr_cyc` where the write's value is an expression.
-3. **Calls and returns as the stack sees them** (`spc_call`, `spc_ret`), with their
-   cycles. A routine that calls another gives its own CALL's cycles.
+2. **Its waits for the hardware, as waits:** `spc_wait_until(ready, ctx)` for a loop on a
+   timer's counter or a port. The C states no other time.
+3. **Calls and returns as the stack sees them** (`spc_call`, `spc_ret`).
 4. **The routine table** (`nshvc_cart.spc_routines`, sorted by APU address). Each entry
    lists the ROM bytes it stands for (`uses`), so the console can pick the right routine
    when two uploaded programs share an address.
@@ -103,42 +93,51 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## What the console promises
 
-- **Everything but the processors and the cartridge's own hardware, as the hardware
-  does.** This means:
-  - the bus and its timing, work RAM, the mappings;
+- **Behaviour exact: everything but the processors and the cartridge's own hardware, as
+  the hardware does, at the hardware's time.** This means:
+  - the bus, work RAM, the mappings;
   - the CPU's registers (NMI, H/V IRQ, multiplier, divider, the joypads' automatic read);
   - DMA and HDMA, the PPU, the sound unit and DSP;
   - every controller in `NSHVC_PORT_*`.
 
-  The reference is bsnes with its accuracy options. Where nativeshvc differs from it,
-  that's a defect in nativeshvc, fixed in a patch release.
+  The reference is bsnes with its accuracy options. Where nativeshvc's hardware differs
+  from it, that's a defect in nativeshvc, fixed in a patch release.
+- **The processors' work takes no time.** The S-CPU's and the SPC700's C are made at the
+  clock as it stands. The clock moves on where they wait for the hardware (the waits
+  above, WAI, a branch to itself) and while a DMA (a `$420B` write) stops the S-CPU, for
+  the DMA unit's real time. The multiplier and divider are done when read. Where the
+  original's own work set the pace (a frame its CPU did not finish in time), the game does
+  not: that is the processors' time, which the C does not keep.
+- **The sound as the original's.** After a KON or KOFF write, the SPC700's next DSP write
+  waits until the DSP has taken that key event (every other sample), so every note the
+  driver keys on or off reaches the DSP, in order, with the voice's registers as the
+  original had them. A note sounds within the driver's own work in a beat (well under a
+  millisecond) of when the original's did.
 - **Interrupts in the console's time.** An interrupt comes due at the clock the hardware
-  raises it; a chip's IRQ, at the clock the chip gives (`nshvc_cart_irq_at`). It is taken at the first point between two of the C's operations at or
-  after that clock: the end of an access, a word, or a read-modify-write's write, or that
-  clock itself inside `cyc`, `cycs` or `cpu_idle`. No operation is split. The IRQ waits
-  while `cpu`'s I flag masks it. WAI, a branch to itself and the console's own code take
-  interrupts exactly as the CPU does.
-- **The one exception to cycle exactness: interrupt latency.** The 65816 starts a handler
-  at the end of the instruction in progress. Structured C doesn't carry that instruction,
-  so here the handler can start earlier by the rest of it. On the test cartridges that
-  measure it, that's 1 to 20 dots (README.md, Time; `tests/rom/KNOWN`). The handler can
-  also come before a read or write the interrupted instruction still had to make (an
-  interrupt due while the original fetches an instruction is taken before its access, on
-  the hardware after it). So a loop polling a flag the handler sets, or a status register,
-  can leave a turn early, and that access differs where the handler writes what it reads
-  or reads what it writes. Where the code waits with WAI (or a branch to itself), the
-  timing is exact.
+  raises it; a chip's IRQ, at the clock the chip gives (`nshvc_cart_irq_at`). In a wait it
+  is taken at that clock, its handler run before the wait looks again; one a DMA's time
+  made due is taken at the end of the access that started it. No operation is split. The
+  IRQ waits while `cpu`'s I flag masks it, and a handler may wait too (an NMI can still
+  come in an IRQ's handler, as on the console).
 - **A fatal error, never a guess,** when the game reaches something the contract doesn't
-  cover: an address with no C (a vector's included), a cycle length other than 6, 8 or 12, or a wait on time while untimed. It's reported,
-  then the process exits with status 70.
+  cover: an address with no C (a vector's included), a loop that waits for the hardware
+  with no wait (20,000,000 reads with no write between), or a wait while interrupts are
+  held. It's reported, then the process exits with status 70.
 - **The console's numbers by default.** Every extension (`nshvc_ext_*`,
-  `nshvc_set_untimed`, `nshvc_hold_interrupts`) is off until the game asks for it. With
-  all of them off, the console is exact.
+  `nshvc_hold_interrupts`) is off until the game asks for it.
 - **The same run on every host.** One thread, a deterministic schedule: the same input
   gives the same machine.
 
 ## Changes
 
+- **2.0:** behaviour exact, not cycle exact. The S-CPU's and the SPC700's C state no time:
+  `cyc`, `cycs`, `cyc_then`, `cyc_loop`, `cycs_then`, `cycs_loop`, `cpu_idle`, `spc_cyc` and
+  `spc_wr_cyc` are gone, and `spc_call` and `spc_ret` take no cycles. Their waits are
+  `nshvc_wait_until` and `spc_wait_until`; `nshvc_wait_vblank` moves to `machine.h`.
+  `nshvc_set_untimed` and `nshvc_untimed` are gone (the processors' work is untimed always),
+  and with them the interrupt latency exception of 1.x. `tooling.h` (`nshvc_mark`) and the
+  environment options `NSHVC_AUDIT` and `NSHVC_CYCLOG` are gone with the stated time they
+  read.
 - **1.1:** `nshvc_cart_irq_at` (`cart.h`): a chip changes the cartridge's IRQ line at its
   own clock, and the S-CPU sees a rise from that clock, as on the console. A chip that
   calls `nshvc_cart_irq` builds and runs as before, its line changed at the clock its sync

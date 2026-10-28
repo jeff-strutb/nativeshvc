@@ -18,26 +18,23 @@ bits set one write in sixteen.
 The S-CPU, meanwhile, writes a port and reads another every 3 frames.
 
 The reference runs it (tests/oracle: --sound, --voices, --spclog with every
-read) and mix_replay holds the mixer to it: every sample, every voice's
-state, every DSP register read and every read of the APU RAM. Then the same
-cartridge runs on nativeshvc (tests/rom/testcart, whose SPC700 C is this
-program's, tests/dsp/fuzz_spc.c, cycle for cycle) and the whole sound unit
-is held to the reference: every sample it plays, every SPC700 access (its
-time, the timers' counts and the ports' values it reads), and the S-CPU's
-reads of the ports.
+read) and mix_replay holds the mixer to it: the reference's writes at the
+reference's clocks, then every sample, every voice's state, every DSP
+register read and every read of the APU RAM. (The program's own time, its
+pauses, is the SPC700's instruction time, which the C does not keep: the
+DSP is held to the reference with the reference's own writes.)
 
   python3 tests/dsp/fuzz.py [SEED...]       (default seeds 1-4; about 2 minutes)
 
 Needs NSHVC_ORACLE_CORE and NSHVC_ASAR, as tests/rom/run.py.
 """
-import concurrent.futures, os, struct, subprocess, sys
+import concurrent.futures, os, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tests", "rom"))
 import snestest  # noqa: E402
 
 BUILD = os.path.join(ROOT, "build", "tests", "dsp")
-CART = os.environ.get("NSHVC_CART", os.path.join(ROOT, "build", "null", "tests", "testcart"))
 ORACLE = os.environ.get("NSHVC_ORACLE", os.path.join(ROOT, "build", "null", "tests", "oracle"))
 REPLAY = os.environ.get("NSHVC_MIX_REPLAY", os.path.join(ROOT, "build", "null", "tests", "mix_replay"))
 CORE = os.environ.get("NSHVC_ORACLE_CORE")
@@ -264,65 +261,7 @@ def one(seed):
     q = subprocess.run([REPLAY, os.path.join(d, "spc.log"), os.path.join(d, "sound.raw"),
                         os.path.join(d, "voices.bin")], capture_output=True, text=True, timeout=1200)
     notes = ["the mixer against the reference's chip: " + (q.stderr + q.stdout).strip().replace("\n", "; ")]
-    ok = q.returncode == 0
-    native_ok, native_notes = native(t, d)
-    return seed, ok and native_ok, "\n".join(notes + native_notes)
-
-
-def records(path):
-    with open(path, "rb") as f:
-        return list(struct.iter_unpack("<IBHB", f.read()))
-
-
-def native(t, d):
-    """the cartridge on nativeshvc: its sound, its SPC700's accesses (the
-       reference's writes and reads of $F0-$FF; a port read the reference
-       times between its cycle's halves) and the S-CPU's port reads"""
-    nd = os.path.join(d, "native")
-    os.makedirs(nd, exist_ok=True)
-    script = os.path.join(nd, "script.txt")
-    with open(script, "w") as f:
-        f.write("wait %d\ndump end\n" % FRAMES)
-    env = dict(os.environ, NSHVC_SPCLOG=os.path.join(nd, "spc.log"))
-    r = subprocess.run([CART, "--rom", os.path.join(d, t.name + ".sfc"), "--headless", "--script", script, "--out",
-                        nd, "--sound", os.path.join(nd, "sound.raw")], capture_output=True, text=True, timeout=1200,
-                       env=env)
-    if r.returncode:
-        return False, ["nativeshvc exit %d: %s" % (r.returncode, r.stderr.strip()[-300:])]
-    ok, notes = True, []
-    ref = [x for x in records(os.path.join(d, "spc.log")) if x[1] == 1 or (not x[1] and 0xF0 <= x[2] <= 0xFF)]
-    nat = [x for x in records(os.path.join(nd, "spc.log")) if x[1] != 2]
-    n = min(len(ref), len(nat))
-    port = lambda x: not x[1] and 0xF4 <= x[2] <= 0xF7
-    k = next((i for i in range(n) if (ref[i][0] + port(ref[i]),) + ref[i][1:] != nat[i]), None)
-    if k is not None:
-        ok = False
-        notes.append("SPC700 access %d of %d differs: reference %s, nativeshvc %s" % (k, n, ref[k], nat[k]))
-    else:
-        notes.append("SPC700 accesses: all %d the same (time, address, value)" % n)
-    with open(os.path.join(d, "sound.raw"), "rb") as f:
-        a = f.read()
-    with open(os.path.join(nd, "sound.raw"), "rb") as f:
-        b = f.read()
-    m = min(len(a), len(b)) // 4 * 4
-    k = next((i for i in range(0, m, 4) if a[i:i + 4] != b[i:i + 4]), None)
-    if k is not None:
-        ok = False
-        notes.append("sound: sample %d of %d differs" % (k // 4, m // 4))
-    else:
-        notes.append("sound: all %d samples the same (reference %d, nativeshvc %d made)" % (m // 4, len(a) // 4,
-                                                                                         len(b) // 4))
-    with open(os.path.join(d, "end.wram"), "rb") as f:
-        a = f.read()[0x2000:0x2000 + t.reads]
-    with open(os.path.join(nd, "end.wram"), "rb") as f:
-        b = f.read()[0x2000:0x2000 + t.reads]
-    k = next((i for i in range(t.reads) if a[i] != b[i]), None)
-    if k is not None:
-        ok = False
-        notes.append("S-CPU port read %d of %d differs: reference %02X, nativeshvc %02X" % (k, t.reads, a[k], b[k]))
-    else:
-        notes.append("S-CPU port reads: all %d the same" % t.reads)
-    return ok, notes
+    return seed, q.returncode == 0, "\n".join(notes)
 
 
 def main():

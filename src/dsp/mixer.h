@@ -35,6 +35,8 @@ void mix_voice_envelope(int v, int adsr, int attack, int decay, int sustain_leve
 void mix_voice_gain(int v, uint8_t gain);
 /* voices (a bit each) started from their sample, released */
 void mix_key_on(uint8_t voices);
+/* a KON or KOFF written since the DSP last took them (every other sample) */
+int mix_key_unread(void);
 void mix_key_off(uint8_t voices);
 /* voices whose pitch the voice before modulates; that play noise; that
    feed the echo */

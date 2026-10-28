@@ -29,7 +29,6 @@
 
 #include "nshvc/machine.h"
 #include "nshvc/spc.h"
-#include "nshvc/tooling.h"
 #include "snes_internal.h"
 #include "nshvc/cart.h"
 #include "coro.h"
@@ -39,7 +38,6 @@ Regs65816 cpu;
 
 static port_jmp_buf top;
 static void (*next_entry)(void);
-static int in_interrupt;
 static Coro *cpu_co, *host_co;
 static int powered;
 static void (*user_frame_hook)(void);
@@ -100,65 +98,22 @@ void jump_routine_pushed(uint32_t addr, const uint8_t *pushed, int n)
     r->abi();
 }
 
-/* one cycle of the CPU's the console states for the C: `cc` clocks */
-static void cpu_cycle(unsigned cc) { snes_cpu_cycle_k(cc); }
-
-/* the clocks the fetch of a code byte at `at` takes */
-static unsigned fetch(uint32_t at) { return snes_access_clocks(at); }
-
 void cpu_loop_forever(uint32_t at)
 {
-    in_interrupt = 0;
-    snes_in_interrupt = 0;
-    if (snes_untimed())
-        snes_fatal("untimed, the S-CPU loops for ever at $%06X: it waits for an interrupt that cannot come",
-                   (unsigned)at);
-    for (;;) {
-        /* BRA to itself: its opcode and operand fetched, an internal cycle */
-        cpu_cycle(fetch(at)); cpu_cycle(fetch(at + 1)); cpu_cycle(6);
-        snes_cpu_boundary();
-    }
+    (void)at;
+    snes_loop_forever();
 }
-
-void cpu_idle(uint32_t clocks) { snes_cpu_idle(clocks); }
 
 void cpu_wai(uint32_t at)
 {
-    /* WAI: the opcode, then internal cycles; one that begins with an
-       interrupt due (an NMI, or the IRQ line, masked or not) is the last
-       but one, and the interrupt is taken after the next */
-    cpu_cycle(fetch(at));
-    while (!snes_interrupt_due())
-        cpu_cycle(6);
-    cpu_cycle(6); cpu_cycle(6);
-    snes_cpu_boundary();
-}
-void cyc(uint32_t clocks) { snes_cpu_stated(clocks, __builtin_return_address(0)); }
-void nshvc_mark(uint32_t id) { snes_cyclog_mark(id); }
-
-void cycs(uint64_t lengths)
-{
-    int shift = 60;
-    snes_cyclog_cycs(__builtin_return_address(0), lengths);
-    while (shift >= 0 && !((lengths >> shift) & 0xF))
-        shift -= 4;
-    for (; shift >= 0; shift -= 4) {
-        unsigned c = (unsigned)(lengths >> shift) & 0xF;
-        if (c != 6 && c != 8 && c != 12)
-            snes_fatal("cycs(0x%llx): a cycle of %u clocks (6, 8 or C for 12), from %p", (unsigned long long)lengths, c,
-                       __builtin_return_address(0));
-        snes_cpu_cycle_c(c);
-    }
+    (void)at;
+    snes_wai();
 }
 
 void cpu_restart(uint32_t at, void (*entry)(void))
 {
     (void)at;
     next_entry = entry;
-    in_interrupt = 0;
-    snes_in_interrupt = 0;
-    /* untimed is the work of the calls the restart drops: it ends with them */
-    nshvc_set_untimed(0);
     port_longjmp(top);
 }
 
@@ -175,11 +130,9 @@ static uint8_t pull8(void)
     return snes_cpu_read_within((uint16_t)cpu.s);
 }
 
-/* RTI: its fetch, two internal cycles, P and PC (and PB in native mode)
-   pulled */
-static void rti(uint32_t at)
+/* RTI: P and PC (and PB in native mode) pulled */
+static void rti(void)
 {
-    cpu_cycle(fetch(at)); cpu_cycle(6); cpu_cycle(6);
     pull8();
     pull8();
     pull8();
@@ -187,11 +140,10 @@ static void rti(uint32_t at)
         pull8();
 }
 
-/* The interrupt: the sequence the CPU runs (two internal cycles, the frame
-   it pushes, the vector read, I set and D clear), then the vector's code.
-   The handler's C runs with the frame pushed and the registers as the
-   interrupted code left them; it states its time up to its RTI, whose
-   pulls are made here. The registers are put back after, as the handler's
+/* The interrupt: the sequence the CPU runs (the frame it pushes, the
+   vector read, I set and D clear), then the vector's code. The handler's C
+   runs with the frame pushed and the registers as the interrupted code
+   left them, up to its RTI, whose pulls are made here. The registers are put back after, as the handler's
    own pushes and pulls and RTI leave them on the console. */
 static void take_interrupt(int nmi)
 {
@@ -199,8 +151,6 @@ static void take_interrupt(int nmi)
     uint32_t vector = cpu.e ? (nmi ? 0x00FFFA : 0x00FFFE) : (nmi ? 0x00FFEA : 0x00FFEE);
     uint32_t at = (uint16_t)(snes_peek(vector) | snes_peek(vector + 1) << 8);
     const nshvc_routine *r;
-    /* a read at the next opcode, an internal cycle */
-    cpu_cycle(fetch(cpu.pc)); cpu_cycle(6);
     if (!cpu.e)
         push8((uint8_t)(cpu.pc >> 16));
     push8((uint8_t)(cpu.pc >> 8));
@@ -208,11 +158,8 @@ static void take_interrupt(int nmi)
     push8(cpu.p);
     /* I set and D cleared before the vector's read */
     cpu.p = (uint8_t)((cpu.p | P_I) & ~P_D);
-    cpu_cycle(fetch(vector)); cpu_cycle(fetch(vector + 1));
     cpu.pc = at;
     cpu.db = saved.db;
-    in_interrupt++;
-    snes_in_interrupt++;
     r = find(at);
     if (!r)
         snes_fatal("interrupt vector $%04X: no routine with C starts at $00:%04X (the code there needs C, as any "
@@ -220,9 +167,7 @@ static void take_interrupt(int nmi)
     r->abi();
     if (cpu.unwound)
         snes_fatal("the interrupt handler at $00:%04X left through its caller's frame", (unsigned)at);
-    rti(at);
-    in_interrupt--;
-    snes_in_interrupt--;
+    rti();
     cpu = saved;
 }
 

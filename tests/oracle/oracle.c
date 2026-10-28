@@ -23,7 +23,14 @@
  * time when the core reports it, which may be behind the S-CPU's), the
  * address and the value, little-endian (the DSP's clock is the
  * SPC700's cycle: tests/dsp/mix_replay; and to pair with nativeshvc's
- * NSHVC_SPCLOG); --spcreads: every data read too. --voices: at
+ * NSHVC_SPCLOG); --spcreads: every data read too. --cpulog: each S-CPU
+ * read and write (an interrupt's pushes too), and each byte a DMA or HDMA
+ * writes, 16 bytes: the core's CPU clock as it is made (master clocks from
+ * power-on, 64 bits; a read's 4 clocks before its cycle ends, a write's at
+ * its end), the address (32 bits), 0 for a read of data, 1 for a write, 2
+ * for a fetch of code (the open bus holds what it fetched), 3 for a DMA's
+ * or HDMA's write, the value, 2 bytes of 0; little-endian
+ * (tests/rom/replay.c plays it back on nativeshvc). --voices: at
  * each sample, each voice's envelope level, its stage, pitch counter, BRR
  * block and byte, as the core's DSP holds them (40 32-bit values).
  *
@@ -754,11 +761,45 @@ static void spclog_cpu_write(uint32_t addr, uint8_t value)
     }
 }
 
+/* --cpulog: the core's CPU clock, widened to 64 bits as it runs, and
+   what its reads are for (SFXBOX_WHO_DATA 0: data; 1, 2 an opcode's, an
+   operand's fetch) */
+static FILE *cpulog_f;
+static uint32_t (*core_clock)(void);
+static int *core_who;
+static uint64_t cpu_clock64;
+static uint32_t cpu_clock_last;
+
+static void cpulog_put(uint32_t addr, int write, uint8_t value)
+{
+    uint32_t c = core_clock();
+    uint8_t rec[16];
+    int k;
+    cpu_clock64 += (uint32_t)(c - cpu_clock_last);
+    cpu_clock_last = c;
+    for (k = 0; k < 8; k++)
+        rec[k] = (uint8_t)(cpu_clock64 >> (8 * k));
+    for (k = 0; k < 4; k++)
+        rec[8 + k] = (uint8_t)(addr >> (8 * k));
+    rec[12] = (uint8_t)write;
+    rec[13] = value;
+    rec[14] = rec[15] = 0;
+    fwrite(rec, 1, 16, cpulog_f);
+}
+
+static void core_read(uint32_t addr, uint8_t value)
+{
+    if (cpulog_f && *core_who <= 2)
+        cpulog_put(addr, *core_who ? 2 : 0, value);
+}
+
 /* the core's write hook (its harness's, before the write lands) */
 static void core_write(uint32_t addr, uint8_t value, int kind)
 {
     if (kind == 0)
         spclog_cpu_write(addr, value);
+    if (cpulog_f)
+        cpulog_put(addr, kind == 0 ? 1 : 3, value);
     if (watch_set && runs + 1 >= watch_from && runs + 1 <= watch_to) {
         long o = wram_offset(addr);
         if (o >= 0 && watch_set[o])
@@ -806,6 +847,10 @@ int main(int argc, char **argv)
             }
         }
         else if (!strcmp(argv[i], "--wram") && i + 1 < argc) wram_path = argv[++i];
+        else if (!strcmp(argv[i], "--cpulog") && i + 1 < argc) {
+            if (!(cpulog_f = fopen(argv[++i], "wb")))
+                die("cannot write ", argv[i]);
+        }
         else if (!strcmp(argv[i], "--sound") && i + 1 < argc) {
             if (!(sound_f = fopen(argv[++i], "wb")))
                 die("cannot write ", argv[i]);
@@ -876,13 +921,22 @@ int main(int argc, char **argv)
     fclose(f);
     if (!p_load_game(&gi))
         die("the core did not load ", rom);
-    if (watch_set || spclog_f) {
+    if (watch_set || spclog_f || cpulog_f) {
         static struct sfxbox_callbacks cb;
         void (*set)(const struct sfxbox_callbacks *) =
             (void (*)(const struct sfxbox_callbacks *))dlsym(core, "sfxbox_set_callbacks");
         if (!set)
             die("the core has no write hook", NULL);
         cb.write = core_write;
+        if (cpulog_f) {
+            *(void **)&core_clock = dlsym(core, "sfxbox_core_clock");
+            core_who = (int *)dlsym(core, "sfxbox_cpu_who");
+            if (!core_clock || !core_who)
+                die("the core has no CPU clock", NULL);
+            cpu_clock_last = core_clock();
+            cpu_clock64 = cpu_clock_last;
+            cb.read = core_read;
+        }
         if (watch_set)
             cb.insn = watch_insn;
         set(&cb);
@@ -923,6 +977,8 @@ int main(int argc, char **argv)
         fclose(voices_f);
     if (spclog_f)
         fclose(spclog_f);
+    if (cpulog_f)
+        fclose(cpulog_f);
     if (wram_path) {
         /* work RAM after the last frame (libretro's system RAM, id 2) */
         uint8_t *m = (uint8_t *)p_get_memory_data(2);

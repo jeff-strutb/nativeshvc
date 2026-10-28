@@ -5,22 +5,21 @@ Each was shown able to fail (a planted error caught) before it was relied on.
 
 | check | holds | run |
 |---|---|---|
-| `rom/run.py` | the console, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off): every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, the CPU's interrupt, DMA and HDMA timing (a DMA's own time at every phase, HDMA's, HDMA between a DMA's bytes, and both inside stretches the C states cycle by cycle), the multiplier's and divider's results as they work, the counters and frame lengths, interlace (its fields woven, hires and OBJ interlace), mid-line changes (each layer's tile fetch by mode) the sound unit's replies as the S-CPU sees them (the boot ROM's handshake, to 2 clocks), the joypads' automatic read (when it ends, at every phase of the CPU's counter) and every controller (joypads, multitap, mice and their speed, Super Scope, Justifiers, an empty port: the automatic read, a strobe and while latched, with the script's input each frame, the same on both). 1,164 test cartridges: 1,060 match, and the 104 that measure interrupt latency differ by it alone (README.md, Time), each listed in `rom/KNOWN` | `python3 tests/rom/run.py [--only NAME,...]` (about 3 minutes) |
+| `rom/run.py` | the console's hardware, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off), to the clock: the reference runs each test cartridge and records every read, write and code fetch its S-CPU makes and every byte its DMA moves, with its clock (`oracle --cpulog`); `rom/replay.c` makes the same accesses on nativeshvc at the same clocks through the console's public calls (its own chip's IRQ line stopping a wait at each), and every read and every picture must match, and each DMA's length (its end 0 to 6 clocks before the reference's last byte, by how the two starts fall on the unit's 8-clock steps). An access may come up to 36 clocks late after the DMA unit's work, the reference CPU's cycle alignment, which the replay cannot reproduce; later is a failure. Every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, the IRQ's and NMI's flags and latches at every dot, DMA and HDMA at every phase and HDMA between a DMA's bytes, the multiplier and divider, the counters and frame lengths, interlace, mid-line changes (each layer's tile fetch by mode), the sound unit's ports, the joypads' automatic read at every phase of the CPU's counter and every controller. 1,164 test cartridges: 1,103 match; the 61 that differ do so only where contract 2.0 means them to (README.md, Time), each listed in `rom/KNOWN` | `python3 tests/rom/run.py [--only NAME,...]` (about 3 minutes) |
 | `rom/ext_check.py` | the extensions: a larger screen's centre is exactly the console's picture, its extra columns the scene scrolled, VRAM pages the same as page 0 | `python3 tests/rom/ext_check.py` (about 1 minute) |
-| `dsp/fuzz.py` | the sound unit on its own: a test cartridge whose SPC700 program (`dsp/fuzz_spc.c` its C, cycle for cycle) writes every DSP register at random on every clock of the frame, plays random sample data, runs the timers and the ports. The mixer given the reference's writes at the reference's clocks: every sample, every voice's state, every DSP register read and every APU RAM read; then the cartridge on nativeshvc: every SPC700 access (time, address, value), every sample, every S-CPU port read | `python3 tests/dsp/fuzz.py [SEED...]` (seeds 1-4, about 30 seconds) |
+| `dsp/fuzz.py` | the DSP on its own: a test cartridge whose SPC700 program writes every DSP register at random on every clock of the frame, plays random sample data, runs the timers and the ports, run on the reference; the mixer given the reference's writes at the reference's clocks: every sample, every voice's state, every DSP register read and every APU RAM read | `python3 tests/dsp/fuzz.py [SEED...]` (seeds 1-4, about 2 minutes) |
+| `dsp/keys.py` | the notes a sound driver plays, its work taking no time: a driver keying voices on and off on timer 0's beat (`dsp/keys_spc.c` its C), on the reference and on nativeshvc; both runs' writes played through the mixer (`dsp/key_events`), every voice's key events the same, in order, each key-on with the same sample, each within 32 samples of the reference's (they come within 14) | `python3 tests/dsp/keys.py` (about 30 seconds) |
 | `dsp/mix_replay` | any run's sound against the reference's: the mixer given the writes the reference's SPC700 made (`oracle --spclog L [--spcreads] --sound S --voices V`), every sample, voice state and DSP read (and APU RAM read, with `--spcreads`) | `build/null/tests/mix_replay L S V` |
 | `dsp/resample_check` | the resampler against the exact signal: 70 dB or more below a tone up to 12 kHz | `build/null/tests/resample_check` |
 | `unit/input.c` | the native controls onto the console's controllers (keyboard, game controllers and their buttons' names, the mouse, the multitap, the pointer's place on the picture), read back through the ports; the device each player is using | `build/null/tests/input` |
 | `unit/states.py` | the script's save and load, with `fork` and without (as on Windows): every dump the same both ways, byte for byte, and each the machine it should be | `python3 tests/unit/states.py` (seconds) |
 | `unit/pointer_macos.m` | a light gun aimed with the real pointer, in a window: AppKit's own mouse events at known places on the picture, the counters the console latched read back by the cartridge | `build/macos/tests/pointer_macos` (a window, seconds) |
 | `unit/pointer_ios.c` | a light gun aimed by touch on the iOS simulator: each touch's place against the counters latched | `sh tests/unit/pointer_ios.sh build`, install and touch it, then `sh tests/unit/pointer_ios.sh check pointer.txt` |
-| `unit/untimed.c` | untimed mode, the vertical blank wait, the untimed wait guard | `build/null/tests/untimed` |
+| `unit/waits.c` | the S-CPU's time: its work takes none; a wait ends at the clock its condition comes (the vertical and horizontal blank, the joypads' read) and returns the clocks waited; the NMI and IRQ taken in a wait at their clocks; a wait in a handler, the IRQ held by the I flag and taken as the handler returns; WAI, masked and not; a DMA's length; the multiplier and divider done when read; a loop with no wait, and a wait with interrupts held, fatal | `build/null/tests/waits` (`--poll`, `--held`: exit 70) |
 | `unit/chip.c` | the cartridge connector: a board its chip decodes (`NSHVC_CHIP`, the chip's `rom_at`), the chip's registers and RAM, its IRQ line, open bus, the ROM read for the chip with its own bits | `build/null/tests/chip` |
-| `unit/chip_irq.c` | a chip's IRQ at its own clock (`nshvc_cart_irq_at`): a chip on its own coroutine stops at a clock and raises it; the S-CPU takes it at that clock in a stretch (`cyc`, `cpu_idle`), between status reads or at the end of the read it rises in, two cycles after the WAI cycle that sees it, at a refresh's end when it rises in one, and not while masked | `build/null/tests/chip_irq` |
+| `unit/chip_irq.c` | a chip's IRQ at its own clock (`nshvc_cart_irq_at`): a chip on its own coroutine stops at a clock and raises it; the S-CPU takes it at that clock in a wait on its status (the handler's acknowledge before the wait sees the chip stopped), masked the wait ends there, in WAI, and at a refresh's end when it rises in one | `build/null/tests/chip_irq` |
 | `unit/overlay_check.c` | every renderer's overlays against the reference drawing | `RR_SIZE=1100x800 build/null-RENDER/tests/overlay_check` |
 | `NSHVC_RRCHECK=1` | every renderer's presented frames (one to one and scaled, sharp bilinear) against the reference scaling | `NSHVC_RRCHECK=1 RR_SIZE=1000x750 build/null-RENDER/tests/testcart --rom ROM --headless --frames 4` |
-| `NSHVC_AUDIT=1` | the C's time against the DMA unit: each `cyc` stretch a DMA or HDMA falls inside, by C function and offset (where `cycs` wants using) | any headless run of a game |
-| `NSHVC_CYCLOG=FILE` | the C's time and accesses, a line each (`[NSHVC_CYCLOG_FRAMES=A-B]`; format in `src/console/bus.c`): each `cyc` and `cycs` by call site, the time the console states, waits, reads, writes and an interrupt's pushes, to pair against the original's cycles. | any headless run of a game |
 | `NSHVC_SPCLOG=FILE` | the SPC700's accesses, to pair with the reference's (`oracle --spclog`): each write and each read of $F0-$FF, and the S-CPU's port writes, 8 bytes each (format in `tests/oracle/oracle.c`) | any headless run |
 | `NSHVC_PPUCHECK=1` | each frame drawn from its record against the frame drawn a line at a time | any headless run |
 
@@ -51,20 +50,22 @@ DSP, no overclock, no blur, no randomised power-on state, no hacks.
 `rom/snestest.py` builds each test as a real ROM: a small interpreter in
 65816 assembly that runs a table of steps (register writes, DMA, waits for
 a line or a vertical blank, reads logged to work RAM, WAI, NMI and IRQ
-handlers that run tables of their own). The same ROM runs on the reference
-and on nativeshvc, where `rom/testcart.c` is the same interpreter written
-against the machine model, cycle for cycle as the assembly runs, as a cycle
-exact decompilation's C is. `rom/cases.py` lists the tests; most fill VRAM,
-CGRAM and OAM with random data so every path of a feature is reached, and
-the probes (`probe_*`) use labelled data that shows exactly what the console
-did at each pixel.
+handlers that run tables of their own). `rom/cases.py` lists the tests;
+most fill VRAM, CGRAM and OAM with random data so every path of a feature
+is reached, and the probes (`probe_*`) use labelled data that shows exactly
+what the console did at each pixel. The reference runs the ROM; on
+nativeshvc, `rom/replay.c` makes the reference's own S-CPU accesses at the
+reference's clocks, so the reference's CPU timing places every write and
+read and the console's hardware is what is held. `rom/testcart.c` is the
+same interpreter as C written against the machine model, untimed, its
+polls waits: what `rom/ext_check.py` and the sound check run.
 
-## The known residual (`rom/KNOWN`)
+## The known differences (`rom/KNOWN`)
 
-The 104 tests that measure interrupt latency (`irq_fixed`, `irq_entry`,
-`frame_clock`): the handler starts 1 to 20 dots earlier than the
-reference's, because the C marks no instruction ends (README.md, Time).
-Every other test matches. A test that differs goes in `rom/KNOWN` with
-the reason;
-`rom/run.py` reports it as KNOWN, never as passing, and reports any that
-start passing, so the list is kept true.
+The 61 tests that differ, each only where contract 2.0 means it to
+(README.md, Time): 42 read the multiplier or divider while it works (done
+when read here, since the C's work takes no time), and 19 read the sound
+boot ROM's reply before the reference's SPC700 makes it (its work taking no
+time here). No picture differs. A test that differs goes in `rom/KNOWN`
+with the reason; `rom/run.py` reports it as KNOWN, never as passing, and
+reports any that start passing, so the list is kept true.

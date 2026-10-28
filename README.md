@@ -20,7 +20,7 @@ that every Super Nintendo decompilation can share one console instead of buildin
 
 ## Project Purpose
 
-A decompilation that is byte exact and cycle exact recovers the game's code, but code alone
+A decompilation that is byte exact recovers the game's code, but code alone
 does not play. On the console it sat in a machine: a bus that answers its addresses, a
 picture unit drawing what it wrote, a sound chip, DMA, interrupts, a controller, a battery,
 a television's frame rate. Each native port has had to rebuild all of that around its game.
@@ -32,11 +32,11 @@ and Linux to come), presented on the GPU at any window size, with sound, control
 saves, at the console's own pace.
 
 It holds to the standard of the decompilations it serves. It runs no emulated CPU, does no
-high-level emulation of the game, and has no per-game fixes. The game's own C makes every
-access the original makes, in the original's order, and states the time the original spends
-between them; nativeshvc answers each access as the hardware does, at the hardware's time.
-A game whose C is cycle exact therefore runs on nativeshvc frame for frame as it ran on the
-console.
+high-level emulation of the game, and has no per-game fixes. It is behaviour exact, not
+cycle exact: the game's own C makes every access the original makes, in the original's
+order, and waits where the original waits for the hardware; nativeshvc answers each access
+as the hardware does, and runs the hardware at the hardware's time. The C's own work takes
+no time (see [Time](#time)).
 
 Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
 console's numbers are its baseline, and a port may opt out of them (see
@@ -64,9 +64,9 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 
 The rules are [the game contract](docs/contract.md). Write each routine's C against
 `machine.h` and `spc.h`: every bus access through `rd8`/`wr8` (`spc_rd`/`spc_wr`) in the
-original's order, and the original's time between them through `cyc` (`spc_cyc`), cycle by
-cycle with `cycs` wherever a DMA or HDMA starts. Mark no instruction's end: the C is
-structured, not a trace. A cartridge chip's processor has the game's own machine model,
+original's order, and each loop that waits for the hardware as a wait (`nshvc_wait_until`,
+`spc_wait_until`). State no time and mark no instruction's end: the C is structured, not a
+trace. A cartridge chip's processor has the game's own machine model,
 with its chip. This is the same C the decompilation's verification harness checks against
 the original, unchanged. Each routine that is entered from an address (a vector, a
 computed call, a chip's program, an SPC700 routine) gets an `abi_` wrapper that takes its
@@ -141,15 +141,6 @@ then `nshvc_run_frame` each frame, and takes the picture (`nshvc_picture`) and t
 machine's memory, peek at the bus with no side effects, and hook each frame and each S-CPU
 write. See [docs/nativeshvc.md](docs/nativeshvc.md#running-it-yourself).
 
-### 5. Check its timing
-
-Two options show where a port's stated time and the console disagree, on any headless run:
-`NSHVC_AUDIT=1` names each `cyc` stretch a DMA or HDMA falls inside (where `cycs` is
-needed), and `NSHVC_CYCLOG=FILE` writes the C's time and accesses a line each, to pair
-against the original's cycles. The C can drop markers into that record with `nshvc_mark`
-([`tooling.h`](include/nshvc/tooling.h), outside the game contract), which takes no time,
-to line it up with the code that made it.
-
 ### What the decompilation does not have to do
 
 It does not write a renderer, a mixer, a resampler, a window, controller handling (any of
@@ -163,15 +154,13 @@ it into the connector (`cart.h`).
 
 ## Status
 
-Version 1.1.0. **The standard is finished:** the game contract, what a game writes against
-and what the console promises it, is in [docs/contract.md](docs/contract.md), at 1.1 (1.0
-and one addition, a chip's IRQ at its own clock).
-A game built against it plays on every later 1.x unchanged; only a 2.0 may change it. The
-one difference from the hardware, interrupt latency, is part of that contract (see
-[Time](#time)).
+Version 2.0.0. **The standard is finished:** the game contract, what a game writes against
+and what the console promises it, is in [docs/contract.md](docs/contract.md), at 2.0:
+behaviour exact, the processors' work taking no time (see [Time](#time)). A game built
+against it plays on every later 2.x unchanged; only a 3.0 may change it.
 
 **Platform hosts still to come.** These are separate implementations of the host
-interface, outside the standard; a game written against 1.x needs no change for them:
+interface, outside the standard; a game written against 2.x needs no change for them:
 
 - **Windows:** the host is written and cross-builds with MinGW with no warnings, but has
   never been run on Windows. Its saving and loading of states, and calls that put the
@@ -184,9 +173,14 @@ interface, outside the standard; a game written against 1.x needs no change for 
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
 each one, is in [tests/README.md](tests/README.md).
 
-- **Test cartridges:** 1,060 of the 1,164 console test cartridges match the reference.
-  The other 104 measure interrupt latency and differ by it alone: the one exception to
-  cycle exactness (see Time), each listed in `tests/rom/KNOWN`.
+- **Test cartridges:** the reference runs each of the 1,164 console test cartridges and
+  records every read and write its S-CPU makes, with the clock it makes it at; nativeshvc
+  makes the same accesses at the same clocks, so its hardware is held to the reference's
+  to the clock with the reference's own CPU timing. 1,103 match in every read and every
+  picture. The other 61 differ only where contract 2.0 means them to (see Time): 42 read
+  the multiplier or divider while it works (done when read here), and 19 read the sound
+  boot ROM's reply before the reference's SPC700 makes it. Each is listed in
+  `tests/rom/KNOWN`; none differs in a picture.
 - **Cartridges:** LoROM, HiROM, ExLoROM and ExHiROM mappings, including mirroring for ROM
   sizes that are not a power of two, and cartridge RAM; a board its own chip decodes,
   through the cartridge connector; NTSC and PAL frame lengths.
@@ -197,10 +191,12 @@ each one, is in [tests/README.md](tests/README.md).
   brightness, HDMA, the read side and open bus.
 - **Timing:** mid-line register writes (Mode 7's matrix included) and each layer's tile
   fetch by mode, CGRAM writes during display landing on the entry being looked up, VRAM
-  writes blocked during display, H and V IRQs with long dots, WAI, multiply and divide
-  results read mid-operation, DMA and HDMA timing at every 2-clock phase and HDMA between a
-  DMA's bytes, the joypads' automatic read bit by bit at the CPU counter's own steps, and
-  the sound unit's handshake as the S-CPU sees it.
+  writes blocked during display, H and V IRQs with long dots and their flags and latches
+  at every dot, DMA lengths and HDMA at every 2-clock phase and HDMA between a DMA's
+  bytes, and the joypads' automatic read bit by bit at the CPU counter's own steps. The
+  waits: each change a wait looks for seen at its clock (the vertical and horizontal
+  blank, the joypads' read, a chip's IRQ), the NMI and IRQ taken there, a wait in a
+  handler, WAI, a DMA's time, the multiplier and divider done when read.
 - **Controllers:** the joypad, the mouse (its speed setting), the multitap (IOBit picking
   the pair), the Super Scope, one Justifier and two, and an empty port, each read through
   the automatic read, a strobe and $4016/$4017, and while latched, with different input
@@ -218,15 +214,18 @@ each one, is in [tests/README.md](tests/README.md).
 - **The cartridge connector:** a chip on a test board answers its registers, decodes the
   board's ROM, owns the cartridge's RAM and drives the IRQ line, all through `cart.h`; a
   chip running on its own clock raises its IRQ at that clock, and the S-CPU takes it there
-  (in a stretch of its time, between its reads, in WAI, after a refresh).
-- **Sound unit and DSP, on their own:** a test cartridge's SPC700 program writes every DSP
-  register at random on every clock of the chip's frame, plays random sample data, runs the
-  timers and the ports. The DSP matches the reference's chip sample for sample, with every
-  voice's state, every register read and every APU RAM read; the whole sound unit on
-  nativeshvc matches every SPC700 access (time, address, value: the timers' counts and the
-  ports' values), every sample and every S-CPU port read (seeds 1 to 4).
+  (in a wait, the wait then seeing the chip stopped; masked, the wait ending there; in
+  WAI; after a refresh).
+- **Sound unit and DSP:** a test cartridge's SPC700 program writes every DSP register at
+  random on every clock of the chip's frame, plays random sample data, runs the timers and
+  the ports; given the reference's writes at the reference's clocks, the DSP matches the
+  reference's chip sample for sample, with every voice's state, every register read and
+  every APU RAM read (seeds 1 to 4). A sound driver keying voices on and off on a timer's
+  beat, its work taking no time here: all 3,214 of its key events, on every voice, match
+  the reference's in order and sample, each within 14 samples (0.44 ms) of the
+  reference's.
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the test cartridges'
-  frames (one to one and scaled) and draw overlays as the CPU reference does: 1,105
+  frames (one to one and scaled) and draw overlays as the CPU reference does: 1,274
   cartridges each, none differing.
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
@@ -257,20 +256,16 @@ native console. Together with the cartridge's description, they are the game con
 
 - [`machine.h`](include/nshvc/machine.h), the S-CPU: `rd8`/`wr8` (and `rd16`, `wr16`,
   `rd24`) for every access to the 24-bit address space; `rd8_rmw`/`rd16_rmw` for a
-  read-modify-write's read and `wr8`/`wr16_rmw` for its write; `cyc(clocks)` for the
-  original's fetches and internal cycles between two accesses, in master clocks, and
-  `cycs` for the same cycle by cycle where a DMA or HDMA starts in them; the 65816
-  register file `cpu` for routines entered through `abi_` wrappers; `call_routine`,
-  `jump_routine` and `jump_routine_pushed` for calls and jumps through computed addresses;
-  `cpu_loop_forever` and `cpu_restart` for the code no C returns from; `cpu_wai` for WAI;
-  `cpu_idle` for time with no access of the C's.
+  read-modify-write's read and `wr8`/`wr16_rmw` for its write; `nshvc_wait_until` and
+  `nshvc_wait_vblank` for its waits for the hardware; the 65816 register file `cpu` for
+  routines entered through `abi_` wrappers; `call_routine`, `jump_routine` and
+  `jump_routine_pushed` for calls and jumps through computed addresses; `cpu_loop_forever`
+  and `cpu_restart` for the code no C returns from; `cpu_wai` for WAI.
 - [`spc.h`](include/nshvc/spc.h), the SPC700: the register file `spc`; `spc_rd`/`spc_wr`
-  for every APU RAM and I/O access; `spc_cyc` for the original's cycles; `spc_call` and
+  for every APU RAM and I/O access; `spc_wait_until` for its waits; `spc_call` and
   `spc_ret` for its calls; `spc_restart` and `spc_boot_rom` for the code no C returns from.
 
 [`hw.h`](include/nshvc/hw.h) names the hardware registers by their standard names.
-[`tooling.h`](include/nshvc/tooling.h) holds one call for checking a decomp against its
-original (`nshvc_mark`); it is outside the contract and changes nothing in the machine.
 
 ### The cartridge connector
 
@@ -278,8 +273,8 @@ nativeshvc is the console, and implements no expansion chip itself. A cartridge'
 hardware (the Super FX, the SA-1, a DSP) is the cartridge's, as on the console, and plugs in
 through the connector in [`cart.h`](include/nshvc/cart.h): the chip powers on with the
 console, answers the S-CPU's accesses to the addresses it decodes, is brought up to the
-console's clock before those accesses, once a line and wherever the S-CPU could take its
-IRQ, drives the IRQ line at its own clock (`nshvc_cart_irq_at`: the S-CPU sees a rise from
+console's clock before those accesses, once a line and in the S-CPU's waits, drives the
+IRQ line at its own clock (`nshvc_cart_irq_at`: the S-CPU sees a rise from
 the clock the chip raised it at, as on the console), and may own the cartridge's RAM. A board the chip decodes (`NSHVC_CHIP`) tells the console where its ROM
 is (`rom_at`), and the console reads that ROM as it reads a mapping's. A cartridge with a
 chip names it in its description.
@@ -290,44 +285,43 @@ registers or board, and no list of chips it supports.
 
 ### Time
 
-Time is the console's master clock (21.477 MHz NTSC). Each S-CPU access moves it by what
-that access takes on the bus, and `cyc` moves it by the time the original spends between
-accesses. Where a DMA or HDMA can fall inside that time, the C states it cycle by cycle
-instead (`cycs`, each hex digit one cycle's clocks), so the transfer lands on the right
-cycle edge. As the clock passes each line's horizontal blank, that line is drawn and HDMA
-runs; at the vertical blank's start come the NMI, the joypads' automatic read and the
-frame's end.
+Time is the console's master clock (21.477 MHz NTSC). nativeshvc is behaviour exact, not
+cycle exact: the hardware runs at the hardware's time, and the processors' C, the S-CPU's
+and the SPC700's, takes none. Their accesses are made at the clock as it stands. The clock
+moves on where the code waits for the hardware, as on the console it spends that time in a
+poll loop: `nshvc_wait_until` (a status bit, a counter, a chip's flag, the sound unit's
+reply), `nshvc_wait_vblank`, WAI and a branch to itself for the S-CPU, `spc_wait_until`
+for the SPC700. In a wait the clock moves in steps of a poll loop's few cycles, and each
+change the loop looks for is seen at its own clock: a line's start, the horizontal blank,
+the joypads' read, an IRQ, a chip's IRQ. A DMA stops the S-CPU for the DMA unit's real
+time, as on the console. As the clock passes each line's horizontal blank, that line is
+drawn and HDMA runs; at the vertical blank's start come the NMI, the joypads' automatic
+read and the frame's end.
 
 Interrupts are events in the console's time. The NMI, the H/V IRQ and a cartridge's IRQ
-come due at exactly the clock the hardware raises them, and the S-CPU's C takes each at the
-first point between two of its operations at or after that clock: the end of an access
-(`rd8`, `wr8`), a word (`rd16`, `wr16`, `rd24`) or a read-modify-write (`rd8_rmw`/`rd16_rmw`
-to its write), or, inside a stretch of time (`cyc`, `cycs`, `cpu_idle`), the clock itself.
-No operation is split, so a handler never sees half of a word or of a read-modify-write.
-The IRQ waits while the I flag masks it. The C marks no instruction boundaries and the bus
-infers none: the C is structured, not a trace of the original's instructions. WAI and a
-branch to itself are the console's own, and take their interrupts exactly as the CPU
-does.
+come due at exactly the clock the hardware raises them. One that comes due in a wait is
+taken at that clock, and its handler runs before the wait looks again; one that a DMA's
+time made due is taken at the end of the access that started the DMA. No operation is
+split, so a handler never sees half of a word or of a read-modify-write. The IRQ waits
+while the I flag masks it; a handler may itself wait, the I flag holding the IRQ there as
+on the console.
 
-**The one exception to cycle exactness: interrupt latency.** The 65816 decides on an
-interrupt as an instruction's last cycle begins and takes it when that instruction ends, so
-on the hardware the handler starts after the rest of the instruction in progress (and,
-when the interrupt comes due in its last cycle, after the next instruction as well): a
-delay of a few CPU cycles, by which instructions those are (1 to 20 dots, 4 to 80 master
-clocks, on the test cartridges that measure it). Which instruction is in
-progress is a fact of the original's machine code that structured C does not carry, so
-nativeshvc starts the handler at the operation's end or the clock it comes due instead,
-earlier here by that delay. That can also put the handler before an access the interrupted
-instruction still had to make: an interrupt that comes due while the original fetches an
-instruction is taken here before that instruction's read or write, and on the hardware
-after it. That access then reads or writes something else only where the handler writes
-what it reads or reads what it writes; and a loop polling a flag the handler sets, or a
-status register (a chip's, as it stops), can see the change a turn sooner and leave a turn
-early. Where the code waits with WAI (or a branch to itself), the console takes the
-interrupt as the CPU does and the timing is exact. It shows where a handler's writes are
-timed to the dot (a mid-line split from an H-IRQ the code does not wait for), in poll loops
-like those, and in test cartridges that measure the latency itself: 104 of the 1,164,
-listed in `tests/rom/KNOWN`.
+**What this leaves out, on purpose:** how long the processors' own work takes. Where the
+original's work set the pace (a frame its CPU did not finish before the next vertical
+blank, a reply the sound driver made a few hundred cycles after a port changed), the game
+here does not: its work is done at once, and it goes on at its next wait. The multiplier
+and divider are done when read, since no time passes between the write and the read. The
+hardware's own time is all kept: a DMA, an HDMA, a line, a timer, the Super FX's job a
+cartridge's chip runs.
+
+**The sound.** The DSP makes its 32,040 samples a second at its own clock, and the
+driver's waits on its timers keep its beat exactly. Inside a beat, the writes the
+original spread through its work all land at the beat's start, a fraction of a
+millisecond earlier, which no ear hears. The one place that would be heard is a key
+event: the DSP takes KON and KOFF every other sample, so two written in the same instant
+would lose one. So after a KON or KOFF write, the SPC700's next DSP write waits until the
+DSP has taken it: every note reaches the DSP, in order, with its voice's registers as the
+original had them.
 
 ### Controllers
 
@@ -374,14 +368,14 @@ The SPC700's C, and a cartridge chip's that has a processor, run on coroutines o
 x86-64, fibers on Windows; a chip's through `cart.h`), each with its own clock. Whenever
 the S-CPU could see what one of them does (its registers, its RAM, the sound ports, a
 chip's IRQ) and once a line, the S-CPU brings it up to its own time, and it hands back when
-it gets there. Through a stretch in which the S-CPU makes no access, a chip runs to the
-stretch's end, or stops where its IRQ rises.
+it gets there. Through a step of a wait, a chip runs to the step's end, or stops where its
+IRQ rises.
 One runs at a time, on a deterministic schedule, with no threads: the same input gives the
 same run on every host.
 
 - **Sound unit** ([`apu.c`](src/console/apu.c)). At power on, the boot ROM's work is done
-  instruction for instruction (not from the ROM's bytes), so the S-CPU's upload sees the
-  same replies at the same pace. Code the S-CPU uploads and starts is the game's SPC700 C,
+  access for access (not from the ROM's bytes), its poll loops waits, so the S-CPU's upload
+  sees the same replies. Code the S-CPU uploads and starts is the game's SPC700 C,
   chosen by which program's bytes the APU RAM holds at that address (two drivers may share
   addresses). The DSP runs a clock an SPC700 cycle, so a write lands between the same
   two of its clocks as on the console, and makes a sample every 32, 32,040 a second.
@@ -448,7 +442,7 @@ time, files and the save folder, a window, input, audio.
 
 The console's numbers are baselines a port may raise, each off until the port asks for it:
 any screen size up to 1024x480, sprite X and Y extension bits, sprite line limits off, VRAM
-up to 256 KB in pages, an untimed mode with a vertical blank wait, and held interrupts. The front end adds key, touch
+up to 256 KB in pages, and held interrupts. The front end adds key, touch
 and frame hooks, overlays, buttons the game holds itself, the safe area and the window's
 size. They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions).
 

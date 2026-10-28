@@ -1,6 +1,9 @@
 """
-run.py: build each test cartridge, run it on the oracle and on nativeshvc,
-compare what they show, pixel for pixel, and what they read back.
+run.py: build each test cartridge and run it on the oracle, recording its
+S-CPU's reads and writes with their clocks; make the same accesses on
+nativeshvc at the same clocks (replay.c); compare what the two show, pixel
+for pixel, and every read. nativeshvc's own CPU is untimed (README.md,
+Time): this holds its hardware to the reference's to the clock.
 
   python3 tests/rom/run.py [--only NAME,NAME] [--keep]
 
@@ -22,7 +25,7 @@ BUILD = os.environ.get("NSHVC_TESTBUILD", os.path.join(ROOT, "build", "null", "t
 OUTROOT = os.path.join(ROOT, "build", "tests")
 OUT = os.environ.get("NSHVC_TESTOUT", os.path.join(OUTROOT, "rom"))
 ORACLE = os.environ.get("NSHVC_ORACLE", os.path.join(BUILD, "oracle"))
-CART = os.environ.get("NSHVC_TESTCART", os.path.join(BUILD, "testcart"))
+REPLAY = os.environ.get("NSHVC_REPLAY", os.path.join(BUILD, "replay"))
 CORE = os.environ.get("NSHVC_ORACLE_CORE")
 
 
@@ -77,33 +80,31 @@ def run_one(t):
             if t.frames > at:
                 f.write("wait %d\n" % (t.frames - at))
         f.write("dump end\n")
+    log = os.path.join(od, "cpu.log")
     if t.inputs:
-        cmd = [ORACLE, "--core", CORE, "--rom", rom, "--script", script, "--out", od]
+        cmd = [ORACLE, "--core", CORE, "--rom", rom, "--script", script, "--out", od, "--cpulog", log]
     else:
         cmd = [ORACLE, "--core", CORE, "--rom", rom, "--frames", str(t.frames), "--out", od,
-               "--shot", ",".join(map(str, t.shots)), "--wram", os.path.join(od, "end.wram")]
+               "--shot", ",".join(map(str, t.shots)), "--cpulog", log]
     if getattr(t, "overscan", False):
         cmd.append("--overscan")
     subprocess.run(cmd, check=True, timeout=120)
-    r = subprocess.run([CART, "--rom", rom, "--headless", "--script", script, "--out", nd],
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode != 0:
+    r = subprocess.run([REPLAY, "--rom", rom, "--log", log, "--headless", "--script", script, "--out", nd],
+                       capture_output=True, text=True, timeout=300)
+    lines = [x for x in r.stderr.splitlines() if x.startswith("replay:")]
+    if r.returncode not in (0, 1) or not lines:
         return False, "nativeshvc exit %d: %s" % (r.returncode, r.stderr.strip()[-400:])
-    ok, notes = True, []
+    ok, notes = r.returncode == 0, []
+    if not ok:
+        # the summary (the last line), then the first read or time that differs
+        notes.append(lines[-1][len("replay: "):])
+        if len(lines) > 1:
+            notes.append(lines[0][len("replay: "):])
     for s in t.shots:
         bad, first = compare(ppm(os.path.join(od, "frame_%d.ppm" % s)), ppm(os.path.join(nd, "frame_%d.ppm" % s)))
         if bad != 0:
             ok = False
             notes.append("frame %d: %s pixels differ, first %s" % (s, bad, first))
-    if t.reads:
-        with open(os.path.join(od, "end.wram"), "rb") as f:
-            a = f.read()[0x2000:0x2000 + t.reads]
-        with open(os.path.join(nd, "end.wram"), "rb") as f:
-            b = f.read()[0x2000:0x2000 + t.reads]
-        if a != b:
-            ok = False
-            k = next(i for i in range(len(a)) if a[i] != b[i])
-            notes.append("read %d of %d differs: oracle %02X nativeshvc %02X" % (k, t.reads, a[k], b[k]))
     return ok, "; ".join(notes)
 
 

@@ -61,7 +61,7 @@ struct nshvc_chip {
 uint64_t nshvc_cart_clock(void);
 /* the cartridge's IRQ line, driven by the chip (1 asserted), changed at
    master clock `clock`: the chip's own, when it raises or lowers it. The
-   S-CPU sees a rise from that clock, as on the console. (Since 1.1.) */
+   S-CPU sees a rise from that clock, as on the console. */
 void nshvc_cart_irq_at(int level, uint64_t clock);
 /* the same at nshvc_cart_clock(): for a chip that does not run on a clock
    of its own (its line changed by the S-CPU's accesses) */

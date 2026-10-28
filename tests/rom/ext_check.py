@@ -18,6 +18,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run, cases, snestest  # noqa: E402
 
+# the test cartridge, its C untimed (its polls waits): the extensions are held
+# to its own console picture
+CART = os.environ.get("NSHVC_TESTCART", os.path.join(run.BUILD, "testcart"))
+
 SIZES = [(512, 224), (320, 256), (1024, 480), (258, 226)]
 
 
@@ -28,7 +32,7 @@ def shot(rom, screen, d):
         env["NSHVC_TEST_SCREEN"] = "%dx%d" % screen
     script = os.path.join(d, "s.txt")
     open(script, "w").write("wait 6\nshot f\n")
-    subprocess.run([run.CART, "--rom", rom, "--headless", "--script", script, "--out", d], env=env, check=True,
+    subprocess.run([CART, "--rom", rom, "--headless", "--script", script, "--out", d], env=env, check=True,
                    capture_output=True, timeout=120)
     return run.ppm(os.path.join(d, "f.ppm"))
 
@@ -98,9 +102,9 @@ def main():
         env = dict(os.environ, NSHVC_TEST_VRAM_PAGE="3")
         open(os.path.join(d3, "s.txt"), "w").write("wait 6\nshot f\ndump f\n")
         open(os.path.join(d0, "s.txt"), "w").write("wait 6\nshot f\ndump f\n")
-        subprocess.run([run.CART, "--rom", rom, "--headless", "--script", os.path.join(d3, "s.txt"), "--out", d3],
+        subprocess.run([CART, "--rom", rom, "--headless", "--script", os.path.join(d3, "s.txt"), "--out", d3],
                        env=env, check=True, capture_output=True)
-        subprocess.run([run.CART, "--rom", rom, "--headless", "--script", os.path.join(d0, "s.txt"), "--out", d0],
+        subprocess.run([CART, "--rom", rom, "--headless", "--script", os.path.join(d0, "s.txt"), "--out", d0],
                        check=True, capture_output=True)
         same = all(open(os.path.join(d0, "f" + e), "rb").read() == open(os.path.join(d3, "f" + e), "rb").read()
                    for e in (".ppm", ".wram"))
@@ -135,7 +139,7 @@ def shot_env(rom, envd, d):
     os.makedirs(d, exist_ok=True)
     env = dict(os.environ, **envd)
     open(os.path.join(d, "s.txt"), "w").write("wait 6\nshot f\n")
-    subprocess.run([run.CART, "--rom", rom, "--headless", "--script", os.path.join(d, "s.txt"), "--out", d], env=env,
+    subprocess.run([CART, "--rom", rom, "--headless", "--script", os.path.join(d, "s.txt"), "--out", d], env=env,
                    check=True, capture_output=True, timeout=120)
     return run.ppm(os.path.join(d, "f.ppm"))
 

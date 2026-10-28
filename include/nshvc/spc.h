@@ -10,6 +10,16 @@
  * SPC700 takes no interrupts, so nothing comes between the C's operations.
  * With machine.h, the game's side of the contract (docs/contract.md).
  *
+ * The C's work takes none of the sound unit's time: its accesses are made
+ * at its clock as it stands, and the clock (1,025,280 Hz, the DSP's 32,040
+ * samples a second) moves on only where the code waits for the hardware
+ * (spc_wait_until: a timer's counter, a port), the DSP and the timers
+ * running meanwhile. One rule keeps the DSP hearing what the original
+ * made it hear: after a write of KON or KOFF, the next write to the DSP
+ * waits until the DSP has taken that key event (it takes them every other
+ * sample), so no note is lost or cut short, and none starts with the
+ * voice's registers written after it.
+ *
  * A routine is entered by CALL, PCALL or TCALL: the caller pushes the return
  * address (spc_call), the routine's RET pulls it (spc_ret). abi_Name(void)
  * is the routine at its entry.
@@ -29,23 +39,15 @@ extern SpcRegs spc;
 uint8_t spc_rd(uint16_t addr);
 void spc_wr(uint16_t addr, uint8_t v);
 
-/* The time the original spends before an access of the C's (spc_rd, spc_wr),
-   besides the access: its opcode and operand fetches, dummy reads and
-   internal cycles from the cycle after the access before to the cycle of
-   this one's own, `n` SPC700 cycles. A call states the cycles after its last
-   access through the end of its RET too. A routine that calls another states
-   its own CALL's cycles. The checks compare it with the original's. */
-void spc_cyc(unsigned n);
-
-/* spc_wr with its time stated after its arguments are evaluated (a value that
-   reads: spc_wr_cyc(a, f(spc_rd(b)), n) states the read's time inside the
-   argument and the write's here). It is spc_wr with the time after the
-   arguments, which spc_wr itself, a primitive the checks provide, cannot take. */
-static inline void spc_wr_cyc(uint16_t addr, uint8_t v, unsigned before)
-{
-    spc_cyc(before);
-    spc_wr(addr, v);
-}
+/* Wait for the hardware: the original's poll loop (a timer's counter at
+   $FD-$FF, a port the S-CPU writes). `ready` makes the loop's reads
+   (spc_rd: real accesses, a counter's read clearing it as the original's
+   does) and says whether the loop ends; it is called at once, and while
+   it says no the sound unit's clock moves on a cycle at a time, the DSP,
+   the timers and the S-CPU running meanwhile. Returns the SPC700 cycles
+   waited. A loop that waits with no wait (reads of the registers and no
+   write, without end) is a fatal error. */
+uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx);
 
 static inline uint16_t spc_dp(uint8_t d) { return (uint16_t)(spc.p ? 0x0100 | d : d); }
 static inline uint16_t spc_ya(void) { return (uint16_t)(spc.y << 8 | spc.a); }
@@ -65,17 +67,11 @@ static inline void spc_set_psw(uint8_t v)
     spc.h = v >> 3 & 1; spc.i = v >> 2 & 1; spc.z = v >> 1 & 1; spc.c = v & 1;
 }
 
-/* CALL, with the cycles before the first push (the opcode and operand
-   fetches and the idle cycle, with the push's own), before the second, and
-   after it (the idle cycles up to the routine's first fetch): the return
-   address pushed (high byte first), then the routine. */
-static inline void spc_call(void (*abi)(void), uint16_t ret, unsigned first, unsigned second, unsigned after)
+/* CALL: the return address pushed (high byte first), then the routine. */
+static inline void spc_call(void (*abi)(void), uint16_t ret)
 {
-    spc_cyc(first);
     spc_push((uint8_t)(ret >> 8));
-    spc_cyc(second);
     spc_push((uint8_t)ret);
-    spc_cyc(after);
     abi();
 }
 
@@ -91,14 +87,11 @@ void spc_restart(uint16_t at, void (*entry)(void));
    it. Never returns. */
 void spc_boot_rom(void);
 
-/* RET, with the cycles before the first pull (the opcode fetch, the dummy
-   read and the idle cycle included) and before the second: the return address
-   pulled (low byte first); the checks end the call at it. */
-static inline uint16_t spc_ret(unsigned first, unsigned second)
+/* RET: the return address pulled (low byte first); the checks end the
+   call at it. */
+static inline uint16_t spc_ret(void)
 {
-    spc_cyc(first);
     uint16_t lo = spc_pull();
-    spc_cyc(second);
     return (uint16_t)(lo | spc_pull() << 8);
 }
 

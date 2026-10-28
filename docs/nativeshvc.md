@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (1.1); this page describes the interface
+[the game contract](contract.md) (2.0); this page describes the interface
 around it.
 
 ## What it is
@@ -103,7 +103,7 @@ console's, turned, scaled and faded, on every renderer).
 
 ## The extensions
 
-Each is off by default; off, the console is exact.
+Each is off by default.
 
 | | |
 |---|---|
@@ -111,38 +111,33 @@ Each is off by default; off, the console is exact.
 | `nshvc_ext_sprite_x`, `_y` | sprites past the 9-bit X (+512) and the 256-row Y (+256) |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
-| `nshvc_set_untimed`, `nshvc_wait_vblank` | the S-CPU's work taking no time (a frame's work at once); interrupt handlers stay timed, but for code run in one with interrupts held; a wait on time untimed is a fatal error |
-| `nshvc_hold_interrupts` | no interrupt taken while held (an app's own work in the game's machine, from the frame hook) |
+| `nshvc_hold_interrupts` | no interrupt taken while held (an app's own work in the game's machine, from the frame hook); the console's time does not pass there, so a wait while held is a fatal error |
 
 The game owns what shows past the console's screen: sprites it hides off the
 console's screen may come into view on a larger one.
 
 ## Time
 
-The master clock is the console's (21.477 MHz NTSC). Each access takes the
-bus's time for it (8 clocks for SlowROM and work RAM, 6 for FastROM and
-most registers, 12 for $4000-$41FF), a read taking its value 4 clocks
-before its end and a write landing at its end; the C states the time
-between (`cyc`, `spc_cyc`). The beam's lines are 1,364 clocks,
+The master clock is the console's (21.477 MHz NTSC). The processors' C
+takes none of it: each access is made at the clock as it stands, and the
+clock moves on in the C's waits (`nshvc_wait_until`, `nshvc_wait_vblank`,
+`cpu_wai`, `cpu_loop_forever`; `spc_wait_until`), in steps of a poll
+loop's few cycles cut short wherever what a wait looks at changes (a line's
+parts, the horizontal blank, an edge of the joypads' read, an IRQ, a chip's
+IRQ), and in a DMA. The beam's lines are 1,364 clocks,
 dots 323 and 327 6 clocks each (NTSC's line 240 in field 1 1,360 when not
 interlaced; an interlaced frame's field 0 a line longer); the work RAM's
-refresh stops the CPU 40 clocks a line. The DMA unit takes work up at the
-start of the CPU's next cycle and makes it at the start of the one after: a
-DMA at the second cycle after its $420B write, HDMA (the frame's setup in
-line 0, a transfer in each shown line's horizontal blank) at the second
-cycle after it comes due, or between a DMA's bytes, where HDMA stops a DMA
-on its own channel. It waits for its 8-clock step, takes 8 clocks to
-start, 8 a channel and 8 a byte (read 4 clocks in, written at the end) and
-an HDMA table byte each line, and gives the bus back on the CPU's own
-cycle. So the unit lands at the right cycle, the C states the cycles a DMA
-or HDMA can fall in one by one (`cycs`: machine.h); `NSHVC_AUDIT=1` names
-each `cyc` stretch that one falls in. Interrupts are taken at the first
-point between two of the C's operations at or after the clock they come
-due (an access's end, a word's, a read-modify-write's at its write, or the
-clock itself inside `cyc`, `cycs` or `cpu_idle`), the IRQ unless the I
-flag masks it; the C marks no instruction boundaries, so the handler can
-start earlier than the original's by the rest of the instruction the
-original is in (README.md, Time).
+refresh stops the CPU 40 clocks a line. A DMA starts at its $420B write
+(the C's work taking no time, the S-CPU's next cycle is the write's end);
+HDMA (the frame's setup in line 0, a transfer in each shown line's
+horizontal blank) is taken up at the start of a wait's next cycle after it
+comes due and made at the one after, or between a DMA's bytes, where HDMA
+stops a DMA on its own channel. The unit waits for its 8-clock step, takes
+8 clocks to start, 8 a channel and 8 a byte (read 4 clocks in, written at
+the end) and an HDMA table byte each line, and gives the bus back on the
+CPU's cycle. Interrupts are taken in a wait at the clock they come due, or
+at the end of the access whose DMA made them due, the IRQ unless the I
+flag masks it (README.md, Time).
 The sound unit runs
 from power on with the console's clock (the S-CPU starts after its reset);
 each side sees an access of the other's made at or before its own time, a

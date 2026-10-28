@@ -9,6 +9,12 @@
  * of the contract (docs/contract.md); it changes only with nativeshvc's
  * major version.
  *
+ * The C's work takes none of the console's time: its accesses are made at
+ * the clock as it stands, and the clock moves on only where the code waits
+ * for the hardware (the waits below) and while a DMA its write starts
+ * stops the S-CPU. The machine is exact in what it does, not in how long
+ * the C's own work takes (README.md, Time).
+ *
  * Routines that assembly still calls also need the register file: each such
  * routine has an abi_ wrapper that takes its inputs from `cpu` and leaves its
  * outputs there, as its entry contract states.
@@ -22,9 +28,9 @@ uint8_t rd8(uint32_t addr);
 void wr8(uint32_t addr, uint8_t value);
 
 /* Multi-byte accesses are little-endian and linear in the 24-bit space,
-   the low byte first, as the CPU makes them (lockstep places each access
-   on the original's, so the order is part of the behaviour). Each call is
-   one operation: no interrupt comes between its bytes. */
+   the low byte first, as the CPU makes them (the order is part of the
+   behaviour). Each call is one operation: no interrupt comes between its
+   bytes. */
 uint16_t rd16(uint32_t addr);
 void wr16(uint32_t addr, uint16_t value);
 uint32_t rd24(uint32_t addr);
@@ -32,22 +38,37 @@ uint32_t rd24(uint32_t addr);
 /* A read-modify-write instruction (ASL, LSR, ROL, ROR, INC, DEC, TSB, TRB
    on memory): its read, then its write, one operation, no interrupt
    between them: rd8_rmw then wr8, or rd16_rmw then wr16_rmw, whose write
-   is the high byte first, then the low, as the CPU makes them. The C may
-   state time between the two (cyc); another read before the write is a
-   fatal error. */
+   is the high byte first, then the low, as the CPU makes them. Another
+   read, or a wait, before the write is a fatal error. */
 uint8_t rd8_rmw(uint32_t addr);
 uint16_t rd16_rmw(uint32_t addr);
 void wr16_rmw(uint32_t addr, uint16_t value);
 
 /* Interrupts: the CPU takes one between two of its operations, never in
-   one. The console takes it at the first point between two of the C's
-   operations (an access, a word, a read-modify-write, a stretch of time)
-   at or after the time it comes due, the IRQ unless the I flag in `cpu`
-   masks it: at an operation's end, or, in a stretch of time (cyc, cycs,
-   cpu_idle), at the clock it comes due. The C marks no instruction's end:
-   the original takes the interrupt at its instruction's end, later than
-   here by the rest of that instruction, which can put the handler here
-   before that instruction's own read or write (README.md, Time). */
+   one, the IRQ unless the I flag in `cpu` masks it. With the C's work
+   taking no time, one comes due in a wait, and is taken there at the clock
+   it comes due, its handler run before the wait looks again; or in a DMA,
+   and is taken at the end of the write that started it. A handler may
+   wait too: the I flag the interrupt sets holds the IRQ, as on the
+   console, and an NMI may still come in an IRQ's handler. */
+
+/* Wait for the hardware: the original's poll loop (a status bit, a
+   counter, a chip's flag, the sound unit's reply). `ready` makes the
+   loop's reads (rd8 and the rest: real accesses, their side effects as the
+   original's) and says whether the loop ends; it is called at once, and
+   while it says no the console's clock moves on in steps of a few of the
+   S-CPU's cycles, everything else running meanwhile (lines drawn, HDMA,
+   DMA, the sound unit, the cartridge's chip), each interrupt taken at the
+   clock it comes due, before `ready` is called again. A change a line, the
+   IRQ's time or the chip's IRQ makes is seen at its own clock; another
+   (a port the sound unit writes, a chip's register) within 64 clocks.
+   Returns the master clocks waited (21.477 MHz): a counter the original
+   ticked in each turn of the loop is that over the turn's length. Fatal
+   with interrupts held (nshvc_hold_interrupts) and between rd8_rmw and its
+   write. */
+uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx);
+/* the wait for the next vertical blank's start */
+void nshvc_wait_vblank(void);
 
 /* The 65816 register file, for abi_ wrappers. */
 typedef struct {
@@ -103,9 +124,9 @@ void jump_routine(uint32_t addr);
 void jump_routine_pushed(uint32_t addr, const uint8_t *pushed, int n);
 /* A branch to itself (BRA to its own address, at `at`): the CPU never goes
    on. It makes no access, so nothing changes but time; the interrupts the
-   machine raises still run between its passes. Never returns. (`at` is
-   where the loop is: the verification harness finds it in the original's
-   record there.) */
+   machine raises still run, each at the clock it comes due. Never returns.
+   (`at` is where the loop is: the verification harness finds it in the
+   original's record there.) */
 void cpu_loop_forever(uint32_t at);
 /* The original jumps to `at`, code that resets the stack (LDX #$02FF,
    TXS): every frame of the calls under it is gone, the C's own included,
@@ -113,57 +134,8 @@ void cpu_loop_forever(uint32_t at);
    registers in `cpu`. Never returns. */
 void cpu_restart(uint32_t at, void (*entry)(void));
 /* WAI at `at`: the CPU stops until an interrupt is due (an NMI, or the IRQ
-   line, masked or not), then goes on: the interrupt is taken there when it
-   is not masked. Its opcode's fetch, then internal cycles: the one that
-   begins with the interrupt due and one more. */
+   line, masked or not), the clock moving on as in a wait, then goes on:
+   the interrupt is taken there when it is not masked. */
 void cpu_wai(uint32_t at);
-/* Time the original spends with no access the C makes: a delay loop's
-   turns (its fetches and internal cycles), `clocks` master clocks (21.477
-   MHz). The rest of the machine runs meanwhile, so the time matters: the
-   sound CPU acting on a command before the next one arrives. An interrupt
-   that comes due in it is taken at its time. */
-void cpu_idle(uint32_t clocks);
-/* The time the original spends here between two bus accesses, besides
-   their own: its instruction fetches and internal cycles, `clocks` master
-   clocks. The C states it where its code stands for the original's, so
-   each access comes at the original's time. */
-void cyc(uint32_t clocks);
-/* The same time stated cycle by cycle, in order: each hex digit of
-   `lengths` one cycle's master clocks (6, 8, or C for 12), the first cycle
-   the leftmost digit: cycs(0x8668) is cycles of 8, 6, 6 and 8 clocks, up
-   to 16 a call. Each is a cycle of the original's, where the console's
-   DMA unit takes the bus as the S-CPU's does: a DMA a $420B write starts
-   runs at the second cycle after it, an HDMA due at the first cycle that
-   begins after its time. A stretch a DMA or HDMA falls in wants stating
-   this way (NSHVC_AUDIT=1 names each cyc that one falls in). */
-void cycs(uint64_t lengths);
-/* `v`, with the time before an access stated after the access's other
-   arguments are worked out: where the access is reached in the middle of
-   an expression, so no statement before it stands for that place. */
-static inline uint32_t cyc_then(uint32_t clocks, uint32_t v)
-{
-    cyc(clocks);
-    return v;
-}
-/* `again`, a loop's test, with the time the original takes to go round
-   once more stated when it does. */
-static inline int cyc_loop(uint32_t clocks, int again)
-{
-    if (again)
-        cyc(clocks);
-    return again;
-}
-/* cyc_then and cyc_loop, the time stated cycle by cycle (cycs) */
-static inline uint32_t cycs_then(uint64_t lengths, uint32_t v)
-{
-    cycs(lengths);
-    return v;
-}
-static inline int cycs_loop(uint64_t lengths, int again)
-{
-    if (again)
-        cycs(lengths);
-    return again;
-}
 
 #endif
