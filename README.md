@@ -198,10 +198,11 @@ it into the connector (`cart.h`).
 
 Version 2.2.0. The game contract, what a game writes against and what the console
 promises it, is in [docs/contract.md](docs/contract.md), at 2.2: behaviour exact, each
-access costing the bus's time and the game's cost profile's weight (see [Time](#time)). A
-game built against it plays on every later 2.x unchanged; only a 3.0 may change it. The
-cost profile's standard is [docs/cost-profile.md](docs/cost-profile.md); its acceptance
-bar is still to be set, once Stunt Race FX's first report has been seen.
+access costing the bus's time and the game's cost profile's weight, or no time with the
+costs off in a game's Enhanced mode (see [Time](#time)). A game built against it plays on
+every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
+[docs/cost-profile.md](docs/cost-profile.md); its acceptance bar is not set (an Original
+mode's profile is an approximation, and its report gives the error).
 
 **Platform hosts still to come.** These are separate implementations of the host
 interface, outside the standard; a game written against 2.x needs no change for them:
@@ -334,8 +335,10 @@ Time is the console's master clock (21.477 MHz NTSC). nativeshvc is behaviour ex
 cycle exact: the hardware runs at the hardware's time. Each access the S-CPU's C makes costs
 what the console's bus takes for it, by the console's memory speeds (6, 8 or 12 clocks),
 and before it the weight of its kind from the game's cost profile (0 with none); the C's
-own arithmetic between accesses costs nothing, and the C states no time. Each access the
-SPC700's C makes costs its one bus cycle, and its kind's weight from the profile. The clock also moves on where the code waits for the hardware, as on the
+own arithmetic between accesses costs nothing, and the C states no time. A game's Enhanced
+mode turns the S-CPU's costs off (`nshvc_set_cpu_costs(0)`), and its accesses then take no
+time at all (see Pacing, below). Each access the SPC700's C makes costs its one bus cycle,
+and its kind's weight from the profile. The clock also moves on where the code waits for the hardware, as on the
 console it spends that time in a poll loop: `nshvc_wait_until` (a status bit, a counter, a chip's flag, the sound unit's
 reply), `nshvc_wait_vblank`, WAI and a branch to itself for the S-CPU, `spc_wait_until`
 for the SPC700. In a wait the clock moves in steps of a poll loop's few cycles, and each

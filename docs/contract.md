@@ -111,8 +111,10 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   0 with none. The C states nothing; its own arithmetic between accesses takes no time. The
   clock also moves on in its waits (the waits above, WAI, a branch to itself) and while a
   DMA (a `$420B` write) stops it, for the DMA unit's real time. The multiplier and divider
-  are done when read. Each access the SPC700's C makes costs its one bus cycle and the
-  weight of its kind from the profile (0 with none); its clock also moves in its waits.
+  are done when read. With the S-CPU's costs off (`nshvc_set_cpu_costs(0)`, 2.2), its
+  accesses take no time, and the clock moves only in its waits and while a DMA runs. Each
+  access the SPC700's C makes costs its one bus cycle and the weight of its kind from the
+  profile (0 with none); its clock also moves in its waits.
 - **Pacing, in two modes.** A game whose pace is how much work fits in a frame has both
   (README.md, The preservation standard; Time, Pacing): an Original mode, paced on its work
   by a cost profile, which approximates the original's processor time, so its slowdown is

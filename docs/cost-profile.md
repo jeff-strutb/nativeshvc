@@ -205,7 +205,8 @@ consistency is the game's own run of its jobs against its recording.
   longest jobs); a POOR line for each program whose mean is over 10% or p95 over 25%, with
   its share, never hidden;
 - step 2: each kind's count ratio and the frames whose counts differ, or `unchecked`;
-- **acceptance bar: TBD**, to be set once Stunt Race FX's first report has been seen.
+- **acceptance bar: not set** (an Original mode's profile is an approximation: README.md,
+  Time, Pacing); the tool writes `TBD`.
 
 ## 4. In the contract (2.1, 2.2)
 
