@@ -10,9 +10,9 @@ nativeshvc is a behaviour-exact implementation of the console, not an
 emulator: the hardware does what the console's does, at the console's time;
 the processors are the game's C, each access it makes costing the bus's
 time and its cost profile's weight. A game whose pace is how much work fits
-in a frame is, the decomper's choice, made independent of processor speed
-(exact) or paced on its work by a cost profile (approximate) (README.md, Time, Pacing;
-cost-profile.md).
+in a frame has an Original mode, paced on its work by a cost profile
+(approximate), and an Enhanced mode made independent of processor speed
+(exact) (README.md, The preservation standard; Time, Pacing; cost-profile.md).
 
 A decompiled game is the cartridge; nativeshvc is the console. The
 processors are the game's own C, written against the machine model

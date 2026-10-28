@@ -16,9 +16,10 @@ its C: it makes every access the original makes, in the original's order, each c
 what the console's bus takes for it, and waits where the original waited for the hardware.
 So the game does what it did, and sees and plays what it saw and played. How long its
 processors' own work took between accesses is not kept by the C. A game whose pace depends
-on it is paced one of two ways, the decomper's choice: made independent of processor speed,
-exactly, or on its work, by a cost profile that approximates the original's processor time (see
-[Time](#time), Pacing).
+on it has two modes: an Original mode paced on its work by a cost profile, which
+approximates the original's processor time, and an Enhanced mode made independent of
+processor speed, which runs exactly (see [The preservation
+standard](#the-preservation-standard) and [Time](#time), Pacing).
 
 **A decompiled game is the cartridge; nativeshvc is the console it plugs into.** A game's
 decompiled C, linked against nativeshvc, builds a native program that powers on, runs the
@@ -55,6 +56,32 @@ does, and runs the hardware at the hardware's time (see [Time](#time)).
 Beyond the console, nativeshvc is also an unconstrained native Super Nintendo: the
 console's numbers are its baseline, and a port may opt out of them (see
 [Extensions](#extensions)).
+
+## The preservation standard
+
+A fully preserved, exact Super Nintendo decompilation is three things:
+
+| | What it is | Exact to the original as |
+|---|---|---|
+| **ASM** | the bit-exact decompiled source | bits: it assembles to the original ROM, byte for byte |
+| **C** | the behaviour-exact decompiled source | behaviour: on nativeshvc it does what the original did, access for access, and plays and sounds as it did |
+| **Enhanced** | the C improved to a modern standard, on nativeshvc | behaviour correct: the original game, respected, with what the hardware limited lifted (60 Hz or an unlocked frame rate, widescreen, and the like) |
+
+**Why this is the standard.** Each level keeps what the one before it cannot. The ASM is
+the original itself, proven by rebuilding the ROM, but it plays only where a 65816 and the
+console's chips do. The C is the same game as code anyone can read, port and build on, and
+nativeshvc makes it play as the cartridge did on every platform it runs on, held to the
+ASM's behaviour and the console's to the reference's. Enhanced is how the game is best
+played now, and it is built on the C, not instead of it: the original stays, so improving
+the game never loses it. nativeshvc holds the C and Enhanced levels to this; a game aligns
+to it and documents how it does (its Enhanced mode's frame rate, screen, and the rest).
+
+**Pacing, in both modes.** Where a game's pace depends on how much work its processors fit
+in a frame (Stunt Race FX's race slows when much is on screen), the C changes the game's
+code either way, so the standard does both rather than choosing one: the Original mode
+keeps the original's pacing with a cost profile, and the Enhanced mode is made independent
+of processor speed (see [Time](#time), Pacing). Both are behaviour correct, and both respect
+the original game.
 
 ![nativeshvc's architecture: the game's decompilation is the cartridge, nativeshvc the console, the host below; numbered steps show how a game plays through it](docs/architecture.svg)
 
@@ -326,36 +353,41 @@ split, so a handler never sees half of a word or of a read-modify-write. The IRQ
 while the I flag masks it; a handler may itself wait, the I flag holding the IRQ there as
 on the console.
 
-**Pacing: the decomper's choice.** The C makes the original's data accesses but not its
-instruction fetches or internal cycles, so the time the original's processors spent
-between accesses is not in the C. Most games pace themselves on the console's events
-(waiting for the vertical blank), and do the same whatever their processors' speed. A game
-whose pace is how much work fits in a frame does not: Stunt Race FX's race drops to a lower
-update rate when much is on screen, because the S-CPU and the Super FX could do no more in a
-frame. That slowdown is a side effect of the chips' speed, not something the game was
-written to do. So the decomper chooses how such a game is behaviour exact to the original's
-code, and both ways are:
+**Pacing: an Original mode and an Enhanced mode.** The C makes the original's data
+accesses but not its instruction fetches or internal cycles, so the time the original's
+processors spent between accesses is not in the C. Most games pace themselves on the
+console's events (waiting for the vertical blank), and do the same whatever their
+processors' speed: one mode is all they need, and it is exact. A game whose pace is how
+much work fits in a frame is different: Stunt Race FX's race drops to a lower update rate
+when much is on screen, because the S-CPU and the Super FX could do no more in a frame.
+That slowdown is a side effect of the chips' speed, not something the game was written to
+do. Making such a game's C changes its code either way, so the standard
+([The preservation standard](#the-preservation-standard)) has it do both:
 
-1. **Independent of processor speed.** The decomp's code is updated as a properly built
-   modern game's is: its pace is set by the time that really passes and the console's
-   display, not by how much work fits in a frame (waiting for the vertical blank, or
-   moving things by the frames that passed, are ways to get there). Its behaviour no
-   longer depends on the processors' speed, so nativeshvc runs it exactly, at the default
-   cost of 0, with no profile. Where the original slowed down, it does not.
-2. **Paced on its work, approximately.** The game keeps the original's pacing and declares
-   a cost profile (`nshvc_cart.cost_profile`): a weight for each kind of access (a read or a
-   write of work RAM, ROM, cartridge RAM, I/O), and for a chip, a cost for each of its
-   programs, so a frame where more happens costs more time. The weights are never set by a
-   person: nativeshvc provides the standard and the tool (`tools/nshvc-profile`,
+1. **Original mode: paced on its work, by a cost profile.** The game keeps the original's
+   pacing and declares a cost profile (`nshvc_cart.cost_profile`): a weight for each kind
+   of access (a read or a write of work RAM, ROM, cartridge RAM, I/O), and for a chip, a
+   cost for each of its programs, so a frame where more happens costs more time and the
+   game slows where the original slowed. The weights are never set by a person: nativeshvc
+   provides the standard and the tool (`tools/nshvc-profile`,
    [docs/cost-profile.md](docs/cost-profile.md)) that measures them from the game's own ROM
    on the reference. The C does the original's work with other accesses than the
    original's, so the profile approximates the original's processor time, and the slowdown
-   it gives is approximate (Stunt Race FX: its race within about 5%).
+   it gives is approximate (Stunt Race FX: its race 5% to 11% fast, by the profiles
+   measured so far).
+2. **Enhanced mode: independent of processor speed.** The game's code is updated as a
+   properly built modern game's is: its pace is set by the time that really passes and the
+   display, not by how much work fits in a frame (60 Hz, or a frame rate left unlocked).
+   Its behaviour no longer depends on the processors' speed, so nativeshvc runs it exactly,
+   with no S-CPU or SPC700 weights (their cost 0). A cartridge chip still runs each job for
+   its own time, the hardware's, as a DMA does, so its profile still declares its programs'
+   durations. Where the original slowed down, it does not.
 
-nativeshvc does not choose for the game; with no profile declared the cost is 0. The sound
-driver's beat is its timers', which run at their real time; a profile's weights give it the
-real chip's time around each access. The multiplier and divider are done when read. The hardware's own time is all kept:
-a DMA, an HDMA, a line, a timer, a chip's job.
+Both are behaviour correct, and both respect the original game. With no profile declared
+the cost is 0. The sound driver's beat is its timers', which run at their real time; a
+profile's weights give it the real chip's time around each access. The multiplier and
+divider are done when read. The hardware's own time is all kept: a DMA, an HDMA, a line, a
+timer, a chip's job.
 
 **The sound.** The DSP makes its 32,040 samples a second at its own clock, and the
 driver's waits on its timers keep its beat exactly. Each access the driver's C makes costs

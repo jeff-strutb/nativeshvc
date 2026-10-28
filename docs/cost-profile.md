@@ -11,17 +11,11 @@ person sets a number: anyone can give the tool a ROM and get the same numbers ba
 nativeshvc is behaviour exact, not cycle exact (README.md, Time). A processor's C makes the
 original's data accesses, but not its instruction fetches or internal cycles. The console
 charges each access the bus's own time for it, as the hardware's memory speeds give it. A
-game whose pace is how much work fits in a frame (slowdown when much happens at once) is
-paced one of two ways, the decomper's choice (README.md, Time, Pacing), and both are
-behaviour exact to the original's code:
+game whose pace is how much work fits in a frame (slowdown when much happens at once) has
+two modes (README.md, The preservation standard; Time, Pacing), both behaviour correct and
+both respecting the original game:
 
-1. **Independent of processor speed, exactly.** The decomp's code is updated as a properly
-   built modern game's is: its pace is set by the time that really passes and the
-   console's display, not by how much work fits in a frame (waiting for the vertical blank
-   through the console's waits, or moving things by the frames that passed, are ways to
-   get there). It behaves the same at any CPU cost, zero included, and needs no profile. Where the original slowed down, it does not: that
-   slowdown was a side effect of the chips' speed, not something the game was written to do.
-2. **On its work, approximately: the cost profile.** The game keeps the original's pacing,
+1. **Original mode: on its work, approximately, by the cost profile.** The game keeps the original's pacing,
    and the profile gives the CPU work around each access, which the console cannot see: a
    **weight** for each kind of access, measured on the original, charged on top of the
    bus's time. A frame where more happens makes more accesses and costs more time, so the
@@ -29,9 +23,17 @@ behaviour exact to the original's code:
    other accesses than the original's (fewer reads, values kept in variables, the console's
    waits where the original polled), and in some code more or fewer than in other code, so
    no set of weights gives each part of its work the original's time: the profile is an
-   approximation (Stunt Race FX: its race within about 5%, by the frame-total fit).
+   approximation (Stunt Race FX: its race 5% to 11% fast, by the profiles measured so far).
+2. **Enhanced mode: independent of processor speed, exactly.** The game's code is updated
+   as a properly built modern game's is: its pace is set by the time that really passes and
+   the display, not by how much work fits in a frame (60 Hz, or a frame rate left
+   unlocked). It behaves the same at any CPU cost, zero included, and needs no S-CPU or
+   SPC700 weights. A cartridge chip still runs each job for its own time, the hardware's,
+   so its programs' durations are still declared.
+   Where the original slowed down, it does not: that slowdown was a side effect of the
+   chips' speed, not something the game was written to do.
 
-**Who needs one.** Only a game that takes the second way.
+**Who needs one.** A game's Original mode, where its pace is how much work fits in a frame.
 
 **With none declared, the cost is 0:** each access takes the bus's time alone.
 
