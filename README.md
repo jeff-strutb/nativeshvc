@@ -1,11 +1,12 @@
-# nativeshvc: a native Super Famicom / Super Nintendo for decompiled games
+# nativeshvc: a native Super Famicom / Super Nintendo implementation
 
-**nativeshvc is a behaviour-exact implementation of the Super Famicom / Super Nintendo,
-not an emulator.** It is the console itself, built as native code for the host: its bus,
-picture unit, sound unit, DMA, interrupts and controller ports. Nothing in it interprets,
-translates or recompiles machine code: there is no emulated 65816 or SPC700, no instruction
-loop and no ROM image of the game's code. The game's own decompiled C runs directly on it,
-natively.
+**nativeshvc is not an emulator.**
+
+It is a behaviour-exact native implementation of the Super Famicom / Super Nintendo itself:
+the console's bus, picture unit, sound unit, DMA, interrupts and controller ports, built as
+native code for the host. Nothing in it interprets, translates or recompiles machine code:
+there is no emulated 65816 or SPC700, no instruction loop and no ROM image of the game's
+code. The game's own decompiled C runs directly on it, natively.
 
 **Behaviour exact, not cycle exact.** Everything the console does, nativeshvc does as the
 console does it, at the console's own time: the picture line by line, DMA and HDMA, the
