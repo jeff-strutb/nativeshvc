@@ -36,6 +36,7 @@
 #include "nshvc/machine.h"
 #include "ppu.h"
 #include "rr_size.h"
+#include "rr_mode7.h"
 
 #define NSCENES 8
 static int fails;
@@ -127,7 +128,8 @@ static void setup(int sc)
         } else if (i >= 0x0C00 && i < 0x1000) {
             v = (rnd() % 256u) | (rnd() & 0xFC00u);   /* BG3's map */
         }
-        w2(0x18, (int)v);
+        w(0x18, v & 0xFF);
+        w(0x19, v >> 8);
     }
     w(0x21, 0);
     for (i = 0; i < 256; i++)
@@ -355,6 +357,45 @@ static void check_scene(int sc)
             snprintf(what, sizeof what, "%s: rr_ref_image x%.2fx%.2f", scene[sc].flat ? "flat" : "off", size[si][0],
                      size[si][1]);
             report(what, sc, bad, (long)ow * oh);
+        }
+    }
+    if (scene[sc].shows) {
+        /* the scene holds what it is to check: canvas pixels, tiles past the
+           canvas on its rows, flipped tiles each way, more than one palette,
+           and picture pixels side by side with one record (zeros) and two
+           colours, which the presentation must blend as two */
+        RrMode7 mm;
+        long cv = 0, past = 0, hf = 0, vf = 0, pair = 0, x, y;
+        unsigned pals = 0;
+        if (!ppu_mode7(f, pic, &mm)) {
+            printf("FAIL scene %d: no record\n", sc);
+            fails++;
+        } else {
+            for (y = 0; y < mm.ph; y++)
+                for (x = 0; x < mm.pw && mm.row_m7[y]; x++) {
+                    const RrM7Px *q = &mm.px[y * mm.pw + x];
+                    if (q->w2 & RR_CV) {
+                        cv++;
+                        hf += q->w3 >> 20 & 1;
+                        vf += q->w3 >> 21 & 1;
+                        pals |= 1u << (q->w3 >> 22 & 7);
+                    } else if (q->w2 & RR_M7_NOT) {
+                        past++;
+                        if (x + 1 < mm.pw && !memcmp(q, q + 1, sizeof *q) && pic[y * pw + x] != pic[y * pw + x + 1])
+                            pair++;
+                    }
+                }
+            {
+                int npal = 0, b2;
+                int ok;
+                for (b2 = 0; b2 < 8; b2++)
+                    npal += pals >> b2 & 1;
+                ok = cv > 5000 && past > 5000 && hf > 1000 && vf > 1000 && (scene[sc].bpp == 8 || npal >= 4) && pair > 100;
+                printf("%s scene %d holds: %ld canvas pixels, %ld past it, %ld flipped across, %ld down, %d palettes, %ld "
+                       "pairs of one record and two colours\n",
+                       ok ? "ok  " : "FAIL", sc, cv, past, hf, vf, npal, pair);
+                fails += !ok;
+            }
         }
     }
     if (sc == 3) {

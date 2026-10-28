@@ -35,13 +35,23 @@ static NSString *const k_src = @
 "  constexpr sampler s(filter::nearest, address::clamp_to_edge);\n"
 "  return float4(t.sample(s, in.uv).rgb, 1); }\n"
 /* sharp bilinear: whole texels at any scale, blended only across the one
-   target pixel a texel edge falls in */
-"fragment float4 sfs(BO in [[stage_in]], texture2d<float> t [[texture(0)]]) {\n"
-"  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
-"  float2 ts = float2(t.get_width(), t.get_height()), px = in.uv * ts - 0.5;\n"
-"  float2 i = floor(px), f = px - i, d = max(fwidth(px), float2(1e-5));\n"
-"  f = clamp((f - 0.5) / d + 0.5, 0.0, 1.0);\n"
-"  return float4(t.sample(s, (i + 0.5 + f) / ts).rgb, 1); }\n"
+   target pixel a texel edge falls in (rr_size.h rr_ref_image): the sample
+   point from the target pixel's own place and the texels a target pixel
+   (an interpolated coordinate and fwidth fall to either side of a texel's
+   edge), the four texels blended as rr_mix does, across then down, each
+   rounded (the sampler's own blend weighs in fewer bits): 2 off a channel
+   at a hard edge otherwise */
+"struct SU { float d0, d1, dx, dy; };\n"
+"fragment float4 sfs(BO in [[stage_in]], constant SU &U [[buffer(0)]], texture2d<float> t [[texture(0)]]) {\n"
+"  float2 ts = float2(t.get_width(), t.get_height()), dd = max(float2(U.dx, U.dy), float2(1e-5));\n"
+"  float2 px = (in.pos.xy - float2(U.d0, U.d1)) * float2(U.dx, U.dy) - 0.5;\n"
+"  float2 i = floor(px), f = px - i;\n"
+"  f = clamp((f - 0.5) / dd + 0.5, 0.0, 1.0);\n"
+"  int2 hi = int2(ts) - 1, a = clamp(int2(i), int2(0), hi), b = clamp(int2(i) + 1, int2(0), hi);\n"
+"  float3 c00 = round(t.read(uint2(a.x, a.y)).rgb * 255.0), c01 = round(t.read(uint2(b.x, a.y)).rgb * 255.0);\n"
+"  float3 c10 = round(t.read(uint2(a.x, b.y)).rgb * 255.0), c11 = round(t.read(uint2(b.x, b.y)).rgb * 255.0);\n"
+"  float3 top = floor(c00 + (c01 - c00) * f.x + 0.5), bot = floor(c10 + (c11 - c10) * f.x + 0.5);\n"
+"  return float4(floor(top + (bot - top) * f.y + 0.5) / 255.0, 1); }\n"
 /* an overlay: bilinear, its alpha kept for the blend */
 "fragment float4 ofs(BO in [[stage_in]], texture2d<float> t [[texture(0)]]) {\n"
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
@@ -201,7 +211,9 @@ static NSString *const k_src = @
 "  if ((fl0 | fl1) & 0x800u) {\n"
 "    uint a = m7_q(U, P, S, pal, vram, pic, plane, cv, i, r, u, v);\n"
 "    return uint2(a, two ? m7_q(U, P, S, pal, vram, pic, plane, cv, i + 1, r, u, v) : a); }\n"
-"  bool same = all(p0 == p1);\n"
+/* the same record, the same colour: but a picture pixel's (not on such a
+   line) is its own */
+"  bool same = all(p0 == p1) && !(fl0 & 1u);\n"
 /* a picture pixel not on a Mode 7 line, or a hires line's first half pixel */
 "  uint k0 = (fl0 & 1u) ? pic[r * U.pw + i0] : 0xFF000000u, k1 = (fl1 & 1u) ? pic[r * U.pw + i1] : 0xFF000000u;\n"
 "  bool m0 = !(fl0 & 3u), m1 = two && !(fl1 & 3u) && !same;\n"
@@ -464,6 +476,12 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
             return;
         [s_enc setRenderPipelineState:d[2] - d[0] == w && d[3] - d[1] == h ? s_copy : s_sharp];
         [s_enc setVertexBuffer:s_vb[s_pi] offset:(NSUInteger)off atIndex:0];
+        {
+            /* where the target's pixels sample: its rectangle's corner, and
+               texels a target pixel (rr_ref_image's dx, dy) */
+            float su[4] = { (float)d[0], (float)d[1], (float)w / (float)(d[2] - d[0]), (float)h / (float)(d[3] - d[1]) };
+            [s_enc setFragmentBytes:su length:sizeof su atIndex:0];
+        }
         [s_enc setFragmentTexture:t atIndex:0];
         [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }

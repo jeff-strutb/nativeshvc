@@ -585,6 +585,9 @@ static void rr_check(void)
     int tw, th, pw, ph, i, d[4];
     const uint32_t *px = ppu_picture(&pw, &ph);
     long bad = 0;
+    RrMode7 m;
+    RrM7Samples smp;
+    int recorded = 0;
     if (rr_frames < 0) {
         if (!rr_open()) {
             fprintf(stderr, "rrcheck: the renderer cannot open\n");
@@ -609,8 +612,7 @@ static void rr_check(void)
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
     if (ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
-        RrMode7 m;
-        RrM7Samples smp;
+        recorded = 1;
         if (!mode7_prepare(tw, th, &m, &smp))
             nshvc_fatal("rrcheck: no record for the frame");
         rr_mode7(&m, d, &smp);
@@ -631,8 +633,36 @@ static void rr_check(void)
             if (a > worst)
                 worst = a;
         }
-        if (worst > 1)
+        if (worst > 1) {
+            /* NSHVC_RRCHECK_WHY=1: the first frame that differs, its first
+               pixels with the record of the picture pixel under each */
+            if (rr_first < 0 && bad < 8 && getenv("NSHVC_RRCHECK_WHY")) {
+                int X = i % tw, Y = i / tw;
+                fprintf(stderr, "rrcheck: frame %ld at (%d, %d): got %08x want %08x", frame_no, X, Y, got[i], want[i]);
+                if (recorded) {
+                    int tx = smp.cols[3 * X], ty = smp.rows[4 * Y], u = smp.cols[3 * X + 2], v = smp.rows[4 * Y + 3];
+                    float fx, fy;
+                    memcpy(&fx, &smp.cols[3 * X + 1], 4);
+                    memcpy(&fy, &smp.rows[4 * Y + 1], 4);
+                    fprintf(stderr, "; picture (%d, %d) fx %.3f fy %.3f u %d v %d; k %d, %zu texels", tx, ty, fx, fy, u, v,
+                            m.cv_k, m.cv_len);
+                    for (int dy = 0; dy < 2; dy++)
+                        for (int dx = 0; dx < 2; dx++) {
+                            int ii = tx + dx < 0 ? 0 : tx + dx >= m.pw ? m.pw - 1 : tx + dx;
+                            int rr = ty + dy < 0 ? 0 : ty + dy >= m.ph ? m.ph - 1 : ty + dy;
+                            const RrM7Px *q = &m.px[(size_t)rr * (size_t)m.pw + (size_t)ii];
+                            fprintf(stderr, "\n  (%d, %d): %08x %08x %08x %08x", ii, rr, q->w0, q->w1, q->w2, q->w3);
+                            if (!(q->w2 & (RR_M7_NOT | RR_M7_BLACK))) {
+                                const RrM7Seg *g = &m.seg[q->w2 >> 16];
+                                fprintf(stderr, " seg %u: %d %d %d %d %08x %08x %d %08x", q->w2 >> 16, g->s[0], g->s[1], g->s[2],
+                                        g->s[3], (unsigned)g->s[4], (unsigned)g->s[5], g->s[6], (unsigned)g->s[7]);
+                            }
+                        }
+                }
+                fprintf(stderr, "\n");
+            }
             bad++;
+        }
     }
     rr_frames++;
     if (bad) {

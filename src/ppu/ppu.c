@@ -2105,7 +2105,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
                     int cw;
                     if (!a->ci1) {
                         for (i = x * cpp; i < (x + 1) * cpp; i++)
-                            row[i].w2 = RR_M7_NOT;
+                            row[i].w0 = row[i].w1 = row[i].w3 = 0, row[i].w2 = RR_M7_NOT;
                         continue;
                     }
                     m7_row[r] = 1;
@@ -2129,7 +2129,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
             }
             if (!pres_is_m7(st)) {
                 for (i = x0 * cpp; i < x1 * cpp; i++)
-                    row[i].w2 = RR_M7_NOT;
+                    row[i].w0 = row[i].w1 = row[i].w3 = 0, row[i].w2 = RR_M7_NOT;
                 continue;
             }
             m7_row[r] = 1;

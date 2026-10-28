@@ -120,7 +120,9 @@ uvec2 m7_row(int i, bool two, bool one, int r, int u, int v) {
     if (one) i0 = i1;
     uvec4 p0 = P_(r * U_pw + i0), p1 = two ? P_(r * U_pw + i1) : p0;
     uint fl0 = p0.z & 0xFFFFu, fl1 = p1.z & 0xFFFFu;
-    bool same = all(equal(p0, p1));
+    // the same record, the same colour: but a picture pixel's (not on such
+    // a line) is its own
+    bool same = all(equal(p0, p1)) && (fl0 & 1u) == 0u;
     uint k0 = (fl0 & 1u) != 0u ? PIC_(r * U_pw + i0) : 0xFF000000u, k1 = (fl1 & 1u) != 0u ? PIC_(r * U_pw + i1) : 0xFF000000u;
     bool m0 = (fl0 & 3u) == 0u, m1 = two && (fl1 & 3u) == 0u && !same;
     if (!m0 && !m1) return uvec2(k0, same ? k0 : k1);
