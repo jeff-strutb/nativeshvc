@@ -79,6 +79,11 @@ typedef struct {
     size_t cv_len;
     const uint8_t *cv;
     uint32_t cv_gen;
+    /* BG1-4's maps outside the console's picture (nshvc_ext_layer_outside),
+       as they stood when the frame began: bit n on, each one's size
+       (BGnSC's low bits) and entries */
+    uint8_t out_on, out_size[4];
+    uint16_t out_map[4][4096];
 } PpuFrame;
 
 /* A line's screen state packed for the GPU compositor: PPU_LINE_WORDS
@@ -162,6 +167,7 @@ void ppu_ext_vram(int kb);
 void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
 void ppu_ext_layer_clip(int layer, int on);
+void ppu_ext_layer_outside(int layer, const uint16_t *map, int size);
 void ppu_ext_vram_copy(int to_page, int from_page);
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
 /* the texels a console pixel spans along each axis at the window's size

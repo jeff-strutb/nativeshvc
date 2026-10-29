@@ -21,6 +21,9 @@
  *   clip      1024 x 480, BG1 and the sprites kept to the console's
  *             picture (nshvc_ext_layer_clip) over BG2, not kept: BG2
  *             everywhere past the picture, sprites cut at its edges
+ *   outside   1024 x 480, BG1's map all tile 0 (colour 1), its map outside
+ *             the console's picture (nshvc_ext_layer_outside) all tile 1
+ *             (colour 2): colour 1 exactly on the picture, 2 past it
  *   clip 7    the same in Mode 7, BG1 a plane of one colour over the
  *             backdrop; and the presentation at one to one (ppu_present,
  *             the Mode 7 records) exactly the picture
@@ -37,7 +40,7 @@
 #include "nshvc/machine.h"
 #include "ppu.h"
 
-#define NSCENES 8
+#define NSCENES 9
 #define NSPR 40
 #define BACKDROP 0x2108u
 
@@ -50,6 +53,7 @@ typedef struct {
     int hires;             /* Mode 5, interlaced */
     int mode7;
     int clip;              /* BG1 and the sprites kept to the console's picture */
+    int outside;           /* BG1 alone, its map outside the picture another */
 } Scene;
 
 static const Scene scenes[NSCENES] = {
@@ -60,7 +64,8 @@ static const Scene scenes[NSCENES] = {
     { "hires", 8192, 8192, -1, -1, 1, 0 },
     { "mode 7", 8192, 8192, 1000, 6000, 0, 1, 0 },
     { "clip", 1024, 480, -1, -1, 0, 0, 1 },
-    { "clip 7", 1024, 480, 100, 200, 0, 1, 1 },
+    { "clip 7", 1024, 480, 100, 200, 0, 1, 1, 0 },
+    { "outside", 1024, 480, 300, 100, 0, 0, 0, 1 },
 };
 
 #define BG1_C 0x03E0u     /* BG1's colour (colour 1), green */
@@ -174,6 +179,31 @@ static void setup(int k)
     w(0x22, BG1_C >> 8);
     w(0x22, BG2_C & 0xFF);
     w(0x22, BG2_C >> 8);
+    if (sc->outside) {
+        /* BG1 (4 bpp, characters at word 0x2000): tile 0 colour 1, tile 1
+           colour 2; its map (word 0) all tile 0, outside all tile 1 */
+        static uint16_t outmap[1024];
+        w(0x15, 0x80);
+        w(0x16, 0);
+        w(0x17, 0);
+        for (i = 0; i < 0x800; i++) {
+            w(0x18, 0);
+            w(0x19, 0);
+        }
+        w(0x16, 0);
+        w(0x17, 0x20);
+        for (i = 0; i < 32; i++) {
+            w(0x18, i < 8 ? 0xFF : 0);
+            w(0x19, i >= 16 && i < 24 ? 0xFF : 0);
+        }
+        w(0x07, 0x00);
+        w(0x0B, 0x02);
+        for (i = 0; i < 1024; i++)
+            outmap[i] = 1;
+        nshvc_ext_layer_outside(0, outmap, 0);
+    } else {
+        nshvc_ext_layer_outside(0, NULL, 0);
+    }
     if (sc->clip) {
         /* sprites' tiles from word 0x4000 (OBSEL 2), tile 1 colour 1; BG1's
            and BG2's maps (all tile 0) at words 0 and 0x400, their tile 0
@@ -247,7 +277,7 @@ static void setup(int k)
     w(0x01, sc->clip ? 0x02 : 0x00);
     w(0x05, sc->hires ? 0x05 : sc->mode7 ? 0x07 : 0x01);
     w(0x33, sc->hires ? 0x01 : 0x00);
-    w(0x2C, sc->clip ? (sc->mode7 ? 0x11 : 0x13) : sc->mode7 ? 0x11 : 0x10);
+    w(0x2C, sc->outside ? 0x01 : sc->clip ? (sc->mode7 ? 0x11 : 0x13) : sc->mode7 ? 0x11 : 0x10);
     /* hires: the even half pixels the sub screen's, so the sprites on both */
     w(0x2D, sc->hires ? 0x10 : 0);
     w(0x30, 0);
@@ -349,11 +379,14 @@ static void check_scene(int k)
         int in_rows = R >= top && R < top + 224;
         for (x = 0; x < sc->w; x++)
             want[x] = sc->clip && in_rows && x >= left && x < left + 256 ? rgb(BG1_C) : back;
+        if (sc->outside)
+            for (x = 0; x < sc->w; x++)
+                want[x] = in_rows && x >= left && x < left + 256 ? rgb(BG1_C) : rgb(BG2_C);
         /* from the last, so the first ends on top */
         for (i = nspr[k]; i-- > 0;) {
             const Spr *s = &spr[k][i];
             int c0 = col_of(s, left), c;
-            if (!covers_row(s, R, top) || (sc->clip && !in_rows))
+            if (sc->outside || !covers_row(s, R, top) || (sc->clip && !in_rows))
                 continue;
             for (c = c0; c < c0 + 8; c++)
                 if (c >= 0 && c < sc->w && (!sc->clip || (c >= left && c < left + 256)))
@@ -376,7 +409,7 @@ static void check_scene(int k)
         fails++;
     /* every sprite in view: each one's pixels counted (an 8 x 8 square, or
        the console's page's repeats, whole or cut by the screen's edge) */
-    if (shown < (long)nspr[k] * 64 * sx * sy / (sc->clip ? 4 : 2)) {
+    if (!sc->outside && shown < (long)nspr[k] * 64 * sx * sy / (sc->clip ? 4 : 2)) {
         printf("FAIL %-7s too few sprite pixels\n", sc->name);
         fails++;
     }

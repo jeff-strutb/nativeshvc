@@ -693,6 +693,23 @@ void ppu_ext_layer_page(int layer, int page)
         dirty = 1;
 }
 
+/* the maps outside the console's picture, as the game last set them */
+static uint8_t out_on, out_size[4];
+static uint16_t out_map[4][4096];
+
+void ppu_ext_layer_outside(int layer, const uint16_t *map, int size)
+{
+    if (layer < 0 || layer > 3 || size < 0 || size > 3)
+        snes_fatal("nshvc_ext_layer_outside(%d, map, %d): layers 0-3 (BG1-4), sizes 0-3 (BGnSC's)", layer, size);
+    if (!map) {
+        out_on = (uint8_t)(out_on & ~(1u << layer));
+        return;
+    }
+    memcpy(out_map[layer], map, (size_t)(1024u << (size == 0 ? 0 : size == 3 ? 2 : 1)) * sizeof *map);
+    out_size[layer] = (uint8_t)size;
+    out_on = (uint8_t)(out_on | 1u << layer);
+}
+
 void ppu_ext_layer_clip(int layer, int on)
 {
     if (layer < 0 || layer > 4)
@@ -1098,6 +1115,18 @@ static const uint8_t mode_bpp[8][4] = {
     { 8, 2, 0, 0 }, { 4, 2, 0, 0 }, { 4, 0, 0, 0 }, { 8, 0, 0, 0 },
 };
 
+/* background n's map entry for tile (tx, ty) from its map outside the
+   console's picture (nshvc_ext_layer_outside), laid out as BGnSC's */
+static uint16_t out_entry(int n, unsigned tx, unsigned ty)
+{
+    unsigned sc = d_frame->out_size[n], off = (ty & 31) << 5 | (tx & 31);
+    if ((tx & 32) && (sc & 1))
+        off += 0x400;
+    if ((ty & 32) && (sc & 2))
+        off += (sc & 1) ? 0x800 : 0x400;
+    return d_frame->out_map[n][off & 0xFFF];
+}
+
 static uint16_t map_entry(int n, unsigned tx, unsigned ty)
 {
     uint8_t sc = s->bgsc[n];
@@ -1243,7 +1272,16 @@ static void draw_bg(int n, unsigned line, unsigned mode)
         yy = ((unsigned)y + vofs) & 0x3FF;
         tx = xx >> xshift;
         ty = yy >> yshift;
-        e = map_entry(n, tx, ty);
+        {
+            /* outside the console's picture, the layer's own map there
+               when it has one */
+            int col = hires ? (int)x >> 1 : (int)x;
+            if (d_frame && (d_frame->out_on >> n & 1) &&
+                (col < sl || col >= sl + PPU_WIDTH || draw_row < 0 || draw_row >= draw_lines_of))
+                e = out_entry(n, tx, ty);
+            else
+                e = map_entry(n, tx, ty);
+        }
         px = xx & ((1u << xshift) - 1);
         py = yy & ((1u << yshift) - 1);
         if (e & 0x4000)
@@ -1726,7 +1764,14 @@ static void take_version(void)
 static void record_line(unsigned line)
 {
     if (line == 1) {
+        int n;
         cv_take();
+        making->out_on = out_on;
+        for (n = 0; n < 4; n++)
+            if (out_on >> n & 1) {
+                making->out_size[n] = out_size[n];
+                memcpy(making->out_map[n], out_map[n], sizeof out_map[n]);
+            }
         making->versions = 0;
         making->hires = 0;
         dirty = 1;
@@ -2075,7 +2120,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     const uint8_t *keep_oam = d_oam;
     int keep_field = d_field;
     uint8_t ro = range_over, to = time_over;
-    size_t n = CP_HEADER, pals, vr, cv, states, rows, nst = 0, v, i;
+    size_t n = CP_HEADER, pals, vr, cv, states, rows, nst = 0, v, i, outs;
     unsigned line, k;
     const uint16_t *last_pal = NULL;
     uint32_t last_at = 0;
@@ -2111,6 +2156,18 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
                 w |= (uint32_t)f->cv[i + k] << (8 * k);
             cp_w[n++] = w;
         }
+    }
+    /* the maps outside the picture */
+    outs = 0;
+    if (f->out_on) {
+        int b;
+        outs = n;
+        cp_w = grow(cp_w, &cp_cap, n + 1 + 4 * 2048, sizeof *cp_w);
+        cp_w[n++] = f->out_on | (uint32_t)f->out_size[0] << 4 | (uint32_t)f->out_size[1] << 6 |
+                    (uint32_t)f->out_size[2] << 8 | (uint32_t)f->out_size[3] << 10;
+        for (b = 0; b < 4; b++)
+            for (i = 0; i < 4096; i += 2)
+                cp_w[n++] = (f->out_on >> b & 1) ? f->out_map[b][i] | (uint32_t)f->out_map[b][i + 1] << 16 : 0;
     }
     /* the states: each line's and segment's */
     states = n;
@@ -2180,6 +2237,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVK] = (uint32_t)f->cv_k;
     cp_w[CP_CVLEN] = (uint32_t)f->cv_len;
     cp_w[CP_M7SEG] = 0;
+    cp_w[CP_OUT] = (uint32_t)outs;
     *words = n + cp_parts_n + cp_spr_n;
     return cp_w;
 }

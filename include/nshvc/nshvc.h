@@ -380,6 +380,15 @@ void nshvc_ext_layer_page(int layer, int page);
    picture's edge is cut at it; off (the default), it goes on past them
    by the console's rules. (Since 2.7.) */
 void nshvc_ext_layer_clip(int layer, int on);
+/* Background layer 0-3 (BG1-4)'s map outside the console's picture on a
+   larger screen (nshvc_ext_screen), from the next frame: past the
+   console's 256 columns and its lines the layer reads its map entries
+   from map, laid out as a BGnSC map of size `size` (BGnSC's low two
+   bits: 0 32x32, 1 64x32, 2 32x64, 3 64x64 tiles), copied here; its
+   characters, scroll, tile size, priority, palettes, windows and clip
+   are the layer's own. Offset-per-tile still reads BG3's own map. NULL:
+   off (the default), the layer's map everywhere. (Since 2.8.) */
+void nshvc_ext_layer_outside(int layer, const uint16_t *map, int size);
 /* Pages 1-3 written outside the console's bus and time, at any moment (a
    board whose extra VRAM is the cartridge's too); page 0 is the console's,
    written only through the bus. copy: page from_page (0 included) into

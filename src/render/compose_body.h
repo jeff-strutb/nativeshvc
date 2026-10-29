@@ -34,6 +34,8 @@
  *               order (the first on top), the console's line limits
  *               decided (ppu.c obj_eval): CP_SE words each
  *   canvas      the canvas's texels, four to a word
+ *   outside     BG1-4's maps outside the console's picture
+ *               (nshvc_ext_layer_outside), when one is on
  *   segments    with a frame presenting Mode 7 or a canvas: each part's
  *               entry in the presentation's segment table (rr_mode7.h, made
  *               by ppu.c ppu_mode7_segs), for its records (cp_record)
@@ -60,7 +62,9 @@
 #define CP_CVK 18
 #define CP_CVLEN 19
 #define CP_M7SEG 20      /* the parts' segments (0: none, the frame presents neither) */
-#define CP_HEADER 21
+#define CP_OUT 21        /* the maps outside the picture: on (bits 0-3) | sizes << 4, then
+                            4096 entries a layer, two a word (0: none) */
+#define CP_HEADER 22
 
 #define CP_ST 20         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */
@@ -250,7 +254,23 @@ CP_FN U32 cp_bg(U32 si, U32 n, U32 x, I32 dr, U32 my)
     yy = (U_(y) + vofs) & 0x3FFu;
     tx = xx >> xshift;
     ty = yy >> yshift;
-    e = cp_map_entry(si, n, tx, ty);
+    {
+        /* outside the console's picture, the layer's own map there when it
+           has one */
+        U32 ob = FD_(CP_OUT), col = hires != 0u ? x >> 1 : x;
+        if (ob != 0u && ((FD_(ob) >> n) & 1u) != 0u &&
+            (I_(col) < sl || I_(col) >= sl + 256 || dr < 0 || dr >= I_(FD_(CP_LINES)))) {
+            U32 sc = (FD_(ob) >> (4u + 2u * n)) & 3u, off = (ty & 31u) << 5 | (tx & 31u);
+            if ((tx & 32u) != 0u && (sc & 1u) != 0u)
+                off += 0x400u;
+            if ((ty & 32u) != 0u && (sc & 2u) != 0u)
+                off += (sc & 1u) != 0u ? 0x800u : 0x400u;
+            off &= 0xFFFu;
+            e = (FD_(ob + 1u + n * 2048u + (off >> 1)) >> (16u * (off & 1u))) & 0xFFFFu;
+        } else {
+            e = cp_map_entry(si, n, tx, ty);
+        }
+    }
     px = xx & ((1u << xshift) - 1u);
     py = yy & ((1u << yshift) - 1u);
     if ((e & 0x4000u) != 0u)
