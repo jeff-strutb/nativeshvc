@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 8
+#define NSHVC_VERSION_MINOR 9
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -363,6 +363,12 @@ void nshvc_ext_sprite_y(int sprite, int on);
    whole). STAT77's range and time over flags report the console's limits
    either way. */
 void nshvc_ext_sprite_limits(int on);
+/* Y page 0's wrap above the console's picture on a taller screen: on (the
+   default), a sprite there shows again every 256 rows above line 1, as
+   the console's Y wraps; off, it shows nothing above line 1 (a sprite
+   meant there takes Y page -1, nshvc_ext_sprite_page). In the console's
+   own 256 rows it wraps as the console's either way. (Since 2.9.) */
+void nshvc_ext_sprite_wrap(int on);
 
 /* VRAM past the console's 64 KB: kb 64 to 256, in 64 KB pages (from now;
    64, the default, is the console's). The data port ($2118-$2119, $2139-

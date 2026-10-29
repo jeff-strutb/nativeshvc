@@ -1,8 +1,8 @@
-# The game contract, version 2.8
+# The game contract, version 2.9
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.8: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.9: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,9 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.9:** `nshvc_ext_sprite_wrap(on)`: Y page 0's sprites shown again every 256 rows
+  above the console's picture on a taller screen (on, the default) or not at all above
+  line 1 (off); in the console's own 256 rows they wrap as the console's either way.
 - **2.8:** `nshvc_ext_layer_outside(layer, map, size)`: a background's own map past the
   console's 256 columns and lines on a larger screen (entries in BGnSC's layout, copied,
   from the next frame); the layer's characters, scroll and the rest are its own.

@@ -345,6 +345,9 @@ static id<MTLCommandQueue> s_q;
 static id<MTLRenderPipelineState> s_copy, s_sharp, s_m7;
 static id<MTLComputePipelineState> s_cp, s_cpr; /* the compositor: a picture; a picture and its records */
 static id<MTLBuffer> s_recbuf[3], s_picbuf[3];  /* each frame in flight's records and picture */
+static id<MTLBuffer> s_m7buf[3][8];             /* each frame in flight's Mode 7 tables (m7_draw) */
+#define CP_CV_WORD 13                           /* compose_body.h CP_CV: the canvas's first word */
+
 static id<MTLBuffer> s_cpbuf[3];              /* each frame in flight's description */
 static id<MTLTexture> s_plane;             /* the Mode 7 planes (rr_mode7.h), as last uploaded */
 static uint32_t s_plane_gen;
@@ -612,9 +615,9 @@ static void draw_pic(id<MTLTexture> t, int w, int h, const int d[4])
 }
 
 static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, id<MTLBuffer> px,
-                    id<MTLBuffer> pic);
+                    id<MTLBuffer> pic, id<MTLBuffer> cv, size_t cv_off);
 
-void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s) { m7_draw(m, d, s, nil, nil); }
+void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s) { m7_draw(m, d, s, nil, nil, nil, 0); }
 
 int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
                      const struct RrM7Samples *s)
@@ -648,15 +651,31 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
         rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         s_enc = [s_cmd renderCommandEncoderWithDescriptor:rp];
-        m7_draw(m, d, s, s_recbuf[s_pi], s_picbuf[s_pi]);
+        /* the canvas's texels where the description holds them */
+        m7_draw(m, d, s, s_recbuf[s_pi], s_picbuf[s_pi], s_cpbuf[s_pi], (size_t)desc[CP_CV_WORD] * 4);
         return 1;
     }
 }
 
+/* n bytes of p in this frame's table buffer i, kept from frame to frame
+   (made larger when it must be) */
+static id<MTLBuffer> table_buf(int i, const void *p, size_t n)
+{
+    id<MTLBuffer> b = s_m7buf[s_pi][i];
+    if (n == 0)
+        n = 4;
+    if (!b || [b length] < n)
+        b = s_m7buf[s_pi][i] = [s_dev newBufferWithLength:n + n / 2 options:MTLResourceStorageModeShared];
+    if (b && p)
+        memcpy([b contents], p, n);
+    return b;
+}
+
 /* m presented over d; its records and picture from px and pic where given
-   (the compositor's), else m's own */
+   (the compositor's), else m's own; its canvas's texels from cv at byte
+   cv_off where given (the description's), else m's own */
 static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, id<MTLBuffer> px,
-                    id<MTLBuffer> pic)
+                    id<MTLBuffer> pic, id<MTLBuffer> cv, size_t cv_off)
 {
     @autoreleasepool {
         struct { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen, cvw, cvh; } u;
@@ -689,21 +708,15 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
         /* the frame's record, its states, palettes, VRAM and picture, and
            the tables: each draw its own copies, the GPU reading them while
            the next frame is made */
-        b[0] = px ? px : [s_dev newBufferWithBytes:m->px length:np * sizeof *m->px options:MTLResourceStorageModeShared];
-        b[1] = [s_dev newBufferWithBytes:m->seg length:(size_t)(m->segs ? m->segs : 1) * sizeof *m->seg
-                                 options:MTLResourceStorageModeShared];
-        b[2] = [s_dev newBufferWithBytes:m->pal length:(size_t)(m->pals ? m->pals : 1) * 512 options:MTLResourceStorageModeShared];
-        b[3] = [s_dev newBufferWithBytes:m->vram length:(size_t)(m->vrams ? m->vrams : 1) * 0x10000
-                                 options:MTLResourceStorageModeShared];
-        b[4] = pic ? pic : [s_dev newBufferWithBytes:m->pic length:np * 4 options:MTLResourceStorageModeShared];
-        b[5] = [s_dev newBufferWithBytes:s->cols length:(size_t)ow * 3 * 4 options:MTLResourceStorageModeShared];
-        b[6] = [s_dev newBufferWithBytes:s->rows length:(size_t)oh * 4 * 4 options:MTLResourceStorageModeShared];
-        {
-            /* the canvas's texels (a byte where there is none) */
-            static const uint8_t none = 0;
-            b[7] = [s_dev newBufferWithBytes:m->cv && m->cv_len ? (const void *)m->cv : &none length:m->cv && m->cv_len ? m->cv_len : 1
-                                     options:MTLResourceStorageModeShared];
-        }
+        b[0] = px ? px : table_buf(0, m->px, np * sizeof *m->px);
+        b[1] = table_buf(1, m->seg, (size_t)m->segs * sizeof *m->seg);
+        b[2] = table_buf(2, m->pal, (size_t)m->pals * 512);
+        b[3] = table_buf(3, m->vram, (size_t)m->vrams * 0x10000);
+        b[4] = pic ? pic : table_buf(4, m->pic, np * 4);
+        b[5] = table_buf(5, s->cols, (size_t)ow * 3 * 4);
+        b[6] = table_buf(6, s->rows, (size_t)oh * 4 * 4);
+        /* the canvas's texels (a byte where there is none) */
+        b[7] = cv ? cv : table_buf(7, m->cv && m->cv_len ? (const void *)m->cv : NULL, m->cv && m->cv_len ? m->cv_len : 4);
         for (i = 0; i < 8; i++)
             if (!b[i])
                 return;
@@ -736,7 +749,7 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
         [s_enc setVertexBuffer:s_vb[s_pi] offset:(NSUInteger)off atIndex:0];
         [s_enc setFragmentBytes:&u length:sizeof u atIndex:0];
         for (i = 0; i < 8; i++)
-            [s_enc setFragmentBuffer:b[i] offset:0 atIndex:(NSUInteger)i + 1];
+            [s_enc setFragmentBuffer:b[i] offset:i == 7 && cv ? cv_off : 0 atIndex:(NSUInteger)i + 1];
         [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }
 }

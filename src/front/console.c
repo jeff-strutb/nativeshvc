@@ -50,6 +50,7 @@ void nshvc_ext_sprite_x(int sprite, int on) { ppu_ext_sprite_x(sprite, on); }
 void nshvc_ext_sprite_y(int sprite, int on) { ppu_ext_sprite_y(sprite, on); }
 void nshvc_ext_sprite_page(int sprite, int x_page, int y_page) { ppu_ext_sprite_page(sprite, x_page, y_page); }
 void nshvc_ext_sprite_limits(int on) { ppu_ext_sprite_limits(on); }
+void nshvc_ext_sprite_wrap(int on) { ppu_ext_sprite_wrap(on); }
 void nshvc_ext_vram(int kb) { ppu_ext_vram(kb); }
 void nshvc_ext_vram_page(int page) { ppu_ext_vram_page(page); }
 void nshvc_ext_layer_page(int layer, int page) { ppu_ext_layer_page(layer, page); }

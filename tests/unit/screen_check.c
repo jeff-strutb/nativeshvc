@@ -24,6 +24,9 @@
  *   outside   1024 x 480, BG1's map all tile 0 (colour 1), its map outside
  *             the console's picture (nshvc_ext_layer_outside) all tile 1
  *             (colour 2): colour 1 exactly on the picture, 2 past it
+ *   nowrap    256 x 1024, the picture 600 rows down, Y page 0's wrap above
+ *             it off (nshvc_ext_sprite_wrap(0)): its sprites nowhere
+ *             above line 1, in the console's own 256 rows as ever
  *   clip 7    the same in Mode 7, BG1 a plane of one colour over the
  *             backdrop; and the presentation at one to one (ppu_present,
  *             the Mode 7 records) exactly the picture
@@ -40,7 +43,7 @@
 #include "nshvc/machine.h"
 #include "ppu.h"
 
-#define NSCENES 9
+#define NSCENES 10
 #define NSPR 40
 #define BACKDROP 0x2108u
 
@@ -54,6 +57,7 @@ typedef struct {
     int mode7;
     int clip;              /* BG1 and the sprites kept to the console's picture */
     int outside;           /* BG1 alone, its map outside the picture another */
+    int nowrap;            /* Y page 0's wrap above the picture off */
 } Scene;
 
 static const Scene scenes[NSCENES] = {
@@ -65,7 +69,8 @@ static const Scene scenes[NSCENES] = {
     { "mode 7", 8192, 8192, 1000, 6000, 0, 1, 0 },
     { "clip", 1024, 480, -1, -1, 0, 0, 1 },
     { "clip 7", 1024, 480, 100, 200, 0, 1, 1, 0 },
-    { "outside", 1024, 480, 300, 100, 0, 0, 0, 1 },
+    { "outside", 1024, 480, 300, 100, 0, 0, 0, 1, 0 },
+    { "nowrap", 256, 1024, 0, 600, 0, 0, 0, 0, 1 },
 };
 
 #define BG1_C 0x03E0u     /* BG1's colour (colour 1), green */
@@ -161,6 +166,7 @@ static void setup(int k)
     int i;
     nshvc_ext_screen(sc->w, sc->h);
     nshvc_ext_screen_origin(sc->ox, sc->oy);
+    nshvc_ext_sprite_wrap(!sc->nowrap);
     for (i = 0; i < 5; i++)
         nshvc_ext_layer_clip(i, sc->clip && (i == 0 || i == 4));
     /* tile 1 (4 bpp, OBSEL 0: sprites' tiles from word 0): colour 1 */
@@ -325,12 +331,12 @@ static uint32_t rgb(unsigned c)
 /* whether sprite s covers the screen's row R (rows from the picture's
    line 1 at top): on Y page 0 the console's 256-row wrap, none at or past
    256; else its Y and 256 more a page */
-static int covers_row(const Spr *s, int R, int top)
+static int covers_row(const Spr *s, int R, int top, int nowrap)
 {
     int r = R - top, yp = s->how == 2 ? 1 : s->how == 1 ? 0 : s->yp;
     if (yp)
         return r >= s->y + 256 * yp && r < s->y + 256 * yp + 8;
-    if (r >= 256)
+    if (r >= 256 || (nowrap && r < 0))
         return 0;
     return ((r - s->y) % 256 + 256) % 256 < 8;
 }
@@ -386,7 +392,7 @@ static void check_scene(int k)
         for (i = nspr[k]; i-- > 0;) {
             const Spr *s = &spr[k][i];
             int c0 = col_of(s, left), c;
-            if (sc->outside || !covers_row(s, R, top) || (sc->clip && !in_rows))
+            if (sc->outside || !covers_row(s, R, top, sc->nowrap) || (sc->clip && !in_rows))
                 continue;
             for (c = c0; c < c0 + 8; c++)
                 if (c >= 0 && c < sc->w && (!sc->clip || (c >= left && c < left + 256)))

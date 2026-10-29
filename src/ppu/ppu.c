@@ -71,6 +71,7 @@ static int ext_width = PPU_WIDTH, ext_height = 224;
    made began */
 static int ext_ox = -1, ext_oy = -1, frame_oy = -1;
 static int ext_limits = 1;           /* the line's sprite and tile limits (nshvc_ext_sprite_limits) */
+static int ext_wrap = 1;             /* Y page 0's sprites above line 1, wrapped (nshvc_ext_sprite_wrap) */
 static int8_t ext_xp[128], ext_yp[128];    /* each sprite's pages (nshvc_ext_sprite_page) */
 /* the sprite table as it stands with the extended X and Y bits after it, as
    a frame's copies hold it (what the drawing reads) */
@@ -217,6 +218,7 @@ void ppu_reset(void)
     memset(ext_xp, 0, sizeof ext_xp);
     memset(ext_yp, 0, sizeof ext_yp);
     ext_limits = 1;
+    ext_wrap = 1;
     making = &frames[0];
     finished = &frames[1];
     before = &frames[2];
@@ -656,6 +658,7 @@ void ppu_ext_screen_origin(int x, int y)
 }
 
 void ppu_ext_sprite_limits(int on) { ext_limits = on != 0; }
+void ppu_ext_sprite_wrap(int on) { ext_wrap = on != 0; }
 
 void ppu_ext_vram(int kb)
 {
@@ -1515,7 +1518,7 @@ static int obj_row(unsigned s, unsigned y, unsigned h, int r, unsigned *row)
         *row = (unsigned)d;
         return 1;
     }
-    if (r >= 256)
+    if (r >= 256 || (r < 0 && !ext_wrap))
         return 0;
     d = (r - (int)y) & 0xFF;
     if (d >= (int)h)
@@ -2104,7 +2107,7 @@ static int cp_row(const CpObj *o, int r, unsigned *row)
         *row = (unsigned)d;
         return 1;
     }
-    if (r >= 256)
+    if (r >= 256 || (r < 0 && !ext_wrap))
         return 0;
     d = (r - o->y) & 0xFF;
     if (d >= o->h)
@@ -2231,13 +2234,14 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     /* the canvas's texels */
     cv = n;
     if (f->cv_on) {
-        cp_w = grow(cp_w, &cp_cap, n + f->cv_len / 4 + 1, sizeof *cp_w);
-        for (i = 0; i < f->cv_len; i += 4) {
-            uint32_t w = 0;
-            for (k = 0; k < 4 && i + k < f->cv_len; k++)
-                w |= (uint32_t)f->cv[i + k] << (8 * k);
-            cp_w[n++] = w;
-        }
+        /* four texels a word, the first the low byte: in memory, the texels
+           in order on a little-endian host (every host nativeshvc builds
+           for), so one copy */
+        size_t words = (f->cv_len + 3) / 4;
+        cp_w = grow(cp_w, &cp_cap, n + words + 1, sizeof *cp_w);
+        cp_w[n + words - 1] = 0;
+        memcpy(cp_w + n, f->cv, f->cv_len);
+        n += words;
     }
     /* the maps outside the picture */
     outs = 0;

@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.8); this page describes the interface
+[the game contract](contract.md) (2.9); this page describes the interface
 around it.
 
 ## What it is
@@ -126,6 +126,7 @@ Each is off by default.
 | `nshvc_ext_layer_outside(layer, map, size)` | a background's map past the console's 256 columns and lines, its entries in BGnSC's layout (copied, from the next frame); everything else the layer's |
 | `nshvc_ext_canvas_screen(layer, texels, w, h, k, priority, palette)` | a background's picture over the whole screen from the game's texels by the screen's pixels, one priority and palette, at the window's resolution (one canvas at a time) |
 | `nshvc_ext_layer_clip(layer, on)` | a background or the sprites kept to the console's picture on a larger screen: transparent past its 256 columns and lines, a sprite across the edge cut at it |
+| `nshvc_ext_sprite_wrap(0)` | Y page 0's sprites nowhere above the console's line 1 on a taller screen (in its own 256 rows they wrap as ever) |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
 | `nshvc_ext_vram_copy(to, from)`, `_vram_direct(page)` | pages 1-3 written outside the console's bus and time, at any moment, as a board whose extra VRAM is the cartridge's too: a whole page copied, or the data port's writes (by the S-CPU or a DMA) landing in a page at once, while lines are drawn too, a DMA of only those taking no time. Page 0 is the console's, written only through the bus. A change to a page a layer reads shows from the next line drawn; one to a page no layer reads, from when a layer is switched to it (so a game builds its next screen in a page not shown, and switches) |
