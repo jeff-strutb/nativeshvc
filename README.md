@@ -255,6 +255,14 @@ What it does bring, besides its C, is its cartridge's own hardware: an expansion
 the cartridge's, so the game implements it (or brings an implementation it owns) and plugs
 it into the connector (`cart.h`).
 
+### An example
+
+[Stunt Race FX](https://github.com/jeff-strutb/stuntracefx) is a decompilation that plays
+on nativeshvc: its C written against the machine model, its Super FX brought as the
+cartridge's own chip through the connector, and an Original mode and an Enhanced mode
+built on the extensions. It shows a whole game put together as this section describes;
+nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
+
 ## Status
 
 Version 2.4.0. The game contract, what a game writes against and what the console
@@ -333,12 +341,21 @@ each one, is in [tests/README.md](tests/README.md).
   reference's.
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the test cartridges'
   frames (one to one and scaled, and Mode 7 at the window's resolution, anti-aliased) and
-  draw overlays as the CPU reference does: 1,176 cartridges each (70 of them presenting
-  Mode 7), none differing. The anti-aliasing is held to its definition written again in
+  draw overlays as the CPU reference does: 1,164 cartridges each (70 of them presenting
+  Mode 7), none differing; and a layer's canvas at five window sizes, none differing. The anti-aliasing is held to its definition written again in
   its check, and to the plane's ground truth (`tests/unit/present_check.c`): its error is
   5.5 to 35 times smaller than point sampling's where the plane is magnified, 4.5 to 6
   times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
   a plain frame 0.2 to 0.4.
+- **Enhancement support:** a larger screen's centre is exactly the console's picture, and
+  VRAM pages the same as page 0 (`tests/rom/ext_check.py`); with the S-CPU's costs off,
+  its accesses (bytes, words, longs, read-modify-writes) take no time while a wait and a
+  DMA take theirs, and a poll with no wait stops the run (`tests/unit/waits.c`); a VRAM
+  page copied or written directly lands as it must, unseen until shown, and page 0 refused
+  (`tests/unit/vram_direct.c`); a layer's canvas, on 8 scenes at one to one, scaled up and
+  down, of another shape and 6x, each window pixel exactly the texel under it placed by the
+  layer's rules, and the scenes checking their own coverage (flips, palettes, tiles past
+  the canvas, neighbouring pixels of one record in two colours) (`tests/unit/canvas_check.c`).
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
   the iOS simulator, Windows) compiles with no warnings.
