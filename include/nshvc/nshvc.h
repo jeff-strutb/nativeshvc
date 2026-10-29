@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 9
+#define NSHVC_VERSION_MINOR 10
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -390,7 +390,9 @@ void nshvc_ext_layer_clip(int layer, int on);
    larger screen (nshvc_ext_screen), from the next frame: past the
    console's 256 columns and its lines the layer reads its map entries
    from map, laid out as a BGnSC map of size `size` (BGnSC's low two
-   bits: 0 32x32, 1 64x32, 2 32x64, 3 64x64 tiles), copied here; its
+   bits: 0 32x32, 1 64x32, 2 32x64, 3 64x64 tiles), or 4 128x32 and 5
+   128x64 tiles in rows of 128 entries (since 2.10: a layer whose scroll
+   wraps at 1,024 pixels then wraps there too), copied here; its
    characters, scroll, tile size, priority, palettes, windows and clip
    are the layer's own. Offset-per-tile still reads BG3's own map. NULL:
    off (the default), the layer's map everywhere. (Since 2.8.) */

@@ -85,9 +85,9 @@ typedef struct {
     uint32_t cv_gen;
     /* BG1-4's maps outside the console's picture (nshvc_ext_layer_outside),
        as they stood when the frame began: bit n on, each one's size
-       (BGnSC's low bits) and entries */
+       (BGnSC's low bits, or 4 and 5: 128 x 32 and 128 x 64) and entries */
     uint8_t out_on, out_size[4];
-    uint16_t out_map[4][4096];
+    uint16_t out_map[4][8192];
 } PpuFrame;
 
 /* A line's screen state packed for the GPU compositor: PPU_LINE_WORDS

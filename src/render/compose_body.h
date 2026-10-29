@@ -62,8 +62,8 @@
 #define CP_CVK 18
 #define CP_CVLEN 19
 #define CP_M7SEG 20      /* the parts' segments (0: none, the frame presents neither) */
-#define CP_OUT 21        /* the maps outside the picture: on (bits 0-3) | sizes << 4, then
-                            4096 entries a layer, two a word (0: none) */
+#define CP_OUT 21        /* the maps outside the picture: on (bits 0-3) | sizes << 4 (3 bits
+                            each), then 8192 entries a layer, two a word (0: none) */
 #define CP_CVSCREEN 22   /* a screen canvas: 1 | priority << 1 | palette << 2 (0: none) */
 #define CP_CVW 23        /* its texels across and down */
 #define CP_CVH 24
@@ -315,13 +315,18 @@ CP_FN U32 cp_bg(U32 si, U32 n, U32 x, I32 dr, U32 my)
         U32 ob = FD_(CP_OUT), col = hires != 0u ? x >> 1 : x;
         if (ob != 0u && ((FD_(ob) >> n) & 1u) != 0u &&
             (I_(col) < sl || I_(col) >= sl + 256 || dr < 0 || dr >= I_(FD_(CP_LINES)))) {
-            U32 sc = (FD_(ob) >> (4u + 2u * n)) & 3u, off = (ty & 31u) << 5 | (tx & 31u);
-            if ((tx & 32u) != 0u && (sc & 1u) != 0u)
-                off += 0x400u;
-            if ((ty & 32u) != 0u && (sc & 2u) != 0u)
-                off += (sc & 1u) != 0u ? 0x800u : 0x400u;
-            off &= 0xFFFu;
-            e = (FD_(ob + 1u + n * 2048u + (off >> 1)) >> (16u * (off & 1u))) & 0xFFFFu;
+            U32 sc = (FD_(ob) >> (4u + 3u * n)) & 7u, off = (ty & 31u) << 5 | (tx & 31u);
+            if (sc >= 4u) {
+                /* 128 wide: rows of 128 entries, 32 or 64 of them */
+                off = (ty & (sc == 4u ? 31u : 63u)) << 7 | (tx & 127u);
+            } else {
+                if ((tx & 32u) != 0u && (sc & 1u) != 0u)
+                    off += 0x400u;
+                if ((ty & 32u) != 0u && (sc & 2u) != 0u)
+                    off += (sc & 1u) != 0u ? 0x800u : 0x400u;
+                off &= 0xFFFu;
+            }
+            e = (FD_(ob + 1u + n * 4096u + (off >> 1)) >> (16u * (off & 1u))) & 0xFFFFu;
         } else {
             e = cp_map_entry(si, n, tx, ty);
         }

@@ -699,17 +699,19 @@ void ppu_ext_layer_page(int layer, int page)
 
 /* the maps outside the console's picture, as the game last set them */
 static uint8_t out_on, out_size[4];
-static uint16_t out_map[4][4096];
+static uint16_t out_map[4][8192];
 
 void ppu_ext_layer_outside(int layer, const uint16_t *map, int size)
 {
-    if (layer < 0 || layer > 3 || size < 0 || size > 3)
-        snes_fatal("nshvc_ext_layer_outside(%d, map, %d): layers 0-3 (BG1-4), sizes 0-3 (BGnSC's)", layer, size);
+    static const unsigned entries[6] = { 1024, 2048, 2048, 4096, 4096, 8192 };
+    if (layer < 0 || layer > 3 || size < 0 || size > 5)
+        snes_fatal("nshvc_ext_layer_outside(%d, map, %d): layers 0-3 (BG1-4), sizes 0-3 (BGnSC's) and 4-5 (128 x 32, "
+                   "128 x 64)", layer, size);
     if (!map) {
         out_on = (uint8_t)(out_on & ~(1u << layer));
         return;
     }
-    memcpy(out_map[layer], map, (size_t)(1024u << (size == 0 ? 0 : size == 3 ? 2 : 1)) * sizeof *map);
+    memcpy(out_map[layer], map, (size_t)entries[size] * sizeof *map);
     out_size[layer] = (uint8_t)size;
     out_on = (uint8_t)(out_on | 1u << layer);
 }
@@ -1176,6 +1178,9 @@ static const uint8_t mode_bpp[8][4] = {
 static uint16_t out_entry(int n, unsigned tx, unsigned ty)
 {
     unsigned sc = d_frame->out_size[n], off = (ty & 31) << 5 | (tx & 31);
+    if (sc >= 4)
+        /* 128 wide: rows of 128 entries, 32 or 64 of them */
+        return d_frame->out_map[n][(ty & (sc == 4 ? 31u : 63u)) << 7 | (tx & 127)];
     if ((tx & 32) && (sc & 1))
         off += 0x400;
     if ((ty & 32) && (sc & 2))
@@ -2258,11 +2263,11 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     if (f->out_on) {
         int b;
         outs = n;
-        cp_w = grow(cp_w, &cp_cap, n + 1 + 4 * 2048, sizeof *cp_w);
-        cp_w[n++] = f->out_on | (uint32_t)f->out_size[0] << 4 | (uint32_t)f->out_size[1] << 6 |
-                    (uint32_t)f->out_size[2] << 8 | (uint32_t)f->out_size[3] << 10;
+        cp_w = grow(cp_w, &cp_cap, n + 1 + 4 * 4096, sizeof *cp_w);
+        cp_w[n++] = f->out_on | (uint32_t)f->out_size[0] << 4 | (uint32_t)f->out_size[1] << 7 |
+                    (uint32_t)f->out_size[2] << 10 | (uint32_t)f->out_size[3] << 13;
         for (b = 0; b < 4; b++)
-            for (i = 0; i < 4096; i += 2)
+            for (i = 0; i < 8192; i += 2)
                 cp_w[n++] = (f->out_on >> b & 1) ? f->out_map[b][i] | (uint32_t)f->out_map[b][i + 1] << 16 : 0;
     }
     /* the states: each line's and segment's */

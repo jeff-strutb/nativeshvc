@@ -24,6 +24,9 @@
  *   outside   1024 x 480, BG1's map all tile 0 (colour 1), its map outside
  *             the console's picture (nshvc_ext_layer_outside) all tile 1
  *             (colour 2): colour 1 exactly on the picture, 2 past it
+ *   outside 5 2048 x 600, the same with a 128 x 64 outside map (size 5)
+ *             whose tiles change at its column 64 and row 32: wrapping at
+ *             1,024 pixels across and 512 down
  *   nowrap    256 x 1024, the picture 600 rows down, Y page 0's wrap above
  *             it off (nshvc_ext_sprite_wrap(0)): its sprites nowhere
  *             above line 1, in the console's own 256 rows as ever
@@ -43,7 +46,7 @@
 #include "nshvc/machine.h"
 #include "ppu.h"
 
-#define NSCENES 10
+#define NSCENES 11
 #define NSPR 40
 #define BACKDROP 0x2108u
 
@@ -71,7 +74,9 @@ static const Scene scenes[NSCENES] = {
     { "clip 7", 1024, 480, 100, 200, 0, 1, 1, 0 },
     { "outside", 1024, 480, 300, 100, 0, 0, 0, 1, 0 },
     { "nowrap", 256, 1024, 0, 600, 0, 0, 0, 0, 1 },
+    { "outside 5", 2048, 600, 700, 150, 0, 0, 0, 5, 0 },
 };
+#define COL3 0x001Fu   /* colour 3, red: the wide outside map's other tile */
 
 #define BG1_C 0x03E0u     /* BG1's colour (colour 1), green */
 #define BG2_C 0x7C00u     /* BG2's (colour 2), blue */
@@ -188,7 +193,7 @@ static void setup(int k)
     if (sc->outside) {
         /* BG1 (4 bpp, characters at word 0x2000): tile 0 colour 1, tile 1
            colour 2; its map (word 0) all tile 0, outside all tile 1 */
-        static uint16_t outmap[1024];
+        static uint16_t outmap[8192];
         w(0x15, 0x80);
         w(0x16, 0);
         w(0x17, 0);
@@ -198,15 +203,26 @@ static void setup(int k)
         }
         w(0x16, 0);
         w(0x17, 0x20);
-        for (i = 0; i < 32; i++) {
-            w(0x18, i < 8 ? 0xFF : 0);
-            w(0x19, i >= 16 && i < 24 ? 0xFF : 0);
+        for (i = 0; i < 48; i++) {
+            /* tile 0 colour 1, tile 1 colour 2, tile 2 colour 3 */
+            w(0x18, i < 8 || (i >= 32 && i < 40) ? 0xFF : 0);
+            w(0x19, (i >= 16 && i < 24) || (i >= 32 && i < 40) ? 0xFF : 0);
         }
         w(0x07, 0x00);
         w(0x0B, 0x02);
-        for (i = 0; i < 1024; i++)
-            outmap[i] = 1;
-        nshvc_ext_layer_outside(0, outmap, 0);
+        w(0x21, 3);
+        w(0x22, COL3 & 0xFF);
+        w(0x22, COL3 >> 8);
+        if (sc->outside == 5) {
+            /* 128 x 64: tile 1 where column 64+ and row 32+ differ, else 2 */
+            for (i = 0; i < 8192; i++)
+                outmap[i] = ((i & 127) >= 64) != ((i >> 7) >= 32) ? 1 : 2;
+            nshvc_ext_layer_outside(0, outmap, 5);
+        } else {
+            for (i = 0; i < 1024; i++)
+                outmap[i] = 1;
+            nshvc_ext_layer_outside(0, outmap, 0);
+        }
     } else {
         nshvc_ext_layer_outside(0, NULL, 0);
     }
@@ -385,9 +401,17 @@ static void check_scene(int k)
         int in_rows = R >= top && R < top + 224;
         for (x = 0; x < sc->w; x++)
             want[x] = sc->clip && in_rows && x >= left && x < left + 256 ? rgb(BG1_C) : back;
-        if (sc->outside)
+        if (sc->outside == 1)
             for (x = 0; x < sc->w; x++)
                 want[x] = in_rows && x >= left && x < left + 256 ? rgb(BG1_C) : rgb(BG2_C);
+        if (sc->outside == 5)
+            for (x = 0; x < sc->w; x++) {
+                /* the outside map's tile: the layer's column and row, as
+                   its scroll (0) gives them, wrapping at 1,024 and 512 */
+                int tx = ((x - left) & 1023) >> 3, ty = ((R - top + 1) & 1023) >> 3 & 63;
+                want[x] = in_rows && x >= left && x < left + 256 ? rgb(BG1_C)
+                          : ((tx >= 64) != (ty >= 32)) ? rgb(BG2_C) : rgb(COL3);
+            }
         /* from the last, so the first ends on top */
         for (i = nspr[k]; i-- > 0;) {
             const Spr *s = &spr[k][i];
