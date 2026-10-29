@@ -25,6 +25,32 @@ void host_metal_layer_fit(int *w, int *h);
 __attribute__((weak)) CAMetalLayer *host_metal_layer(void) { return nil; }
 __attribute__((weak)) void host_metal_layer_fit(int *w, int *h) { *w = *h = 0; }
 
+#include "rr_compose_src.h"
+
+/* the compositor (compose_body.h): its functions members of a structure
+   that holds the frame's description, a thread a picture pixel */
+static const char k_compose_pre[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "#define CP_FN\n"
+    "#define CP_VAR\n"
+    "#define U32 uint\n"
+    "#define I32 int\n"
+    "#define U_(x) uint(x)\n"
+    "#define I_(x) int(x)\n"
+    "#define FD_(i) fd[(i)]\n"
+    "struct CP {\n"
+    "device const uint *fd;\n";
+static const char k_compose_post[] =
+    "};\n"
+    "kernel void cpk(device const uint *fd [[buffer(0)]], texture2d<float, access::write> o [[texture(0)]],\n"
+    "                uint2 g [[thread_position_in_grid]]) {\n"
+    "  CP c; uint p;\n"
+    "  c.fd = fd;\n"
+    "  if (g.x >= fd[CP_PW] || g.y >= fd[CP_PH]) return;\n"
+    "  p = c.cp_pixel(g.x, g.y);\n"
+    "  o.write(float4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0, g); }\n";
+
 static NSString *const k_src = @
 "#include <metal_stdlib>\n"
 "using namespace metal;\n"
@@ -301,6 +327,8 @@ static NSString *const k_src = @
 static id<MTLDevice> s_dev;
 static id<MTLCommandQueue> s_q;
 static id<MTLRenderPipelineState> s_copy, s_sharp, s_m7;
+static id<MTLComputePipelineState> s_cp;      /* the compositor */
+static id<MTLBuffer> s_cpbuf[3];              /* each frame in flight's description */
 static id<MTLTexture> s_plane;             /* the Mode 7 planes (rr_mode7.h), as last uploaded */
 static uint32_t s_plane_gen;
 static int s_planes;
@@ -375,6 +403,18 @@ int rr_open(void)
         s_m7 = make_pipe(@"m7fs", lib);
         if (!s_copy || !s_sharp || !s_over || !s_m7)
             return 0;
+        {
+            NSString *src = [NSString stringWithFormat:@"%s%s%s", k_compose_pre, k_compose_body, k_compose_post];
+            id<MTLLibrary> cl = [s_dev newLibraryWithSource:src options:nil error:&err];
+            id<MTLFunction> fn = cl ? [cl newFunctionWithName:@"cpk"] : nil;
+            if (!fn) {
+                fprintf(stderr, "rr: metal compositor: %s\n", [[err description] UTF8String]);
+                return 0;
+            }
+            s_cp = [s_dev newComputePipelineStateWithFunction:fn error:&err];
+            if (!s_cp)
+                return 0;
+        }
         for (i = 0; i < 3; i++)
             s_vb[i] = [s_dev newBufferWithLength:VB_SIZE options:MTLResourceStorageModeShared];
         s_inflight = dispatch_semaphore_create(3);
@@ -456,22 +496,71 @@ void rr_begin(uint32_t argb)
     }
 }
 
+/* this frame's picture, w x h */
+static id<MTLTexture> pic_tex(int w, int h)
+{
+    id<MTLTexture> t = s_pic[s_pi];
+    if (!t || (int)t.width != w || (int)t.height != h) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                       width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        t = s_pic[s_pi] = [s_dev newTextureWithDescriptor:td];
+    }
+    return t;
+}
+
+static void draw_pic(id<MTLTexture> t, int w, int h, const int d[4]);
+
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 {
     @autoreleasepool {
-        id<MTLTexture> t = s_pic[s_pi];
-        long off;
+        id<MTLTexture> t;
         if (!s_enc || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
             return;
-        if (!t || (int)t.width != w || (int)t.height != h) {
-            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                           width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
-            td.usage = MTLTextureUsageShaderRead;
-            t = s_pic[s_pi] = [s_dev newTextureWithDescriptor:td];
-        }
+        t = pic_tex(w, h);
         /* 0xAARRGGBB little-endian is BGRA in memory */
         [t replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h) mipmapLevel:0
                withBytes:argb bytesPerRow:(NSUInteger)w * 4];
+        draw_pic(t, w, h, d);
+    }
+}
+
+int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
+{
+    @autoreleasepool {
+        id<MTLTexture> t;
+        id<MTLComputeCommandEncoder> ce;
+        MTLRenderPassDescriptor *rp;
+        if (!s_cp || !s_enc || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
+            return 0;
+        t = pic_tex(w, h);
+        if (!s_cpbuf[s_pi] || [s_cpbuf[s_pi] length] < words * 4)
+            s_cpbuf[s_pi] = [s_dev newBufferWithLength:words * 4 * 2 options:MTLResourceStorageModeShared];
+        memcpy([s_cpbuf[s_pi] contents], desc, words * 4);
+        /* the picture first, in a pass of its own, then the target's pass
+           goes on */
+        [s_enc endEncoding];
+        ce = [s_cmd computeCommandEncoder];
+        [ce setComputePipelineState:s_cp];
+        [ce setBuffer:s_cpbuf[s_pi] offset:0 atIndex:0];
+        [ce setTexture:t atIndex:0];
+        [ce dispatchThreads:MTLSizeMake((NSUInteger)w, (NSUInteger)h, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [ce endEncoding];
+        rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = s_col;
+        rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        s_enc = [s_cmd renderCommandEncoderWithDescriptor:rp];
+        draw_pic(t, w, h, d);
+        return 1;
+    }
+}
+
+/* picture t (w x h) over target rectangle d: one to one, or sharp bilinear */
+static void draw_pic(id<MTLTexture> t, int w, int h, const int d[4])
+{
+    {
+        long off;
         if ((off = quad(d)) < 0)
             return;
         [s_enc setRenderPipelineState:d[2] - d[0] == w && d[3] - d[1] == h ? s_copy : s_sharp];

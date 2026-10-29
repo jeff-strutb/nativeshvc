@@ -28,6 +28,7 @@ Each was shown able to fail (a planted error caught) before it was relied on.
 | `NSHVC_RRCHECK=1` | every renderer's presented frames against the reference (with `NSHVC_RRCHECK_WHY=1`, the first frame that differs: its first pixels, and the record of the picture pixels under each): one to one and scaled with sharp bilinear, and a frame with Mode 7 or a layer's canvas at the target's resolution (rr_mode7.h rr_ref_mode7: the plane anti-aliased, the canvas's texels), within 1 a channel | `NSHVC_RRCHECK=1 RR_SIZE=1000x750 build/null-RENDER/tests/testcart --rom ROM --headless --frames 4` |
 | `NSHVC_SPCLOG=FILE` | the SPC700's accesses, to pair with the reference's (`oracle --spclog`): each write and each read of $F0-$FF, and the S-CPU's port writes, 8 bytes each (format in `tests/oracle/oracle.c`) | any headless run |
 | `NSHVC_PPUCHECK=1` | each frame drawn from its record against the frame drawn a line at a time | any headless run |
+| `NSHVC_COMPOSECHECK=1` | each frame's picture from its description by the C build of the compositor (`src/render/compose_body.h`, as the GPU backends draw it) against the frame drawn from its record, pixel for pixel | any headless run (`NSHVC_COMPOSE=0`: the renderers show the CPU's picture instead) |
 
 ## Setting up
 

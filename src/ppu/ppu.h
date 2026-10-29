@@ -175,5 +175,8 @@ const uint8_t *ppu_oam(void);
 /* PPU checks (NSHVC_PPUCHECK): frames drawn from their records against
    the frames drawn a line at a time */
 extern unsigned long ppu_check_frames, ppu_check_bad, ppu_version_overflow, ppu_segment_overflow;
+extern unsigned long ppu_compose_frames, ppu_compose_bad;
+/* a frame described for a compositor (render/compose_body.h): its words */
+const uint32_t *ppu_compose(const PpuFrame *f, size_t *words);
 
 #endif

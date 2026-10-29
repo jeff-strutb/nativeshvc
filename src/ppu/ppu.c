@@ -25,10 +25,12 @@
  *   brightness   and forced blank; overscan (239 lines)
  */
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "ppu.h"
+#include "rr_compose.h"
 #include "rr_mode7.h"
 #include "snes.h"
 
@@ -820,6 +822,9 @@ void ppu_field_flip(void)
 /* NSHVC_PPUCHECK=1: each finished frame drawn again from its record and
    compared with the picture drawn a line at a time */
 unsigned long ppu_check_frames, ppu_check_bad;
+/* NSHVC_COMPOSECHECK=1: each finished frame's picture from its
+   description (ppu_compose, render/rr_compose.h) against ppu_draw_frame's */
+unsigned long ppu_compose_frames, ppu_compose_bad;
 static uint32_t *check_pic;
 static size_t check_cap;
 
@@ -864,7 +869,7 @@ static void weave(const PpuFrame *f, int rows_of)
 
 void ppu_vblank_start(void)
 {
-    static int check = -1;
+    static int check = -1, compose_check = -1;
     PpuFrame *t = finished;
     making->height = (int)snes_vblank_line() - 1;
     /* the height asked for as the frame began, at least the hardware's */
@@ -906,6 +911,26 @@ void ppu_vblank_start(void)
                 break;
             }
         }
+    }
+    if (compose_check < 0)
+        compose_check = getenv("NSHVC_COMPOSECHECK") != NULL;
+    if (compose_check) {
+        int w = ppu_frame_width(finished), h = finished->screen_height, x, y;
+        long bad = 0;
+        size_t nw;
+        check_pic = grow(check_pic, &check_cap, (size_t)w * (size_t)h, sizeof *check_pic);
+        ppu_draw_frame(finished, check_pic);
+        rr_cp_fd = ppu_compose(finished, &nw);
+        for (y = 0; y < h; y++)
+            for (x = 0; x < w; x++) {
+                uint32_t got = rr_cp_pixel((uint32_t)x, (uint32_t)y), want = check_pic[(size_t)y * (size_t)w + (size_t)x];
+                if (got != want && !bad && ppu_compose_bad < 3)
+                    fprintf(stderr, "composecheck: frame %lu at (%d, %d): got %08x want %08x\n", frames_done, x, y,
+                            got, want);
+                bad += got != want;
+            }
+        ppu_compose_frames++;
+        ppu_compose_bad += bad != 0;
     }
     /* forced blank lifted: OAM's address reloads at the vertical blank */
     if (!(cur.inidisp & 0x80))
@@ -1256,26 +1281,20 @@ static int obj_row(unsigned s, unsigned y, unsigned h, int r, unsigned *row)
     return 1;
 }
 
-static void draw_obj(unsigned line)
+/* The console's line limits on the row being drawn: for each sprite,
+   its tiles the console draws (-1 none). The first 32 sprites in range of
+   its 256 columns (range over past them), then their tiles in those
+   columns from the last in the list, up to 34 (time over past them). */
+static void obj_eval(int keep[128])
 {
     unsigned first = s->oam_prio ? (s->oamaddr >> 1) & 0x7F : 0;
     unsigned i, n = 0, tiles = 0, k;
     unsigned list[32];
-    int keep[128];                 /* by sprite: its tiles the console draws on the line (-1 none) */
     int row = draw_row;
-    uint16_t base = (uint16_t)((s->obsel & 7) << 13);
-    uint16_t gap = (uint16_t)((((s->obsel >> 3) & 3) + 1) << 12);
     unsigned sz = s->obsel >> 5;
-    /* OBJ interlace (SETINI bit 1): each sprite half as many lines, every
-       other row of it, the field's */
     unsigned oi = (s->setini >> 1) & 1;
-    (void)line;
-    memset(op, 0, sizeof op);
     for (i = 0; i < 128; i++)
         keep[i] = -1;
-    /* the console's: the first 32 sprites in range of its 256 columns
-       (range over past them), then their tiles in those columns from the
-       last in the list, up to 34 (time over past them) */
     for (i = 0; i < 128; i++) {
         unsigned sp = (first + i) & 0x7F;
         uint8_t hi = (uint8_t)(d_oam[0x200 + (sp >> 2)] >> ((sp & 3) * 2));
@@ -1313,6 +1332,23 @@ static void draw_obj(unsigned line)
         tiles += on;
         keep[sp] = (int)on;
     }
+}
+
+static void draw_obj(unsigned line)
+{
+    unsigned first = s->oam_prio ? (s->oamaddr >> 1) & 0x7F : 0;
+    unsigned i;
+    int keep[128];                 /* by sprite: its tiles the console draws on the line (-1 none) */
+    int row = draw_row;
+    uint16_t base = (uint16_t)((s->obsel & 7) << 13);
+    uint16_t gap = (uint16_t)((((s->obsel >> 3) & 3) + 1) << 12);
+    unsigned sz = s->obsel >> 5;
+    /* OBJ interlace (SETINI bit 1): each sprite half as many lines, every
+       other row of it, the field's */
+    unsigned oi = (s->setini >> 1) & 1;
+    (void)line;
+    memset(op, 0, sizeof op);
+    obj_eval(keep);
     /* Drawn from the last in priority order, so the first ends on top:
        in the console's columns the tiles it keeps; in a larger screen's
        columns past them every sprite's, with no limit. */
@@ -1746,6 +1782,282 @@ void ppu_pack_line(const PpuFrame *f, unsigned line, uint32_t *w)
     w[16] = l->m7hofs | (uint32_t)l->m7vofs << 16;
     w[17] = (uint32_t)f->hires;
     w[18] = w[19] = 0;
+}
+
+/* ---- the frame described for a compositor (render/compose_body.h) ------------------- */
+/* The description's words, as large as the largest frame has needed */
+static uint32_t *cp_w, *cp_parts, *cp_spr;
+static size_t cp_cap, cp_parts_cap, cp_spr_cap, cp_parts_n, cp_spr_n;
+
+static void cp_part(uint32_t x0, uint32_t st, uint32_t first, uint32_t n)
+{
+    cp_parts = grow(cp_parts, &cp_parts_cap, cp_parts_n + 4 < 1024 ? 1024 : (cp_parts_n + 4) * 2, sizeof *cp_parts);
+    cp_parts[cp_parts_n++] = x0;
+    cp_parts[cp_parts_n++] = st;
+    cp_parts[cp_parts_n++] = first;
+    cp_parts[cp_parts_n++] = n;
+}
+
+/* The sprites as the table and the state decode them (draw_obj's), once
+   for each copy of the table and state the frame's rows show: in priority
+   order, each one's X, width, height (OBJ interlace's), Y, Y page, its
+   tiles in the console's columns, attributes and name. */
+typedef struct {
+    int x, w, h, y, page, on, at256;
+    unsigned sp;
+    uint8_t attr;
+    uint16_t name;
+} CpObj;
+static CpObj cp_objs[128];
+static const uint8_t *cp_obj_oam;
+static unsigned cp_obj_key = ~0u;
+
+static void cp_decode(void)
+{
+    unsigned first = s->oam_prio ? (s->oamaddr >> 1) & 0x7F : 0, i, sz = s->obsel >> 5, oi = (s->setini >> 1) & 1;
+    unsigned key = first | (unsigned)s->obsel << 8 | oi << 16 | (unsigned)d_field << 17;
+    if (cp_obj_oam == d_oam && cp_obj_key == key)
+        return;
+    cp_obj_oam = d_oam;
+    cp_obj_key = key;
+    for (i = 0; i < 128; i++) {
+        unsigned sp = (first + i) & 0x7F, c;
+        uint8_t hi = (uint8_t)(d_oam[0x200 + (sp >> 2)] >> ((sp & 3) * 2));
+        unsigned big = (hi >> 1) & 1;
+        CpObj *o = &cp_objs[i];
+        o->sp = sp;
+        o->x = obj_x(sp, hi);
+        o->w = obj_w[sz][big];
+        o->h = obj_h[sz][big] >> oi;
+        o->y = d_oam[sp * 4 + 1];
+        o->page = (int8_t)d_oam[672 + sp];
+        o->attr = d_oam[sp * 4 + 3];
+        o->name = (uint16_t)(d_oam[sp * 4 + 2] | (o->attr & 1) << 8);
+        o->at256 = (d_oam[sp * 4] | (hi & 1) << 8) == 256;
+        o->on = 0;
+        for (c = 0; c < (unsigned)o->w >> 3; c++) {
+            int tx = o->x + (int)c * 8;
+            if (o->at256 || (tx > -8 && tx < PPU_WIDTH))
+                o->on++;
+        }
+    }
+}
+
+/* whether decoded sprite o covers row r, and its row there (obj_row's) */
+static int cp_row(const CpObj *o, int r, unsigned *row)
+{
+    int d;
+    if (o->page) {
+        d = r - (o->y + 256 * o->page);
+        if (d < 0 || d >= o->h)
+            return 0;
+        *row = (unsigned)d;
+        return 1;
+    }
+    if (r >= 256)
+        return 0;
+    d = (r - o->y) & 0xFF;
+    if (d >= o->h)
+        return 0;
+    *row = (unsigned)d;
+    return 1;
+}
+
+/* the sprites on the row being drawn (draw_row), in priority order, with
+   the console's line limits decided (obj_eval's, draw_obj's): their first
+   entry's index; *n how many */
+static uint32_t cp_sprites(uint32_t *n)
+{
+    unsigned i, k, oi = (s->setini >> 1) & 1, list[32], nl = 0, tiles = 0, r;
+    uint32_t at = (uint32_t)(cp_spr_n / 3);
+    int keep[128], row = draw_row, hit[128], nhit = 0;
+    unsigned rows[128];
+    *n = 0;
+    cp_decode();
+    /* the sprites on the row; the console's: the first 32 in range of its
+       columns, then their tiles from the last, up to 34 */
+    for (i = 0; i < 128; i++) {
+        keep[i] = -1;
+        if (cp_row(&cp_objs[i], row, &rows[i]))
+            hit[nhit++] = (int)i;
+    }
+    for (k = 0; k < (unsigned)nhit; k++) {
+        const CpObj *o = &cp_objs[hit[k]];
+        if (!o->at256 && (o->x <= -o->w || o->x >= PPU_WIDTH))
+            continue;
+        if (nl == 32)
+            break;
+        list[nl++] = (unsigned)hit[k];
+    }
+    for (k = nl; k-- > 0;) {
+        const CpObj *o = &cp_objs[list[k]];
+        if (tiles + (unsigned)o->on > 34) {
+            keep[list[k]] = (int)(34 - tiles);
+            break;
+        }
+        tiles += (unsigned)o->on;
+        keep[list[k]] = o->on;
+    }
+    cp_spr = grow(cp_spr, &cp_spr_cap, cp_spr_n + 3 * (size_t)nhit + 3 < 3072 ? 3072 : (cp_spr_n + 3 * (size_t)nhit) * 2,
+                  sizeof *cp_spr);
+    for (k = 0; k < (unsigned)nhit; k++) {
+        const CpObj *o = &cp_objs[hit[k]];
+        unsigned h = (unsigned)o->h << oi, w = (unsigned)o->w;
+        if (o->x + o->w <= -sl || o->x >= sw - sl)
+            continue;
+        r = rows[hit[k]] << oi;
+        if (o->attr & 0x80)
+            r = h > w ? (r & ~(w - 1)) | (w - 1 - (r & (w - 1))) : h - 1 - r;
+        if (oi)
+            r = ((o->attr & 0x80) ? r - (unsigned)d_field : r + (unsigned)d_field) & 0xFF;
+        cp_spr[cp_spr_n++] = (uint32_t)o->x;
+        cp_spr[cp_spr_n++] = (r & 0xFF) | w >> 3 << 8 | (uint32_t)((o->attr >> 6) & 1) << 12 |
+                             (uint32_t)((o->attr >> 1) & 7) << 13 | (uint32_t)((o->attr >> 4) & 3) << 16 |
+                             (uint32_t)(keep[hit[k]] + 1) << 18;
+        cp_spr[cp_spr_n++] = o->name;
+        (*n)++;
+    }
+    return at;
+}
+
+static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vbase)
+{
+    o[0] = l->inidisp | l->obsel << 8 | l->bgmode << 16 | (uint32_t)l->mosaic << 24;
+    o[1] = l->bgsc[0] | l->bgsc[1] << 8 | l->bgsc[2] << 16 | (uint32_t)l->bgsc[3] << 24;
+    o[2] = l->bgnba[0] | l->bgnba[1] << 8 | l->m7sel << 16 | (uint32_t)l->setini << 24;
+    o[3] = l->w12sel | l->w34sel << 8 | l->wobjsel << 16 | (uint32_t)l->wbglog << 24;
+    o[4] = l->wh[0] | l->wh[1] << 8 | l->wh[2] << 16 | (uint32_t)l->wh[3] << 24;
+    o[5] = l->wobjlog | l->tm << 8 | l->ts << 16 | (uint32_t)l->tmw << 24;
+    o[6] = l->tsw | l->cgwsel << 8 | l->cgadsub << 16 | (uint32_t)l->clip << 24;
+    o[7] = l->bghofs[0] | (uint32_t)l->bghofs[1] << 16;
+    o[8] = l->bghofs[2] | (uint32_t)l->bghofs[3] << 16;
+    o[9] = l->bgvofs[0] | (uint32_t)l->bgvofs[1] << 16;
+    o[10] = l->bgvofs[2] | (uint32_t)l->bgvofs[3] << 16;
+    o[11] = l->fixed_r | l->fixed_g << 8 | l->fixed_b << 16;
+    o[12] = (uint16_t)l->m7a | (uint32_t)(uint16_t)l->m7b << 16;
+    o[13] = (uint16_t)l->m7c | (uint32_t)(uint16_t)l->m7d << 16;
+    o[14] = (uint16_t)l->m7x | (uint32_t)(uint16_t)l->m7y << 16;
+    o[15] = l->m7hofs | (uint32_t)l->m7vofs << 16;
+    o[16] = l->page[0] | l->page[1] << 8 | l->page[2] << 16 | (uint32_t)l->page[3] << 24;
+    o[17] = l->page[4];
+    o[18] = pal;
+    o[19] = vbase;
+}
+
+const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
+{
+    static uint32_t st_of[PPU_MAX_HEIGHT + 1][PPU_SEGS + 1];
+    int pw = ppu_frame_width(f), ph = f->screen_height, r, keep_sw = sw, keep_sl = sl, keep_row = draw_row;
+    const PpuScreen *keep_s = s;
+    const uint8_t *keep_oam = d_oam;
+    int keep_field = d_field;
+    uint8_t ro = range_over, to = time_over;
+    size_t n = CP_HEADER, pals, vr, cv, states, rows, nst = 0, v, i;
+    unsigned line, k;
+    const uint16_t *last_pal = NULL;
+    uint32_t last_at = 0;
+    size_t vwords = (size_t)vram_pages * 0x8000;
+    /* the palettes (one for each run of lines and segments with the same) */
+    pals = n;
+    for (line = 1; line <= (unsigned)f->height; line++)
+        for (k = 0; k <= f->segs[line]; k++) {
+            const uint16_t *p = k ? f->seg_palette[line][k - 1] : f->palette[line];
+            if (!last_pal || memcmp(p, last_pal, 512)) {
+                cp_w = grow(cp_w, &cp_cap, n + 128, sizeof *cp_w);
+                for (i = 0; i < 128; i++)
+                    cp_w[n + i] = p[2 * i] | (uint32_t)p[2 * i + 1] << 16;
+                last_at = (uint32_t)n;
+                last_pal = p;
+                n += 128;
+            }
+            st_of[line][k] = last_at;   /* for now, the palette's word */
+        }
+    /* the VRAM's copies */
+    vr = n;
+    cp_w = grow(cp_w, &cp_cap, n + (size_t)f->versions * vwords / 2 + 1, sizeof *cp_w);
+    for (v = 0; v < (size_t)f->versions; v++)
+        for (i = 0; i < vwords; i += 2)
+            cp_w[n++] = f->vram[v][i] | (uint32_t)f->vram[v][i + 1] << 16;
+    /* the canvas's texels */
+    cv = n;
+    if (f->cv_on) {
+        cp_w = grow(cp_w, &cp_cap, n + f->cv_len / 4 + 1, sizeof *cp_w);
+        for (i = 0; i < f->cv_len; i += 4) {
+            uint32_t w = 0;
+            for (k = 0; k < 4 && i + k < f->cv_len; k++)
+                w |= (uint32_t)f->cv[i + k] << (8 * k);
+            cp_w[n++] = w;
+        }
+    }
+    /* the states: each line's and segment's */
+    states = n;
+    for (line = 1; line <= (unsigned)f->height; line++)
+        for (k = 0; k <= f->segs[line]; k++) {
+            cp_w = grow(cp_w, &cp_cap, n + CP_ST, sizeof *cp_w);
+            cp_state(cp_w + n, k ? &f->seg_line[line][k - 1] : &f->line[line], st_of[line][k],
+                     (uint32_t)(f->version[line] * vwords));
+            st_of[line][k] = (uint32_t)nst++;
+            n += CP_ST;
+        }
+    /* the rows, their parts and sprites */
+    rows = n;
+    cp_w = grow(cp_w, &cp_cap, n + 4 * (size_t)ph, sizeof *cp_w);
+    n += 4 * (size_t)ph;
+    cp_parts_n = cp_spr_n = 0;
+    cp_obj_oam = NULL;
+    sw = f->width;
+    sl = f->left;
+    d_field = f->field;
+    for (r = 0; r < ph; r++) {
+        int ln = r - f->top + 1, edge = ln < 1 ? 1 : ln > f->height ? f->height : ln;
+        unsigned parts = ln == edge ? f->segs[ln] + 1u : 1u;
+        uint32_t *row = cp_w + rows + 4 * (size_t)r;
+        row[0] = (uint32_t)(cp_parts_n / 4);
+        row[1] = parts;
+        row[2] = (uint32_t)(ln - 1);
+        row[3] = ln == edge ? f->mosaic_row[ln] : (uint32_t)ln;
+        draw_row = ln - 1;
+        d_oam = f->oam[f->version[edge]];
+        for (k = 0; k < parts; k++) {
+            uint32_t ns, at;
+            s = k ? &f->seg_line[edge][k - 1] : &f->line[edge];
+            at = cp_sprites(&ns);
+            cp_part(k ? f->seg_x[edge][k - 1] : 0, st_of[edge][k], at, ns);
+        }
+    }
+    sw = keep_sw;
+    sl = keep_sl;
+    draw_row = keep_row;
+    s = keep_s;
+    d_oam = keep_oam;
+    d_field = keep_field;
+    range_over = ro;
+    time_over = to;
+    cp_w = grow(cp_w, &cp_cap, n + cp_parts_n + cp_spr_n, sizeof *cp_w);
+    memcpy(cp_w + n, cp_parts, cp_parts_n * sizeof *cp_w);
+    memcpy(cp_w + n + cp_parts_n, cp_spr, cp_spr_n * sizeof *cp_w);
+    cp_w[CP_PW] = (uint32_t)pw;
+    cp_w[CP_PH] = (uint32_t)ph;
+    cp_w[CP_SW] = (uint32_t)f->width;
+    cp_w[CP_SL] = (uint32_t)f->left;
+    cp_w[CP_LINES] = (uint32_t)f->height;
+    cp_w[CP_FIELD] = (uint32_t)f->field;
+    cp_w[CP_LIMITS] = (uint32_t)ext_limits;
+    cp_w[CP_ROWS] = (uint32_t)rows;
+    cp_w[CP_PARTS] = (uint32_t)n;
+    cp_w[CP_STATES] = (uint32_t)states;
+    cp_w[CP_PALS] = (uint32_t)pals;
+    cp_w[CP_VRAM] = (uint32_t)vr;
+    cp_w[CP_SPR] = (uint32_t)(n + cp_parts_n);
+    cp_w[CP_CV] = (uint32_t)cv;
+    cp_w[CP_CVON] = (uint32_t)f->cv_on;
+    cp_w[CP_CVLAYER] = (uint32_t)f->cv_layer;
+    cp_w[CP_CVADDR] = f->cv_addr;
+    cp_w[CP_CVCOUNT] = f->cv_count;
+    cp_w[CP_CVK] = (uint32_t)f->cv_k;
+    cp_w[CP_CVLEN] = (uint32_t)f->cv_len;
+    *words = n + cp_parts_n + cp_spr_n;
+    return cp_w;
 }
 
 /* One pixel's colour out of its screen and the other one: colour maths

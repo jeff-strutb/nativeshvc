@@ -326,6 +326,28 @@ static void canvas_scale(int w, int h)
     ppu_set_canvas_scale(kx > ky ? kx : ky);
 }
 
+/* The last frame's picture over target rectangle d: drawn by the
+   renderer's compositor from the frame's description where it has one
+   (render/compose_body.h; NSHVC_COMPOSE=0: never), else the PPU's picture
+   drawn here. An interlaced frame's weave is the PPU's. */
+static void show_picture(const int d[4])
+{
+    static int on = -1;
+    const PpuFrame *f = ppu_frame();
+    const uint32_t *px;
+    int pw, ph;
+    if (on < 0)
+        on = !getenv("NSHVC_COMPOSE") || strcmp(getenv("NSHVC_COMPOSE"), "0");
+    if (on && f->versions > 0 && !f->interlace) {
+        size_t nw;
+        const uint32_t *desc = ppu_compose(f, &nw);
+        if (rr_compose(desc, nw, ppu_frame_width(f), f->screen_height, d))
+            return;
+    }
+    px = ppu_picture(&pw, &ph);
+    rr_image(px, pw, ph, d);
+}
+
 /* ---- a frame with Mode 7 or a canvas presented (render/rr_mode7.h) ---- */
 static int32_t *m7_cols, *m7_rows;
 static int m7_cols_cap, m7_rows_cap;
@@ -554,14 +576,10 @@ static void show(void)
     shown_tw = tw;
     canvas_scale(w, h);
     rr_begin(0xFF000000u);
-    {
-        int pw, ph;
-        const uint32_t *px = ppu_picture(&pw, &ph);
-        if (mode7_prepare(w, h, &m, &smp))
-            rr_mode7(&m, d, &smp);
-        else
-            rr_image(px, pw, ph, d);
-    }
+    if (mode7_prepare(w, h, &m, &smp))
+        rr_mode7(&m, d, &smp);
+    else
+        show_picture(d);
     draw_overlays(tw, th);
     if (fps_on > 0)
         fps_draw();
@@ -622,7 +640,7 @@ static void rr_check(void)
         rr_ref_mode7(want, tw, th, &m, d, &smp);
         rr_m7_frames++;
     } else {
-        rr_image(px, pw, ph, d);
+        show_picture(d);
         rr_ref_image(want, tw, th, px, pw, ph, d);
     }
     rr_present();
@@ -786,6 +804,8 @@ static void ppucheck_report(void)
     if (getenv("NSHVC_PPUCHECK"))
         fprintf(stderr, "ppucheck: %lu frames, %lu differ; %lu needed more copies than kept\n", ppu_check_frames,
                 ppu_check_bad, ppu_version_overflow);
+    if (getenv("NSHVC_COMPOSECHECK"))
+        fprintf(stderr, "composecheck: %lu frames, %lu differ\n", ppu_compose_frames, ppu_compose_bad);
 }
 
 int nshvc_main(const nshvc_cart *cart, int argc, char **argv)

@@ -108,6 +108,20 @@ static VkImageView s_plane_view;
 static int s_plane_layers, s_planes, s_plane_fresh;
 static uint32_t s_plane_gen;
 
+/* the compositor (compose_body.h, shaders/compose.comp): set 0 the ring
+   (binding 0) and the picture it draws (binding 1, a storage image), the
+   description's word in the ring a push constant; the picture's set for
+   drawing it */
+static VkDescriptorSetLayout s_clay;
+static VkPipelineLayout s_cplayout;
+static VkDescriptorPool s_cpool;
+static VkDescriptorSet s_cset, s_cdraw;
+static VkPipeline s_cp;
+static VkImage s_cimg;
+static VkDeviceMemory s_cimg_mem;
+static VkImageView s_cimg_view;
+static int s_cw, s_ch, s_cimg_fresh;
+
 static VkBuffer s_ring;                /* staging pictures and quads */
 static VkDeviceMemory s_ring_mem;
 static uint8_t *s_ring_map;
@@ -562,6 +576,10 @@ static void ring_bind(void)
     wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     wr.pBufferInfo = &bi;
     vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
+    if (s_cset) {
+        wr.dstSet = s_cset;
+        vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
+    }
 }
 
 static void wait_frame(void);
@@ -609,6 +627,106 @@ static int ring_fit(VkDeviceSize n)
         return 0;
     }
     ring_bind();
+    return 1;
+}
+
+/* the compositor's pipeline and sets (its picture made by cp_image) */
+static int cp_make(void)
+{
+    VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+                                          { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL } };
+    VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    VkPushConstantRange pc = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 };
+    VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkDescriptorPoolSize ps[3] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
+                                   { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
+    VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetAllocateInfo da = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    li.bindingCount = 2;
+    li.pBindings = b;
+    if (!VK_OK(vkCreateDescriptorSetLayout(s_dev, &li, NULL, &s_clay)))
+        return 0;
+    pi.setLayoutCount = 1;
+    pi.pSetLayouts = &s_clay;
+    pi.pushConstantRangeCount = 1;
+    pi.pPushConstantRanges = &pc;
+    if (!VK_OK(vkCreatePipelineLayout(s_dev, &pi, NULL, &s_cplayout)))
+        return 0;
+    dpi.maxSets = 2;
+    dpi.poolSizeCount = 3;
+    dpi.pPoolSizes = ps;
+    if (!VK_OK(vkCreateDescriptorPool(s_dev, &dpi, NULL, &s_cpool)))
+        return 0;
+    da.descriptorPool = s_cpool;
+    da.descriptorSetCount = 1;
+    da.pSetLayouts = &s_clay;
+    if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_cset)))
+        return 0;
+    da.pSetLayouts = &s_lay;
+    if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_cdraw)))
+        return 0;
+    ring_bind();
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = module(k_compose_comp, sizeof k_compose_comp);
+    ci.stage.pName = "main";
+    ci.layout = s_cplayout;
+    return VK_OK(vkCreateComputePipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_cp));
+}
+
+/* the compositor's picture, w x h: made again (after what the frame has
+   recorded so far has run) when its size changes */
+static int cp_image(int w, int h)
+{
+    VkDescriptorImageInfo di;
+    VkWriteDescriptorSet wr[2] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } };
+    if (w == s_cw && h == s_ch && s_cimg)
+        return 1;
+    if (s_ring_used) {
+        /* the frame so far reads the old picture */
+        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        vkEndCommandBuffer(s_cmd);
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &s_cmd;
+        vkQueueSubmit(s_queue, 1, &si, s_fence);
+        s_submitted = 1;
+        wait_frame();
+        vkResetFences(s_dev, 1, &s_fence);
+        vkResetCommandBuffer(s_cmd, 0);
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(s_cmd, &bi);
+        s_ring_used = 0;
+    }
+    wait_frame();
+    vkDeviceWaitIdle(s_dev);
+    image_destroy(&s_cimg, &s_cimg_mem, &s_cimg_view);
+    s_cw = s_ch = 0;
+    if (!image_fmt(w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &s_cimg,
+                   &s_cimg_mem, &s_cimg_view))
+        return 0;
+    di.sampler = s_smp;
+    di.imageView = s_cimg_view;
+    di.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    wr[0].dstSet = s_cset;
+    wr[0].dstBinding = 1;
+    wr[0].descriptorCount = 1;
+    wr[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    wr[0].pImageInfo = &di;
+    wr[1] = wr[0];
+    wr[1].dstSet = s_cdraw;
+    wr[1].dstBinding = 0;
+    wr[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    {
+        VkDescriptorImageInfo ds = di;
+        ds.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        wr[1].pImageInfo = &ds;
+        vkUpdateDescriptorSets(s_dev, 2, wr, 0, NULL);
+    }
+    s_cw = w;
+    s_ch = h;
+    s_cimg_fresh = 1;
     return 1;
 }
 
@@ -882,6 +1000,8 @@ int rr_open(void)
         return 0;
     if (!m7_make(vs))
         return 0;
+    if (!cp_make())
+        return 0;
     if (s_surface)
         host_window_pixels(&w, &h);
     if (w < 1 || h < 1)
@@ -1016,6 +1136,31 @@ static void draw(VkDescriptorSet set, int w, int h, const int d[4])
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
     vkCmdDraw(s_cmd, 6, 1, 0, 0);
     vkCmdEndRenderPass(s_cmd);
+}
+
+
+int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
+{
+    long off;
+    uint32_t pc;
+    if (!s_recording || !s_cp || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
+        return 0;
+    if (!cp_image(w, h) || !ring_fit(words * 4 + 6 * 16 + 512) || (off = ring_put(desc, words * 4)) < 0)
+        return 0;
+    pc = (uint32_t)off;
+    /* the picture drawn by the compositor, then sampled as rr_image's is */
+    barrier(s_cmd, s_cimg, s_cimg_fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    s_cimg_fresh = 0;
+    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cp);
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cplayout, 0, 1, &s_cset, 0, NULL);
+    vkCmdPushConstants(s_cmd, s_cplayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &pc);
+    vkCmdDispatch(s_cmd, (uint32_t)(w + 31) / 32, (uint32_t)(h + 7) / 8, 1);
+    barrier(s_cmd, s_cimg, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    draw(s_cdraw, w, h, d);
+    return 1;
 }
 
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])

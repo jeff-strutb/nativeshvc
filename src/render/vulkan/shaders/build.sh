@@ -1,9 +1,9 @@
 #!/bin/sh
 # Compile the shaders to SPIR-V and write them into ../rr_spv.h, which is
 # checked in: building the game needs no shader compiler. Run after editing
-# quad.vert, copy.frag, sharp.frag, over.frag, m7.frag, m7_gl.glsl or
-# m7_body.glsl (glslangValidator, from glslang or the Vulkan SDK). The
-# Mode 7 shader's body is the OpenGL backend's too: it is written, after
+# quad.vert, copy.frag, sharp.frag, over.frag, m7.frag, m7_gl.glsl,
+# m7_body.glsl, compose.comp or ../../compose_body.h (glslangValidator,
+# from glslang or the Vulkan SDK). The Mode 7 shader's body is the OpenGL backend's too: it is written, after
 # m7_gl.glsl's prelude, into ../../gl/rr_m7_glsl.h, checked against the
 # compiler as OpenGL GLSL first.
 set -e
@@ -13,12 +13,13 @@ glslangValidator -V --vn k_copy_frag -o copy.h copy.frag >/dev/null
 glslangValidator -V --vn k_sharp_frag -o sharp.h sharp.frag >/dev/null
 glslangValidator -V --vn k_over_frag -o over.h over.frag >/dev/null
 glslangValidator -V --vn k_m7_frag -o m7.h m7.frag >/dev/null
+glslangValidator -V --vn k_compose_comp -o compose.h compose.comp >/dev/null
 {
-  echo "/* rr_spv.h: SPIR-V of shaders/quad.vert, copy.frag, sharp.frag, over.frag and m7.frag,"
+  echo "/* rr_spv.h: SPIR-V of shaders/quad.vert, copy.frag, sharp.frag, over.frag, m7.frag and compose.comp,"
   echo " * written by shaders/build.sh: do not edit. */"
-  for f in vert.h copy.h sharp.h over.h m7.h; do sed -n '/^const uint32_t/,$p' $f | sed 's/^const/static const/'; done
+  for f in vert.h copy.h sharp.h over.h m7.h compose.h; do sed -n '/^const uint32_t/,$p' $f | sed 's/^const/static const/'; done
 } > ../rr_spv.h
-rm -f vert.h copy.h sharp.h over.h m7.h
+rm -f vert.h copy.h sharp.h over.h m7.h compose.h
 cat m7_gl.glsl m7_body.glsl > m7_gl.frag
 glslangValidator m7_gl.frag >/dev/null
 {

@@ -14,6 +14,7 @@
 #ifndef PORT_RR_H
 #define PORT_RR_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -33,6 +34,12 @@ void rr_begin(uint32_t argb);
    rectangle d (x0, y0, x1, y1, target pixels, top left origin): sharp
    bilinear, or one to one when d is w x h */
 void rr_image(const uint32_t *argb, int w, int h, const int d[4]);
+/* the console's picture, w x h, drawn by the backend's compositor from the
+   frame's description (ppu.c ppu_compose, render/compose_body.h: words of
+   it), then shown over target rectangle d as rr_image shows a picture;
+   0 when the backend has none (the caller draws the picture and calls
+   rr_image) */
+int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4]);
 /* An image with alpha (0xAARRGGBB, the alpha straight) over the frame,
    blended (src alpha, 1 - src alpha), filtered bilinear, onto the
    parallelogram q: its top left (q[0], q[1]), top right (q[2], q[3]) and

@@ -77,12 +77,33 @@ static const char *k_over =
 /* a frame with Mode 7 presented (rr_mode7.h, the same arithmetic): the
    shader the Vulkan backend's is made from (vulkan/shaders/m7_body.glsl) */
 #include "rr_m7_glsl.h"
+#include "rr_compose_src.h"
+
+/* the compositor (compose_body.h): a fragment a picture pixel, the frame's
+   description in a buffer texture */
+static const char k_cp_pre[] =
+    "#version 330 core\n"
+    "uniform usamplerBuffer fdb;\n"
+    "out vec4 o;\n"
+    "#define CP_FN\n"
+    "#define CP_VAR\n"
+    "#define U32 uint\n"
+    "#define I32 int\n"
+    "#define U_(x) uint(x)\n"
+    "#define I_(x) int(x)\n"
+    "#define FD_(i) texelFetch(fdb, int(i)).r\n";
+static const char k_cp_post[] =
+    "void main() {\n"
+    "    uint p = cp_pixel(uint(gl_FragCoord.x), uint(gl_FragCoord.y));\n"
+    "    o = vec4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0;\n"
+    "}\n";
 
 static GLuint s_copy, s_sharp, s_over, s_m7, s_otex, s_vao, s_vbo, s_fbo, s_col, s_pic;
 static GLuint s_m7buf[8], s_m7tex[8], s_plane;
 static uint32_t s_plane_gen;
 static int s_planes, s_plane_layers;
 static int s_pw, s_ph;
+static GLuint s_cp, s_cpfbo, s_cpbuf, s_cptex;   /* the compositor, its target and description */
 static int s_rw, s_rh, s_window;
 
 static GLuint shader(GLenum kind, const char *src)
@@ -155,6 +176,21 @@ int rr_open(void)
     s_m7 = program(k_vs, k_m7);
     if (!s_copy || !s_sharp || !s_over || !s_m7)
         return 0;
+    {
+        size_t n = sizeof k_cp_pre + sizeof k_compose_body + sizeof k_cp_post;
+        char *fs = (char *)malloc(n);
+        if (!fs)
+            return 0;
+        snprintf(fs, n, "%s%s%s", k_cp_pre, k_compose_body, k_cp_post);
+        s_cp = program(k_vs, fs);
+        free(fs);
+        if (!s_cp)
+            return 0;
+        glUniform1i(glGetUniformLocation(s_cp, "fdb"), 12);
+        glGenFramebuffers(1, &s_cpfbo);
+        glGenBuffers(1, &s_cpbuf);
+        glGenTextures(1, &s_cptex);
+    }
     {
         static const char *names[9] = { "Pb", "Sb", "palb", "vramb", "picb", "colsb", "rowsb", "planet", "cvb" };
         int i;
@@ -248,6 +284,47 @@ static void draw(GLuint tex, int w, int h, const int d[4])
         glUniform1f(glGetUniformLocation(s_sharp, "rh"), (float)s_rh);
     }
     glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
+
+int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
+{
+    static const float q[6][4] = { { -1, -1, 0, 0 }, { 1, -1, 1, 0 }, { -1, 1, 0, 1 },
+                                   { -1, 1, 0, 1 }, { 1, -1, 1, 0 }, { 1, 1, 1, 1 } };
+    if (!s_cp || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
+        return 0;
+    /* the picture, row 0 the texture's first (as rr_image's), drawn into
+       by the compositor; then shown as rr_image shows it */
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_pic);
+    if (w != s_pw || h != s_ph) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+        s_pw = w;
+        s_ph = h;
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0 + 12);
+    glBindBuffer(GL_TEXTURE_BUFFER, s_cpbuf);
+    glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(words * 4), desc, GL_STREAM_DRAW);
+    glBindTexture(GL_TEXTURE_BUFFER, s_cptex);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, s_cpbuf);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_cpfbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_pic, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+        return 0;
+    }
+    glViewport(0, 0, w, h);
+    glUseProgram(s_cp);
+    glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+    glViewport(0, 0, s_rw, s_rh);
+    glActiveTexture(GL_TEXTURE0);
+    draw(s_pic, w, h, d);
+    return 1;
 }
 
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])

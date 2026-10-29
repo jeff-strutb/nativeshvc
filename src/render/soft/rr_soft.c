@@ -65,6 +65,17 @@ void rr_begin(uint32_t argb)
         s_px[i] = argb | 0xFF000000u;
 }
 
+
+int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
+{
+    (void)desc;
+    (void)words;
+    (void)w;
+    (void)h;
+    (void)d;
+    return 0;   /* no compositor: the caller draws the picture */
+}
+
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 {
     rr_ref_image(s_px, s_w, s_h, argb, w, h, d);

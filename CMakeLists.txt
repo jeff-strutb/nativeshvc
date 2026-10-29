@@ -103,6 +103,16 @@ elseif(NOT NSHVC_HOST STREQUAL "none")
   message(FATAL_ERROR "nativeshvc: no host ${NSHVC_HOST}")
 endif()
 
+# the compositor's source (src/render/compose_body.h) as a string, for the
+# backends that compile it at run time
+set(_cp_src ${CMAKE_CURRENT_BINARY_DIR}/gen/rr_compose_src.h)
+add_custom_command(OUTPUT ${_cp_src}
+  COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/src/render/compose_body.h -DOUT=${_cp_src}
+    -DNAME=k_compose_body -P ${CMAKE_CURRENT_SOURCE_DIR}/src/render/embed.cmake
+  DEPENDS src/render/compose_body.h src/render/embed.cmake)
+target_sources(nshvc PRIVATE ${_cp_src})
+target_include_directories(nshvc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen)
+
 # the renderer
 if(NSHVC_RENDER STREQUAL "soft")
   target_sources(nshvc PRIVATE src/render/soft/rr_soft.c)
