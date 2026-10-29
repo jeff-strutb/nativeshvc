@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 4
+#define NSHVC_VERSION_MINOR 5
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -379,6 +379,11 @@ void nshvc_ext_vram_direct(int page);
    console pixel along each axis: each character 8k x 8k texels, row by
    row, the characters one after the other; a texel is a pixel value as a
    tile's (0 transparent; 4 bpp with the tile's palette, and so on).
+   word_addr from $8000 (below the pages' end, nshvc_ext_vram) is in
+   VRAM's whole space, page << 15 | word: the canvas covers the
+   characters a layer reads from any of its pages, page 1 on, so one canvas
+   covers a layer whose lines read more than one page (each page's map
+   naming up to 1,024 characters). (Since 2.5.)
    nshvc_ext_canvas_scale: k for the window as it is now (its pixels a
    console pixel, rounded up), the k to draw at; headless, NSHVC_SCALE's
    (its shots that window's picture), else 1. The canvas is copied, and
@@ -386,7 +391,7 @@ void nshvc_ext_vram_direct(int page);
    hires mode, or the layer under mosaic, shows the layer's own tiles.
    texels NULL (or count 0): no canvas. The console's picture (nshvc_picture)
    takes each console pixel's centre texel. One canvas at a time. (Since
-   2.4.) */
+   2.4; across pages since 2.5.) */
 int nshvc_ext_canvas_scale(void);
 void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
 /* The same pages as registers on the B bus, for the game's code and its

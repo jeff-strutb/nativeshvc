@@ -95,7 +95,7 @@ what its Enhanced mode does.
 | sprites past the console's coordinates | sprite X and Y extension bits | `nshvc_ext_sprite_x`, `_y` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
-| a picture at the window's resolution | a canvas: a background's characters drawn from the game's own texels at the window's resolution (its pixels a console pixel), placed by the console's own rules | `nshvc_ext_canvas_chars`, `_canvas_scale` |
+| a picture at the window's resolution | a canvas: a background's characters drawn from the game's own texels at the window's resolution (its pixels a console pixel), placed by the console's own rules, across VRAM pages for a layer that reads more than one | `nshvc_ext_canvas_chars`, `_canvas_scale` |
 | an app's own work in the game's machine | interrupts held | `nshvc_hold_interrupts` |
 
 They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions). The front end
@@ -265,8 +265,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.4.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.4: behaviour exact, each
+Version 2.5.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.5: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -341,8 +341,9 @@ each one, is in [tests/README.md](tests/README.md).
   reference's.
 - **Renderers:** software, Metal, OpenGL and Vulkan each present the test cartridges'
   frames (one to one and scaled, and Mode 7 at the window's resolution, anti-aliased) and
-  draw overlays as the CPU reference does: 1,164 cartridges each (70 of them presenting
-  Mode 7), none differing; and a layer's canvas at five window sizes, none differing. The anti-aliasing is held to its definition written again in
+  draw overlays as the CPU reference does: 1,164 cartridges each at two window sizes (70 of
+  them presenting Mode 7), none differing; and a layer's canvas at eight window sizes, none
+  differing. The anti-aliasing is held to its definition written again in
   its check, and to the plane's ground truth (`tests/unit/present_check.c`): its error is
   5.5 to 35 times smaller than point sampling's where the plane is magnified, 4.5 to 6
   times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
@@ -352,10 +353,12 @@ each one, is in [tests/README.md](tests/README.md).
   its accesses (bytes, words, longs, read-modify-writes) take no time while a wait and a
   DMA take theirs, and a poll with no wait stops the run (`tests/unit/waits.c`); a VRAM
   page copied or written directly lands as it must, unseen until shown, and page 0 refused
-  (`tests/unit/vram_direct.c`); a layer's canvas, on 8 scenes at one to one, scaled up and
-  down, of another shape and 6x, each window pixel exactly the texel under it placed by the
-  layer's rules, and the scenes checking their own coverage (flips, palettes, tiles past
-  the canvas, neighbouring pixels of one record in two colours) (`tests/unit/canvas_check.c`).
+  (`tests/unit/vram_direct.c`); a layer's canvas, on 10 scenes at one to one, scaled up
+  and down, of another shape and 6x, each window pixel exactly the texel under it placed by
+  the layer's rules, among them a layer on page 1 and a layer reading page 1 above and page
+  2 below under one canvas, and the scenes checking their own coverage (flips, palettes,
+  tiles past the canvas, neighbouring pixels of one record in two colours, both pages'
+  characters) (`tests/unit/canvas_check.c`).
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
   touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
   the iOS simulator, Windows) compiles with no warnings.

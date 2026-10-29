@@ -1,12 +1,15 @@
 /*
- * canvas_check.c: a layer's canvas (nshvc_ext_canvas_chars, contract 2.4),
+ * canvas_check.c: a layer's canvas (nshvc_ext_canvas_chars, contracts 2.4
+ * and 2.5),
  * a background's characters drawn at the window's resolution from the
  * game's texels, checked on a cartridge of a few lines of C that shows
  * scenes of it (BG1 at 8 bpp scrolled, with flips and tiles outside the
  * canvas; BG1 at 4 bpp in 16 x 16 tiles and palettes; BG2 at 2 bpp in Mode
  * 0; a canvas under and over other layers, windows, colour maths and
  * brightness; a hires line and mosaic, where it does not show; the canvas
- * turned off). For each scene's frame, at one to one, scales up, of
+ * turned off; a layer on VRAM page 1 with a canvas in the layer's page;
+ * a layer on page 1 at the top and page 2 below, one canvas across both
+ * pages). For each scene's frame, at one to one, scales up, of
  * another shape, down and a large window:
  *
  *   ref      the canvas layer alone on the main screen: each output pixel
@@ -38,7 +41,7 @@
 #include "rr_size.h"
 #include "rr_mode7.h"
 
-#define NSCENES 8
+#define NSCENES 10
 static int fails;
 static long compared;
 static int front;                      /* through the front end: the canvas at the window's scale */
@@ -46,9 +49,12 @@ static int front;                      /* through the front end: the canvas at t
 /* each scene: mode, the canvas's layer, its colour depth, 16 x 16 tiles,
    the scroll, the canvas's texels a console pixel (unit checks), whether
    the canvas layer is alone on the main screen (ref), its texels one
-   value a console pixel (flat), and whether it shows at all */
+   value a console pixel (flat), whether it shows at all, and its VRAM
+   pages (0: page 0; 1: the layer on page 1, the canvas in the layer's
+   page; 2: the layer on page 1 to line 112 and page 2 below, one canvas
+   in VRAM's whole space across both) */
 static const struct {
-    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows;
+    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages;
 } scene[NSCENES] = {
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1 },     /* 0: BG1 8 bpp, flips, tiles past the canvas */
     { 1, 0, 4, 1, 300, 501, 2, 1, 0, 1 },   /* 1: BG1 4 bpp, 16 x 16, palettes */
@@ -58,9 +64,15 @@ static const struct {
     { 5, 0, 4, 0, 0, 0, 3, 0, 0, 0 },       /* 5: a hires mode: the layer's tiles */
     { 1, 0, 4, 0, 0, 0, 3, 0, 0, 0 },       /* 6: BG1 under mosaic: its tiles */
     { 1, 0, 4, 0, 0, 0, 3, 1, 0, 0 },       /* 7: the canvas off */
+    { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1, 1 },  /* 8: BG1 on page 1, the canvas in its page */
+    { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1, 2 },  /* 9: BG1 on pages 1 and 2, one canvas across them */
 };
 #define CV_ADDR 0x1000u                /* the canvas's first character's word address (the layer's characters' base) */
 #define CV_CHARS 64
+/* the scene's canvas: its word address and characters (across pages, from
+   page 1's $1000 to page 2's $1000 + 64 characters at 8 bpp) */
+static unsigned cv_addr(int sc) { return scene[sc].pages == 2 ? 0x8000u + CV_ADDR : CV_ADDR; }
+static unsigned cv_chars(int sc) { return scene[sc].pages == 2 ? (0x10000u - 0x8000u) / 32u + CV_CHARS : CV_CHARS; }
 
 /* ---- the cartridge ---- */
 static unsigned rng = 4242;
@@ -86,8 +98,8 @@ static void make_canvas(int sc, int k)
     int c, y, x, mask = (1 << scene[sc].bpp) - 1;
     size_t per = (size_t)64 * (size_t)k * (size_t)k;
     free(texels);
-    texels = malloc(CV_CHARS * per);
-    for (c = 0; c < CV_CHARS; c++)
+    texels = malloc(cv_chars(sc) * per);
+    for (c = 0; c < (int)cv_chars(sc); c++)
         for (y = 0; y < 8 * k; y++)
             for (x = 0; x < 8 * k; x++) {
                 unsigned v;
@@ -103,18 +115,20 @@ static void make_canvas(int sc, int k)
                 texels[(size_t)c * per + (size_t)y * 8u * (size_t)k + (size_t)x] = (uint8_t)v;
             }
     scene_k = k;
-    nshvc_ext_canvas_chars(scene[sc].layer, CV_ADDR, CV_CHARS, texels, k);
+    nshvc_ext_canvas_chars(scene[sc].layer, cv_addr(sc), (int)cv_chars(sc), texels, k);
     if (front)
         fprintf(stderr, "canvas_check: scene %d's canvas at k %d\n", sc, k);
 }
 
 static void setup(int sc)
 {
-    int i, n = scene[sc].layer;
+    int i, n = scene[sc].layer, page;
     /* VRAM: random words; the map at $0000 (32 x 32), characters from
        $1000 (the first 64 of them the canvas's), BG2's and BG3's maps and
-       characters likewise further on */
+       characters likewise further on; in each page the scene uses */
     w(0x15, 0x80);
+    for (page = 0; page <= scene[sc].pages; page++) {
+    nshvc_ext_vram_page(page);
     w(0x16, 0);
     w(0x17, 0);
     for (i = 0; i < 0x8000; i++) {
@@ -130,6 +144,23 @@ static void setup(int sc)
         }
         w(0x18, v & 0xFF);
         w(0x19, v >> 8);
+    }
+    }
+    nshvc_ext_vram_page(0);
+    /* the layer's page: page 1, or by HDMA to its page register ($21C0 +
+       layer) page 1 then page 2 from line 112 */
+    nshvc_ext_layer_page(n, scene[sc].pages ? 1 : 0);
+    wr8(0x00420C, 0);
+    if (scene[sc].pages == 2) {
+        static const uint8_t table[] = { 0x70, 1, 0x01, 2, 0x00 };
+        for (i = 0; i < (int)sizeof table; i++)
+            wr8(0x7E2000 + (uint32_t)i, table[i]);
+        wr8(0x004300, 0x00);
+        wr8(0x004301, (uint8_t)(0xC0 + n));
+        wr8(0x004302, 0x00);
+        wr8(0x004303, 0x20);
+        wr8(0x004304, 0x7E);
+        wr8(0x00420C, 0x01);
     }
     w(0x21, 0);
     for (i = 0; i < 256; i++)
@@ -181,6 +212,7 @@ static void game(void)
 {
     int sc;
     wr8(0x004200, 0x00);
+    nshvc_ext_vram(192);
     for (sc = 0; sc < NSCENES; sc++) {
         w(0x00, 0x80);
         setup(sc);
@@ -221,11 +253,13 @@ static uint32_t rgb(unsigned c)
 static uint32_t ref_colour(const PpuFrame *f, int sc, int h, int r, int sx, int sy)
 {
     const PpuScreen *st = &f->line[r + 1];
-    const uint16_t *v = f->vram[f->version[r + 1]], *cg = f->palette[r + 1];
+    const uint16_t *cg = f->palette[r + 1];
     int n = scene[sc].layer, bpp = scene[sc].bpp, ts = scene[sc].big ? 16 : 8, k = f->cv_k;
+    /* the layer's page on this line */
+    const uint16_t *v = f->vram[f->version[r + 1]] + ((unsigned)st->page[n] << 15);
     unsigned lx = (unsigned)(h + st->bghofs[n]) & 1023u, ly = (unsigned)(r + 1 + st->bgvofs[n]) & 1023u;
     unsigned base = (unsigned)(st->bgsc[n] & 0xFC) << 8, e = v[(base + ((ly / (unsigned)ts) & 31) * 32 + ((lx / (unsigned)ts) & 31)) & 0x7FFF];
-    unsigned px = lx % (unsigned)ts, py = ly % (unsigned)ts, ch = e & 0x3FF, nba, ca, t, pal = (e >> 10) & 7;
+    unsigned px = lx % (unsigned)ts, py = ly % (unsigned)ts, ch = e & 0x3FF, nba, ca, a, t, pal = (e >> 10) & 7;
     if (e & 0x4000) {
         px = (unsigned)ts - 1 - px;
         sx = k - 1 - sx;
@@ -238,8 +272,12 @@ static uint32_t ref_colour(const PpuFrame *f, int sc, int h, int r, int sx, int 
     if (py >= 8) ch += 16;
     nba = (unsigned)((n < 2 ? st->bgnba[0] : st->bgnba[1]) >> ((n & 1) * 4) & 0x0F) << 12;
     ca = (nba + (ch & 0x3FF) * (unsigned)bpp * 4) & 0x7FFF;
-    if (ca >= CV_ADDR && (ca - CV_ADDR) % ((unsigned)bpp * 4) == 0 && (ca - CV_ADDR) / ((unsigned)bpp * 4) < CV_CHARS) {
-        unsigned ci = (ca - CV_ADDR) / ((unsigned)bpp * 4);
+    /* the canvas's address for the character: in the layer's page, or
+       from $8000 in VRAM's whole space */
+    a = cv_addr(sc) >= 0x8000 ? (unsigned)st->page[n] << 15 | ca : ca;
+    if (a >= cv_addr(sc) && (a - cv_addr(sc)) % ((unsigned)bpp * 4) == 0 &&
+        (a - cv_addr(sc)) / ((unsigned)bpp * 4) < cv_chars(sc)) {
+        unsigned ci = (a - cv_addr(sc)) / ((unsigned)bpp * 4);
         t = texels[(size_t)ci * 64u * (size_t)k * (size_t)k + ((size_t)(py & 7) * (size_t)k + (size_t)sy) * 8u * (size_t)k +
                    (size_t)(px & 7) * (size_t)k + (size_t)sx];
     } else {
@@ -365,7 +403,7 @@ static void check_scene(int sc)
            and picture pixels side by side with one record (zeros) and two
            colours, which the presentation must blend as two */
         RrMode7 mm;
-        long cv = 0, past = 0, hf = 0, vf = 0, pair = 0, x, y;
+        long cv = 0, past = 0, hf = 0, vf = 0, pair = 0, x, y, lo = 0, hi = 0;
         unsigned pals = 0;
         if (!ppu_mode7(f, pic, &mm)) {
             printf("FAIL scene %d: no record\n", sc);
@@ -379,6 +417,10 @@ static void check_scene(int sc)
                         hf += q->w3 >> 20 & 1;
                         vf += q->w3 >> 21 & 1;
                         pals |= 1u << (q->w3 >> 22 & 7);
+                        if ((q->w3 & 0x3FFF) < CV_CHARS)
+                            lo++;
+                        else if ((q->w3 & 0x3FFF) >= 1024)
+                            hi++;
                     } else if (q->w2 & RR_M7_NOT) {
                         past++;
                         if (x + 1 < mm.pw && !memcmp(q, q + 1, sizeof *q) && pic[y * pw + x] != pic[y * pw + x + 1])
@@ -391,6 +433,21 @@ static void check_scene(int sc)
                 for (b2 = 0; b2 < 8; b2++)
                     npal += pals >> b2 & 1;
                 ok = cv > 5000 && past > 5000 && hf > 1000 && vf > 1000 && (scene[sc].bpp == 8 || npal >= 4) && pair > 100;
+                if (scene[sc].pages) {
+                    /* the layer's pages on its lines, and for the canvas
+                       across pages, characters of both pages' ranges */
+                    long on1 = 0, on2 = 0;
+                    for (y = 1; y <= 224; y++) {
+                        on1 += f->line[y].page[scene[sc].layer] == 1;
+                        on2 += f->line[y].page[scene[sc].layer] == 2;
+                    }
+                    if (scene[sc].pages == 1)
+                        ok = ok && on1 == 224;
+                    else
+                        ok = ok && on1 > 100 && on2 > 100 && lo > 2000 && hi > 2000;
+                    printf("%s scene %d pages: %ld lines on page 1, %ld on page 2; %ld canvas pixels from page 1's "
+                           "characters, %ld from page 2's\n", ok ? "ok  " : "FAIL", sc, on1, on2, lo, hi);
+                }
                 printf("%s scene %d holds: %ld canvas pixels, %ld past it, %ld flipped across, %ld down, %d palettes, %ld "
                        "pairs of one record and two colours\n",
                        ok ? "ok  " : "FAIL", sc, cv, past, hf, vf, npal, pair);

@@ -499,6 +499,7 @@ static int make_layout(void)
     VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
     VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkPushConstantRange spc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * 4 };   /* sharp bilinear's (sharp.frag SU) */
     VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 + RR_OVERLAYS };
     VkDescriptorSetLayout two[2];
     VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -510,6 +511,8 @@ static int make_layout(void)
         return 0;
     pi.setLayoutCount = 1;
     pi.pSetLayouts = &s_lay;
+    pi.pushConstantRangeCount = 1;
+    pi.pPushConstantRanges = &spc;
     if (!VK_OK(vkCreatePipelineLayout(s_dev, &pi, NULL, &s_playout)))
         return 0;
     dpi.maxSets = 1 + RR_OVERLAYS;
@@ -937,6 +940,12 @@ static void draw(VkDescriptorSet set, int w, int h, const int d[4])
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       d[2] - d[0] == w && d[3] - d[1] == h ? s_copy : s_sharp);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &set, 0, NULL);
+    if (d[2] - d[0] != w || d[3] - d[1] != h) {
+        /* where the target's pixels sample: its rectangle's corner, and
+           texels a target pixel (rr_ref_image's dx, dy) */
+        float su[4] = { (float)d[0], (float)d[1], (float)w / (float)(d[2] - d[0]), (float)h / (float)(d[3] - d[1]) };
+        vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof su, su);
+    }
     vo = (VkDeviceSize)qo;
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
     vkCmdDraw(s_cmd, 6, 1, 0, 0);

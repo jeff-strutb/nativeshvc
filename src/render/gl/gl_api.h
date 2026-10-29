@@ -163,6 +163,8 @@ typedef ptrdiff_t GLsizeiptr, GLintptr;
     X(void, glUseProgram, (GLuint)) \
     X(GLint, glGetUniformLocation, (GLuint, const GLchar *)) \
     X(void, glUniform1i, (GLint, GLint)) \
+    X(void, glUniform1f, (GLint, GLfloat)) \
+    X(void, glUniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) \
     X(void, glGenFramebuffers, (GLsizei, GLuint *)) \
     X(void, glDeleteFramebuffers, (GLsizei, const GLuint *)) \
     X(void, glBindFramebuffer, (GLenum, GLuint)) \
@@ -224,6 +226,8 @@ GL_FUNCS(GL_DECL)
 #define glUseProgram glUseProgram_p
 #define glGetUniformLocation glGetUniformLocation_p
 #define glUniform1i glUniform1i_p
+#define glUniform1f glUniform1f_p
+#define glUniform4f glUniform4f_p
 #define glGenFramebuffers glGenFramebuffers_p
 #define glDeleteFramebuffers glDeleteFramebuffers_p
 #define glBindFramebuffer glBindFramebuffer_p

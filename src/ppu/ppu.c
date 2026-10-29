@@ -675,9 +675,10 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
         cv_now.gen++;
         return;
     }
-    if (layer < 0 || layer > 3 || word_addr > 0x7FFF || k < 1 || k > 64 || count > 4096)
-        snes_fatal("nshvc_ext_canvas_chars(%d, $%04X, %d, k %d): layers 0-3 (BG1-4), a word address below $8000, "
-                   "at most 4,096 characters, k 1 to 64", layer, word_addr, count, k);
+    if (layer < 0 || layer > 3 || word_addr >= (unsigned)vram_pages << 15 || k < 1 || k > 64 || count > 4096)
+        snes_fatal("nshvc_ext_canvas_chars(%d, $%05X, %d, k %d): layers 0-3 (BG1-4), a word address below $%05X "
+                   "(the layer's page below $8000, VRAM's pages from it), at most 4,096 characters, k 1 to 64",
+                   layer, word_addr, count, k, (unsigned)vram_pages << 15);
     len = (size_t)count * 64u * (size_t)k * (size_t)k;
     if (len > cv_now.cap) {
         uint8_t *n = (uint8_t *)realloc(cv_now.data, len);
@@ -921,14 +922,18 @@ static CvAt cv_at[PPU_EXT_WIDTH];
 
 /* the canvas's character for char address ca of layer n at bpp, or -1:
    d_frame's canvas covers the layer's characters whose data starts in its
-   range (n of them at the layer's colour depth) */
+   range (n of them at the layer's colour depth); a range from $8000 is in
+   VRAM's whole space, the character's address its page's (page << 15) */
 static long cv_char(int n, unsigned ca, unsigned bpp)
 {
     unsigned wpc = bpp * 4u;
+    unsigned long a = ca & 0x7FFFu;
     long rel;
     if (!d_frame || !d_frame->cv_on || d_frame->cv_layer != n)
         return -1;
-    rel = (long)(ca & 0x7FFFu) - (long)d_frame->cv_addr;
+    if (d_frame->cv_addr >= 0x8000u)
+        a |= (unsigned long)s->page[n] << 15;
+    rel = (long)a - (long)d_frame->cv_addr;
     if (rel < 0 || rel % (long)wpc || (unsigned long)(rel / (long)wpc) >= d_frame->cv_count)
         return -1;
     return rel / (long)wpc;

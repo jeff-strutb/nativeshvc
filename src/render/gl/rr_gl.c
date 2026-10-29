@@ -43,17 +43,27 @@ static const char *k_copy =
     "out vec4 o;\n"
     "void main() { o = vec4(texelFetch(t, ivec2(uv * vec2(textureSize(t, 0))), 0).rgb, 1.0); }\n";
 /* sharp bilinear: whole texels at any scale, blended only across the one
-   target pixel a texel edge falls in */
+   target pixel a texel edge falls in (rr_size.h rr_ref_image): the sample
+   point from the target pixel's own place (rows from the top) and the
+   texels a target pixel, the four texels blended as rr_mix does, each step
+   rounded (vulkan/shaders/sharp.frag) */
 static const char *k_sharp =
     "#version 330 core\n"
     "uniform sampler2D t;\n"
+    "uniform vec4 SU;\n"
+    "uniform float rh;\n"
     "in vec2 uv;\n"
     "out vec4 o;\n"
     "void main() {\n"
-    "  vec2 ts = vec2(textureSize(t, 0)), px = uv * ts - 0.5;\n"
-    "  vec2 i = floor(px), f = px - i, d = max(fwidth(px), vec2(1e-5));\n"
-    "  f = clamp((f - 0.5) / d + 0.5, 0.0, 1.0);\n"
-    "  o = vec4(texture(t, (i + 0.5 + f) / ts).rgb, 1.0);\n"
+    "  vec2 dd = max(SU.zw, vec2(1e-5));\n"
+    "  vec2 px = (vec2(gl_FragCoord.x, rh - gl_FragCoord.y) - SU.xy) * SU.zw - 0.5;\n"
+    "  vec2 i = floor(px), f = px - i;\n"
+    "  f = clamp((f - 0.5) / dd + 0.5, 0.0, 1.0);\n"
+    "  ivec2 hi = textureSize(t, 0) - 1, a = clamp(ivec2(i), ivec2(0), hi), b = clamp(ivec2(i) + 1, ivec2(0), hi);\n"
+    "  vec3 c00 = round(texelFetch(t, ivec2(a.x, a.y), 0).rgb * 255.0), c01 = round(texelFetch(t, ivec2(b.x, a.y), 0).rgb * 255.0);\n"
+    "  vec3 c10 = round(texelFetch(t, ivec2(a.x, b.y), 0).rgb * 255.0), c11 = round(texelFetch(t, ivec2(b.x, b.y), 0).rgb * 255.0);\n"
+    "  vec3 top = floor(c00 + (c01 - c00) * f.x + 0.5), bot = floor(c10 + (c11 - c10) * f.x + 0.5);\n"
+    "  o = vec4(floor(top + (bot - top) * f.y + 0.5) / 255.0, 1.0);\n"
     "}\n";
 
 /* an overlay: bilinear, its alpha kept for the blend */
@@ -227,7 +237,16 @@ static void draw(GLuint tex, int w, int h, const int d[4])
     }
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
-    glUseProgram(d[2] - d[0] == w && d[3] - d[1] == h ? s_copy : s_sharp);
+    if (d[2] - d[0] == w && d[3] - d[1] == h)
+        glUseProgram(s_copy);
+    else {
+        /* where the target's pixels sample: its rectangle's corner, and
+           texels a target pixel (rr_ref_image's dx, dy) */
+        glUseProgram(s_sharp);
+        glUniform4f(glGetUniformLocation(s_sharp, "SU"), (float)d[0], (float)d[1], (float)w / (float)(d[2] - d[0]),
+                    (float)h / (float)(d[3] - d[1]));
+        glUniform1f(glGetUniformLocation(s_sharp, "rh"), (float)s_rh);
+    }
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
