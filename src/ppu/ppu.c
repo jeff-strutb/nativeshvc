@@ -2173,8 +2173,9 @@ static uint32_t cp_sprites(uint32_t *n)
     return at;
 }
 
-static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vbase)
+static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vbase, const PpuFrame *f)
 {
+    unsigned n, mode = l->bgmode & 7;
     o[0] = l->inidisp | l->obsel << 8 | l->bgmode << 16 | (uint32_t)l->mosaic << 24;
     o[1] = l->bgsc[0] | l->bgsc[1] << 8 | l->bgsc[2] << 16 | (uint32_t)l->bgsc[3] << 24;
     o[2] = l->bgnba[0] | l->bgnba[1] << 8 | l->m7sel << 16 | (uint32_t)l->setini << 24;
@@ -2195,6 +2196,15 @@ static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vba
     o[17] = l->page[4];
     o[18] = pal;
     o[19] = vbase;
+    /* each background's descriptor: plain when draw_bg's special cases
+       (offset-per-tile, mosaic, hires, a canvas, a map outside) are not its */
+    for (n = 0; n < 4; n++) {
+        unsigned bpp = mode_bpp[mode][n], big = (l->bgmode >> (4 + n)) & 1;
+        int plain = bpp && mode != 5 && mode != 6 && !((mode == 2 || mode == 4) && n < 2) &&
+                    !((l->mosaic >> n & 1) && (l->mosaic >> 4)) && !(f->cv_on && f->cv_layer == (int)n) &&
+                    !(f->out_on >> n & 1);
+        o[20 + n] = (uint32_t)plain | bpp << 1 | (big ? 4u : 3u) << 5 | (big ? 4u : 3u) << 8;
+    }
 }
 
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
@@ -2261,7 +2271,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
         for (k = 0; k <= f->segs[line]; k++) {
             cp_w = grow(cp_w, &cp_cap, n + CP_ST, sizeof *cp_w);
             cp_state(cp_w + n, k ? &f->seg_line[line][k - 1] : &f->line[line], st_of[line][k],
-                     (uint32_t)(f->version[line] * vwords));
+                     (uint32_t)(f->version[line] * vwords), f);
             st_of[line][k] = (uint32_t)nst++;
             n += CP_ST;
         }

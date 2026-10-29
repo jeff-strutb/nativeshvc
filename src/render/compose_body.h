@@ -70,7 +70,7 @@
 #define CP_TOP 25        /* the hardware's line 1's row */
 #define CP_HEADER 26
 
-#define CP_ST 20         /* a state's words */
+#define CP_ST 24         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */
 #define CP_S_BGSC 1
 #define CP_S_NBA 2       /* bgnba[0], bgnba[1], m7sel, setini */
@@ -89,6 +89,8 @@
 #define CP_S_PAGE4 17    /* page[4], oam_prio, oamaddr's sprite (first) */
 #define CP_S_PAL 18
 #define CP_S_VBASE 19
+#define CP_S_LAYER 20    /* BG1-4 each: plain (no offset-per-tile, mosaic, hires, canvas or
+                            map outside) | bpp << 1 | tile width's shift << 5 | height's << 8 */
 
 #define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept; name */
 
@@ -207,6 +209,34 @@ CP_FN U32 cp_cv(U32 si, U32 n, U32 ca, U32 bpp, U32 px, U32 py, U32 flip)
    width, twice on a hires line), on row dr with the mosaic's row my */
 CP_FN U32 cp_bg(U32 si, U32 n, U32 x, I32 dr, U32 my)
 {
+    U32 ld = cp_st[U_(CP_S_LAYER) + n];
+    if ((ld & 1u) != 0u) {
+        /* a plain layer: its tile at the scroll (the general path's, with
+           nothing of its special cases to decide) */
+        U32 bpp = (ld >> 1) & 15u, xs = (ld >> 5) & 7u, ys = (ld >> 8) & 7u;
+        U32 hofs = ((n >> 1) == 0u ? cp_st[CP_S_HOFS] : cp_st[CP_S_HOFS + 1]) >> (16u * (n & 1u)) & 0xFFFFu;
+        U32 vofs = ((n >> 1) == 0u ? cp_st[CP_S_VOFS] : cp_st[CP_S_VOFS + 1]) >> (16u * (n & 1u)) & 0xFFFFu;
+        U32 nbaw = cp_b(si, U_(CP_S_NBA), n < 2u ? 0u : 1u), nba = ((nbaw >> ((n & 1u) * 4u)) & 0x0Fu) << 12;
+        U32 xx = (x - FD_(CP_SL) + hofs) & 0x3FFu, yy = (U_(dr + 1) + vofs) & 0x3FFu;
+        U32 e = cp_map_entry(si, n, xx >> xs, yy >> ys), px = xx & ((1u << xs) - 1u), py = yy & ((1u << ys) - 1u);
+        U32 ch = e & 0x3FFu, ca, c, pal = (e >> 10) & 7u, prio = (e >> 13) & 1u, mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
+        if ((e & 0x4000u) != 0u)
+            px = (1u << xs) - 1u - px;
+        if ((e & 0x8000u) != 0u)
+            py = (1u << ys) - 1u - py;
+        if (px >= 8u) ch += 1u;
+        if (py >= 8u) ch += 16u;
+        ca = (nba + (ch & 0x3FFu) * (bpp * 4u)) & 0xFFFFu;
+        c = cp_tile_pixel(si, cp_b(si, U_(CP_S_PAGE), n), ca, py & 7u, px & 7u, bpp);
+        if (c == 0u)
+            return prio << 23;
+        if (bpp == 8u)
+            return CP_LP((cp_b(si, U_(CP_S_TSW), 1u) & 1u) != 0u ? cp_direct(c, pal) : cp_pal(si, c), c, prio);
+        if (bpp == 4u)
+            return CP_LP(cp_pal(si, pal * 16u + c), pal * 16u + c, prio);
+        return CP_LP(cp_pal(si, (mode == 0u ? n * 32u : 0u) + pal * 4u + c), (mode == 0u ? n * 32u : 0u) + pal * 4u + c, prio);
+    }
+    {
     U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u), mode = bgmode & 7u, mosaic = cp_b(si, U_(CP_S_INIDISP), 3u);
     U32 bpp = cp_bpp(mode, n), big = (bgmode >> (4u + n)) & 1u;
     U32 hires = mode == 5u || mode == 6u ? 1u : 0u;
@@ -324,6 +354,7 @@ CP_FN U32 cp_bg(U32 si, U32 n, U32 x, I32 dr, U32 my)
     {
         U32 ci = (mode == 0u ? n * 32u : 0u) + pal * 4u + c;
         return CP_LP(cp_pal(si, ci), ci, (e >> 13) & 1u);
+    }
     }
 }
 
