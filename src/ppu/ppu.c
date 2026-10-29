@@ -61,8 +61,8 @@ static void *grow(void *p, size_t *cap, size_t n, size_t size)
     *cap = n;
     return q;
 }
-static int woven_w, woven_h;
-static unsigned long woven_of;                  /* the frame woven last */
+static int woven_w, woven_h, woven_from[2];
+static unsigned long woven_of, woven_built;     /* the frame woven last; the one woven[] holds */
 /* the extensions (nshvc.h): the screen's width asked for (from the next
    frame), the sprites' extended X bits */
 static int ext_width = PPU_WIDTH, ext_height = 224;
@@ -89,9 +89,11 @@ static int draw_lines = -1;                     /* lines drawn as recorded (NSHV
 
 static PpuScreen cur = { .inidisp = 0x80 };   /* the state as the game sets it */
 static const PpuScreen *s = &cur;             /* the state being drawn */
-/* the frames' records: one being made, the last finished */
-static PpuFrame frames[2];
-static PpuFrame *making = &frames[0], *finished = &frames[1];
+/* the frames' records: one being made, the last finished, and the one
+   before it (whole until the next frame is finished: an interlaced
+   frame's picture is woven with it) */
+static PpuFrame frames[3];
+static PpuFrame *making = &frames[0], *finished = &frames[1], *before = &frames[2];
 static int dirty = 1;                           /* the tiles or sprites changed since the last copy */
 unsigned long ppu_version_overflow;             /* frames that needed more copies than PPU_VERSIONS */
 /* what the drawing reads: the live memory, or a record's */
@@ -111,8 +113,8 @@ static struct {
     size_t len, cap;
     uint32_t gen;
 } cv_now;
-static uint8_t *cv_kept[2];           /* each frame record's copy of it */
-static size_t cv_kept_cap[2];
+static uint8_t *cv_kept[3];           /* each frame record's copy of it */
+static size_t cv_kept_cap[3];
 static int cv_scale = 1;              /* the window's texels a console pixel (ppu_set_canvas_scale) */
 
 /* the data ports: where the game's writes of tiles, palette and sprites go */
@@ -148,6 +150,8 @@ static PpuScreen live_base;
 static uint16_t live_base_pal[256];
 unsigned long ppu_segment_overflow;
 
+static void weave_pixels(void);
+
 /* the last finished frame, drawn from its record when first asked for */
 const uint32_t *ppu_picture(int *width, int *height)
 {
@@ -158,6 +162,8 @@ const uint32_t *ppu_picture(int *width, int *height)
         shown_of = frames_done;
     }
     if (frames_done && finished->interlace && woven_of == frames_done) {
+        if (woven_built != frames_done)
+            weave_pixels();
         if (width)
             *width = woven_w;
         if (height)
@@ -200,9 +206,9 @@ void ppu_reset(void)
     shown = grow(shown, &shown_cap, 2 * PPU_WIDTH * PPU_MAX_HEIGHT, sizeof *shown);
     memset(shown, 0, shown_cap * sizeof *shown);
     memset(frames, 0, sizeof frames);
-    frames[0].height = frames[1].height = 224;
-    frames[0].width = frames[1].width = PPU_WIDTH;
-    frames[0].screen_height = frames[1].screen_height = 224;
+    frames[0].height = frames[1].height = frames[2].height = 224;
+    frames[0].width = frames[1].width = frames[2].width = PPU_WIDTH;
+    frames[0].screen_height = frames[1].screen_height = frames[2].screen_height = 224;
     ext_width = sw = PPU_WIDTH;
     ext_height = 224;
     ext_ox = ext_oy = frame_oy = -1;
@@ -212,8 +218,10 @@ void ppu_reset(void)
     ext_limits = 1;
     making = &frames[0];
     finished = &frames[1];
-    frames_done = shown_of = woven_of = 0;
+    before = &frames[2];
+    frames_done = shown_of = woven_of = woven_built = 0;
     woven_w = woven_h = 0;
+    woven_from[0] = woven_from[1] = 0;
     dirty = 1;
     memset(&cur, 0, sizeof cur);
     cur.inidisp = 0x80;
@@ -748,7 +756,7 @@ int ppu_canvas_scale(void) { return cv_scale; }
 /* the frame being made takes the canvas as it stands as the frame begins */
 static void cv_take(void)
 {
-    int slot = making == &frames[0] ? 0 : 1;
+    int slot = (int)(making - frames);
     if (!cv_now.on) {
         making->cv_on = 0;
         return;
@@ -835,42 +843,78 @@ static size_t check_cap;
 static uint32_t *field_pic;
 static size_t field_cap;
 
-static void weave(const PpuFrame *f, int rows_of)
+/* An interlaced frame's weave, as the frames finish (no pixels): the
+   woven picture's size, and which frame each row parity's rows are from
+   (woven_from: 0 the finished frame, 1 the one before). A frame of
+   another size starts the picture over, both parities its own; a hires
+   frame beside one that was not widens the picture, the other's rows
+   doubled. which: the frame woven (0 finished, 1 before); rows_of its
+   parity (-1 both). */
+static void weave(const PpuFrame *f, int rows_of, int which)
 {
-    int w = ppu_frame_width(f), h = f->screen_height, r, x, p;
-    field_pic = grow(field_pic, &field_cap, (size_t)w * (size_t)h, sizeof *field_pic);
-    woven = grow(woven, &woven_cap, (size_t)(w > woven_w ? w : woven_w) * 2 * (size_t)h, sizeof *woven);
-    ppu_draw_frame(f, field_pic);
+    int w = ppu_frame_width(f), h = f->screen_height;
     if (2 * h != woven_h || (woven_w != f->width && woven_w != 2 * f->width)) {
         woven_w = w;
         woven_h = 2 * h;
         rows_of = -1;
     } else if (w > woven_w) {
-        /* a hires field beside a picture that was not: the rows kept widened */
-        for (r = woven_h; r-- > 0;)
-            for (x = woven_w; x-- > 0;)
-                woven[(size_t)r * (size_t)w + 2 * x] = woven[(size_t)r * (size_t)w + 2 * x + 1] =
-                    woven[(size_t)r * (size_t)woven_w + x];
         woven_w = w;
     }
-    for (r = 0; r < h; r++)
-        for (p = 0; p < 2; p++) {
-            const uint32_t *from = field_pic + (size_t)r * (size_t)w;
+    if (rows_of < 0)
+        woven_from[0] = woven_from[1] = which;
+    else
+        woven_from[rows_of] = which;
+}
+
+/* the woven picture's pixels, from the finished frame and the one before
+   (ppu_picture, when first asked for) */
+static void weave_pixels(void)
+{
+    static uint32_t *other;
+    static size_t other_cap;
+    int r, x, p;
+    woven = grow(woven, &woven_cap, (size_t)woven_w * (size_t)woven_h, sizeof *woven);
+    field_pic = grow(field_pic, &field_cap, (size_t)ppu_frame_width(finished) * (size_t)finished->screen_height,
+                     sizeof *field_pic);
+    ppu_draw_frame(finished, field_pic);
+    if (woven_from[0] || woven_from[1]) {
+        other = grow(other, &other_cap, (size_t)ppu_frame_width(before) * (size_t)before->screen_height, sizeof *other);
+        ppu_draw_frame(before, other);
+    }
+    for (p = 0; p < 2; p++) {
+        const PpuFrame *f = woven_from[p] ? before : finished;
+        const uint32_t *pic = woven_from[p] ? other : field_pic;
+        int w = ppu_frame_width(f);
+        for (r = 0; 2 * r + p < woven_h; r++) {
+            const uint32_t *from = pic + (size_t)r * (size_t)w;
             uint32_t *to = woven + (size_t)(2 * r + p) * (size_t)woven_w;
-            if (rows_of >= 0 && p != rows_of)
-                continue;
             if (w == woven_w)
                 memcpy(to, from, (size_t)w * sizeof *to);
             else
                 for (x = 0; x < w; x++)
                     to[2 * x] = to[2 * x + 1] = from[x];
         }
+    }
+    woven_built = frames_done;
 }
+
+int ppu_woven(int *w, int *h, int from[2])
+{
+    if (!frames_done || !finished->interlace || woven_of != frames_done || woven_from[0] > 1 || woven_from[1] > 1)
+        return 0;
+    *w = woven_w;
+    *h = woven_h;
+    from[0] = woven_from[0];
+    from[1] = woven_from[1];
+    return 1;
+}
+
+const PpuFrame *ppu_frame_before(void) { return before; }
 
 void ppu_vblank_start(void)
 {
     static int check = -1, compose_check = -1;
-    PpuFrame *t = finished;
+    PpuFrame *t = before;
     making->height = (int)snes_vblank_line() - 1;
     /* the height asked for as the frame began, at least the hardware's */
     if (making->screen_height < making->height)
@@ -880,6 +924,7 @@ void ppu_vblank_start(void)
     making->top = frame_oy < 0 ? (making->screen_height - making->height) / 2 : frame_oy;
     if (making->top > making->screen_height - making->height)
         making->top = making->screen_height - making->height;
+    before = finished;
     finished = making;
     making = t;
     frames_done++;
@@ -887,9 +932,13 @@ void ppu_vblank_start(void)
         /* the frame before (its record still whole until the next frame's
            lines are recorded over it) if it is not woven in yet: both its
            rows when it was not interlaced */
+        /* the rows woven so far are a frame older: the last finished's
+           are now the one before's (2: older still) */
+        woven_from[0] = woven_from[0] ? 2 : 1;
+        woven_from[1] = woven_from[1] ? 2 : 1;
         if (woven_of != frames_done - 1 && frames_done > 1)
-            weave(making, making->interlace ? making->field : -1);
-        weave(finished, finished->field);
+            weave(before, before->interlace ? before->field : -1, 1);
+        weave(finished, finished->field, 0);
         woven_of = frames_done;
     }
     if (check < 0)
@@ -972,6 +1021,36 @@ void ppu_vblank_start(void)
                     rbad++;
                 }
             bad += rbad;
+        }
+        {
+            /* an interlaced frame's woven picture: from both descriptions */
+            int ww, wh, from[2], wpw, wph;
+            if (ppu_woven(&ww, &wh, from)) {
+                static uint32_t *both;
+                static size_t both_cap;
+                size_t na, nb = 0;
+                const uint32_t *pic = ppu_picture(&wpw, &wph);
+                const uint32_t *da = ppu_compose(finished, &na);
+                both = grow(both, &both_cap, na, sizeof *both);
+                memcpy(both, da, na * sizeof *both);
+                if (from[0] | from[1]) {
+                    const uint32_t *db = ppu_compose(before, &nb);
+                    both = grow(both, &both_cap, na + nb, sizeof *both);
+                    memcpy(both + na, db, nb * sizeof *both);
+                }
+                rr_cp_fd = both;
+                for (y = 0; y < wh; y++)
+                    for (x = 0; x < ww; x++) {
+                        uint32_t got = cp_woven((uint32_t)x, (uint32_t)y, (uint32_t)ww, from[0] ? (uint32_t)na : 0,
+                                                from[1] ? (uint32_t)na : 0);
+                        uint32_t want = pic[(size_t)y * (size_t)ww + (size_t)x];
+                        if (got != want && !bad && ppu_compose_bad < 3)
+                            fprintf(stderr, "composecheck: frame %lu woven (%d, %d): got %08x want %08x\n", frames_done,
+                                    x, y, got, want);
+                        bad += got != want;
+                    }
+                cp_fdb = 0;
+            }
         }
         ppu_compose_frames++;
         ppu_compose_bad += bad != 0;

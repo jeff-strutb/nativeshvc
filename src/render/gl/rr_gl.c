@@ -90,7 +90,7 @@ static const char k_cp_pre[] =
     "#define I32 int\n"
     "#define U_(x) uint(x)\n"
     "#define I_(x) int(x)\n"
-    "#define FD_(i) texelFetch(fdb, int(i)).r\n";
+    "#define FD_(i) texelFetch(fdb, int(cp_fdb + uint(i))).r\n";
 /* a frame presenting Mode 7 or a canvas: its records and picture, into
    two integer targets */
 static const char k_cpr_post[] =
@@ -98,14 +98,19 @@ static const char k_cpr_post[] =
     "layout(location = 1) out uint picv;\n"
     "void main() {\n"
     "    uint X = uint(gl_FragCoord.x), Y = uint(gl_FragCoord.y);\n"
+    "    cp_fdb = 0u;\n"
     "    picv = cp_pixel(X, Y);\n"
     "    cp_record(X, Y);\n"
     "    rec = uvec4(cp_r0, cp_r1, cp_r2, cp_r3);\n"
     "}\n";
 static const char k_cp_post[] =
     "out vec4 o;\n"
+    "uniform uint U_ww, U_b0, U_b1;\n"
     "void main() {\n"
-    "    uint p = cp_pixel(uint(gl_FragCoord.x), uint(gl_FragCoord.y));\n"
+    "uint p;\n"
+    "cp_fdb = 0u;\n"
+    "p = U_ww == 0u ? cp_pixel(uint(gl_FragCoord.x), uint(gl_FragCoord.y))\n"
+    "               : cp_woven(uint(gl_FragCoord.x), uint(gl_FragCoord.y), U_ww, U_b0, U_b1);\n"
     "    o = vec4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0;\n"
     "}\n";
 
@@ -313,7 +318,22 @@ static void draw(GLuint tex, int w, int h, const int d[4])
 }
 
 
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], const int d[4]);
+
 int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
+{
+    static const uint32_t none[3] = { 0, 0, 0 };
+    return compose(desc, words, w, h, none, d);
+}
+
+int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1,
+                     const int d[4])
+{
+    uint32_t wp[3] = { (uint32_t)ww, base0, base1 };
+    return compose(desc, words, ww, wh, wp, d);
+}
+
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], const int d[4])
 {
     static const float q[6][4] = { { -1, -1, 0, 0 }, { 1, -1, 1, 0 }, { -1, 1, 0, 1 },
                                    { -1, 1, 0, 1 }, { 1, -1, 1, 0 }, { 1, 1, 1, 1 } };
@@ -342,6 +362,9 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
     }
     glViewport(0, 0, w, h);
     glUseProgram(s_cp);
+    glUniform1ui(glGetUniformLocation(s_cp, "U_ww"), wp[0]);
+    glUniform1ui(glGetUniformLocation(s_cp, "U_b0"), wp[1]);
+    glUniform1ui(glGetUniformLocation(s_cp, "U_b1"), wp[2]);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, 6);

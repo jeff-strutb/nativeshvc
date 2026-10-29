@@ -646,7 +646,7 @@ static int cp_make(void)
     VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
                                           { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL } };
     VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-    VkPushConstantRange pc = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 4 };
+    VkPushConstantRange pc = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 16 };
     VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorPoolSize ps[3] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
                                    { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
@@ -1207,15 +1207,33 @@ static void draw(VkDescriptorSet set, int w, int h, const int d[4])
 }
 
 
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], const int d[4]);
+
 int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
 {
+    static const uint32_t none[3] = { 0, 0, 0 };
+    return compose(desc, words, w, h, none, d);
+}
+
+int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1,
+                     const int d[4])
+{
+    uint32_t wp[3] = { (uint32_t)ww, base0, base1 };
+    return compose(desc, words, ww, wh, wp, d);
+}
+
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], const int d[4])
+{
     long off;
-    uint32_t pc;
+    uint32_t pc[4];
     if (!s_recording || !s_cp || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
         return 0;
     if (!cp_image(w, h) || !ring_fit(words * 4 + 6 * 16 + 512) || (off = ring_put(desc, words * 4)) < 0)
         return 0;
-    pc = (uint32_t)off;
+    pc[0] = (uint32_t)off;
+    pc[1] = wp[0];
+    pc[2] = wp[1];
+    pc[3] = wp[2];
     /* the picture drawn by the compositor, then sampled as rr_image's is */
     barrier(s_cmd, s_cimg, s_cimg_fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
@@ -1223,7 +1241,7 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
     s_cimg_fresh = 0;
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cp);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cplayout, 0, 1, &s_cset, 0, NULL);
-    vkCmdPushConstants(s_cmd, s_cplayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &pc);
+    vkCmdPushConstants(s_cmd, s_cplayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
     vkCmdDispatch(s_cmd, (uint32_t)(w + 31) / 32, (uint32_t)(h + 7) / 8, 1);
     barrier(s_cmd, s_cimg, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
             VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);

@@ -343,6 +343,42 @@ static void show_picture(const int d[4])
         const uint32_t *desc = ppu_compose(f, &nw);
         if (rr_compose(desc, nw, ppu_frame_width(f), f->screen_height, d))
             return;
+    } else if (on && f->versions > 0) {
+        /* an interlaced frame: woven from its description and, for the
+           rows that are the frame before's, that one's */
+        static uint32_t *both;
+        static size_t cap;
+        int ww, wh, from[2];
+        size_t na, nb = 0;
+        const uint32_t *a;
+        if (ppu_woven(&ww, &wh, from) && (!(from[0] | from[1]) || ppu_frame_before()->versions > 0)) {
+            a = ppu_compose(f, &na);
+            if (na > cap) {
+                free(both);
+                both = (uint32_t *)malloc(na * 2 * sizeof *both);
+                cap = both ? na * 2 : 0;
+            }
+            if (both) {
+                memcpy(both, a, na * sizeof *both);
+                if (from[0] | from[1]) {
+                    const uint32_t *b = ppu_compose(ppu_frame_before(), &nb);
+                    if (na + nb > cap) {
+                        uint32_t *g = (uint32_t *)realloc(both, (na + nb) * sizeof *both);
+                        if (g) {
+                            both = g;
+                            cap = na + nb;
+                        }
+                    }
+                    if (na + nb <= cap)
+                        memcpy(both + na, b, nb * sizeof *both);
+                    else
+                        nb = (size_t)-1;
+                }
+                if (nb != (size_t)-1 &&
+                    rr_compose_woven(both, na + nb, ww, wh, from[0] ? (uint32_t)na : 0, from[1] ? (uint32_t)na : 0, d))
+                    return;
+            }
+        }
     }
     px = ppu_picture(&pw, &ph);
     rr_image(px, pw, ph, d);

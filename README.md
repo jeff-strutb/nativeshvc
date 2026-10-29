@@ -358,7 +358,7 @@ each one, is in [tests/README.md](tests/README.md).
   screens too), and each backend to the CPU reference through the presentation, none
   differing. On an M4 Pro a 2048x2048 screen takes about 1 ms of description and 2 of
   the GPU, 8192x8192 about 4 and 21 (the CPU's drawing: 0.3 and 4.3 s). An interlaced
-  frame's two fields are still woven on the CPU.
+  frame is woven there too, from its description and the frame before's.
 - **Enhancement support:** a larger screen's centre, or where the game puts the picture,
   is exactly the console's picture, up to 8192 x 8192, and VRAM pages the same as page 0
   (`tests/rom/ext_check.py`); on the largest screens, sprites at every corner and edge

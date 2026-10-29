@@ -40,6 +40,12 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4]);
    0 when the backend has none (the caller draws the picture and calls
    rr_image) */
 int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4]);
+/* an interlaced frame's woven picture, ww x wh, by the compositor: desc
+   holds the finished frame's description and the one before's, each row
+   parity's rows from the one at word base0 (even rows) or base1 (odd)
+   (ppu.h ppu_woven) */
+int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1,
+                     const int d[4]);
 /* An image with alpha (0xAARRGGBB, the alpha straight) over the frame,
    blended (src alpha, 1 - src alpha), filtered bilinear, onto the
    parallelogram q: its top left (q[0], q[1]), top right (q[2], q[3]) and

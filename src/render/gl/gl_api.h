@@ -181,6 +181,7 @@ typedef ptrdiff_t GLsizeiptr, GLintptr;
     X(void, glClearBufferuiv, (GLenum, GLint, const GLuint *)) \
     X(void, glTexBuffer, (GLenum, GLenum, GLuint)) \
     X(void, glDrawBuffers, (GLsizei, const GLenum *)) \
+    X(void, glUniform1ui, (GLint, GLuint)) \
     X(void, glReadBuffer, (GLenum)) \
     X(void, glUniform1iv, (GLint, GLsizei, const GLint *)) \
     X(void, glTexImage3D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
@@ -246,6 +247,7 @@ GL_FUNCS(GL_DECL)
 #define glClearBufferuiv glClearBufferuiv_p
 #define glTexBuffer glTexBuffer_p
 #define glDrawBuffers glDrawBuffers_p
+#define glUniform1ui glUniform1ui_p
 #define glReadBuffer glReadBuffer_p
 #define glUniform1iv glUniform1iv_p
 #define glTexImage3D glTexImage3D_p

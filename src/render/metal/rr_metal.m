@@ -38,23 +38,26 @@ static const char k_compose_pre[] =
     "#define I32 int\n"
     "#define U_(x) uint(x)\n"
     "#define I_(x) int(x)\n"
-    "#define FD_(i) fd[(i)]\n"
+    "#define FD_(i) fd[cp_fdb + (i)]\n"
     "struct CP {\n"
     "device const uint *fd;\n";
 static const char k_compose_post[] =
     "};\n"
+    /* wp: the woven picture's width (0: none) and its descriptions' first words */
     "kernel void cpk(device const uint *fd [[buffer(0)]], texture2d<float, access::write> o [[texture(0)]],\n"
-    "                uint2 g [[thread_position_in_grid]]) {\n"
+    "                constant uint4 &wp [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {\n"
     "  CP c; uint p;\n"
     "  c.fd = fd;\n"
-    "  if (g.x >= fd[CP_PW] || g.y >= fd[CP_PH]) return;\n"
-    "  p = c.cp_pixel(g.x, g.y);\n"
+    "  c.cp_fdb = 0u;\n"
+    "  if (g.x >= o.get_width() || g.y >= o.get_height()) return;\n"
+    "  p = wp.x == 0u ? c.cp_pixel(g.x, g.y) : c.cp_woven(g.x, g.y, wp.x, wp.y, wp.z);\n"
     "  o.write(float4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0, g); }\n"
     /* a frame presenting Mode 7 or a canvas: its picture and records */
     "kernel void cprk(device const uint *fd [[buffer(0)]], device uint4 *rec [[buffer(1)]], device uint *pic [[buffer(2)]],\n"
     "                 uint2 g [[thread_position_in_grid]]) {\n"
     "  CP c; uint i;\n"
     "  c.fd = fd;\n"
+    "  c.cp_fdb = 0u;\n"
     "  if (g.x >= fd[CP_PW] || g.y >= fd[CP_PH]) return;\n"
     "  i = g.y * fd[CP_PW] + g.x;\n"
     "  pic[i] = c.cp_pixel(g.x, g.y);\n"
@@ -538,7 +541,22 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
     }
 }
 
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[4], const int d[4]);
+
 int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
+{
+    static const uint32_t none[4] = { 0, 0, 0, 0 };
+    return compose(desc, words, w, h, none, d);
+}
+
+int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1,
+                     const int d[4])
+{
+    uint32_t wp[4] = { (uint32_t)ww, base0, base1, 0 };
+    return compose(desc, words, ww, wh, wp, d);
+}
+
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[4], const int d[4])
 {
     @autoreleasepool {
         id<MTLTexture> t;
@@ -556,6 +574,7 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
         ce = [s_cmd computeCommandEncoder];
         [ce setComputePipelineState:s_cp];
         [ce setBuffer:s_cpbuf[s_pi] offset:0 atIndex:0];
+        [ce setBytes:wp length:16 atIndex:1];
         [ce setTexture:t atIndex:0];
         [ce dispatchThreads:MTLSizeMake((NSUInteger)w, (NSUInteger)h, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
         [ce endEncoding];

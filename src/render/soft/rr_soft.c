@@ -76,6 +76,20 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
     return 0;   /* no compositor: the caller draws the picture */
 }
 
+
+int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1,
+                     const int d[4])
+{
+    (void)desc;
+    (void)words;
+    (void)ww;
+    (void)wh;
+    (void)base0;
+    (void)base1;
+    (void)d;
+    return 0;   /* no compositor */
+}
+
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 {
     rr_ref_image(s_px, s_w, s_h, argb, w, h, d);

@@ -16,7 +16,7 @@
 #define U_(x) ((uint32_t)(x))
 #define I_(x) ((int32_t)(x))
 static const uint32_t *rr_cp_fd;
-#define FD_(i) rr_cp_fd[(i)]
+#define FD_(i) rr_cp_fd[cp_fdb + (i)]
 
 #include "compose_body.h"
 

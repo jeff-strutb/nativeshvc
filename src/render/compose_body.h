@@ -10,7 +10,8 @@
  *   CP_VAR         a variable private to the pixel being drawn
  *   U32, I32       32-bit unsigned and signed integers
  *   U_(x), I_(x)   conversions to them
- *   FD_(i)         word i of the description
+ *   FD_(i)         word cp_fdb + i of the descriptions (cp_fdb: the one
+ *                  drawn, 0 but in an interlaced frame's weave)
  *
  * and nothing here uses pointers, structures, arrays or the remainder of a
  * negative number.
@@ -82,6 +83,9 @@
 #define CP_S_VBASE 19
 
 #define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept; name */
+
+/* the description drawn from: its first word (cp_woven sets it) */
+CP_VAR U32 cp_fdb;
 
 /* the pixel's state's words (cp_load), and the main and sub screens'
    pixels at it (cp_screens) */
@@ -626,6 +630,18 @@ CP_FN U32 cp_pixel(U32 X, U32 R)
     }
     cp_screens(si, p, x, dr, my);
     return cp_finish(si, cp_main, cp_sub, I_(x) - I_(sl));
+}
+
+/* An interlaced frame's woven picture's pixel (X, Y), ww wide (ppu.c
+   weave): each row parity's rows from the description at word base0 or
+   base1 (the finished frame's, or the frame before's), doubled where it is
+   half as wide */
+CP_FN U32 cp_woven(U32 X, U32 Y, U32 ww, U32 base0, U32 base1)
+{
+    U32 pw;
+    cp_fdb = (Y & 1u) != 0u ? base1 : base0;
+    pw = FD_(CP_PW);
+    return cp_pixel(pw < ww ? X >> 1 : X, Y >> 1);
 }
 
 /* ---- a frame presenting Mode 7 or a canvas: each picture pixel's record ---- */

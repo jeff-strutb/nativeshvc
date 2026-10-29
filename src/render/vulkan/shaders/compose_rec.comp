@@ -14,12 +14,13 @@ layout(push_constant) uniform PC { uint off, orec, opic; } U;
 #define I32 int
 #define U_(x) uint(x)
 #define I_(x) int(x)
-#define FD_(i) ring_w[U.off + (i)]
+#define FD_(i) ring_w[U.off + cp_fdb + (i)]
 #include "../../compose_body.h"
 void main()
 {
     uvec2 g = gl_GlobalInvocationID.xy;
     uint i;
+    cp_fdb = 0u;
     if (g.x >= FD_(CP_PW) || g.y >= FD_(CP_PH))
         return;
     i = g.y * FD_(CP_PW) + g.x;

@@ -91,6 +91,14 @@ int ppu_line_hires(const PpuScreen *s);
 
 /* the last finished frame's record */
 const PpuFrame *ppu_frame(void);
+/* the frame before the last finished one (whole until the next finishes) */
+const PpuFrame *ppu_frame_before(void);
+/* the last finished frame is interlaced and woven: 1, the woven picture's
+   size, and for each row parity (row & 1) the frame its rows are from (0
+   the last finished, 1 the one before: ppu_frame_before), drawn the
+   width of the woven picture (each pixel twice when the frame is half as
+   wide) */
+int ppu_woven(int *w, int *h, int from[2]);
 /* a frame drawn from its record (the reference the GPU compositor is held
    to): ppu_frame_width(f) x f->screen_height pixels, 0xFFRRGGBB: f->width,
    twice that when a line is hires */
