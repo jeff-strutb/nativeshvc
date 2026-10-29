@@ -54,7 +54,7 @@ typedef VkResult (VKAPI_PTR *rr_create_win32_surface)(VkInstance, const rr_win32
 #endif
 
 #define FMT VK_FORMAT_B8G8R8A8_UNORM      /* 0xAARRGGBB little-endian, as the pictures come */
-#define RING_SIZE (32u << 20)
+#define RING_SIZE (32u << 20)          /* the ring at first; it grows to a frame's need */
 
 static VkInstance s_inst;
 static VkPhysicalDevice s_phys;
@@ -112,6 +112,7 @@ static VkBuffer s_ring;                /* staging pictures and quads */
 static VkDeviceMemory s_ring_mem;
 static uint8_t *s_ring_map;
 static VkDeviceSize s_ring_used;
+static VkDeviceSize s_ring_size = RING_SIZE;
 static VkBuffer s_read;                /* the frame read back */
 static VkDeviceMemory s_read_mem;
 static uint8_t *s_read_map;
@@ -181,7 +182,7 @@ static int make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *bu
 static long ring_take(VkDeviceSize n)
 {
     VkDeviceSize o = (s_ring_used + 255) & ~(VkDeviceSize)255;
-    if (o + n > RING_SIZE)
+    if (o + n > s_ring_size)
         return -1;
     s_ring_used = o + n;
     return (long)o;
@@ -544,6 +545,73 @@ static void pass_begin(void);
 /* the Mode 7 pipeline: set 0 the ring (binding 0) and the planes
    (binding 1), the push constants the presentation and the data's word
    offsets in the ring */
+/* the Mode 7 pass's storage buffer: the ring, as far as the device lets
+   one binding reach */
+static void ring_bind(void)
+{
+    VkDescriptorBufferInfo bi;
+    VkWriteDescriptorSet wr = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    VkPhysicalDeviceProperties pp;
+    vkGetPhysicalDeviceProperties(s_phys, &pp);
+    bi.buffer = s_ring;
+    bi.offset = 0;
+    bi.range = s_ring_size < pp.limits.maxStorageBufferRange ? s_ring_size : pp.limits.maxStorageBufferRange;
+    wr.dstSet = s_m7set;
+    wr.dstBinding = 0;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    wr.pBufferInfo = &bi;
+    vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
+}
+
+static void wait_frame(void);
+
+/* room in the ring for n more bytes this frame: when there is not, what
+   the frame recorded so far is run first (it reads the ring), and the ring
+   made again large enough. 0 when it cannot be. */
+static int ring_fit(VkDeviceSize n)
+{
+    VkDeviceSize size = s_ring_size;
+    if (((s_ring_used + 255) & ~(VkDeviceSize)255) + n <= s_ring_size)
+        return 1;
+    if (s_ring_used) {
+        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        vkEndCommandBuffer(s_cmd);
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &s_cmd;
+        vkQueueSubmit(s_queue, 1, &si, s_fence);
+        s_submitted = 1;
+        wait_frame();
+        vkResetFences(s_dev, 1, &s_fence);
+        vkResetCommandBuffer(s_cmd, 0);
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(s_cmd, &bi);
+        s_ring_used = 0;
+    }
+    if (n <= s_ring_size)
+        return 1;
+    wait_frame();
+    vkDeviceWaitIdle(s_dev);
+    while (size < n)
+        size *= 2;
+    vkUnmapMemory(s_dev, s_ring_mem);
+    vkDestroyBuffer(s_dev, s_ring, NULL);
+    vkFreeMemory(s_dev, s_ring_mem, NULL);
+    s_ring = VK_NULL_HANDLE;
+    s_ring_mem = VK_NULL_HANDLE;
+    s_ring_size = size;
+    if (!make_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     &s_ring, &s_ring_mem, &s_ring_map)) {
+        fprintf(stderr, "vulkan: no staging buffer of %llu MB\n", (unsigned long long)(size >> 20));
+        s_ring_size = 0;
+        return 0;
+    }
+    ring_bind();
+    return 1;
+}
+
 static int m7_make(VkShaderModule vs)
 {
     VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
@@ -555,8 +623,6 @@ static int m7_make(VkShaderModule vs)
     VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     VkDescriptorSetAllocateInfo da = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     VkSamplerCreateInfo si = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    VkDescriptorBufferInfo bi;
-    VkWriteDescriptorSet wr = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
     li.bindingCount = 2;
     li.pBindings = b;
     if (!VK_OK(vkCreateDescriptorSetLayout(s_dev, &li, NULL, &s_m7lay)))
@@ -582,15 +648,7 @@ static int m7_make(VkShaderModule vs)
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     if (!VK_OK(vkCreateSampler(s_dev, &si, NULL, &s_ismp)))
         return 0;
-    bi.buffer = s_ring;
-    bi.offset = 0;
-    bi.range = RING_SIZE;
-    wr.dstSet = s_m7set;
-    wr.dstBinding = 0;
-    wr.descriptorCount = 1;
-    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    wr.pBufferInfo = &bi;
-    vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
+    ring_bind();
     s_m7 = make_pipe(vs, module(k_m7_frag, sizeof k_m7_frag), 1, s_m7playout, s_pass_load);
     return s_m7 != VK_NULL_HANDLE;
 }
@@ -667,6 +725,14 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         return;
     if (!m7_plane_image(m->vrams ? m->vrams : 1))
         return;
+    {
+        /* everything this draw puts in the ring, each part aligned */
+        VkDeviceSize need = (VkDeviceSize)m->vrams * 0x100000u + np * sizeof *m->px + (size_t)m->segs * sizeof *m->seg +
+                            (size_t)m->pals * 512 + (size_t)m->vrams * 0x10000 + np * 4 + (size_t)ow * 12 +
+                            (size_t)oh * 16 + sizeof uv + (m->cv ? m->cv_len : 0) + 6 * 16 + 12 * 256;
+        if (!ring_fit(need))
+            return;
+    }
     if (s_planes < m->vrams || s_plane_gen != m->plane_gen) {
         /* the planes changed: copied in from the ring before this frame's
            draws read them */
@@ -980,7 +1046,7 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
             picture_image(w, h);
         }
     }
-    if ((po = ring_take(n)) < 0)
+    if (!ring_fit(n + 6 * 16 + 512) || (po = ring_take(n)) < 0)
         return;
     memcpy(s_ring_map + po, argb, n);
     barrier(s_cmd, s_pic, s_pic_fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

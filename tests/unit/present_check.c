@@ -5,7 +5,8 @@
  * few lines of C that shows Mode 7 scenes (rotation and scale, the three
  * wrap modes, flips, a matrix changed each line by HDMA, EXTBG, sprites,
  * colour maths, windows, brightness, mosaic, pseudo-hires, direct colour,
- * a larger screen, one off its centre, a minified plane), one of tiles,
+ * a larger screen, one off its centre, a large one, a minified plane),
+ * one of tiles,
  * and a flat plane. For each scene's frame,
  * at one to one, scales up, down, of another shape and a large window:
  *
@@ -37,7 +38,7 @@
 #include "ppu.h"
 #include "rr_size.h"
 
-#define NSCENES 13
+#define NSCENES 14
 static int fails;
 static long compared;
 
@@ -210,6 +211,11 @@ static void setup(int k)
     case 12:  /* a larger screen with the console's picture off its centre */
         nshvc_ext_screen(320, 272);
         nshvc_ext_screen_origin(8, 40);
+        break;
+    case 13:  /* a large screen, the console's picture near its top right
+                 (at one to one and scaled down) */
+        nshvc_ext_screen(2048, 1536);
+        nshvc_ext_screen_origin(1700, 40);
         break;
     case 8:   /* the console's screen again, wrap, magnified with a turn */
         nshvc_ext_screen(256, 224);
@@ -519,7 +525,7 @@ static void check_scene(int k)
     const uint32_t *pic = ppu_picture(&pw, &ph);
     /* output sizes: one to one, up, of another shape, down, and a large window */
     const double sc[5][2] = { { 1, 1 }, { 2.5, 2.5 }, { 3.37, 2.91 }, { 0.6, 0.77 }, { 6, 6 } };
-    int simple = k == 0 || k == 1 || k == 2 || k == 6 || k == 7 || k == 8 || k == 11 || k == 12;
+    int simple = k == 0 || k == 1 || k == 2 || k == 6 || k == 7 || k == 8 || k == 11 || k == 12 || k == 13;
     uint32_t *a, *b;
     char what[80];
     a = malloc((size_t)pw * 6 * (size_t)ph * 6 * 4);
@@ -535,6 +541,8 @@ static void check_scene(int k)
     }
     for (si = 0; si < 5; si++) {
         int ow = (int)(pw * sc[si][0] + 0.5), oh = (int)(ph * sc[si][1] + 0.5), d[4] = { 0, 0, ow, oh };
+        if (k == 13 && si != 0 && si != 3)
+            continue;   /* the large screen: one to one and down */
         ppu_present(f, pic, a, ow, oh);
         if (k == 5 || k == 10) {
             /* no Mode 7, or a plane of one colour: the picture scaled, the

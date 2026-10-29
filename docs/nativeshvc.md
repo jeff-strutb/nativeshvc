@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.6); this page describes the interface
+[the game contract](contract.md) (2.7); this page describes the interface
 around it.
 
 ## What it is
@@ -119,9 +119,11 @@ Each is off by default.
 
 | | |
 |---|---|
-| `nshvc_ext_screen(w, h)` | any screen size, 256 to 1024 by 224 to 480: the console's picture at the centre, exact; the rest drawn by the same rules (backgrounds and Mode 7 go on at their scroll, windows outside, a column its line's state, a row the nearest line's) |
+| `nshvc_ext_screen(w, h)` | any screen size, 256 to 8192 by 224 to 8192: the console's picture at the centre, exact; the rest drawn by the same rules (backgrounds and Mode 7 go on at their scroll, windows outside, a column its line's state, a row the nearest line's) |
 | `nshvc_ext_screen_origin(x, y)` | the console's picture at column x and row y of that screen instead of its centre (-1: the centre), held at its right and bottom edges; sprites from the picture's column 0 and line 1 |
-| `nshvc_ext_sprite_x`, `_y` | sprites past the 9-bit X (+512) and the 256-row Y (+256) |
+| `nshvc_ext_sprite_page(s, x, y)` | a sprite 512 columns (pages -16 to 16) and 256 rows (pages -32 to 32) from its place, reaching the whole of the largest screen |
+| `nshvc_ext_sprite_x`, `_y` | X or Y page 1: sprites past the 9-bit X (+512) and the 256-row Y (+256) |
+| `nshvc_ext_layer_clip(layer, on)` | a background or the sprites kept to the console's picture on a larger screen: transparent past its 256 columns and lines, a sprite across the edge cut at it |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |
 | `nshvc_ext_vram_copy(to, from)`, `_vram_direct(page)` | pages 1-3 written outside the console's bus and time, at any moment, as a board whose extra VRAM is the cartridge's too: a whole page copied, or the data port's writes (by the S-CPU or a DMA) landing in a page at once, while lines are drawn too, a DMA of only those taking no time. Page 0 is the console's, written only through the bus. A change to a page a layer reads shows from the next line drawn; one to a page no layer reads, from when a layer is switched to it (so a game builds its next screen in a page not shown, and switches) |

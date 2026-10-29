@@ -1,7 +1,7 @@
 """
 ext_check.py: nshvc_ext_screen held to its two promises, on every test
 cartridge (tests/rom/run.py builds them):
-  centre     on a larger screen the console's picture, at the centre, is
+  centre     on a larger screen (to 8192 x 8192) the console's picture, at the centre, is
              exactly the console's own (from nativeshvc at 256 x 224), but
              for a hires line's first half pixel, black at the screen's
              own left edge; and so where nshvc_ext_screen_origin puts it:
@@ -28,6 +28,11 @@ CART = os.environ.get("NSHVC_TESTCART", os.path.join(run.BUILD, "testcart"))
 SIZES = [(512, 224), (320, 256), (1024, 480), (258, 226)]
 # a screen and where the console's picture is put on it (None: the centre)
 PLACES = [(sz, None) for sz in SIZES] + [((320, 256), (0, 0)), ((1024, 480), (768, 256)), ((512, 240), (5, 11))]
+# the largest screens, on every 20th cartridge (tall and wide, the picture
+# at their far ends) and every 100th (8192 x 8192 at the centre and its
+# bottom right corner)
+TALL = [((256, 8192), (0, 7968)), ((8192, 224), (7936, 0))]
+HUGE = [((8192, 8192), None), ((8192, 8192), (7936, 7968))]
 
 
 def shot(rom, screen, d, origin=None):
@@ -52,17 +57,21 @@ def crop(img, x0, y0, w, h):
 def main():
     bad = 0
     tests = [t for t in cases.all_tests() if not t.name.startswith(("irq_", "probe_cg", "probe_scroll", "map_"))]
-    for t in tests:
+    for n, t in enumerate(tests):
         rom = os.path.join(run.OUT, t.name, t.name + ".sfc")
         if not os.path.exists(rom):
             continue
         base = shot(rom, None, os.path.join(run.OUT, t.name, "ext_base"))
         bw, bh, _ = base
-        for sz, at in PLACES:
+        places = PLACES + (TALL if n % 20 == 0 else []) + (HUGE if n % 100 == 0 else [])
+        for sz, at in places:
             if sz[1] < bh:
                 continue
             tag = "%dx%d" % sz + ("" if at is None else "_at%d_%d" % at)
             img = shot(rom, sz, os.path.join(run.OUT, t.name, "ext_" + tag), at)
+            if sz[0] * sz[1] > 1024 * 480:
+                # the largest screens' shots are hundreds of MB: not kept
+                os.remove(os.path.join(run.OUT, t.name, "ext_" + tag, "f.ppm"))
             W, H, _ = img
             wide = 2 if bw == 512 else 1
             # interlaced: the fields woven, twice the screen's lines

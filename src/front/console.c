@@ -48,10 +48,12 @@ void nshvc_ext_screen(int width, int height) { ppu_ext_screen(width, height); }
 void nshvc_ext_screen_origin(int x, int y) { ppu_ext_screen_origin(x, y); }
 void nshvc_ext_sprite_x(int sprite, int on) { ppu_ext_sprite_x(sprite, on); }
 void nshvc_ext_sprite_y(int sprite, int on) { ppu_ext_sprite_y(sprite, on); }
+void nshvc_ext_sprite_page(int sprite, int x_page, int y_page) { ppu_ext_sprite_page(sprite, x_page, y_page); }
 void nshvc_ext_sprite_limits(int on) { ppu_ext_sprite_limits(on); }
 void nshvc_ext_vram(int kb) { ppu_ext_vram(kb); }
 void nshvc_ext_vram_page(int page) { ppu_ext_vram_page(page); }
 void nshvc_ext_layer_page(int layer, int page) { ppu_ext_layer_page(layer, page); }
+void nshvc_ext_layer_clip(int layer, int on) { ppu_ext_layer_clip(layer, on); }
 void nshvc_ext_vram_copy(int to_page, int from_page) { ppu_ext_vram_copy(to_page, from_page); }
 void nshvc_ext_vram_direct(int page) { ppu_ext_vram_direct(page); }
 int nshvc_ext_canvas_scale(void) { return ppu_canvas_scale(); }

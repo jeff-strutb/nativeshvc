@@ -91,8 +91,9 @@ what its Enhanced mode does.
 | For | nativeshvc provides | Calls |
 |---|---|---|
 | a pace independent of processor speed | the S-CPU's accesses taking no console time (see Pacing, below) | `nshvc_set_cpu_costs(0)`, and `(1)` back |
-| a wider or taller screen | any screen up to 1024x480, the console's picture exact at its centre or where the game puts it, and the rest drawn by the same rules | `nshvc_ext_screen`, `nshvc_ext_screen_origin` |
-| sprites past the console's coordinates | sprite X and Y extension bits | `nshvc_ext_sprite_x`, `_y` |
+| a wider or taller screen | any screen up to 8192x8192, the console's picture exact at its centre or where the game puts it, and the rest drawn by the same rules | `nshvc_ext_screen`, `nshvc_ext_screen_origin` |
+| sprites past the console's coordinates | sprites anywhere on the largest screen, 512 columns and 256 rows a page | `nshvc_ext_sprite_page`, `nshvc_ext_sprite_x`, `_y` |
+| a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
 | a picture at the window's resolution | a canvas: a background's characters drawn from the game's own texels at the window's resolution (its pixels a console pixel), placed by the console's own rules, across VRAM pages for a layer that reads more than one | `nshvc_ext_canvas_chars`, `_canvas_scale` |
@@ -265,8 +266,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.6.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.6: behaviour exact, each
+Version 2.7.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.7: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -349,8 +350,11 @@ each one, is in [tests/README.md](tests/README.md).
   times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
   a plain frame 0.2 to 0.4.
 - **Enhancement support:** a larger screen's centre, or where the game puts the picture,
-  is exactly the console's picture, and VRAM pages the same as page 0
-  (`tests/rom/ext_check.py`); with the S-CPU's costs off,
+  is exactly the console's picture, up to 8192 x 8192, and VRAM pages the same as page 0
+  (`tests/rom/ext_check.py`); on the largest screens, sprites at every corner and edge
+  and either side of the picture land exactly where their pages put them, through every
+  renderer, and a layer kept to the console's picture stops exactly at its edges
+  (`tests/unit/screen_check.c`); with the S-CPU's costs off,
   its accesses (bytes, words, longs, read-modify-writes) take no time while a wait and a
   DMA take theirs, and a poll with no wait stops the run (`tests/unit/waits.c`); a VRAM
   page copied or written directly lands as it must, unseen until shown, and page 0 refused

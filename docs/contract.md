@@ -1,8 +1,8 @@
-# The game contract, version 2.6
+# The game contract, version 2.7
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.6: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.7: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,16 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.7:** `nshvc_ext_screen` to 8192 x 8192 (from 1024 x 480), and
+  `nshvc_ext_screen_origin` across it (column to 7936, row to 7968).
+  `nshvc_ext_sprite_page(sprite, x_page, y_page)`: a sprite 512 columns a page (-16 to
+  16) and 256 rows a page (-32 to 32) from its table's place, without wrapping off Y
+  page 0, so sprites reach the whole of the largest screen wherever the console's
+  picture sits; `nshvc_ext_sprite_x` and `_y` set a page to 1, as before. Off until
+  asked for; memory and a frame's drawing grow with the screen asked for.
+  `nshvc_ext_layer_clip(layer, on)`: a background or the sprites kept to the console's
+  picture on a larger screen, transparent past its 256 columns and its lines (a sprite
+  across the edge cut at it), from the next line drawn. Off until asked for.
 - **2.6:** `nshvc_ext_screen_origin(x, y)`: where on a larger screen the console's
   picture sits, the screen's column of its column 0 and row of its line 1 (-1 the centre,
   as without the call), held at the screen's right and bottom edges. The rest of the

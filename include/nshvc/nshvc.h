@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 6
+#define NSHVC_VERSION_MINOR 7
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -322,30 +322,40 @@ void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value));
 
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 
-/* The screen the game asks for, from the next frame: width 256 to 1024
-   and height 224 to 480, both even; 256 x 224 (or 239 with SETINI's
-   overscan) is the console's own. The console's picture sits at its
-   centre (its column 0 at (width - 256) / 2, its line 1 at (height - 224)
-   / 2, or 239 with overscan) or where nshvc_ext_screen_origin puts it,
-   drawn exactly as on the console; the rest of the screen is drawn by the
-   same rules, past the console's edges: the backgrounds and Mode 7 go on
-   at their scroll, windows are outside both windows, colour maths and
+/* The screen the game asks for, from the next frame: width 256 to 8192
+   and height 224 to 8192, both even (since 2.7; to 1024 x 480 before);
+   256 x 224 (or 239 with SETINI's overscan) is the console's own. Memory
+   and the time to draw a frame grow with the screen asked for. The console's picture sits at its centre
+   (its column 0 at (width - 256) / 2, its line 1 at (height - 224) / 2,
+   or 239 with overscan) or where nshvc_ext_screen_origin puts it, drawn
+   exactly as on the console; the rest of the screen is drawn by the same
+   rules, past the console's edges: the backgrounds and Mode 7 go on at
+   their scroll, windows are outside both windows, colour maths and
    brightness as on the line; a column carries its line's state (a change
    in the line included), a row above or below the console's lines the
    nearest line's. Sprites, from the console's column 0 and line 1
-   wherever they sit: their 9-bit X covers -256 to 255, nshvc_ext_sprite_x
-   adds 512; their Y wraps in 256 rows as the console's does, and rows
-   past those 256 show only the sprites nshvc_ext_sprite_y puts 256 lower.
-   The game owns what shows there: the sprites it hides off the console's
-   screen may come into view on a larger one, so it hides them past this
-   one. No timing changes: the frame has the console's lines and time. */
+   wherever they sit: their 9-bit X covers -256 to 255, and each X page
+   (nshvc_ext_sprite_page) adds 512; on Y page 0 their Y wraps in 256 rows
+   as the console's does, rows past those 256 showing none of them, and a
+   sprite on another Y page is at its Y and 256 rows more for each page,
+   without wrapping. The game owns what shows there: the sprites it hides
+   off the console's screen may come into view on a larger one, so it
+   hides them past this one. No timing changes: the frame has the
+   console's lines and time. */
 void nshvc_ext_screen(int width, int height);
 /* Where on that screen the console's picture sits, from the next frame:
-   the screen's column of the console's column 0 (0 to 768) and row of its
-   line 1 (0 to 256); -1 the centre, as without the call. A picture that
-   would pass the screen's right or bottom edge sits at it (with overscan's
-   239 lines too). (Since 2.6.) */
+   the screen's column of the console's column 0 (0 to 7936) and row of
+   its line 1 (0 to 7968); -1 the centre, as without the call. A picture
+   that would pass the screen's right or bottom edge sits at it (with
+   overscan's 239 lines too). (Since 2.6.) */
 void nshvc_ext_screen_origin(int x, int y);
+/* A sprite's pages: x_page -16 to 16 moves it 512 columns each, y_page
+   -32 to 32 256 rows each (0 and 0, the default: the console's
+   coordinates), so a sprite reaches every pixel of the largest screen
+   wherever the console's picture sits on it. (Since 2.7.)
+   nshvc_ext_sprite_x and _y set one page to 1 (on) or 0, the other kept.
+   Off the console's 256 columns a sprite counts toward no line's limits. */
+void nshvc_ext_sprite_page(int sprite, int x_page, int y_page);
 void nshvc_ext_sprite_x(int sprite, int on);
 void nshvc_ext_sprite_y(int sprite, int on);
 /* The line's sprite limits, the console's 32 sprites and 34 tiles in its
@@ -363,6 +373,13 @@ void nshvc_ext_sprite_limits(int on);
 void nshvc_ext_vram(int kb);
 void nshvc_ext_vram_page(int page);
 void nshvc_ext_layer_page(int layer, int page);
+/* Layer 0-3 (BG1-4) or 4 (the sprites) kept to the console's picture on
+   a larger screen (nshvc_ext_screen), from the next line drawn: on, it
+   draws nothing past the console's 256 columns and its lines, where the
+   layers under it and the backdrop show through, and a sprite across the
+   picture's edge is cut at it; off (the default), it goes on past them
+   by the console's rules. (Since 2.7.) */
+void nshvc_ext_layer_clip(int layer, int on);
 /* Pages 1-3 written outside the console's bus and time, at any moment (a
    board whose extra VRAM is the cartridge's too); page 0 is the console's,
    written only through the bus. copy: page from_page (0 included) into

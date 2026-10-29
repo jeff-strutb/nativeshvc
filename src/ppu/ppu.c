@@ -39,11 +39,26 @@ static int direct_page = -1;          /* nshvc_ext_vram_direct: the data port's 
 static int hidden_dirty;              /* a page no layer showed changed since the last copy */
 static uint16_t cgram[256];
 static uint8_t oam[544];
-static uint32_t picture[2 * PPU_EXT_WIDTH * PPU_MAX_HEIGHT];    /* drawn a line at a time (NSHVC_PPUCHECK) */
-static uint32_t shown[2 * PPU_EXT_WIDTH * PPU_EXT_HEIGHT];
-/* the interlaced picture: each field's lines on its own rows (the hardware's
-   line y on row 2(y - 1) + field), over the rows of the frame before */
-static uint32_t woven[2 * PPU_EXT_WIDTH * 2 * PPU_EXT_HEIGHT];
+/* The pictures, each as large as the screen asks for (nshvc_ext_screen),
+   kept at the largest it has been: the frame drawn a line at a time
+   (NSHVC_PPUCHECK), the frame shown, and the interlaced picture, each
+   field's lines on its own rows (the hardware's line y on row 2(y - 1) +
+   field) over the rows of the frame before */
+static uint32_t *picture, *shown, *woven;
+static size_t picture_cap, shown_cap, woven_cap;
+
+/* *p at least n elements of `size` bytes (*cap of them now), its contents kept */
+static void *grow(void *p, size_t *cap, size_t n, size_t size)
+{
+    void *q;
+    if (n <= *cap)
+        return p;
+    q = realloc(p, n * size);
+    if (!q)
+        snes_fatal("no memory for a picture of %lu pixels", (unsigned long)n);
+    *cap = n;
+    return q;
+}
 static int woven_w, woven_h;
 static unsigned long woven_of;                  /* the frame woven last */
 /* the extensions (nshvc.h): the screen's width asked for (from the next
@@ -54,16 +69,19 @@ static int ext_width = PPU_WIDTH, ext_height = 224;
    made began */
 static int ext_ox = -1, ext_oy = -1, frame_oy = -1;
 static int ext_limits = 1;           /* the line's sprite and tile limits (nshvc_ext_sprite_limits) */
-static uint8_t ext_x[16], ext_y[16];
+static int8_t ext_xp[128], ext_yp[128];    /* each sprite's pages (nshvc_ext_sprite_page) */
 /* the sprite table as it stands with the extended X and Y bits after it, as
    a frame's copies hold it (what the drawing reads) */
-static uint8_t oam_live[576];
+static uint8_t oam_live[PPU_OAM_EXT];
 /* the screen being drawn: sw pixels a line (256, or wider with
    nshvc_ext_screen), the hardware's column 0 at sl (nshvc_ext_screen_origin) */
 static int sw = PPU_WIDTH, sl = 0;
 /* the row being drawn, from the hardware's line 1 (0): below 0 and past
    the hardware's last line on a taller screen */
 static int draw_row;
+/* the hardware's lines in the frame being drawn (rows past them are the
+   taller screen's own) */
+static int draw_lines_of = PPU_MAX_HEIGHT;
 static unsigned long frames_done, shown_of;     /* frames finished; the one shown[] holds */
 static int draw_lines = -1;                     /* lines drawn as recorded (NSHVC_PPUCHECK) */
 
@@ -132,6 +150,8 @@ unsigned long ppu_segment_overflow;
 const uint32_t *ppu_picture(int *width, int *height)
 {
     if (frames_done && shown_of != frames_done) {
+        shown = grow(shown, &shown_cap, (size_t)ppu_frame_width(finished) * (size_t)finished->screen_height,
+                     sizeof *shown);
         ppu_draw_frame(finished, shown);
         shown_of = frames_done;
     }
@@ -173,8 +193,10 @@ void ppu_reset(void)
     hidden_dirty = 0;
     memset(cgram, 0, sizeof cgram);
     memset(oam, 0, sizeof oam);
-    memset(picture, 0, sizeof picture);
-    memset(shown, 0, sizeof shown);
+    if (picture)
+        memset(picture, 0, picture_cap * sizeof *picture);
+    shown = grow(shown, &shown_cap, 2 * PPU_WIDTH * PPU_MAX_HEIGHT, sizeof *shown);
+    memset(shown, 0, shown_cap * sizeof *shown);
     memset(frames, 0, sizeof frames);
     frames[0].height = frames[1].height = 224;
     frames[0].width = frames[1].width = PPU_WIDTH;
@@ -183,8 +205,8 @@ void ppu_reset(void)
     ext_height = 224;
     ext_ox = ext_oy = frame_oy = -1;
     sl = 0;
-    memset(ext_x, 0, sizeof ext_x);
-    memset(ext_y, 0, sizeof ext_y);
+    memset(ext_xp, 0, sizeof ext_xp);
+    memset(ext_yp, 0, sizeof ext_yp);
     ext_limits = 1;
     making = &frames[0];
     finished = &frames[1];
@@ -215,8 +237,8 @@ void ppu_reset(void)
 static const uint8_t *live_oam(void)
 {
     memcpy(oam_live, oam, sizeof oam);
-    memcpy(oam_live + 544, ext_x, sizeof ext_x);
-    memcpy(oam_live + 560, ext_y, sizeof ext_y);
+    memcpy(oam_live + 544, ext_xp, sizeof ext_xp);
+    memcpy(oam_live + 672, ext_yp, sizeof ext_yp);
     return oam_live;
 }
 
@@ -661,6 +683,13 @@ void ppu_ext_layer_page(int layer, int page)
         dirty = 1;
 }
 
+void ppu_ext_layer_clip(int layer, int on)
+{
+    if (layer < 0 || layer > 4)
+        snes_fatal("nshvc_ext_layer_clip(%d, %d): layers 0-3 (BG1-4) and 4 (sprites)", layer, on);
+    cur.clip = (uint8_t)((cur.clip & ~(1u << layer)) | (on ? 1u : 0u) << layer);
+}
+
 void ppu_ext_vram_copy(int to_page, int from_page)
 {
     if (to_page < 1 || to_page >= vram_pages || from_page < 0 || from_page >= vram_pages)
@@ -747,7 +776,7 @@ void ppu_ext_sprite_y(int sprite, int on)
     if (sprite < 0 || sprite > 127)
         return;
     dirty = 1;
-    ext_y[sprite >> 3] = (uint8_t)((ext_y[sprite >> 3] & ~(1u << (sprite & 7))) | (on ? 1u : 0u) << (sprite & 7));
+    ext_yp[sprite] = on ? 1 : 0;
 }
 
 void ppu_ext_sprite_x(int sprite, int on)
@@ -755,7 +784,17 @@ void ppu_ext_sprite_x(int sprite, int on)
     if (sprite < 0 || sprite > 127)
         return;
     dirty = 1;
-    ext_x[sprite >> 3] = (uint8_t)((ext_x[sprite >> 3] & ~(1u << (sprite & 7))) | (on ? 1u : 0u) << (sprite & 7));
+    ext_xp[sprite] = on ? 1 : 0;
+}
+
+void ppu_ext_sprite_page(int sprite, int x_page, int y_page)
+{
+    if (sprite < 0 || sprite > 127 || x_page < -16 || x_page > 16 || y_page < -32 || y_page > 32)
+        snes_fatal("nshvc_ext_sprite_page(%d, %d, %d): sprites 0-127, X pages -16 to 16, Y pages -32 to 32", sprite,
+                   x_page, y_page);
+    dirty = 1;
+    ext_xp[sprite] = (int8_t)x_page;
+    ext_yp[sprite] = (int8_t)y_page;
 }
 
 void ppu_frame_start(void)
@@ -781,17 +820,21 @@ void ppu_field_flip(void)
 /* NSHVC_PPUCHECK=1: each finished frame drawn again from its record and
    compared with the picture drawn a line at a time */
 unsigned long ppu_check_frames, ppu_check_bad;
-static uint32_t check_pic[2 * PPU_EXT_WIDTH * PPU_EXT_HEIGHT];
+static uint32_t *check_pic;
+static size_t check_cap;
 
 /* A frame drawn onto the woven picture's rows of its field (-1: both). The
    picture is as wide as the wider of its fields (a 256-wide line's pixels
    doubled beside a hires field's); a picture of another screen starts over
    from this frame's on both. */
-static uint32_t field_pic[2 * PPU_EXT_WIDTH * PPU_EXT_HEIGHT];
+static uint32_t *field_pic;
+static size_t field_cap;
 
 static void weave(const PpuFrame *f, int rows_of)
 {
     int w = ppu_frame_width(f), h = f->screen_height, r, x, p;
+    field_pic = grow(field_pic, &field_cap, (size_t)w * (size_t)h, sizeof *field_pic);
+    woven = grow(woven, &woven_cap, (size_t)(w > woven_w ? w : woven_w) * 2 * (size_t)h, sizeof *woven);
     ppu_draw_frame(f, field_pic);
     if (2 * h != woven_h || (woven_w != f->width && woven_w != 2 * f->width)) {
         woven_w = w;
@@ -849,13 +892,15 @@ void ppu_vblank_start(void)
     if (check) {
         int w = ppu_frame_width(finished), y, pw = 2 * finished->width;
         int top = finished->top;
+        check_pic = grow(check_pic, &check_cap, (size_t)w * (size_t)finished->screen_height, sizeof *check_pic);
         ppu_draw_frame(finished, check_pic);
         ppu_check_frames++;
         /* the lines were drawn 512 wide: a 256-wide frame is their even pixels */
         for (y = 0; y < finished->height; y++) {
             int x, bad = 0;
             for (x = 0; x < w && !bad; x++)
-                bad = check_pic[(y + top) * w + x] != picture[y * pw + (w == finished->width ? 2 * x : x)];
+                bad = check_pic[(size_t)(y + top) * (size_t)w + (size_t)x] !=
+                      picture[(size_t)y * (size_t)pw + (size_t)(w == finished->width ? 2 * x : x)];
             if (bad) {
                 ppu_check_bad++;
                 break;
@@ -1176,27 +1221,27 @@ typedef struct {
 
 static ObjPx op[PPU_EXT_WIDTH];
 
-/* a sprite's X: the table's 9 bits as signed, and 512 more where the
-   extension's bit is set (nshvc_ext_sprite_x) */
+/* a sprite's X: the table's 9 bits as signed, and 512 more for each of
+   its X pages (nshvc_ext_sprite_page) */
 static int obj_x(unsigned s, uint8_t hi)
 {
     int x = d_oam[s * 4] | ((hi & 1) << 8);
     if (x >= 256)
         x -= 512;
-    if (d_oam[544 + (s >> 3)] >> (s & 7) & 1)
-        x += 512;
-    return x;
+    return x + 512 * (int8_t)d_oam[544 + s];
 }
 
 /* Whether sprite s (y its table's Y, h its height) covers row r of the
-   screen (0 the hardware's line 1), and its row there. The hardware's Y
-   wraps in 256 rows; a taller screen's rows past those 256 show only the
-   sprites whose extended Y bit (nshvc_ext_sprite_y) puts them 256 lower. */
+   screen (0 the hardware's line 1), and its row there. On Y page 0 the
+   hardware's Y wraps in 256 rows, and a taller screen's rows past those
+   256 show none of those sprites; a sprite on another Y page
+   (nshvc_ext_sprite_page) is at its Y and 256 rows more for each page,
+   without wrapping. */
 static int obj_row(unsigned s, unsigned y, unsigned h, int r, unsigned *row)
 {
-    int d;
-    if (d_oam[560 + (s >> 3)] >> (s & 7) & 1) {
-        d = r - ((int)y + 256);
+    int d, page = (int8_t)d_oam[672 + s];
+    if (page) {
+        d = r - ((int)y + 256 * page);
         if (d < 0 || d >= (int)h)
             return 0;
         *row = (unsigned)d;
@@ -1371,6 +1416,14 @@ static uint8_t layer_logic(int layer)
     return (uint8_t)(s->wobjlog >> 2);
 }
 
+/* whether layer n (4 the sprites) is kept out of the screen's column x
+   on the row being drawn: kept to the console's picture
+   (nshvc_ext_layer_clip), and x or the row past it */
+static int clipped(int n, int x)
+{
+    return (s->clip >> n & 1) && (x < sl || x >= sl + PPU_WIDTH || draw_row < 0 || draw_row >= draw_lines_of);
+}
+
 /* put a layer's line onto the main and sub screens at its depths; a
    hires layer's 512 pixels give the main screen the odd ones and the sub
    screen the even (the windows, 256 wide, cover a pair) */
@@ -1383,6 +1436,8 @@ static void put_layer(int layer, const uint8_t z[2], int hires)
         const LayerPx *m = hires ? &lp[2 * x + 1] : &lp[x], *b = hires ? &lp[2 * x] : &lp[x];
         int inside = ((s->tmw | s->tsw) >> layer & 1) ? win_mask(sel, logic, (int)x - sl) : 0;
         uint8_t zz;
+        if (clipped(layer, (int)x))
+            continue;
         if (on_main && m->opaque && (zz = z[m->prio]) && zz > main_px[x].z && !(inside && (s->tmw >> layer & 1))) {
             main_px[x].color = m->color;
             main_px[x].ci = m->ci;
@@ -1406,7 +1461,7 @@ static void put_obj(const uint8_t z[4])
     for (x = 0; x < (unsigned)sw; x++) {
         uint8_t zz;
         int inside;
-        if (!op[x].opaque)
+        if (!op[x].opaque || clipped(4, (int)x))
             continue;
         zz = z[op[x].prio];
         inside = ((s->tmw | s->tsw) >> 4 & 1) ? win_mask(sel, logic, (int)x - sl) : 0;
@@ -1499,8 +1554,8 @@ static void take_version(void)
     if (making->versions < PPU_VERSIONS) {
         memcpy(making->vram[making->versions], vram, (size_t)vram_pages * 0x8000 * sizeof vram[0]);
         memcpy(making->oam[making->versions], oam, sizeof oam);
-        memcpy(making->oam[making->versions] + 544, ext_x, sizeof ext_x);
-        memcpy(making->oam[making->versions] + 560, ext_y, sizeof ext_y);
+        memcpy(making->oam[making->versions] + 544, ext_xp, sizeof ext_xp);
+        memcpy(making->oam[making->versions] + 672, ext_yp, sizeof ext_yp);
         making->versions++;
     } else {
         ppu_version_overflow++;
@@ -1610,7 +1665,8 @@ void ppu_render_line(unsigned line)
         d_vram = vram;
         d_oam = live_oam();
         d_frame = making;
-        draw_recorded(making, line, &picture[(line - 1) * 2 * sw], 2 * sw);
+        picture = grow(picture, &picture_cap, (size_t)2 * (size_t)sw * PPU_MAX_HEIGHT, sizeof *picture);
+        draw_recorded(making, line, &picture[(size_t)(line - 1) * 2 * (size_t)sw], 2 * sw);
         d_frame = NULL;
     }
     /* the vertical mosaic: the line the next lines repeat moves on every
@@ -1623,13 +1679,14 @@ void ppu_render_line(unsigned line)
 void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
 {
     unsigned keep = mosaic_y;
-    int w = ppu_frame_width(f), keep_sw = sw, keep_sl = sl, top = f->top, r;
+    int w = ppu_frame_width(f), keep_sw = sw, keep_sl = sl, top = f->top, r, keep_lines = draw_lines_of;
     const PpuScreen *keep_s = s;
     uint8_t ro = range_over, to = time_over;
     sw = f->width;
     d_field = f->field;
     d_frame = f;
     sl = f->left;
+    draw_lines_of = f->height;
     for (r = 0; r < f->screen_height; r++) {
         int line = r - top + 1;
         uint32_t *o = out + (size_t)r * (size_t)w;
@@ -1661,6 +1718,7 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
     s = keep_s;
     sw = keep_sw;
     sl = keep_sl;
+    draw_lines_of = keep_lines;
     d_vram = vram;
     d_cgram = cgram;
     d_oam = oam;
@@ -1878,9 +1936,12 @@ static unsigned cgram_target(unsigned ahead)
    once in the segment table. */
 static RrM7Px *m7_px;
 static size_t m7_px_cap;
-static uint8_t m7_row[PPU_EXT_HEIGHT];
-static RrM7Seg m7_seg[PPU_EXT_HEIGHT * (PPU_SEGS + 1)];
-static uint16_t m7_pal[PPU_EXT_HEIGHT * (PPU_SEGS + 1)][256];
+/* each picture row's flag, its states and their palettes, for as many
+   rows as the screen has */
+static uint8_t *m7_row;
+static RrM7Seg *m7_seg;
+static uint16_t (*m7_pal)[256];
+static size_t m7_row_cap, m7_seg_cap, m7_pal_cap;
 static uint16_t m7_vram[PPU_VERSIONS * PPU_VRAM_PAGES][0x8000];
 static const uint16_t *m7_vram_of[PPU_VERSIONS * PPU_VRAM_PAGES];
 /* each VRAM's plane (rr_mode7.h rr_m7_plane), made again when the VRAM
@@ -1926,7 +1987,7 @@ static int cv_may(int n, int x, int sub)
 {
     unsigned on = sub ? s->ts : s->tm, wn = sub ? s->tsw : s->tmw;
     int inside;
-    if (!(on >> n & 1))
+    if (!(on >> n & 1) || clipped(n, x))
         return 0;
     inside = ((s->tmw | s->tsw) >> n & 1) ? win_mask(layer_sel(n), layer_logic(n), x - sl) : 0;
     return !(inside && (wn >> n & 1));
@@ -1956,7 +2017,7 @@ static void m7_base(const ObjPx *o, int x, int sub, uint16_t *c, uint8_t *z, uin
     *c = sub ? (uint16_t)(s->fixed_r | s->fixed_g << 5 | s->fixed_b << 10) : d_cgram[0];
     *z = 0;
     *l = 5;
-    if (!o->opaque || !(((sub ? s->ts : s->tm) >> 4) & 1))
+    if (!o->opaque || !(((sub ? s->ts : s->tm) >> 4) & 1) || clipped(4, x))
         return;
     inside = ((s->tmw | s->tsw) >> 4 & 1) ? win_mask(layer_sel(4), layer_logic(4), x - sl) : 0;
     if (inside && (((sub ? s->tsw : s->tmw) >> 4) & 1))
@@ -1971,7 +2032,7 @@ static int m7_may(int n, int x, int sub)
 {
     unsigned on = sub ? s->ts : s->tm, wn = sub ? s->tsw : s->tmw;
     int inside;
-    if (!(on >> n & 1) || (n == 1 && !(s->setini & 0x40)))
+    if (!(on >> n & 1) || (n == 1 && !(s->setini & 0x40)) || clipped(n, x))
         return 0;
     inside = ((s->tmw | s->tsw) >> n & 1) ? win_mask(layer_sel(n), layer_logic(n), x - sl) : 0;
     return !(inside && (wn >> n & 1));
@@ -2060,7 +2121,7 @@ static unsigned m7_mosaic_texel(int n, int x, unsigned mosaic_row, const uint16_
 int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
 {
     int pw = ppu_frame_width(f), ph = f->screen_height, cpp = pw / f->width, top = f->top, r;
-    int keep_sw = sw, keep_sl = sl, keep_row = draw_row;
+    int keep_sw = sw, keep_sl = sl, keep_row = draw_row, keep_lines = draw_lines_of;
     unsigned keep_my = mosaic_y;
     const PpuScreen *keep_s = s;
     uint8_t ro = range_over, to = time_over;
@@ -2072,6 +2133,9 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
         if (!m7_px)
             return 0;
     }
+    m7_row = grow(m7_row, &m7_row_cap, (size_t)ph, sizeof *m7_row);
+    m7_seg = grow(m7_seg, &m7_seg_cap, (size_t)ph * (PPU_SEGS + 1), sizeof *m7_seg);
+    m7_pal = grow(m7_pal, &m7_pal_cap, (size_t)ph * (PPU_SEGS + 1), sizeof *m7_pal);
     memset(m, 0, sizeof *m);
     m->pic = pic;
     m->pw = pw;
@@ -2085,6 +2149,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     sw = f->width;
     sl = f->left;
     m->left = sl;
+    draw_lines_of = f->height;
     d_field = f->field;
     for (r = 0; r < ph; r++) {
         int line = r - top + 1, edge = line < 1 ? 1 : line > f->height ? f->height : line, k, n, x, i;
@@ -2221,6 +2286,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     sw = keep_sw;
     sl = keep_sl;
     draw_row = keep_row;
+    draw_lines_of = keep_lines;
     d_vram = vram;
     d_cgram = cgram;
     d_oam = oam;

@@ -11,8 +11,12 @@
 
 #define PPU_WIDTH       256
 #define PPU_HIRES_WIDTH 512
-#define PPU_EXT_WIDTH   1024    /* the widest screen nshvc_ext_screen sets */
-#define PPU_EXT_HEIGHT  480     /* the tallest */
+#define PPU_EXT_WIDTH   8192    /* the widest screen nshvc_ext_screen sets */
+#define PPU_EXT_HEIGHT  8192    /* the tallest */
+/* a copy of the sprite table as the drawing reads it: the table's 544
+   bytes, then each sprite's X page (nshvc_ext_sprite_page, signed), then
+   each one's Y page */
+#define PPU_OAM_EXT     (544 + 128 + 128)
 #define PPU_VRAM_PAGES  4       /* VRAM in 64 KB pages, up to 256 KB (nshvc_ext_vram) */
 #define PPU_MAX_HEIGHT  239
 
@@ -28,6 +32,8 @@ typedef struct {
     uint16_t oamaddr;
     uint8_t oam_prio;
     uint8_t page[5];          /* the VRAM page BG1-4 and the sprites read (nshvc_ext_layer_page) */
+    uint8_t clip;             /* BG1-4 and the sprites (bits 0-4) kept to the console's picture
+                                 (nshvc_ext_layer_clip) */
 } PpuScreen;
 
 /* A frame, everything its picture is drawn from: each line's screen state
@@ -58,7 +64,7 @@ typedef struct {
                                                    tall, woven with the frame before's */
     int versions;
     uint16_t vram[PPU_VERSIONS][PPU_VRAM_PAGES * 0x8000];
-    uint8_t oam[PPU_VERSIONS][576];             /* the table, then the extended X and Y bits */
+    uint8_t oam[PPU_VERSIONS][PPU_OAM_EXT];     /* the table, then the sprites' X and Y pages */
     uint8_t segs[PPU_MAX_HEIGHT + 1];           /* segments past the first (0: none) */
     uint16_t seg_x[PPU_MAX_HEIGHT + 1][PPU_SEGS];
     PpuScreen seg_line[PPU_MAX_HEIGHT + 1][PPU_SEGS];
@@ -142,10 +148,12 @@ void ppu_ext_screen(int width, int height);
 void ppu_ext_screen_origin(int x, int y);
 void ppu_ext_sprite_x(int sprite, int on);
 void ppu_ext_sprite_y(int sprite, int on);
+void ppu_ext_sprite_page(int sprite, int x_page, int y_page);
 void ppu_ext_sprite_limits(int on);
 void ppu_ext_vram(int kb);
 void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
+void ppu_ext_layer_clip(int layer, int on);
 void ppu_ext_vram_copy(int to_page, int from_page);
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
 /* the texels a console pixel spans along each axis at the window's size
