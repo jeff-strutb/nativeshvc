@@ -366,7 +366,10 @@ each one, is in [tests/README.md](tests/README.md).
   is exactly the console's picture, up to 8192 x 8192, and VRAM pages the same as page 0
   (`tests/rom/ext_check.py`); on the largest screens, sprites at every corner and edge
   and either side of the picture land exactly where their pages put them, through every
-  renderer, and a layer kept to the console's picture stops exactly at its edges
+  renderer, Y page 0's sprites kept from repeating above the picture with the wrap off, a
+  layer kept to the console's picture stops exactly at its edges, and a layer's map
+  outside the picture (64 and 128 tiles wide) is read at the layer's own column and row,
+  in the PPU's drawing, the compositor's records and a canvas frame's records alike
   (`tests/unit/screen_check.c`); with the S-CPU's costs off,
   its accesses (bytes, words, longs, read-modify-writes) take no time while a wait and a
   DMA take theirs, and a poll with no wait stops the run (`tests/unit/waits.c`); a VRAM
@@ -378,7 +381,8 @@ each one, is in [tests/README.md](tests/README.md).
   tiles past the canvas, neighbouring pixels of one record in two colours, both pages'
   characters) (`tests/unit/canvas_check.c`).
 - **Hosts:** headless, macOS (windowed run confirmed) and iOS (run on the iPhone simulator:
-  touch, buttons, the frame hook). Every build (headless with each renderer, macOS, iOS,
+  touch, buttons, the frame hook). On macOS both arm64 and x86-64: the x86-64 build (run
+  under Rosetta) plays the 1,164 test cartridges as the arm64 build does. Every build (headless with each renderer, macOS, iOS,
   the iOS simulator, Windows) compiles with no warnings.
 
 ## How it works
