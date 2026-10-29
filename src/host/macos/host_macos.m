@@ -161,7 +161,6 @@ static void key_event(uint16_t mac, int down)
 static NSWindow *s_win;
 static PortView *s_view;
 static CGColorSpaceRef s_rgb;
-static float s_aspect;
 
 @implementation PortView
 - (BOOL)acceptsFirstResponder { return YES; }
@@ -267,7 +266,6 @@ int host_window_open(int width, int height, const char *title)
                                               backing:NSBackingStoreBuffered
                                                 defer:NO];
         [s_win setTitle:[NSString stringWithUTF8String:title ? title : s_app_title]];
-        [s_win setContentAspectRatio:NSMakeSize(width, height)];
         [s_win setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
         s_view = [[PortView alloc] initWithFrame:r];
         [s_view setWantsLayer:YES];
@@ -353,8 +351,8 @@ void host_window_points(float *w, float *h)
 
 /* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the window, at
    the shape `aspect` (width over height): drawn into the largest rectangle
-   of that shape the view holds, centred (the window is held at that shape,
-   so only full screen shows black bars) */
+   of that shape the view holds, centred; the window takes any shape the
+   player gives it, the rest black */
 static CALayer *s_pic;
 
 void host_present(const uint32_t *argb, int w, int h, float aspect)
@@ -369,13 +367,6 @@ void host_present(const uint32_t *argb, int w, int h, float aspect)
             return;
         if (aspect <= 0)
             aspect = (float)w / (float)h;
-        if (aspect != s_aspect) {
-            NSRect f = [s_view bounds];
-            s_aspect = aspect;
-            [s_win setContentAspectRatio:NSMakeSize(aspect * 1000, 1000)];
-            if (!([s_win styleMask] & NSWindowStyleMaskFullScreen))
-                [s_win setContentSize:NSMakeSize(floor(f.size.height * aspect + 0.5), f.size.height)];
-        }
         d = [NSData dataWithBytes:argb length:(NSUInteger)w * (NSUInteger)h * 4];
         dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
         img = CGImageCreate((size_t)w, (size_t)h, 8, 32, (size_t)w * 4, s_rgb,
