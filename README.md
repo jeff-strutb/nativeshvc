@@ -93,6 +93,8 @@ what its Enhanced mode does.
 | a pace independent of processor speed | the S-CPU's accesses taking no console time (see Pacing, below) | `nshvc_set_cpu_costs(0)`, and `(1)` back |
 | a wider or taller screen | any screen up to 8192x8192, the console's picture exact at its centre or where the game puts it, and the rest drawn by the same rules | `nshvc_ext_screen`, `nshvc_ext_screen_origin` |
 | sprites past the console's coordinates | sprites anywhere on the largest screen, 512 columns and 256 rows a page | `nshvc_ext_sprite_page`, `nshvc_ext_sprite_x`, `_y` |
+| a layer's own map past the console's picture | a background reads other map entries outside the console's 256 columns and lines | `nshvc_ext_layer_outside` |
+| a layer's picture from the game's texels over the whole screen | a background drawn from texels by the screen's pixels, at the window's resolution | `nshvc_ext_canvas_screen` |
 | a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
@@ -266,8 +268,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.7.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.7: behaviour exact, each
+Version 2.8.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.8: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is

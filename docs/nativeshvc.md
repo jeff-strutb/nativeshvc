@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.7); this page describes the interface
+[the game contract](contract.md) (2.8); this page describes the interface
 around it.
 
 ## What it is
@@ -123,6 +123,8 @@ Each is off by default.
 | `nshvc_ext_screen_origin(x, y)` | the console's picture at column x and row y of that screen instead of its centre (-1: the centre), held at its right and bottom edges; sprites from the picture's column 0 and line 1 |
 | `nshvc_ext_sprite_page(s, x, y)` | a sprite 512 columns (pages -16 to 16) and 256 rows (pages -32 to 32) from its place, reaching the whole of the largest screen |
 | `nshvc_ext_sprite_x`, `_y` | X or Y page 1: sprites past the 9-bit X (+512) and the 256-row Y (+256) |
+| `nshvc_ext_layer_outside(layer, map, size)` | a background's map past the console's 256 columns and lines, its entries in BGnSC's layout (copied, from the next frame); everything else the layer's |
+| `nshvc_ext_canvas_screen(layer, texels, w, h, k, priority, palette)` | a background's picture over the whole screen from the game's texels by the screen's pixels, one priority and palette, at the window's resolution (one canvas at a time) |
 | `nshvc_ext_layer_clip(layer, on)` | a background or the sprites kept to the console's picture on a larger screen: transparent past its 256 columns and lines, a sprite across the edge cut at it |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |

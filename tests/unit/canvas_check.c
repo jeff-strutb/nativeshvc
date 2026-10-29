@@ -9,13 +9,16 @@
  * brightness; a hires line and mosaic, where it does not show; the canvas
  * turned off; a layer on VRAM page 1 with a canvas in the layer's page;
  * a layer on page 1 at the top and page 2 below, one canvas across both
- * pages). For each scene's frame, at one to one, scales up, of
+ * pages; a screen canvas, nshvc_ext_canvas_screen, contract 2.8, on a
+ * 320 x 240 screen with the console's picture off its centre, alone and
+ * under windows and maths). For each scene's frame, at one to one, scales up, of
  * another shape, down and a large window:
  *
  *   ref      the canvas layer alone on the main screen: each output pixel
  *            inside one console pixel against the canvas's texel under its
  *            centre, placed by the layer's map, scroll and flips as written
- *            again here, independently of ppu.c and rr_mode7.h
+ *            again here, independently of ppu.c and rr_mode7.h (a screen
+ *            canvas: the texel by the screen's pixel, none past its size)
  *   centre   the console's picture (nshvc_picture): each canvas pixel the
  *            centre texel of its console pixel
  *   flat     a canvas whose texels are one value in each console pixel:
@@ -41,7 +44,7 @@
 #include "rr_size.h"
 #include "rr_mode7.h"
 
-#define NSCENES 10
+#define NSCENES 12
 static int fails;
 static long compared;
 static int front;                      /* through the front end: the canvas at the window's scale */
@@ -54,7 +57,7 @@ static int front;                      /* through the front end: the canvas at t
    page; 2: the layer on page 1 to line 112 and page 2 below, one canvas
    in VRAM's whole space across both) */
 static const struct {
-    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages;
+    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages, screen;
 } scene[NSCENES] = {
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1 },     /* 0: BG1 8 bpp, flips, tiles past the canvas */
     { 1, 0, 4, 1, 300, 501, 2, 1, 0, 1 },   /* 1: BG1 4 bpp, 16 x 16, palettes */
@@ -66,7 +69,19 @@ static const struct {
     { 1, 0, 4, 0, 0, 0, 3, 1, 0, 0 },       /* 7: the canvas off */
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1, 1 },  /* 8: BG1 on page 1, the canvas in its page */
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1, 2 },  /* 9: BG1 on pages 1 and 2, one canvas across them */
+    { 1, 0, 4, 0, 0, 0, 3, 1, 0, 1, 0, 1 }, /* 10: a screen canvas, BG1 4 bpp, palette 5, priority 1 */
+    { 1, 0, 4, 0, 0, 0, 3, 0, 1, 1, 0, 1 }, /* 11: the same under windows and maths: flat */
 };
+/* a screen canvas's screen, where the console's picture sits on it, the
+   texels' width short of the screen's (none past them), its palette and
+   priority */
+#define SC_W 320
+#define SC_H 240
+#define SC_LEFT 20
+#define SC_TOP 6
+#define SC_SHORT 40
+#define SC_PAL 5
+#define SC_PRIO 1
 #define CV_ADDR 0x1000u                /* the canvas's first character's word address (the layer's characters' base) */
 #define CV_CHARS 64
 /* the scene's canvas: its word address and characters (across pages, from
@@ -93,10 +108,36 @@ static int scene_k;                    /* the k of the scene's canvas */
 
 /* the scene's canvas at k: random texels (a quarter 0), or one value in
    each console pixel's k x k (flat) */
+static int sc_w, sc_h;                 /* a screen canvas's texels across and down */
+
 static void make_canvas(int sc, int k)
 {
     int c, y, x, mask = (1 << scene[sc].bpp) - 1;
     size_t per = (size_t)64 * (size_t)k * (size_t)k;
+    if (scene[sc].screen) {
+        sc_w = (SC_W - SC_SHORT) * k;
+        sc_h = SC_H * k;
+        free(texels);
+        texels = malloc((size_t)sc_w * (size_t)sc_h);
+        for (y = 0; y < sc_h; y++)
+            for (x = 0; x < sc_w; x++) {
+                unsigned v;
+                if (scene[sc].flat) {
+                    unsigned px = (unsigned)(x / k), py = (unsigned)(y / k), hsh = py * 17u + px * 7u;
+                    v = (hsh % 5u == 0) ? 0u : (hsh * 2654435761u >> 13) & (unsigned)mask;
+                } else {
+                    v = rnd() & (unsigned)mask;
+                    if ((rnd() & 3) == 0)
+                        v = 0;
+                }
+                texels[(size_t)y * (size_t)sc_w + (size_t)x] = (uint8_t)v;
+            }
+        scene_k = k;
+        nshvc_ext_canvas_screen(scene[sc].layer, texels, sc_w, sc_h, k, SC_PRIO, SC_PAL);
+        if (front)
+            fprintf(stderr, "canvas_check: scene %d's canvas at k %d\n", sc, k);
+        return;
+    }
     free(texels);
     texels = malloc(cv_chars(sc) * per);
     for (c = 0; c < (int)cv_chars(sc); c++)
@@ -123,6 +164,8 @@ static void make_canvas(int sc, int k)
 static void setup(int sc)
 {
     int i, n = scene[sc].layer, page;
+    nshvc_ext_screen(scene[sc].screen ? SC_W : 256, scene[sc].screen ? SC_H : 224);
+    nshvc_ext_screen_origin(scene[sc].screen ? SC_LEFT : -1, scene[sc].screen ? SC_TOP : -1);
     /* VRAM: random words; the map at $0000 (32 x 32), characters from
        $1000 (the first 64 of them the canvas's), BG2's and BG3's maps and
        characters likewise further on; in each page the scene uses */
@@ -298,6 +341,17 @@ static uint32_t ref_colour(const PpuFrame *f, int sc, int h, int r, int sx, int 
     return rgb(cg[(scene[sc].mode == 0 ? (unsigned)n * 32 : 0) + pal * 4 + t]);
 }
 
+/* a screen canvas's colour at the screen's pixel (h, r), its texel (sx,
+   sy) of the pixel's k x k: by the screen's pixel, none past the texels */
+static uint32_t ref_screen(const PpuFrame *f, int h, int r, int sx, int sy)
+{
+    int k = f->cv_k, line = r - f->top + 1;
+    const uint16_t *cg = f->palette[line < 1 ? 1 : line > f->height ? f->height : line];
+    long ex = (long)h * k + sx, ey = (long)r * k + sy;
+    unsigned t = ex < sc_w && ey < sc_h ? texels[(size_t)ey * (size_t)sc_w + (size_t)ex] & 15u : 0u;
+    return t ? rgb(cg[SC_PAL * 16 + t]) : rgb(cg[0]);
+}
+
 static void report(const char *what, int sc, long bad, long n)
 {
     compared += n;
@@ -319,28 +373,29 @@ static int near_edge(double t)
    pixels), its centre's texel well inside one of the pixel's k x k */
 static void ref_check(const PpuFrame *f, int sc, const uint32_t *got, int ow, int oh, double scx, double scy)
 {
-    int X, Y, k = f->cv_k;
+    int X, Y, k = f->cv_k, pw = scene[sc].screen ? SC_W : 256, ph = scene[sc].screen ? SC_H : 224;
     long bad = 0, n = 0;
     char what[64];
     for (Y = 0; Y < oh; Y++) {
-        double y0 = (double)Y * 224 / oh, y1 = (double)(Y + 1) * 224 / oh, v = (Y + 0.5) * 224 / oh;
+        double y0 = (double)Y * ph / oh, y1 = (double)(Y + 1) * ph / oh, v = (Y + 0.5) * ph / oh;
         int r = (int)floor(v), sy;
         double fy = v - r;
         if (floor(y0) != ceil(y1) - 1 || near_edge(fy * k))
             continue;
         sy = (int)floor(fy * k);
         for (X = 0; X < ow; X++) {
-            double x0 = (double)X * 256 / ow, x1 = (double)(X + 1) * 256 / ow, u = (X + 0.5) * 256 / ow;
+            double x0 = (double)X * pw / ow, x1 = (double)(X + 1) * pw / ow, u = (X + 0.5) * pw / ow;
+            uint32_t want;
             int h = (int)floor(u), sx;
             double fx = u - h;
             if (floor(x0) != ceil(x1) - 1 || near_edge(fx * k))
                 continue;
             sx = (int)floor(fx * k);
             n++;
-            if (got[(size_t)Y * (size_t)ow + (size_t)X] != ref_colour(f, sc, h, r, sx, sy)) {
+            want = scene[sc].screen ? ref_screen(f, h, r, sx, sy) : ref_colour(f, sc, h, r, sx, sy);
+            if (got[(size_t)Y * (size_t)ow + (size_t)X] != want) {
                 if (!bad)
-                    printf("  first at (%d, %d): got %08x want %08x\n", X, Y, got[(size_t)Y * (size_t)ow + (size_t)X],
-                           ref_colour(f, sc, h, r, sx, sy));
+                    printf("  first at (%d, %d): got %08x want %08x\n", X, Y, got[(size_t)Y * (size_t)ow + (size_t)X], want);
                 bad++;
             }
         }
@@ -371,10 +426,11 @@ static void check_scene(int sc)
         /* the console's picture: the centre texel */
         long bad = 0;
         int k = f->cv_k, r, h;
-        for (r = 0; r < 224; r++)
-            for (h = 0; h < 256; h++)
-                bad += pic[(size_t)r * (size_t)pw + (size_t)h] != ref_colour(f, sc, h, r, k / 2, k / 2);
-        report("centre: the picture's texels", sc, bad, 256L * 224);
+        for (r = 0; r < ph; r++)
+            for (h = 0; h < pw; h++)
+                bad += pic[(size_t)r * (size_t)pw + (size_t)h] !=
+                       (scene[sc].screen ? ref_screen(f, h, r, k / 2, k / 2) : ref_colour(f, sc, h, r, k / 2, k / 2));
+        report("centre: the picture's texels", sc, bad, (long)pw * ph);
     }
     for (si = 0; si < 5; si++) {
         int ow = (int)(pw * size[si][0] + 0.5), oh = (int)(ph * size[si][1] + 0.5), d[4] = { 0, 0, ow, oh };
@@ -432,7 +488,13 @@ static void check_scene(int sc)
                 int ok;
                 for (b2 = 0; b2 < 8; b2++)
                     npal += pals >> b2 & 1;
-                ok = cv > 5000 && past > 5000 && hf > 1000 && vf > 1000 && (scene[sc].bpp == 8 || npal >= 4) && pair > 100;
+                if (scene[sc].screen)
+                    /* a screen canvas: every pixel of the layer the canvas's,
+                       none flipped, its one palette */
+                    ok = cv == (long)mm.pw * mm.ph && hf == 0 && vf == 0 && pals == 1u << SC_PAL;
+                else
+                    ok = cv > 5000 && past > 5000 && hf > 1000 && vf > 1000 && (scene[sc].bpp == 8 || npal >= 4) &&
+                         pair > 100;
                 if (scene[sc].pages) {
                     /* the layer's pages on its lines, and for the canvas
                        across pages, characters of both pages' ranges */

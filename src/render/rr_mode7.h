@@ -123,6 +123,7 @@ typedef struct RrMode7 {
     const uint8_t *cv;        /* the canvas's texels (PpuFrame cv), cv_len of them, cv_k a console pixel */
     size_t cv_len;
     int cv_k;
+    int cv_w, cv_h;           /* a screen canvas's texels across and down (0: a canvas of characters) */
 } RrMode7;
 
 static inline int64_t rr_m7_floordiv(int64_t a, int64_t b)
@@ -363,7 +364,7 @@ static inline uint32_t rr_cv_compose(const RrMode7 *m, const RrM7Px *p, const Rr
     unsigned adsub = ((unsigned)g->s[4] >> 16) & 0xFF, wsel = (unsigned)g->s[4] >> 24;
     unsigned fixed = (unsigned)g->s[5] & 0xFFFF, bright = ((unsigned)g->s[5] >> 16) & 0xFF;
     unsigned bpp = (unsigned)g->s[7] & 0xFF, mode = ((unsigned)g->s[7] >> 8) & 7;
-    unsigned pal = (w3 >> 22) & 7, z = (w3 >> 25) & 15, n = w3 >> 29;
+    unsigned pal = (w3 >> 22) & 7, z = (w3 >> 25) & 15, n = (w3 >> 29) & 3;
     const uint16_t *cg = m->pal + (size_t)g->s[6] * 256u;
     pix &= (1u << bpp) - 1u;
     if (pix) {
@@ -401,6 +402,11 @@ static inline uint32_t rr_cv_q(const RrMode7 *m, const RrM7Px *p, const RrM7Seg 
         sx = k - 1 - sx;
     if (w3 >> 21 & 1)
         sy = k - 1 - sy;
+    if (w3 >> 31) {
+        /* a screen canvas: by the screen's pixel */
+        size_t col = (size_t)(i / m->cpp), ex = col * k + sx, ey = (size_t)r * k + sy;
+        return rr_cv_compose(m, p, g, ex < (size_t)m->cv_w && ey < (size_t)m->cv_h ? m->cv[ey * (size_t)m->cv_w + ex] : 0u);
+    }
     at = (size_t)(w3 & 0x3FFF) * 64u * k * k + ((size_t)(w3 >> 17 & 7) * k + sy) * 8u * k + (size_t)(w3 >> 14 & 7) * k + sx;
     return rr_cv_compose(m, p, g, at < m->cv_len ? m->cv[at] : 0u);
 }

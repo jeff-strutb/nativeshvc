@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 7
+#define NSHVC_VERSION_MINOR 8
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -427,6 +427,23 @@ void nshvc_ext_vram_direct(int page);
    2.4; across pages since 2.5.) */
 int nshvc_ext_canvas_scale(void);
 void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
+/* A screen canvas, from the next frame: background layer 0-3 (BG1-4)'s
+   picture over the whole screen (nshvc_ext_screen's) from the game's
+   texels, w x h of them from the screen's top left pixel, k a console
+   pixel along each axis (so w = the screen's width times k to cover it),
+   copied here; none past w x h. A texel is a pixel's value as a tile's
+   would be at the layer's colour depth: 0 transparent; at 8 bpp the
+   CGRAM entry (or direct colour, with `palette` as the tile's palette
+   bits); at 4 bpp entry palette * 16 + value; at 2 bpp palette * 4 +
+   value (plus layer * 32 in Mode 0, as the layer's tiles). The whole
+   layer takes `priority` (0 or 1); its windows, clip, colour maths and
+   brightness are the console's. The console's picture takes the texel
+   under each pixel's centre; presented at the window's resolution, each
+   window pixel takes the texel under it, as nshvc_ext_canvas_chars's.
+   Modes 0-6, not on a hires line or under the layer's mosaic (there the
+   layer is its tiles). One canvas at a time: this one or
+   nshvc_ext_canvas_chars's, the last asked for. NULL: off. (Since 2.8.) */
+void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
    BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the

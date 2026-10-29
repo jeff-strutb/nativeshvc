@@ -75,6 +75,10 @@ typedef struct {
        pixel spans along each axis (k), and the texels, each character 8k x
        8k of them, row by row (cv_len bytes); cv_on 0: none */
     int cv_on, cv_layer, cv_k;
+    /* a screen canvas (nshvc_ext_canvas_screen) instead: texels by the
+       screen's pixels, cv_w x cv_h of them from its top left, the whole
+       layer's priority and palette */
+    int cv_screen, cv_w, cv_h, cv_prio, cv_pal;
     unsigned cv_addr, cv_count;
     size_t cv_len;
     const uint8_t *cv;
@@ -170,6 +174,7 @@ void ppu_ext_layer_clip(int layer, int on);
 void ppu_ext_layer_outside(int layer, const uint16_t *map, int size);
 void ppu_ext_vram_copy(int to_page, int from_page);
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
+void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
 /* the texels a console pixel spans along each axis at the window's size
    now (nshvc_ext_canvas_scale): the front end sets it as it presents */
 void ppu_set_canvas_scale(int k);

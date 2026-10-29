@@ -108,6 +108,7 @@ static const PpuFrame *d_frame;
    VRAM drawn from the game's texels, k a console pixel along each axis */
 static struct {
     int on, layer, k;
+    int screen, w, h, prio, pal;      /* a screen canvas (nshvc_ext_canvas_screen) */
     unsigned addr, count;
     uint8_t *data;
     size_t len, cap;
@@ -759,6 +760,7 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     }
     memcpy(cv_now.data, texels, len);
     cv_now.on = 1;
+    cv_now.screen = 0;
     cv_now.layer = layer;
     cv_now.addr = word_addr;
     cv_now.count = (unsigned)count;
@@ -771,6 +773,42 @@ void ppu_set_canvas_scale(int k) { cv_scale = k < 1 ? 1 : k > 64 ? 64 : k; }
 int ppu_canvas_scale(void) { return cv_scale; }
 
 /* the frame being made takes the canvas as it stands as the frame begins */
+void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette)
+{
+    size_t len;
+    if (!texels) {
+        cv_now.on = 0;
+        cv_now.gen++;
+        return;
+    }
+    if (layer < 0 || layer > 3 || w < 1 || h < 1 || k < 1 || k > 64 || priority < 0 || priority > 1 || palette < 0 ||
+        palette > 7)
+        snes_fatal("nshvc_ext_canvas_screen(%d, texels, %d, %d, k %d, priority %d, palette %d): layers 0-3 (BG1-4), "
+                   "a size of at least 1 x 1, k 1 to 64, priority 0 or 1, palette 0-7",
+                   layer, w, h, k, priority, palette);
+    len = (size_t)w * (size_t)h;
+    if (len > cv_now.cap) {
+        uint8_t *n = (uint8_t *)realloc(cv_now.data, len);
+        if (!n)
+            snes_fatal("no memory for the canvas (%zu bytes)", len);
+        cv_now.data = n;
+        cv_now.cap = len;
+    }
+    memcpy(cv_now.data, texels, len);
+    cv_now.on = 1;
+    cv_now.screen = 1;
+    cv_now.layer = layer;
+    cv_now.addr = 0;
+    cv_now.count = 0;
+    cv_now.k = k;
+    cv_now.w = w;
+    cv_now.h = h;
+    cv_now.prio = priority;
+    cv_now.pal = palette;
+    cv_now.len = len;
+    cv_now.gen++;
+}
+
 static void cv_take(void)
 {
     int slot = (int)(making - frames);
@@ -793,6 +831,11 @@ static void cv_take(void)
     making->cv_addr = cv_now.addr;
     making->cv_count = cv_now.count;
     making->cv_k = cv_now.k;
+    making->cv_screen = cv_now.screen;
+    making->cv_w = cv_now.w;
+    making->cv_h = cv_now.h;
+    making->cv_prio = cv_now.prio;
+    making->cv_pal = cv_now.pal;
     making->cv_len = cv_now.len;
     making->cv = cv_kept[slot];
     making->cv_gen = cv_now.gen;
@@ -833,6 +876,16 @@ void ppu_frame_start(void)
     sl = ext_ox < 0 ? (ext_width - PPU_WIDTH) / 2 : ext_ox > ext_width - PPU_WIDTH ? ext_width - PPU_WIDTH : ext_ox;
     making->left = sl;
     frame_oy = ext_oy;
+    {
+        /* the hardware's line 1's row, provisionally (the frame's lines
+           known at its vertical blank) */
+        int lines = (cur.setini & 0x04) ? 239 : 224;
+        making->top = ext_oy < 0 ? (ext_height - lines) / 2 : ext_oy;
+        if (making->top > ext_height - lines)
+            making->top = ext_height - lines;
+        if (making->top < 0)
+            making->top = 0;
+    }
     mosaic_y = 1;
     range_over = time_over = 0;
     making->field = field;
@@ -1173,7 +1226,7 @@ static long cv_char(int n, unsigned ca, unsigned bpp)
     unsigned wpc = bpp * 4u;
     unsigned long a = ca & 0x7FFFu;
     long rel;
-    if (!d_frame || !d_frame->cv_on || d_frame->cv_layer != n)
+    if (!d_frame || !d_frame->cv_on || d_frame->cv_screen || d_frame->cv_layer != n)
         return -1;
     if (d_frame->cv_addr >= 0x8000u)
         a |= (unsigned long)s->page[n] << 15;
@@ -1219,6 +1272,35 @@ static void draw_bg(int n, unsigned line, unsigned mode)
        field's (the first with the layer's mosaic on) */
     if (hires && (s->setini & 0x01))
         y = 2 * y + (d_field && !(s->mosaic & (1u << n)));
+    if (!hires && msize == 1 && d_frame && d_frame->cv_on && d_frame->cv_screen && d_frame->cv_layer == n) {
+        /* a screen canvas: each pixel the texel under its centre, the
+           layer's priority and palette (no map, no characters) */
+        const PpuFrame *f = d_frame;
+        int k = f->cv_k, R = draw_row + f->top;
+        unsigned pal = (unsigned)f->cv_pal, prio = (unsigned)f->cv_prio, c;
+        for (x = 0; x < count; x++) {
+            long tx = (long)x * k + k / 2, ty = (long)R * k + k / 2;
+            c = R >= 0 && tx < f->cv_w && ty < f->cv_h ? f->cv[(size_t)ty * (size_t)f->cv_w + (size_t)tx] : 0u;
+            c &= (1u << bpp) - 1u;
+            if (cv_capture) {
+                cv_at[x].ci1 = 1;
+                cv_at[x].px = cv_at[x].py = cv_at[x].flip = 0;
+                cv_at[x].pal = (uint8_t)pal;
+                cv_at[x].prio = (uint8_t)prio;
+            }
+            lp[x].opaque = c != 0;
+            lp[x].prio = (uint8_t)prio;
+            if (!c)
+                continue;
+            if (bpp == 8)
+                lp[x].color = (s->cgwsel & 1) ? direct_color((uint8_t)c, (uint8_t)pal) : d_cgram[c], lp[x].ci = (uint8_t)c;
+            else if (bpp == 4)
+                lp[x].ci = (uint8_t)(pal * 16 + c), lp[x].color = d_cgram[lp[x].ci];
+            else
+                lp[x].ci = (uint8_t)((mode == 0 ? n * 32 : 0) + pal * 4 + c), lp[x].color = d_cgram[lp[x].ci];
+        }
+        return;
+    }
     for (x = 0; x < count; x++) {
         int hx = (int)x - (hires ? 2 * sl : sl);
         int sx = msize > 1 ? floor_to(hx, (int)(hires ? 2 * msize : msize)) : hx;
@@ -2238,6 +2320,10 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVLEN] = (uint32_t)f->cv_len;
     cp_w[CP_M7SEG] = 0;
     cp_w[CP_OUT] = (uint32_t)outs;
+    cp_w[CP_CVSCREEN] = f->cv_on && f->cv_screen ? 1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 : 0u;
+    cp_w[CP_CVW] = (uint32_t)f->cv_w;
+    cp_w[CP_CVH] = (uint32_t)f->cv_h;
+    cp_w[CP_TOP] = (uint32_t)f->top;
     *words = n + cp_parts_n + cp_spr_n;
     return cp_w;
 }
@@ -2708,7 +2794,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
                         q->w2 = flags | (uint32_t)g << 16;
                         q->w3 = (uint32_t)(a->ci1 - 1) | (uint32_t)a->px << 14 | (uint32_t)a->py << 17 |
                                 (uint32_t)(a->flip & 3) << 20 | (uint32_t)a->pal << 22 | cv_depth(cn, a->prio) << 25 |
-                                (uint32_t)cn << 29;
+                                (uint32_t)cn << 29 | (f->cv_screen ? 0x80000000u : 0u);
                     }
                 }
                 continue;
@@ -2773,6 +2859,8 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     m->cv = f->cv_on ? f->cv : NULL;
     m->cv_len = f->cv_on ? f->cv_len : 0;
     m->cv_k = f->cv_on ? f->cv_k : 1;
+    m->cv_w = f->cv_on && f->cv_screen ? f->cv_w : 0;
+    m->cv_h = f->cv_on && f->cv_screen ? f->cv_h : 0;
     mosaic_y = keep_my;
     range_over = ro;
     time_over = to;
@@ -2833,6 +2921,8 @@ static void mode7_segs(const PpuFrame *f, RrMode7 *m, uint32_t *seg_of)
     m->cv = f->cv_on ? f->cv : NULL;
     m->cv_len = f->cv_on ? f->cv_len : 0;
     m->cv_k = f->cv_on ? f->cv_k : 1;
+    m->cv_w = f->cv_on && f->cv_screen ? f->cv_w : 0;
+    m->cv_h = f->cv_on && f->cv_screen ? f->cv_h : 0;
     s = &cur;
     d_vram = vram;
     d_cgram = cgram;

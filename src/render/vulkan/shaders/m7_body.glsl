@@ -83,7 +83,7 @@ uint cv_direct(uint c, uint pal) {
 }
 uint cv_compose(uvec4 p, int g, int pl, uint pix) {
     uint fl = p.z & 0xFFFFu, w3 = p.w, g7 = uint(S_(g + 7)), bpp = g7 & 0xFFu, mode = (g7 >> 8) & 7u;
-    uint pal = (w3 >> 22) & 7u, z = (w3 >> 25) & 15u, n = w3 >> 29;
+    uint pal = (w3 >> 22) & 7u, z = (w3 >> 25) & 15u, n = (w3 >> 29) & 3u;
     uint mc = p.x & 0xFFFFu, sc = p.x >> 16, mz = p.y & 0xFFu, sz = (p.y >> 8) & 0xFFu, ml = (p.y >> 16) & 0xFFu, sl = p.y >> 24;
     uint g4 = uint(S_(g + 4)), g5 = uint(S_(g + 5));
     pix &= (1u << bpp) - 1u;
@@ -104,6 +104,11 @@ uint cv_q(uvec4 p, int i, int r, int u, int v) {
     uint sx = (uint(fu) * k) >> 10, sy = (uint(fv) * k) >> 10;
     if (((w3 >> 20) & 1u) != 0u) sx = k - 1u - sx;
     if (((w3 >> 21) & 1u) != 0u) sy = k - 1u - sy;
+    if ((w3 >> 31) != 0u) {
+        // a screen canvas: by the screen's pixel
+        uint ex = uint(i / U_cpp) * k + sx, ey = uint(r) * k + sy;
+        return cv_compose(p, g, pl, ex < uint(U_cvw) && ey < uint(U_cvh) ? CV_(int(ey * uint(U_cvw) + ex)) : 0u);
+    }
     uint at = (w3 & 0x3FFFu) * 64u * k * k + (((w3 >> 17) & 7u) * k + sy) * 8u * k + ((w3 >> 14) & 7u) * k + sx;
     return cv_compose(p, g, pl, at < uint(U_cvlen) ? CV_(int(at)) : 0u);
 }

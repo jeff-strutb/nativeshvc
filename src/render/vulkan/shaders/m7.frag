@@ -5,7 +5,7 @@
 // push constants give, the planes in a 2D array image.
 layout(std430, set = 0, binding = 0) readonly buffer Ring { uint w[]; };
 layout(set = 0, binding = 1) uniform usampler2DArray planet;
-layout(push_constant) uniform PC { int pw, ph, d0, d1, step_u, step_v, oP, oS, oPal, oVram, oPic, oCols, oRows, oDu, cpp, left, cvk, cvlen, oCv; } U;
+layout(push_constant) uniform PC { int pw, ph, d0, d1, step_u, step_v, oP, oS, oPal, oVram, oPic, oCols, oRows, oDu, cpp, left, cvk, cvlen, oCv, cvw, cvh; } U;
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o;
 #define LD16(base, e) ((w[(base) + ((e) >> 1)] >> (16 * ((e) & 1))) & 0xFFFFu)
@@ -28,6 +28,8 @@ layout(location = 0) out vec4 o;
 #define U_left U.left
 #define U_cvk U.cvk
 #define U_cvlen U.cvlen
+#define U_cvw U.cvw
+#define U_cvh U.cvh
 #define U_du(k) int(w[U.oDu + (k)])
 #define U_dv(k) int(w[U.oDu + 28 + (k)])
 #define FRAG_X int(gl_FragCoord.x)

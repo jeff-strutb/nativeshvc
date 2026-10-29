@@ -64,7 +64,11 @@
 #define CP_M7SEG 20      /* the parts' segments (0: none, the frame presents neither) */
 #define CP_OUT 21        /* the maps outside the picture: on (bits 0-3) | sizes << 4, then
                             4096 entries a layer, two a word (0: none) */
-#define CP_HEADER 22
+#define CP_CVSCREEN 22   /* a screen canvas: 1 | priority << 1 | palette << 2 (0: none) */
+#define CP_CVW 23        /* its texels across and down */
+#define CP_CVH 24
+#define CP_TOP 25        /* the hardware's line 1's row */
+#define CP_HEADER 26
 
 #define CP_ST 20         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */
@@ -176,7 +180,7 @@ CP_FN U32 cp_direct(U32 c, U32 pal)
 CP_FN U32 cp_cv(U32 si, U32 n, U32 ca, U32 bpp, U32 px, U32 py, U32 flip)
 {
     U32 wpc = bpp * 4u, a = ca & 0x7FFFu, k, sx, sy, i, rel;
-    if (FD_(CP_CVON) == 0u || FD_(CP_CVLAYER) != n)
+    if (FD_(CP_CVON) == 0u || FD_(CP_CVSCREEN) != 0u || FD_(CP_CVLAYER) != n)
         return 256u;
     if (FD_(CP_CVADDR) >= 0x8000u)
         a |= cp_b(si, U_(CP_S_PAGE), n) << 15;
@@ -216,6 +220,27 @@ CP_FN U32 cp_bg(U32 si, U32 n, U32 x, I32 dr, U32 my)
     U32 hofs = ((n >> 1) == 0u ? cp_st[CP_S_HOFS] : cp_st[CP_S_HOFS + 1]) >> (16u * (n & 1u)) & 0xFFFFu;
     U32 vofs = ((n >> 1) == 0u ? cp_st[CP_S_VOFS] : cp_st[CP_S_VOFS + 1]) >> (16u * (n & 1u)) & 0xFFFFu;
     U32 xx, yy, tx, ty, px, py, c, e, ch, ca, pal, opt_h = 0u, flip, cv;
+    if (hires == 0u && msize == 1u && FD_(CP_CVON) != 0u && (FD_(CP_CVSCREEN) & 1u) != 0u && FD_(CP_CVLAYER) == n) {
+        /* a screen canvas: the texel under the pixel's centre, the layer's
+           priority and palette (ppu.c draw_bg) */
+        U32 k = FD_(CP_CVK), sc = FD_(CP_CVSCREEN), prio = (sc >> 1) & 1u, spal = (sc >> 2) & 7u;
+        I32 R = dr + I_(FD_(CP_TOP));
+        U32 ex = x * k + (k >> 1), ey = U_(R) * k + (k >> 1), v = 0u;
+        if (R >= 0 && ex < FD_(CP_CVW) && ey < FD_(CP_CVH)) {
+            U32 at = ey * FD_(CP_CVW) + ex;
+            v = (FD_(FD_(CP_CV) + (at >> 2)) >> (8u * (at & 3u))) & 0xFFu;
+        }
+        cp_cvat = spal << 22 | prio << 25;
+        v &= (1u << bpp) - 1u;
+        if (v == 0u)
+            return prio << 23;
+        if (bpp == 8u)
+            return CP_LP((cp_b(si, U_(CP_S_TSW), 1u) & 1u) != 0u ? cp_direct(v, spal) : cp_pal(si, v), v, prio);
+        if (bpp == 4u)
+            return CP_LP(cp_pal(si, spal * 16u + v), spal * 16u + v, prio);
+        return CP_LP(cp_pal(si, (mode == 0u ? n * 32u : 0u) + spal * 4u + v), (mode == 0u ? n * 32u : 0u) + spal * 4u + v,
+                     prio);
+    }
     if (hires != 0u && (cp_b(si, U_(CP_S_NBA), 3u) & 1u) != 0u)
         y = 2 * y + ((FD_(CP_FIELD) != 0u && (mosaic & (1u << n)) == 0u) ? 1 : 0);
     hx = I_(x) - (hires != 0u ? 2 * sl : sl);
@@ -757,7 +782,8 @@ CP_FN void cp_record(U32 X, U32 R)
             cp_r1 = ((cp_main >> 16) & 31u) | ((cp_sub >> 16) & 31u) << 8 | ((cp_main >> 21) & 7u) << 16 |
                     ((cp_sub >> 21) & 7u) << 24;
             cp_r2 = flags | g << 16;
-            cp_r3 = (cp_cvat & 0x1FFFFFFu) | cp_zbg(bgmode, cn, (cp_cvat >> 25) & 1u) << 25 | cn << 29;
+            cp_r3 = (cp_cvat & 0x1FFFFFFu) | cp_zbg(bgmode, cn, (cp_cvat >> 25) & 1u) << 25 | cn << 29 |
+                    ((FD_(CP_CVSCREEN) & 1u) << 31);
             return;
         }
     }

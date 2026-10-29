@@ -763,7 +763,7 @@ static int m7_make(VkShaderModule vs)
     VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
                                           { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
     VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-    VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 19 * 4 };
+    VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 21 * 4 };
     VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
     VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -900,7 +900,7 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     int ow = d[2] - d[0], oh = d[3] - d[1], k;
     size_t np = (size_t)m->pw * (size_t)m->ph;
-    int32_t pcv[19], uv[56];
+    int32_t pcv[21], uv[56];
     long off[9], qo;
     float c[4][4] = { { (float)d[0], (float)d[1], 0, 0 }, { (float)d[2], (float)d[1], 1, 0 },
                       { (float)d[0], (float)d[3], 0, 1 }, { (float)d[2], (float)d[3], 1, 1 } };
@@ -1011,6 +1011,8 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     pcv[16] = m->cv_k;
     pcv[17] = (int32_t)m->cv_len;
     pcv[18] = (int32_t)off[8];
+    pcv[19] = m->cv_w;
+    pcv[20] = m->cv_h;
     pass_begin();
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_m7);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_m7playout, 0, 1, &s_m7set, 0, NULL);

@@ -5,7 +5,7 @@ uniform usamplerBuffer Pb, palb, vramb, picb;
 uniform isamplerBuffer Sb, colsb, rowsb;
 uniform usampler2DArray planet;
 uniform usamplerBuffer cvb;
-uniform int U_pw, U_ph, U_d0, U_d1, U_step_u, U_step_v, U_rh, U_cpp, U_left, U_cvk, U_cvlen;
+uniform int U_pw, U_ph, U_d0, U_d1, U_step_u, U_step_v, U_rh, U_cpp, U_left, U_cvk, U_cvlen, U_cvw, U_cvh;
 uniform int U_du_[28], U_dv_[28];
 in vec2 uv;
 out vec4 o;
