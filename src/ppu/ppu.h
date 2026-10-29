@@ -178,5 +178,10 @@ extern unsigned long ppu_check_frames, ppu_check_bad, ppu_version_overflow, ppu_
 extern unsigned long ppu_compose_frames, ppu_compose_bad;
 /* a frame described for a compositor (render/compose_body.h): its words */
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words);
+/* the same with each part's segment for the records of a frame presenting
+   Mode 7 or a canvas, and m as ppu_mode7 makes it but for its records and
+   picture (the compositor's) */
+struct RrMode7;
+const uint32_t *ppu_compose_m7(const PpuFrame *f, size_t *words, struct RrMode7 *m);
 
 #endif

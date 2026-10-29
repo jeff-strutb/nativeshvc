@@ -929,6 +929,50 @@ void ppu_vblank_start(void)
                             got, want);
                 bad += got != want;
             }
+        if (ppu_frame_mode7(finished)) {
+            /* the records: ppu_mode7's, and the compositor's (their
+               segments compared by what they hold) */
+            static RrMode7 mc, mg;
+            static RrM7Seg *cseg;
+            static uint16_t *cpal;
+            static uint8_t *crow;
+            static size_t cseg_cap, cpal_cap, crow_cap;
+            const RrM7Px *cpx;
+            long rbad = 0;
+            ppu_mode7(finished, check_pic, &mc);
+            cpx = mc.px;
+            cseg = grow(cseg, &cseg_cap, (size_t)mc.segs + 1, sizeof *cseg);
+            cpal = grow(cpal, &cpal_cap, ((size_t)mc.pals + 1) * 256, sizeof *cpal);
+            memcpy(cseg, mc.seg, (size_t)mc.segs * sizeof *cseg);
+            memcpy(cpal, mc.pal, (size_t)mc.pals * 512);
+            crow = grow(crow, &crow_cap, (size_t)h, 1);
+            memcpy(crow, mc.row_m7, (size_t)h);
+            rr_cp_fd = ppu_compose_m7(finished, &nw, &mg);
+            for (y = 0; y < h; y++)
+                for (x = 0; x < w; x++) {
+                    const RrM7Px *q = &cpx[(size_t)y * (size_t)w + (size_t)x];
+                    int same;
+                    cp_record((uint32_t)x, (uint32_t)y);
+                    same = cp_r0 == q->w0 && cp_r1 == q->w1 && cp_r3 == q->w3 && (cp_r2 & 0xFFFF) == (q->w2 & 0xFFFF);
+                    if (same && !(q->w2 & RR_M7_NOT)) {
+                        const RrM7Seg *a = &cseg[q->w2 >> 16], *b = &mg.seg[cp_r2 >> 16];
+                        same = !memcmp(a->s, b->s, 6 * sizeof a->s[0]) && a->s[7] == b->s[7] &&
+                               !memcmp(cpal + (size_t)a->s[6] * 256, mg.pal + (size_t)b->s[6] * 256, 512);
+                    }
+                    if (!same && !rbad && ppu_compose_bad < 3)
+                        fprintf(stderr, "composecheck: frame %lu record (%d, %d): got %08x %08x %08x %08x want %08x %08x %08x %08x\n",
+                                frames_done, x, y, cp_r0, cp_r1, cp_r2, cp_r3, q->w0, q->w1, q->w2, q->w3);
+                    rbad += !same;
+                }
+            /* the rows marked: every row ppu_mode7 marks, at least */
+            for (y = 0; y < h; y++)
+                if (crow[y] && !mg.row_m7[y]) {
+                    if (!rbad && ppu_compose_bad < 3)
+                        fprintf(stderr, "composecheck: frame %lu row %d not marked\n", frames_done, y);
+                    rbad++;
+                }
+            bad += rbad;
+        }
         ppu_compose_frames++;
         ppu_compose_bad += bad != 0;
     }
@@ -2056,6 +2100,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVCOUNT] = f->cv_count;
     cp_w[CP_CVK] = (uint32_t)f->cv_k;
     cp_w[CP_CVLEN] = (uint32_t)f->cv_len;
+    cp_w[CP_M7SEG] = 0;
     *words = n + cp_parts_n + cp_spr_n;
     return cp_w;
 }
@@ -2603,6 +2648,72 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     d_cgram = cgram;
     d_oam = oam;
     return 1;
+}
+
+/* A frame presenting Mode 7 or a canvas for a compositor that makes its
+   records (render/compose_body.h cp_record): m as ppu_mode7 makes it but
+   for the records and the picture (the compositor's), and each of the
+   description's parts' segments (ppu_compose's order) into seg_of. A row
+   with a Mode 7 or canvas part is marked so whether or not a pixel of it
+   shows one: its pixels that do not are the picture's either way. */
+static void mode7_segs(const PpuFrame *f, RrMode7 *m, uint32_t *seg_of)
+{
+    int pw = ppu_frame_width(f), ph = f->screen_height, r;
+    size_t np = 0;
+    m7_row = grow(m7_row, &m7_row_cap, (size_t)ph, sizeof *m7_row);
+    m7_seg = grow(m7_seg, &m7_seg_cap, (size_t)ph * (PPU_SEGS + 1), sizeof *m7_seg);
+    m7_pal = grow(m7_pal, &m7_pal_cap, (size_t)ph * (PPU_SEGS + 1), sizeof *m7_pal);
+    memset(m, 0, sizeof *m);
+    m->pw = pw;
+    m->ph = ph;
+    m->cpp = pw / f->width;
+    m->left = f->left;
+    m->row_m7 = m7_row;
+    m->seg = m7_seg;
+    m->pal = &m7_pal[0][0];
+    m->vram = &m7_vram[0][0];
+    for (r = 0; r < ph; r++) {
+        int line = r - f->top + 1, edge = line < 1 ? 1 : line > f->height ? f->height : line, k, n;
+        const uint16_t *vr = f->vram[f->version[edge]];
+        n = edge == line ? f->segs[line] : 0;
+        m7_row[r] = 0;
+        for (k = 0; k <= n; k++) {
+            const PpuScreen *st = k ? &f->seg_line[line][k - 1] : &f->line[edge];
+            const uint16_t *pal = k ? f->seg_palette[line][k - 1] : f->palette[edge];
+            uint32_t g = 0;
+            if (pres_is_cv(f, st)) {
+                g = (uint32_t)cv_state(m, st, pal, f->cv_layer);
+                m7_row[r] = 1;
+            } else if (pres_is_m7(st)) {
+                g = (uint32_t)m7_state(m, st, pal, vr, line - 1);
+                m7_row[r] = 1;
+            }
+            seg_of[np++] = g;
+        }
+    }
+    m->plane = m7_plane;
+    m->plane_gen = m7_plane_gen;
+    m->cv = f->cv_on ? f->cv : NULL;
+    m->cv_len = f->cv_on ? f->cv_len : 0;
+    m->cv_k = f->cv_on ? f->cv_k : 1;
+    s = &cur;
+    d_vram = vram;
+    d_cgram = cgram;
+    d_oam = oam;
+}
+
+const uint32_t *ppu_compose_m7(const PpuFrame *f, size_t *words, RrMode7 *m)
+{
+    size_t n, parts;
+    const PpuScreen *keep_s = s;
+    ppu_compose(f, &n);
+    parts = cp_parts_n / 4;
+    cp_w = grow(cp_w, &cp_cap, n + parts, sizeof *cp_w);
+    mode7_segs(f, m, cp_w + n);
+    s = keep_s;
+    cp_w[CP_M7SEG] = (uint32_t)n;
+    *words = n + parts;
+    return cp_w;
 }
 
 void ppu_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, int ow, int oh)

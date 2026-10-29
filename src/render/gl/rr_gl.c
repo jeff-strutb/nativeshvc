@@ -84,7 +84,6 @@ static const char *k_over =
 static const char k_cp_pre[] =
     "#version 330 core\n"
     "uniform usamplerBuffer fdb;\n"
-    "out vec4 o;\n"
     "#define CP_FN\n"
     "#define CP_VAR\n"
     "#define U32 uint\n"
@@ -92,7 +91,19 @@ static const char k_cp_pre[] =
     "#define U_(x) uint(x)\n"
     "#define I_(x) int(x)\n"
     "#define FD_(i) texelFetch(fdb, int(i)).r\n";
+/* a frame presenting Mode 7 or a canvas: its records and picture, into
+   two integer targets */
+static const char k_cpr_post[] =
+    "layout(location = 0) out uvec4 rec;\n"
+    "layout(location = 1) out uint picv;\n"
+    "void main() {\n"
+    "    uint X = uint(gl_FragCoord.x), Y = uint(gl_FragCoord.y);\n"
+    "    picv = cp_pixel(X, Y);\n"
+    "    cp_record(X, Y);\n"
+    "    rec = uvec4(cp_r0, cp_r1, cp_r2, cp_r3);\n"
+    "}\n";
 static const char k_cp_post[] =
+    "out vec4 o;\n"
     "void main() {\n"
     "    uint p = cp_pixel(uint(gl_FragCoord.x), uint(gl_FragCoord.y));\n"
     "    o = vec4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0;\n"
@@ -104,6 +115,9 @@ static uint32_t s_plane_gen;
 static int s_planes, s_plane_layers;
 static int s_pw, s_ph;
 static GLuint s_cp, s_cpfbo, s_cpbuf, s_cptex;   /* the compositor, its target and description */
+static GLuint s_cpr, s_rectex, s_picutex;        /* the records' program and targets */
+static int s_recw, s_rech;
+static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, int gpu);
 static int s_rw, s_rh, s_window;
 
 static GLuint shader(GLenum kind, const char *src)
@@ -187,6 +201,18 @@ int rr_open(void)
         if (!s_cp)
             return 0;
         glUniform1i(glGetUniformLocation(s_cp, "fdb"), 12);
+        n = sizeof k_cp_pre + sizeof k_compose_body + sizeof k_cpr_post;
+        fs = (char *)malloc(n);
+        if (!fs)
+            return 0;
+        snprintf(fs, n, "%s%s%s", k_cp_pre, k_compose_body, k_cpr_post);
+        s_cpr = program(k_vs, fs);
+        free(fs);
+        if (!s_cpr)
+            return 0;
+        glUniform1i(glGetUniformLocation(s_cpr, "fdb"), 12);
+        glGenTextures(1, &s_rectex);
+        glGenTextures(1, &s_picutex);
         glGenFramebuffers(1, &s_cpfbo);
         glGenBuffers(1, &s_cpbuf);
         glGenTextures(1, &s_cptex);
@@ -344,7 +370,79 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
     draw(s_pic, w, h, d);
 }
 
-void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
+
+int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
+                     const struct RrM7Samples *s)
+{
+    static const float q[6][4] = { { -1, -1, 0, 0 }, { 1, -1, 1, 0 }, { -1, 1, 0, 1 },
+                                   { -1, 1, 0, 1 }, { 1, -1, 1, 0 }, { 1, 1, 1, 1 } };
+    static const GLenum both[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    int w = m->pw, h = m->ph;
+    size_t np = (size_t)w * (size_t)h;
+    if (!s_cpr || np == 0 || d[2] <= d[0] || d[3] <= d[1])
+        return 0;
+    /* the records and picture drawn into two integer targets, row 0 the
+       first (as the picture's), then copied on the GPU into the
+       presentation's buffers */
+    if (w != s_recw || h != s_rech) {
+        glBindTexture(GL_TEXTURE_2D, s_rectex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, w, h, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, s_picutex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, w, h, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        s_recw = w;
+        s_rech = h;
+    }
+    glActiveTexture(GL_TEXTURE0 + 12);
+    glBindBuffer(GL_TEXTURE_BUFFER, s_cpbuf);
+    glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(words * 4), desc, GL_STREAM_DRAW);
+    glBindTexture(GL_TEXTURE_BUFFER, s_cptex);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, s_cpbuf);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_cpfbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_rectex, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, s_picutex, 0);
+    glDrawBuffers(2, both);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glDrawBuffers(1, both);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+        glActiveTexture(GL_TEXTURE0);
+        return 0;
+    }
+    glViewport(0, 0, w, h);
+    glUseProgram(s_cpr);
+    glBindVertexArray(s_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, s_m7buf[0]);
+    glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)(np * 16), NULL, GL_STREAM_COPY);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(0, 0, w, h, GL_RGBA_INTEGER, GL_UNSIGNED_INT, (void *)0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, s_m7buf[4]);
+    glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)(np * 4), NULL, GL_STREAM_COPY);
+    glReadBuffer(GL_COLOR_ATTACHMENT1);
+    glReadPixels(0, 0, w, h, GL_RED_INTEGER, GL_UNSIGNED_INT, (void *)0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glDrawBuffers(1, both);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
+    glActiveTexture(GL_TEXTURE0);
+    m7_draw(m, d, s, 1);
+    return 1;
+}
+
+void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s) { m7_draw(m, d, s, 0); }
+
+/* m presented over d; with gpu, its records and picture are in the
+   presentation's buffers already (the compositor's) */
+static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, int gpu)
 {
     static const GLenum fmt[7] = { GL_RGBA32UI, GL_R32I, GL_R16UI, GL_R16UI, GL_R32UI, GL_R32I, GL_R32I };
     static const uint8_t none = 0;
@@ -375,7 +473,8 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
     glUseProgram(s_m7);
     for (i = 0; i < 7; i++) {
         glBindBuffer(GL_TEXTURE_BUFFER, s_m7buf[i]);
-        glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)len[i], src[i], GL_STREAM_DRAW);
+        if (!gpu || (i != 0 && i != 4))
+            glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)len[i], src[i], GL_STREAM_DRAW);
         glActiveTexture(GL_TEXTURE0 + 1 + (GLenum)i);
         glBindTexture(GL_TEXTURE_BUFFER, s_m7tex[i]);
         glTexBuffer(GL_TEXTURE_BUFFER, fmt[i], s_m7buf[i]);

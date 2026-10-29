@@ -57,6 +57,12 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]);
 struct RrMode7;
 struct RrM7Samples;
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s);
+/* a frame presenting Mode 7 or a canvas: its picture and records drawn by
+   the backend's compositor from its description (ppu.c ppu_compose_m7),
+   then presented as rr_mode7 presents m (m's tables, not its records or
+   picture); 0 when the backend has no compositor */
+int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
+                     const struct RrM7Samples *s);
 
 /* the frame done: shown in the window, when there is one */
 void rr_present(void);

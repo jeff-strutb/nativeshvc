@@ -381,6 +381,37 @@ static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
     return 1;
 }
 
+/* The last frame, presenting Mode 7 or a canvas, drawn at ow x oh over d
+   by the renderer's compositor (its picture and records the GPU's); 0
+   when it is not drawn so (no compositor, NSHVC_COMPOSE=0, an interlaced
+   weave, or no Mode 7 or canvas presented) */
+static int show_mode7(int ow, int oh, const int d[4])
+{
+    static RrMode7 m;
+    static RrM7Samples smp;
+    const PpuFrame *f = ppu_frame();
+    const char *e = getenv("NSHVC_COMPOSE");
+    size_t nw;
+    const uint32_t *desc;
+    if ((e && !strcmp(e, "0")) || ow <= 0 || oh <= 0 || f->versions == 0 || f->interlace || !ppu_frame_mode7(f))
+        return 0;
+    desc = ppu_compose_m7(f, &nw, &m);
+    if (ow > m7_cols_cap) {
+        free(m7_cols);
+        m7_cols = (int32_t *)malloc((size_t)ow * 3 * 4);
+        m7_cols_cap = m7_cols ? ow : 0;
+    }
+    if (oh > m7_rows_cap) {
+        free(m7_rows);
+        m7_rows = (int32_t *)malloc((size_t)oh * 4 * 4);
+        m7_rows_cap = m7_rows ? oh : 0;
+    }
+    if (!m7_cols || !m7_rows)
+        nshvc_fatal("no memory for the picture at %dx%d", ow, oh);
+    rr_m7_tables(&m, ow, oh, &smp, m7_cols, m7_rows);
+    return rr_compose_mode7(desc, nw, &m, d, &smp);
+}
+
 /* a shot's picture (script.h): NSHVC_SCALE=S or SXxSY (headless), window
    pixels a console pixel: the frame presented as a window that size shows
    it (without it, the console's picture) */
@@ -576,7 +607,9 @@ static void show(void)
     shown_tw = tw;
     canvas_scale(w, h);
     rr_begin(0xFF000000u);
-    if (mode7_prepare(w, h, &m, &smp))
+    if (show_mode7(w, h, d))
+        ;
+    else if (mode7_prepare(w, h, &m, &smp))
         rr_mode7(&m, d, &smp);
     else
         show_picture(d);
@@ -633,10 +666,15 @@ static void rr_check(void)
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
     if (ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
+        int gpu;
         recorded = 1;
+        /* the compositor's records where the renderer has one (drawn
+           first: the reference's are made over the same tables) */
+        gpu = show_mode7(tw, th, d);
         if (!mode7_prepare(tw, th, &m, &smp))
             nshvc_fatal("rrcheck: no record for the frame");
-        rr_mode7(&m, d, &smp);
+        if (!gpu)
+            rr_mode7(&m, d, &smp);
         rr_ref_mode7(want, tw, th, &m, d, &smp);
         rr_m7_frames++;
     } else {

@@ -49,7 +49,17 @@ static const char k_compose_post[] =
     "  c.fd = fd;\n"
     "  if (g.x >= fd[CP_PW] || g.y >= fd[CP_PH]) return;\n"
     "  p = c.cp_pixel(g.x, g.y);\n"
-    "  o.write(float4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0, g); }\n";
+    "  o.write(float4(float((p >> 16) & 255u), float((p >> 8) & 255u), float(p & 255u), 255.0) / 255.0, g); }\n"
+    /* a frame presenting Mode 7 or a canvas: its picture and records */
+    "kernel void cprk(device const uint *fd [[buffer(0)]], device uint4 *rec [[buffer(1)]], device uint *pic [[buffer(2)]],\n"
+    "                 uint2 g [[thread_position_in_grid]]) {\n"
+    "  CP c; uint i;\n"
+    "  c.fd = fd;\n"
+    "  if (g.x >= fd[CP_PW] || g.y >= fd[CP_PH]) return;\n"
+    "  i = g.y * fd[CP_PW] + g.x;\n"
+    "  pic[i] = c.cp_pixel(g.x, g.y);\n"
+    "  c.cp_record(g.x, g.y);\n"
+    "  rec[i] = uint4(c.cp_r0, c.cp_r1, c.cp_r2, c.cp_r3); }\n";
 
 static NSString *const k_src = @
 "#include <metal_stdlib>\n"
@@ -327,7 +337,8 @@ static NSString *const k_src = @
 static id<MTLDevice> s_dev;
 static id<MTLCommandQueue> s_q;
 static id<MTLRenderPipelineState> s_copy, s_sharp, s_m7;
-static id<MTLComputePipelineState> s_cp;      /* the compositor */
+static id<MTLComputePipelineState> s_cp, s_cpr; /* the compositor: a picture; a picture and its records */
+static id<MTLBuffer> s_recbuf[3], s_picbuf[3];  /* each frame in flight's records and picture */
 static id<MTLBuffer> s_cpbuf[3];              /* each frame in flight's description */
 static id<MTLTexture> s_plane;             /* the Mode 7 planes (rr_mode7.h), as last uploaded */
 static uint32_t s_plane_gen;
@@ -412,7 +423,9 @@ int rr_open(void)
                 return 0;
             }
             s_cp = [s_dev newComputePipelineStateWithFunction:fn error:&err];
-            if (!s_cp)
+            fn = [cl newFunctionWithName:@"cprk"];
+            s_cpr = fn ? [s_dev newComputePipelineStateWithFunction:fn error:&err] : nil;
+            if (!s_cp || !s_cpr)
                 return 0;
         }
         for (i = 0; i < 3; i++)
@@ -576,7 +589,52 @@ static void draw_pic(id<MTLTexture> t, int w, int h, const int d[4])
     }
 }
 
-void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
+static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, id<MTLBuffer> px,
+                    id<MTLBuffer> pic);
+
+void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s) { m7_draw(m, d, s, nil, nil); }
+
+int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
+                     const struct RrM7Samples *s)
+{
+    @autoreleasepool {
+        size_t np = (size_t)m->pw * (size_t)m->ph;
+        id<MTLComputeCommandEncoder> ce;
+        MTLRenderPassDescriptor *rp;
+        if (!s_cpr || !s_enc || np == 0 || d[2] <= d[0] || d[3] <= d[1])
+            return 0;
+        if (!s_cpbuf[s_pi] || [s_cpbuf[s_pi] length] < words * 4)
+            s_cpbuf[s_pi] = [s_dev newBufferWithLength:words * 4 * 2 options:MTLResourceStorageModeShared];
+        if (!s_recbuf[s_pi] || [s_recbuf[s_pi] length] < np * 16) {
+            s_recbuf[s_pi] = [s_dev newBufferWithLength:np * 16 options:MTLResourceStorageModePrivate];
+            s_picbuf[s_pi] = [s_dev newBufferWithLength:np * 4 options:MTLResourceStorageModePrivate];
+        }
+        if (!s_cpbuf[s_pi] || !s_recbuf[s_pi] || !s_picbuf[s_pi])
+            return 0;
+        memcpy([s_cpbuf[s_pi] contents], desc, words * 4);
+        /* the picture and records first, in a pass of their own */
+        [s_enc endEncoding];
+        ce = [s_cmd computeCommandEncoder];
+        [ce setComputePipelineState:s_cpr];
+        [ce setBuffer:s_cpbuf[s_pi] offset:0 atIndex:0];
+        [ce setBuffer:s_recbuf[s_pi] offset:0 atIndex:1];
+        [ce setBuffer:s_picbuf[s_pi] offset:0 atIndex:2];
+        [ce dispatchThreads:MTLSizeMake((NSUInteger)m->pw, (NSUInteger)m->ph, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [ce endEncoding];
+        rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = s_col;
+        rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        s_enc = [s_cmd renderCommandEncoderWithDescriptor:rp];
+        m7_draw(m, d, s, s_recbuf[s_pi], s_picbuf[s_pi]);
+        return 1;
+    }
+}
+
+/* m presented over d; its records and picture from px and pic where given
+   (the compositor's), else m's own */
+static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, id<MTLBuffer> px,
+                    id<MTLBuffer> pic)
 {
     @autoreleasepool {
         struct { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen; } u;
@@ -607,13 +665,13 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         /* the frame's record, its states, palettes, VRAM and picture, and
            the tables: each draw its own copies, the GPU reading them while
            the next frame is made */
-        b[0] = [s_dev newBufferWithBytes:m->px length:np * sizeof *m->px options:MTLResourceStorageModeShared];
+        b[0] = px ? px : [s_dev newBufferWithBytes:m->px length:np * sizeof *m->px options:MTLResourceStorageModeShared];
         b[1] = [s_dev newBufferWithBytes:m->seg length:(size_t)(m->segs ? m->segs : 1) * sizeof *m->seg
                                  options:MTLResourceStorageModeShared];
         b[2] = [s_dev newBufferWithBytes:m->pal length:(size_t)(m->pals ? m->pals : 1) * 512 options:MTLResourceStorageModeShared];
         b[3] = [s_dev newBufferWithBytes:m->vram length:(size_t)(m->vrams ? m->vrams : 1) * 0x10000
                                  options:MTLResourceStorageModeShared];
-        b[4] = [s_dev newBufferWithBytes:m->pic length:np * 4 options:MTLResourceStorageModeShared];
+        b[4] = pic ? pic : [s_dev newBufferWithBytes:m->pic length:np * 4 options:MTLResourceStorageModeShared];
         b[5] = [s_dev newBufferWithBytes:s->cols length:(size_t)ow * 3 * 4 options:MTLResourceStorageModeShared];
         b[6] = [s_dev newBufferWithBytes:s->rows length:(size_t)oh * 4 * 4 options:MTLResourceStorageModeShared];
         {

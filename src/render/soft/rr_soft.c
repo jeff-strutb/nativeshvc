@@ -81,6 +81,18 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
     rr_ref_image(s_px, s_w, s_h, argb, w, h, d);
 }
 
+
+int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
+                     const struct RrM7Samples *s)
+{
+    (void)desc;
+    (void)words;
+    (void)m;
+    (void)d;
+    (void)s;
+    return 0;   /* no compositor: the caller makes the records and picture */
+}
+
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
 {
     rr_ref_mode7(s_px, s_w, s_h, m, d, s);

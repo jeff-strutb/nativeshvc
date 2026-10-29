@@ -349,6 +349,16 @@ each one, is in [tests/README.md](tests/README.md).
   5.5 to 35 times smaller than point sampling's where the plane is magnified, 4.5 to 6
   times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
   a plain frame 0.2 to 0.4.
+- **The GPU compositor:** Metal, OpenGL and Vulkan draw the console's picture themselves,
+  a GPU thread a pixel, from a description of the frame the CPU makes (each row's states,
+  the VRAM, and each row's sprites with the console's line limits decided), and the
+  records a Mode 7 or canvas frame is presented from. One source
+  (`src/render/compose_body.h`) is the C reference and every backend's shader; the C is
+  held to the PPU's own drawing on every frame of the test cartridges (on larger and placed
+  screens too), and each backend to the CPU reference through the presentation, none
+  differing. On an M4 Pro a 2048x2048 screen takes about 1 ms of description and 2 of
+  the GPU, 8192x8192 about 4 and 21 (the CPU's drawing: 0.3 and 4.3 s). An interlaced
+  frame's two fields are still woven on the CPU.
 - **Enhancement support:** a larger screen's centre, or where the game puts the picture,
   is exactly the console's picture, up to 8192 x 8192, and VRAM pages the same as page 0
   (`tests/rom/ext_check.py`); on the largest screens, sprites at every corner and edge

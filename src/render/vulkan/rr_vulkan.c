@@ -117,6 +117,12 @@ static VkPipelineLayout s_cplayout;
 static VkDescriptorPool s_cpool;
 static VkDescriptorSet s_cset, s_cdraw;
 static VkPipeline s_cp;
+/* the records' compositor (shaders/compose_rec.comp): set 0 the ring alone */
+static VkDescriptorSetLayout s_crlay;
+static VkPipelineLayout s_crplayout;
+static VkDescriptorSet s_crset;
+static VkPipeline s_cpr;
+static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, long opx, long opic);
 static VkImage s_cimg;
 static VkDeviceMemory s_cimg_mem;
 static VkImageView s_cimg_view;
@@ -580,6 +586,10 @@ static void ring_bind(void)
         wr.dstSet = s_cset;
         vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
     }
+    if (s_crset) {
+        wr.dstSet = s_crset;
+        vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
+    }
 }
 
 static void wait_frame(void);
@@ -653,7 +663,8 @@ static int cp_make(void)
     pi.pPushConstantRanges = &pc;
     if (!VK_OK(vkCreatePipelineLayout(s_dev, &pi, NULL, &s_cplayout)))
         return 0;
-    dpi.maxSets = 2;
+    dpi.maxSets = 3;
+    ps[0].descriptorCount = 2;
     dpi.poolSizeCount = 3;
     dpi.pPoolSizes = ps;
     if (!VK_OK(vkCreateDescriptorPool(s_dev, &dpi, NULL, &s_cpool)))
@@ -666,13 +677,30 @@ static int cp_make(void)
     da.pSetLayouts = &s_lay;
     if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_cdraw)))
         return 0;
+    {
+        VkPushConstantRange rpc = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 12 };
+        li.bindingCount = 1;
+        if (!VK_OK(vkCreateDescriptorSetLayout(s_dev, &li, NULL, &s_crlay)))
+            return 0;
+        pi.pSetLayouts = &s_crlay;
+        pi.pPushConstantRanges = &rpc;
+        if (!VK_OK(vkCreatePipelineLayout(s_dev, &pi, NULL, &s_crplayout)))
+            return 0;
+        da.pSetLayouts = &s_crlay;
+        if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_crset)))
+            return 0;
+    }
     ring_bind();
     ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.stage.module = module(k_compose_comp, sizeof k_compose_comp);
     ci.stage.pName = "main";
     ci.layout = s_cplayout;
-    return VK_OK(vkCreateComputePipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_cp));
+    if (!VK_OK(vkCreateComputePipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_cp)))
+        return 0;
+    ci.stage.module = module(k_compose_rec_comp, sizeof k_compose_rec_comp);
+    ci.layout = s_crplayout;
+    return VK_OK(vkCreateComputePipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_cpr));
 }
 
 /* the compositor's picture, w x h: made again (after what the frame has
@@ -828,7 +856,46 @@ static long ring_put(const void *p, size_t n)
     return o < 0 ? -1 : o / 4;
 }
 
-void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
+
+int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
+                     const struct RrM7Samples *s)
+{
+    size_t np = (size_t)m->pw * (size_t)m->ph;
+    int ow = d[2] - d[0], oh = d[3] - d[1];
+    long off, orec, opic;
+    uint32_t pc[3];
+    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    if (!s_recording || !s_cpr || np == 0 || ow <= 0 || oh <= 0)
+        return 0;
+    /* room for the description, the records and picture, and everything
+       the presentation puts in the ring after them (m7_draw's), at once:
+       no flush between them */
+    if (!ring_fit(words * 4 + np * 20 + (VkDeviceSize)m->vrams * 0x110000u + (size_t)m->segs * sizeof *m->seg +
+                  (size_t)m->pals * 512 + (size_t)ow * 12 + (size_t)oh * 16 + 56 * 4 + (m->cv ? m->cv_len : 0) +
+                  6 * 16 + 16 * 256))
+        return 0;
+    if ((off = ring_put(desc, words * 4)) < 0 || (orec = ring_take(np * 16)) < 0 || (opic = ring_take(np * 4)) < 0)
+        return 0;
+    pc[0] = (uint32_t)off;
+    pc[1] = (uint32_t)(orec / 4);
+    pc[2] = (uint32_t)(opic / 4);
+    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cpr);
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_crplayout, 0, 1, &s_crset, 0, NULL);
+    vkCmdPushConstants(s_cmd, s_crplayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    vkCmdDispatch(s_cmd, (uint32_t)(m->pw + 31) / 32, (uint32_t)(m->ph + 7) / 8, 1);
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(s_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb, 0,
+                         NULL, 0, NULL);
+    m7_draw(m, d, s, orec / 4, opic / 4);
+    return 1;
+}
+
+void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s) { m7_draw(m, d, s, -1, -1); }
+
+/* m presented over d; its records and picture at words opx and opic of
+   the ring where given (the compositor's, >= 0), else m's own */
+static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s, long opx, long opic)
 {
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     int ow = d[2] - d[0], oh = d[3] - d[1], k;
@@ -845,8 +912,9 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
         return;
     {
         /* everything this draw puts in the ring, each part aligned */
-        VkDeviceSize need = (VkDeviceSize)m->vrams * 0x100000u + np * sizeof *m->px + (size_t)m->segs * sizeof *m->seg +
-                            (size_t)m->pals * 512 + (size_t)m->vrams * 0x10000 + np * 4 + (size_t)ow * 12 +
+        VkDeviceSize need = (VkDeviceSize)m->vrams * 0x100000u + (opx < 0 ? np * sizeof *m->px : 0) +
+                            (size_t)m->segs * sizeof *m->seg + (size_t)m->pals * 512 + (size_t)m->vrams * 0x10000 +
+                            (opic < 0 ? np * 4 : 0) + (size_t)ow * 12 +
                             (size_t)oh * 16 + sizeof uv + (m->cv ? m->cv_len : 0) + 6 * 16 + 12 * 256;
         if (!ring_fit(need))
             return;
@@ -898,11 +966,11 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
     memcpy(uv + 28, s->dv4, sizeof s->dv4);
     memcpy(uv + 32, s->dv8, sizeof s->dv8);
     memcpy(uv + 40, s->dv16, sizeof s->dv16);
-    off[0] = ring_put(m->px, np * sizeof *m->px);
+    off[0] = opx >= 0 ? opx : ring_put(m->px, np * sizeof *m->px);
     off[1] = ring_put(m->seg, (size_t)m->segs * sizeof *m->seg);
     off[2] = ring_put(m->pal, (size_t)m->pals * 512);
     off[3] = ring_put(m->vram, (size_t)m->vrams * 0x10000);
-    off[4] = ring_put(m->pic, np * 4);
+    off[4] = opic >= 0 ? opic : ring_put(m->pic, np * 4);
     off[5] = ring_put(s->cols, (size_t)ow * 3 * 4);
     off[6] = ring_put(s->rows, (size_t)oh * 4 * 4);
     off[7] = ring_put(uv, sizeof uv);

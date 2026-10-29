@@ -1,0 +1,32 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The Vulkan backend's prelude to compose_body.h for a frame presenting
+// Mode 7 or a canvas: the frame's description in the staging ring at the
+// word offset the push constants give, its picture and records written
+// into the ring at theirs (the Mode 7 presentation reads them there), a
+// thread a picture pixel.
+layout(local_size_x = 32, local_size_y = 8) in;
+layout(std430, set = 0, binding = 0) buffer Ring { uint ring_w[]; };
+layout(push_constant) uniform PC { uint off, orec, opic; } U;
+#define CP_FN
+#define CP_VAR
+#define U32 uint
+#define I32 int
+#define U_(x) uint(x)
+#define I_(x) int(x)
+#define FD_(i) ring_w[U.off + (i)]
+#include "../../compose_body.h"
+void main()
+{
+    uvec2 g = gl_GlobalInvocationID.xy;
+    uint i;
+    if (g.x >= FD_(CP_PW) || g.y >= FD_(CP_PH))
+        return;
+    i = g.y * FD_(CP_PW) + g.x;
+    ring_w[U.opic + i] = cp_pixel(g.x, g.y);
+    cp_record(g.x, g.y);
+    ring_w[U.orec + 4u * i] = cp_r0;
+    ring_w[U.orec + 4u * i + 1u] = cp_r1;
+    ring_w[U.orec + 4u * i + 2u] = cp_r2;
+    ring_w[U.orec + 4u * i + 3u] = cp_r3;
+}
