@@ -2749,6 +2749,8 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     sl = f->left;
     m->left = sl;
     draw_lines_of = f->height;
+    /* the frame its drawing reads (a canvas, the maps outside the picture) */
+    d_frame = f;
     d_field = f->field;
     for (r = 0; r < ph; r++) {
         int line = r - top + 1, edge = line < 1 ? 1 : line > f->height ? f->height : line, k, n, x, i;
@@ -2785,11 +2787,9 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
                 draw_line((unsigned)edge, scratch, sw);
                 s = st;
                 d_vram = vr + ((unsigned)s->page[cn] << 15);
-                d_frame = f;
                 cv_capture = 1;
                 draw_bg(cn, (unsigned)edge, mode);
                 cv_capture = 0;
-                d_frame = NULL;
                 for (x = x0; x < x1; x++) {
                     const CvAt *a = &cv_at[x];
                     unsigned flags = RR_CV;
@@ -2888,6 +2888,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     sl = keep_sl;
     draw_row = keep_row;
     draw_lines_of = keep_lines;
+    d_frame = NULL;
     d_vram = vram;
     d_cgram = cgram;
     d_oam = oam;

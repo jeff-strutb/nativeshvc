@@ -26,7 +26,9 @@
  *             (colour 2): colour 1 exactly on the picture, 2 past it
  *   outside 5 2048 x 600, the same with a 128 x 64 outside map (size 5)
  *             whose tiles change at its column 64 and row 32: wrapping at
- *             1,024 pixels across and 512 down
+ *             1,024 pixels across and 512 down; and a screen canvas on
+ *             BG3, every texel 0 (the picture the same, but presented
+ *             from records: the outside map in them too)
  *   nowrap    256 x 1024, the picture 600 rows down, Y page 0's wrap above
  *             it off (nshvc_ext_sprite_wrap(0)): its sprites nowhere
  *             above line 1, in the console's own 256 rows as ever
@@ -218,6 +220,10 @@ static void setup(int k)
             for (i = 0; i < 8192; i++)
                 outmap[i] = ((i & 127) >= 64) != ((i >> 7) >= 32) ? 1 : 2;
             nshvc_ext_layer_outside(0, outmap, 5);
+            {
+                static uint8_t none[64 * 64];
+                nshvc_ext_canvas_screen(2, none, 64, 64, 1, 0, 0);
+            }
         } else {
             for (i = 0; i < 1024; i++)
                 outmap[i] = 1;
@@ -299,7 +305,9 @@ static void setup(int k)
     w(0x01, sc->clip ? 0x02 : 0x00);
     w(0x05, sc->hires ? 0x05 : sc->mode7 ? 0x07 : 0x01);
     w(0x33, sc->hires ? 0x01 : 0x00);
-    w(0x2C, sc->outside ? 0x01 : sc->clip ? (sc->mode7 ? 0x11 : 0x13) : sc->mode7 ? 0x11 : 0x10);
+    if (!(sc->outside == 5))
+        nshvc_ext_canvas_screen(2, NULL, 0, 0, 1, 0, 0);
+    w(0x2C, sc->outside == 5 ? 0x05 : sc->outside ? 0x01 : sc->clip ? (sc->mode7 ? 0x11 : 0x13) : sc->mode7 ? 0x11 : 0x10);
     /* hires: the even half pixels the sub screen's, so the sprites on both */
     w(0x2D, sc->hires ? 0x10 : 0);
     w(0x30, 0);
