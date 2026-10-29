@@ -1,16 +1,25 @@
 # SNES decompilation playbook
 
-A complete method for decompiling a SNES game written in hand assembly to
-readable C that is **proven behaviour exact**, plus symbolic assembly that
-rebuilds the ROM **byte exact**, and then running that C natively on
-nativeshvc. Written for whoever starts a new SNES decomp, so they can begin
-work at once without relearning anything.
+A complete method for decompiling a SNES game written in hand assembly.
+**The decompilation is the assembly:** symbolic, commented source that
+rebuilds the ROM **bit exact**. **The C is its companion effort:** readable C
+for every routine, **proven behaviour exact** against the running original,
+and the form that runs natively on nativeshvc. Written for whoever starts a
+new SNES decomp, so they can begin work at once without relearning anything.
+
+| | What it is | Exact to |
+|---|---|---|
+| Assembly | the decompilation; the record of the game | the original, bit for bit (the whole ROM rebuilt with 0 differing bytes) |
+| C | the companion effort; what runs natively | the original's behaviour (each routine's inputs to outputs, every access in order) |
+
+The C never replaces the assembly as the record: where they disagree, the
+assembly and the original ROM are right.
 
 It was learned on a whole-game decomp of a cartridge with three processors
 (the 65816 S-CPU, a Super FX coprocessor and the SPC700 sound CPU): every
-routine of all three with C proven against the running original and
-symbolic, commented assembly, and the whole ROM rebuilt byte for byte, in
-about eight days. The lessons apply to any SNES game; where one is about a
+routine of all three as symbolic, commented assembly with the whole ROM
+rebuilt byte for byte, and every routine's C companion proven against the
+running original, in about eight days. The lessons apply to any SNES game; where one is about a
 chip (the Super FX, the SPC700), its section says so, and a game without
 that chip skips it.
 
@@ -101,6 +110,12 @@ These cost the most time and money when broken. They apply to any working sessio
 
 ## 1. The standard
 
+Two standards, one per deliverable: the assembly (the decompilation) is bit
+exact, the C (its companion) is behaviour exact. The tiers below are the
+order the work is certified in, not a ranking: C is certified first because
+it is how a routine's meaning gets proven, and the assembly is finished
+symbolic at T4.
+
 ### Tiers (per routine)
 
 | Tier | Meaning |
@@ -169,8 +184,9 @@ save, audio), the same areas in C and asm, never by address range.
 
 1. **Hand assembly or compiled?** Search the ROM for C-compiler frames
    (`TSC; SEC; SBC #n; TCS`). Finding none means hand-written assembly: no
-   compiler to match, so the bytes are cheap (the assembly lane) and the
-   meaning is the work (the C lane). This playbook assumes that case.
+   compiler to match, so the decompilation is symbolic assembly that
+   reassembles to the same bits (the assembly lane), and the companion C
+   carries the proven meaning (the C lane). This playbook assumes that case.
 2. **Header:** mapping (LoROM/HiROM), coprocessor (cart type), ROM/RAM sizes,
    vectors. Native NMI/IRQ vectors may point into WRAM (stubs written at
    boot), so static walks from the vectors miss whole trees.
@@ -203,9 +219,9 @@ save, audio), the same areas in C and asm, never by address range.
 - **Layout** (per game, so several decomps can share one repo):
 
 ```
-src/<game>/<area>/            the C decomp
+src/<game>/<area>/            the behaviour-exact C companion
 src/<game>/include/           machine model, CPU op helpers, RAM maps
-asm/<game>/<area>/            companion assembly, same areas
+asm/<game>/<area>/            the decompilation: bit-exact assembly, same areas
 asm/<game>/include/           hw.inc, wram.inc, rom.inc, macros.inc, spc.inc
 config/<game>/                ramcode.csv, verdict ledgers (A5, A7)
 tools/<game>/                 runner, build, gates, census, drafters
@@ -354,7 +370,8 @@ void abi_RandomStep(void)
 }
 ```
 
-and its asm companion, placed in the image with `%at`:
+and the same routine in the decompilation's assembly, placed in the image
+with `%at`:
 
 ```
 ; @routine BB:AAAA RandomStep   (same header)
@@ -851,8 +868,8 @@ was never the standard wanted. Decide this on day one:
 
 | Tier | What it is | How it is proven |
 |---|---|---|
-| ASM | bit-exact symbolic source; rebuilds the ROM byte for byte | image gate |
-| C | behaviour exact: each routine's inputs to outputs exactly the original's | A5 + A7 (sections 4.5, 4.6) |
+| ASM | the decompilation: bit-exact symbolic source; rebuilds the ROM byte for byte | image gate |
+| C | the companion effort: behaviour exact, each routine's inputs to outputs exactly the original's | A5 + A7 (sections 4.5, 4.6) |
 | Enhanced | the C brought to a modern standard (speed independent, wider, smoother) | its own checks; Original stays the record |
 
 This is nativeshvc's preservation standard (README, "The preservation
@@ -939,8 +956,8 @@ pass/fail.
 
 ## 17. Running the C natively: cartridge and console
 
-**No port copy.** The decomp's C is the game. A separate port tree drifts,
-duplicates every fix, and has to be folded back in. The C runs on nativeshvc
+**No port copy.** The companion C is the game's native form. A separate
+port tree drifts, duplicates every fix, and has to be folded back in. The C runs on nativeshvc
 (PPU, DSP, DMA/HDMA, timers, interrupts, the multiplier/divider and the
 memory map in C, running no processor instructions) under its contract
 (docs/contract.md). The game is the cartridge: its own coprocessor plugs in
@@ -955,7 +972,7 @@ address, interrupts taken between the C's operations, a chip connector. The
 console implements documented hardware behaviour natively (BRR is a codec,
 Gaussian interpolation a resampler, ADSR an envelope).
 
-**The reference emulator is the oracle.** bsnes checks the decomp's C
+**The reference emulator is the oracle.** bsnes checks the companion C
 (sections 4.5, 4.6) and nativeshvc's hardware (pixels, DSP samples, frame
 pacing, state). The game never ports or cites its code.
 
