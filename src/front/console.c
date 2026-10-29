@@ -45,6 +45,7 @@ const uint16_t *nshvc_cgram(void) { return ppu_cgram(); }
 const uint8_t *nshvc_oam(void) { return ppu_oam(); }
 uint8_t nshvc_peek(uint32_t addr) { return snes_peek(addr); }
 void nshvc_ext_screen(int width, int height) { ppu_ext_screen(width, height); }
+void nshvc_ext_screen_origin(int x, int y) { ppu_ext_screen_origin(x, y); }
 void nshvc_ext_sprite_x(int sprite, int on) { ppu_ext_sprite_x(sprite, on); }
 void nshvc_ext_sprite_y(int sprite, int on) { ppu_ext_sprite_y(sprite, on); }
 void nshvc_ext_sprite_limits(int on) { ppu_ext_sprite_limits(on); }
@@ -431,7 +432,7 @@ int console_picture_at(float x, float y, int *dot, int *line)
     nshvc_window_size(&ww, &wh);
     if (!shown_tw || ww <= 0)
         return 0;
-    return input_point(shown_at, (float)shown_tw / ww, f->width, f->screen_height, f->height, x, y, dot, line);
+    return input_point(shown_at, (float)shown_tw / ww, f->width, f->screen_height, f->left, f->top, x, y, dot, line);
 }
 
 /* the frame as large as the window holds, centred, sharp bilinear: the

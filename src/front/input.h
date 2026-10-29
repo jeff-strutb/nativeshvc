@@ -20,7 +20,7 @@ void input_frame(const uint16_t *game_buttons);
    connected) */
 void input_frame_pads(const host_pad *now, const int *on, const uint16_t *game_buttons);
 /* (x, y) in window points to the console's dot and line (input.c) */
-int input_point(const int *at, float scale, int width, int screen_height, int height, float x, float y, int *dot,
+int input_point(const int *at, float scale, int width, int screen_height, int left, int top, float x, float y, int *dot,
                 int *line);
 /* a headless run: the script drives every player */
 void input_script(void);

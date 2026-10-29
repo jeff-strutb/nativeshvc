@@ -4,10 +4,13 @@ cartridge (tests/rom/run.py builds them):
   centre     on a larger screen the console's picture, at the centre, is
              exactly the console's own (from nativeshvc at 256 x 224), but
              for a hires line's first half pixel, black at the screen's
-             own left edge;
+             own left edge; and so where nshvc_ext_screen_origin puts it:
+             at a corner, at the far corner (held at the bottom edge
+             with overscan's lines), and at an odd column and row;
   continues  the extra columns are drawn by the console's rules: a
              cartridge's left 256 columns on a 512-wide screen are the
-             console's picture of the same scene scrolled 128 to the left
+             console's picture of the same scene scrolled 128 to the left,
+             and 256 with the console's picture at the screen's column 256
              (the cartridges that scroll BG1 alone, no windows, sprites,
              offset-per-tile or mosaic: scroll_*).
 
@@ -23,13 +26,17 @@ import run, cases, snestest  # noqa: E402
 CART = os.environ.get("NSHVC_TESTCART", os.path.join(run.BUILD, "testcart"))
 
 SIZES = [(512, 224), (320, 256), (1024, 480), (258, 226)]
+# a screen and where the console's picture is put on it (None: the centre)
+PLACES = [(sz, None) for sz in SIZES] + [((320, 256), (0, 0)), ((1024, 480), (768, 256)), ((512, 240), (5, 11))]
 
 
-def shot(rom, screen, d):
+def shot(rom, screen, d, origin=None):
     os.makedirs(d, exist_ok=True)
     env = dict(os.environ)
     if screen:
         env["NSHVC_TEST_SCREEN"] = "%dx%d" % screen
+    if origin:
+        env["NSHVC_TEST_ORIGIN"] = "%d,%d" % origin
     script = os.path.join(d, "s.txt")
     open(script, "w").write("wait 6\nshot f\n")
     subprocess.run([CART, "--rom", rom, "--headless", "--script", script, "--out", d], env=env, check=True,
@@ -51,31 +58,37 @@ def main():
             continue
         base = shot(rom, None, os.path.join(run.OUT, t.name, "ext_base"))
         bw, bh, _ = base
-        for sz in SIZES:
+        for sz, at in PLACES:
             if sz[1] < bh:
                 continue
-            img = shot(rom, sz, os.path.join(run.OUT, t.name, "ext_%dx%d" % sz))
+            tag = "%dx%d" % sz + ("" if at is None else "_at%d_%d" % at)
+            img = shot(rom, sz, os.path.join(run.OUT, t.name, "ext_" + tag), at)
             W, H, _ = img
             wide = 2 if bw == 512 else 1
             # interlaced: the fields woven, twice the screen's lines
             tall = 2 if bh >= 448 else 1
+            lines = bh // tall
             if (W, H) != (sz[0] * wide, sz[1] * tall):
-                print("%-24s %dx%d: the picture is %dx%d" % (t.name, sz[0], sz[1], W, H))
+                print("%-24s %s: the picture is %dx%d" % (t.name, tag, W, H))
                 bad += 1
                 continue
-            x0 = (sz[0] - 256) // 2 * wide
-            # the console's line 1 at the screen's row (lines - console's) / 2
-            y0 = (sz[1] - bh // tall) // 2 * tall
+            if at is None:
+                # the console's line 1 at the screen's row (lines - console's) / 2
+                ox, oy = (sz[0] - 256) // 2, (sz[1] - lines) // 2
+            else:
+                # as asked, held at the right and bottom edges
+                ox, oy = min(at[0], sz[0] - 256), min(at[1], sz[1] - lines)
+            x0, y0 = ox * wide, oy * tall
             a, b = bytearray(crop(img, x0, y0, bw, bh)), bytearray(base[2])
-            if wide == 2 and sz[0] != 256:
+            if wide == 2 and x0 != 0:
                 # a hires line's first half pixel is black: the screen's
-                # own, which on a larger one is left of the centre
+                # own, which on a larger one is left of the picture
                 for y in range(bh):
                     a[y * bw * 3:y * bw * 3 + 3] = b[y * bw * 3:y * bw * 3 + 3]
             if a != b:
-                print("%-24s %dx%d: the centre differs from the console's picture" % (t.name, sz[0], sz[1]))
+                print("%-24s %s: the picture differs from the console's" % (t.name, tag))
                 bad += 1
-    print("centre: %d differ" % bad)
+    print("centre and placed: %d differ" % bad)
     # continues: BG1 alone, scrolled
     cbad = 0
     for i in range(4):
@@ -87,6 +100,13 @@ def main():
         hw = shot(rb, None, os.path.join(run.OUT, b.name, "hw"))
         if crop(wide, 0, 0, 256, 224) != hw[2]:
             print("scroll_%d: the left columns are not the scene scrolled" % i)
+            cbad += 1
+        c = scroll_case("scroll_%d_far" % i, (hofs - 256) & 0x3FF, i)
+        rc = c.build(os.path.join(run.OUT, c.name))
+        placed = shot(ra, (512, 224), os.path.join(run.OUT, a.name, "ext_at256"), (256, 0))
+        far = shot(rc, None, os.path.join(run.OUT, c.name, "hw"))
+        if crop(placed, 0, 0, 256, 224) != far[2] or crop(placed, 256, 0, 256, 224) != crop(wide, 128, 0, 256, 224):
+            print("scroll_%d: placed at column 256, the columns are not the scene scrolled" % i)
             cbad += 1
     print("continues: %d differ" % cbad)
     # pages: a cartridge's VRAM and every layer's reads moved to page 3 of

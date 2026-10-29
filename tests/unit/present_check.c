@@ -5,7 +5,8 @@
  * few lines of C that shows Mode 7 scenes (rotation and scale, the three
  * wrap modes, flips, a matrix changed each line by HDMA, EXTBG, sprites,
  * colour maths, windows, brightness, mosaic, pseudo-hires, direct colour,
- * a larger screen, a minified plane), one of tiles, and a flat plane. For each scene's frame,
+ * a larger screen, one off its centre, a minified plane), one of tiles,
+ * and a flat plane. For each scene's frame,
  * at one to one, scales up, down, of another shape and a large window:
  *
  *   ref      against the definition written again here, independently
@@ -36,7 +37,7 @@
 #include "ppu.h"
 #include "rr_size.h"
 
-#define NSCENES 12
+#define NSCENES 13
 static int fails;
 static long compared;
 
@@ -206,6 +207,10 @@ static void setup(int k)
         w2(0x1D, -0x0100);
         w2(0x1E, 0x0500);
         break;
+    case 12:  /* a larger screen with the console's picture off its centre */
+        nshvc_ext_screen(320, 272);
+        nshvc_ext_screen_origin(8, 40);
+        break;
     case 8:   /* the console's screen again, wrap, magnified with a turn */
         nshvc_ext_screen(256, 224);
         w2(0x1B, 0x0040);
@@ -270,7 +275,7 @@ typedef struct {
 
 static RefLine ref_line(const PpuFrame *f, int r)
 {
-    int top = (f->screen_height - f->height) / 2, line = r - top + 1, L, y, x0, y0, cx, cy;
+    int top = f->top, line = r - top + 1, L, y, x0, y0, cx, cy;
     RefLine l;
     L = line < 1 ? 1 : line > f->height ? f->height : line;
     l.st = &f->line[L];
@@ -347,7 +352,7 @@ static long ref_edge(long f, long sa, long sb)
 /* picture pixel (i, r) over output pixel (X, Y) of an ow x oh presentation */
 static uint32_t ref_q(const PpuFrame *f, const uint32_t *pic, int ow, int oh, int i, int r, int X, int Y)
 {
-    int pw = ppu_frame_width(f), ph = f->screen_height, sl = (f->width - 256) / 2;
+    int pw = ppu_frame_width(f), ph = f->screen_height, sl = f->left;
     long long u, e;
     long su, sv, ax, bx, ay, by, wx, wy, w, px, py;
     RefLine l;
@@ -431,7 +436,7 @@ static void ref_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, i
 static void quality(const PpuFrame *f, const uint32_t *got, int ow, int oh, double *e_aa, double *e_point, double *m_aa,
                     double *m_point, long *minified)
 {
-    int pw = ppu_frame_width(f), ph = f->screen_height, sl = (f->width - 256) / 2, X, Y, sx, sy, ch;
+    int pw = ppu_frame_width(f), ph = f->screen_height, sl = f->left, X, Y, sx, sy, ch;
     float dx = (float)pw / (float)ow, dy = (float)ph / (float)oh;
     double ea = 0, ep = 0, ma = 0, mp = 0;
     long n = 0, nm = 0;
@@ -514,7 +519,7 @@ static void check_scene(int k)
     const uint32_t *pic = ppu_picture(&pw, &ph);
     /* output sizes: one to one, up, of another shape, down, and a large window */
     const double sc[5][2] = { { 1, 1 }, { 2.5, 2.5 }, { 3.37, 2.91 }, { 0.6, 0.77 }, { 6, 6 } };
-    int simple = k == 0 || k == 1 || k == 2 || k == 6 || k == 7 || k == 8 || k == 11;
+    int simple = k == 0 || k == 1 || k == 2 || k == 6 || k == 7 || k == 8 || k == 11 || k == 12;
     uint32_t *a, *b;
     char what[80];
     a = malloc((size_t)pw * 6 * (size_t)ph * 6 * 4);
@@ -522,6 +527,10 @@ static void check_scene(int k)
     printf("scene %d: %dx%d picture, Mode 7 %s\n", k, pw, ph, ppu_frame_mode7(f) ? "shown" : "not shown");
     if (ppu_frame_mode7(f) != (k != 5)) {
         printf("FAIL scene %d: Mode 7 expected %s\n", k, k != 5 ? "shown" : "not shown");
+        fails++;
+    }
+    if (k == 12 && (f->left != 8 || f->top != 40 || pw != 320 || ph != 272)) {
+        printf("FAIL scene 12: the picture at (%d, %d) of %dx%d, not (8, 40) of 320x272\n", f->left, f->top, pw, ph);
         fails++;
     }
     for (si = 0; si < 5; si++) {
@@ -541,7 +550,7 @@ static void check_scene(int k)
             snprintf(what, sizeof what, "ref x%.2fx%.2f", sc[si][0], sc[si][1]);
             same(what, k, a, b, ow, oh);
         }
-        if (simple && (k == 0 || k == 2 || k == 8 || k == 11) && (si >= 1 || k == 11) && si != 3) {
+        if (simple && (k == 0 || k == 2 || k == 8 || k == 11 || k == 12) && (si >= 1 || k == 11) && si != 3) {
             double ea, ep, ma, mp;
             long nm;
             int ok;

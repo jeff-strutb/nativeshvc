@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.5); this page describes the interface
+[the game contract](contract.md) (2.6); this page describes the interface
 around it.
 
 ## What it is
@@ -120,6 +120,7 @@ Each is off by default.
 | | |
 |---|---|
 | `nshvc_ext_screen(w, h)` | any screen size, 256 to 1024 by 224 to 480: the console's picture at the centre, exact; the rest drawn by the same rules (backgrounds and Mode 7 go on at their scroll, windows outside, a column its line's state, a row the nearest line's) |
+| `nshvc_ext_screen_origin(x, y)` | the console's picture at column x and row y of that screen instead of its centre (-1: the centre), held at its right and bottom edges; sprites from the picture's column 0 and line 1 |
 | `nshvc_ext_sprite_x`, `_y` | sprites past the 9-bit X (+512) and the 256-row Y (+256) |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |

@@ -139,13 +139,17 @@ static void abi_reset(void)
 
     /* where the pointer is on the picture: drawn at (100, 50)-(900, 650)
        on a target 2 pixels a point */
-    check(input_point(at, 2, 256, 224, 224, 50, 25, &dot, &line) && dot == 0 && line == 0,
+    check(input_point(at, 2, 256, 224, 0, 0, 50, 25, &dot, &line) && dot == 0 && line == 0,
           "the picture's top left corner is dot 0, line 0");
-    check(input_point(at, 2, 256, 224, 224, 449.9f, 324.9f, &dot, &line) && dot == 255 && line == 223,
+    check(input_point(at, 2, 256, 224, 0, 0, 449.9f, 324.9f, &dot, &line) && dot == 255 && line == 223,
           "its bottom right corner is dot 255, line 223");
-    check(input_point(at, 2, 512, 448, 224, 250, 175, &dot, &line) && dot == 128 && line == 112,
+    check(input_point(at, 2, 512, 448, 128, 112, 250, 175, &dot, &line) && dot == 128 && line == 112,
           "the console's picture centred on a 512 x 448 screen: the middle is dot 128, line 112");
-    check(!input_point(at, 2, 256, 224, 224, 40, 25, &dot, &line), "left of the picture: off the screen");
+    check(input_point(at, 2, 512, 448, 0, 0, 50, 25, &dot, &line) && dot == 0 && line == 0,
+          "the console's picture at a 512 x 448 screen's top left: its corner is dot 0, line 0");
+    check(input_point(at, 2, 512, 448, 256, 224, 250, 175, &dot, &line) && dot == 0 && line == 0,
+          "the console's picture at its bottom right: the middle is dot 0, line 0");
+    check(!input_point(at, 2, 256, 224, 0, 0, 40, 25, &dot, &line), "left of the picture: off the screen");
 
     printf("%d check(s) failed\n", fails);
     exit(fails ? 1 : 0);

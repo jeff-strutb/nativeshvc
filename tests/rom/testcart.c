@@ -52,6 +52,10 @@ static void abi_reset(void)
         int w, h;
         if (e && sscanf(e, "%dx%d", &w, &h) == 2)
             nshvc_ext_screen(w, h);
+        /* NSHVC_TEST_ORIGIN=x,y: the console's picture there on it */
+        e = getenv("NSHVC_TEST_ORIGIN");
+        if (e && sscanf(e, "%d,%d", &w, &h) == 2)
+            nshvc_ext_screen_origin(w, h);
         if (getenv("NSHVC_TEST_NOLIMITS"))
             nshvc_ext_sprite_limits(0);
         /* NSHVC_TEST_VRAM_PAGE=n: everything the cartridge puts in VRAM, and

@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 5
+#define NSHVC_VERSION_MINOR 6
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -322,23 +322,30 @@ void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value));
 
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 
-/* The screen the game asks for, from the next frame: width 256 to 1024 and
-   height 224 to 480, both even; 256 x 224 (or 239 with SETINI's overscan)
-   is the console's own. The console's picture sits at its centre (its
-   column 0 at (width - 256) / 2, its line 1 at (height - 224) / 2, or 239
-   with overscan), drawn exactly as on the console; the rest of the screen
-   is drawn by the same rules, past the console's edges: the backgrounds
-   and Mode 7 go on at their scroll, windows are outside both windows,
-   colour maths and brightness as on the line; a column carries its line's
-   state (a change in the line included), a row above or below the
-   console's lines the nearest line's. Sprites: their 9-bit X covers -256
-   to 255, nshvc_ext_sprite_x adds 512; their Y wraps in 256 rows as the
-   console's does, and rows past those 256 show only the sprites
-   nshvc_ext_sprite_y puts 256 lower. The game owns what shows there: the
-   sprites it hides off the console's screen may come into view on a
-   larger one, so it hides them past this one. No timing changes: the
-   frame has the console's lines and time. */
+/* The screen the game asks for, from the next frame: width 256 to 1024
+   and height 224 to 480, both even; 256 x 224 (or 239 with SETINI's
+   overscan) is the console's own. The console's picture sits at its
+   centre (its column 0 at (width - 256) / 2, its line 1 at (height - 224)
+   / 2, or 239 with overscan) or where nshvc_ext_screen_origin puts it,
+   drawn exactly as on the console; the rest of the screen is drawn by the
+   same rules, past the console's edges: the backgrounds and Mode 7 go on
+   at their scroll, windows are outside both windows, colour maths and
+   brightness as on the line; a column carries its line's state (a change
+   in the line included), a row above or below the console's lines the
+   nearest line's. Sprites, from the console's column 0 and line 1
+   wherever they sit: their 9-bit X covers -256 to 255, nshvc_ext_sprite_x
+   adds 512; their Y wraps in 256 rows as the console's does, and rows
+   past those 256 show only the sprites nshvc_ext_sprite_y puts 256 lower.
+   The game owns what shows there: the sprites it hides off the console's
+   screen may come into view on a larger one, so it hides them past this
+   one. No timing changes: the frame has the console's lines and time. */
 void nshvc_ext_screen(int width, int height);
+/* Where on that screen the console's picture sits, from the next frame:
+   the screen's column of the console's column 0 (0 to 768) and row of its
+   line 1 (0 to 256); -1 the centre, as without the call. A picture that
+   would pass the screen's right or bottom edge sits at it (with overscan's
+   239 lines too). (Since 2.6.) */
+void nshvc_ext_screen_origin(int x, int y);
 void nshvc_ext_sprite_x(int sprite, int on);
 void nshvc_ext_sprite_y(int sprite, int on);
 /* The line's sprite limits, the console's 32 sprites and 34 tiles in its

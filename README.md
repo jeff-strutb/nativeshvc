@@ -91,7 +91,7 @@ what its Enhanced mode does.
 | For | nativeshvc provides | Calls |
 |---|---|---|
 | a pace independent of processor speed | the S-CPU's accesses taking no console time (see Pacing, below) | `nshvc_set_cpu_costs(0)`, and `(1)` back |
-| a wider or taller screen | any screen up to 1024x480, the console's picture exact at its centre and the rest drawn by the same rules | `nshvc_ext_screen` |
+| a wider or taller screen | any screen up to 1024x480, the console's picture exact at its centre or where the game puts it, and the rest drawn by the same rules | `nshvc_ext_screen`, `nshvc_ext_screen_origin` |
 | sprites past the console's coordinates | sprite X and Y extension bits | `nshvc_ext_sprite_x`, `_y` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
@@ -265,8 +265,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.5.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.5: behaviour exact, each
+Version 2.6.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.6: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -348,8 +348,9 @@ each one, is in [tests/README.md](tests/README.md).
   5.5 to 35 times smaller than point sampling's where the plane is magnified, 4.5 to 6
   times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
   a plain frame 0.2 to 0.4.
-- **Enhancement support:** a larger screen's centre is exactly the console's picture, and
-  VRAM pages the same as page 0 (`tests/rom/ext_check.py`); with the S-CPU's costs off,
+- **Enhancement support:** a larger screen's centre, or where the game puts the picture,
+  is exactly the console's picture, and VRAM pages the same as page 0
+  (`tests/rom/ext_check.py`); with the S-CPU's costs off,
   its accesses (bytes, words, longs, read-modify-writes) take no time while a wait and a
   DMA take theirs, and a poll with no wait stops the run (`tests/unit/waits.c`); a VRAM
   page copied or written directly lands as it must, unseen until shown, and page 0 refused

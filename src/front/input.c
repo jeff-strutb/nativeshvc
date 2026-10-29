@@ -223,9 +223,8 @@ static int player_port(int player, int *device, int *slot)
 /* (x, y) in the window's points to the console's dot and line: the
    picture drawn at at[] (left, top, right, bottom) on a target `scale`
    pixels a point, `width` x `screen_height` with the console's column 0
-   at (width - 256) / 2 and its first line at row (screen_height -
-   height) / 2; 0 off the picture */
-int input_point(const int *at, float scale, int width, int screen_height, int height, float x, float y, int *dot,
+   at column `left` and its first line at row `top`; 0 off the picture */
+int input_point(const int *at, float scale, int width, int screen_height, int left, int top, float x, float y, int *dot,
                 int *line)
 {
     double u, v;
@@ -235,8 +234,8 @@ int input_point(const int *at, float scale, int width, int screen_height, int he
     v = ((double)y * scale - at[1]) / (at[3] - at[1]);
     if (u < 0 || u >= 1 || v < 0 || v >= 1)
         return 0;
-    *dot = (int)(u * width) - (width - 256) / 2;
-    *line = (int)(v * screen_height) - (screen_height - height) / 2;
+    *dot = (int)(u * width) - left;
+    *line = (int)(v * screen_height) - top;
     return 1;
 }
 

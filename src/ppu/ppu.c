@@ -49,13 +49,17 @@ static unsigned long woven_of;                  /* the frame woven last */
 /* the extensions (nshvc.h): the screen's width asked for (from the next
    frame), the sprites' extended X bits */
 static int ext_width = PPU_WIDTH, ext_height = 224;
+/* the screen's column and row of the hardware's column 0 and line 1
+   (nshvc_ext_screen_origin; -1 the centre), and the row as the frame being
+   made began */
+static int ext_ox = -1, ext_oy = -1, frame_oy = -1;
 static int ext_limits = 1;           /* the line's sprite and tile limits (nshvc_ext_sprite_limits) */
 static uint8_t ext_x[16], ext_y[16];
 /* the sprite table as it stands with the extended X and Y bits after it, as
    a frame's copies hold it (what the drawing reads) */
 static uint8_t oam_live[576];
 /* the screen being drawn: sw pixels a line (256, or wider with
-   nshvc_ext_screen), the hardware's column 0 at sl */
+   nshvc_ext_screen), the hardware's column 0 at sl (nshvc_ext_screen_origin) */
 static int sw = PPU_WIDTH, sl = 0;
 /* the row being drawn, from the hardware's line 1 (0): below 0 and past
    the hardware's last line on a taller screen */
@@ -177,6 +181,7 @@ void ppu_reset(void)
     frames[0].screen_height = frames[1].screen_height = 224;
     ext_width = sw = PPU_WIDTH;
     ext_height = 224;
+    ext_ox = ext_oy = frame_oy = -1;
     sl = 0;
     memset(ext_x, 0, sizeof ext_x);
     memset(ext_y, 0, sizeof ext_y);
@@ -608,6 +613,15 @@ void ppu_ext_screen(int width, int height)
     ext_height = height;
 }
 
+void ppu_ext_screen_origin(int x, int y)
+{
+    if (x < -1 || x > PPU_EXT_WIDTH - PPU_WIDTH || y < -1 || y > PPU_EXT_HEIGHT - 224)
+        snes_fatal("nshvc_ext_screen_origin(%d, %d): the column is -1 or 0 to %d, the row -1 or 0 to %d", x, y,
+                   PPU_EXT_WIDTH - PPU_WIDTH, PPU_EXT_HEIGHT - 224);
+    ext_ox = x;
+    ext_oy = y;
+}
+
 void ppu_ext_sprite_limits(int on) { ext_limits = on != 0; }
 
 void ppu_ext_vram(int kb)
@@ -749,7 +763,10 @@ void ppu_frame_start(void)
     making->width = ext_width;
     making->screen_height = ext_height;
     sw = ext_width;
-    sl = (ext_width - PPU_WIDTH) / 2;
+    /* the hardware's column 0 as asked, as far right as the screen allows */
+    sl = ext_ox < 0 ? (ext_width - PPU_WIDTH) / 2 : ext_ox > ext_width - PPU_WIDTH ? ext_width - PPU_WIDTH : ext_ox;
+    making->left = sl;
+    frame_oy = ext_oy;
     mosaic_y = 1;
     range_over = time_over = 0;
     making->field = field;
@@ -810,6 +827,11 @@ void ppu_vblank_start(void)
     /* the height asked for as the frame began, at least the hardware's */
     if (making->screen_height < making->height)
         making->screen_height = making->height;
+    /* the hardware's line 1 as asked as the frame began, as low as the
+       screen allows */
+    making->top = frame_oy < 0 ? (making->screen_height - making->height) / 2 : frame_oy;
+    if (making->top > making->screen_height - making->height)
+        making->top = making->screen_height - making->height;
     finished = making;
     making = t;
     frames_done++;
@@ -826,7 +848,7 @@ void ppu_vblank_start(void)
         check = getenv("NSHVC_PPUCHECK") != NULL;
     if (check) {
         int w = ppu_frame_width(finished), y, pw = 2 * finished->width;
-        int top = (finished->screen_height - finished->height) / 2;
+        int top = finished->top;
         ppu_draw_frame(finished, check_pic);
         ppu_check_frames++;
         /* the lines were drawn 512 wide: a 256-wide frame is their even pixels */
@@ -1601,13 +1623,13 @@ void ppu_render_line(unsigned line)
 void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
 {
     unsigned keep = mosaic_y;
-    int w = ppu_frame_width(f), keep_sw = sw, keep_sl = sl, top = (f->screen_height - f->height) / 2, r;
+    int w = ppu_frame_width(f), keep_sw = sw, keep_sl = sl, top = f->top, r;
     const PpuScreen *keep_s = s;
     uint8_t ro = range_over, to = time_over;
     sw = f->width;
     d_field = f->field;
     d_frame = f;
-    sl = (f->width - PPU_WIDTH) / 2;
+    sl = f->left;
     for (r = 0; r < f->screen_height; r++) {
         int line = r - top + 1;
         uint32_t *o = out + (size_t)r * (size_t)w;
@@ -2037,7 +2059,7 @@ static unsigned m7_mosaic_texel(int n, int x, unsigned mosaic_row, const uint16_
 
 int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
 {
-    int pw = ppu_frame_width(f), ph = f->screen_height, cpp = pw / f->width, top = (ph - f->height) / 2, r;
+    int pw = ppu_frame_width(f), ph = f->screen_height, cpp = pw / f->width, top = f->top, r;
     int keep_sw = sw, keep_sl = sl, keep_row = draw_row;
     unsigned keep_my = mosaic_y;
     const PpuScreen *keep_s = s;
@@ -2061,7 +2083,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     m->pal = &m7_pal[0][0];
     m->vram = &m7_vram[0][0];
     sw = f->width;
-    sl = (f->width - PPU_WIDTH) / 2;
+    sl = f->left;
     m->left = sl;
     d_field = f->field;
     for (r = 0; r < ph; r++) {

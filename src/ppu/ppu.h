@@ -46,10 +46,11 @@ typedef struct {
     uint8_t version[PPU_MAX_HEIGHT + 1];        /* the copy each line shows */
     uint8_t mosaic_row[PPU_MAX_HEIGHT + 1];     /* the line a vertical mosaic repeats */
     int height;                                 /* 224, or 239 with overscan */
-    int width;                                  /* 256, or wider (nshvc_ext_screen), the hardware's
-                                                   column 0 at (width - 256) / 2 */
-    int screen_height;                          /* height, or taller: the hardware's line 1 at row
-                                                   (screen_height - height) / 2 */
+    int width;                                  /* 256, or wider (nshvc_ext_screen) */
+    int screen_height;                          /* height, or taller */
+    int left, top;                              /* the screen's column of the hardware's column 0
+                                                   and row of its line 1 (nshvc_ext_screen_origin;
+                                                   the centre by default) */
     int hires;                                  /* a line of the frame is hires (512 wide) */
     int field;                                  /* its field (STAT78 bit 7) */
     int interlace;                              /* interlaced (SETINI bit 0 as the frame began): its
@@ -138,6 +139,7 @@ unsigned long ppu_frames(void);
 
 /* the extensions (nshvc.h nshvc_ext_screen, nshvc_ext_sprite_x) */
 void ppu_ext_screen(int width, int height);
+void ppu_ext_screen_origin(int x, int y);
 void ppu_ext_sprite_x(int sprite, int on);
 void ppu_ext_sprite_y(int sprite, int on);
 void ppu_ext_sprite_limits(int on);
