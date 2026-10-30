@@ -8,7 +8,9 @@
  * host_window_handle), or arrive as ARGB pixels through host_present (the
  * software renderer), shown scaled with StretchDIBits.
  *
- *   keys      a key message's virtual key
+ *   keys      a key message's virtual key; Alt+Enter and F11 switch the
+ *             window between full screen and a window (the game never
+ *             sees them)
  *   sound     WASAPI, shared mode, 32-bit float, on its own thread
  *   pads      XInput's controllers
  *
@@ -138,6 +140,31 @@ static void key_event(WPARAM vk, int down)
 /* ---- the window ----------------------------------------------------------------- */
 static HWND s_win;
 
+/* full screen: the window, borderless, covering its monitor; the window's
+   place before it, to go back to */
+static WINDOWPLACEMENT s_place;
+
+static void toggle_full_screen(void)
+{
+    DWORD style = (DWORD)GetWindowLongA(s_win, GWL_STYLE);
+    MONITORINFO mi;
+    if (style & WS_OVERLAPPEDWINDOW) {
+        s_place.length = sizeof s_place;
+        mi.cbSize = sizeof mi;
+        if (!GetWindowPlacement(s_win, &s_place) ||
+            !GetMonitorInfoA(MonitorFromWindow(s_win, MONITOR_DEFAULTTOPRIMARY), &mi))
+            return;
+        SetWindowLongA(s_win, GWL_STYLE, (LONG)(style & ~WS_OVERLAPPEDWINDOW));
+        SetWindowPos(s_win, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    } else {
+        SetWindowLongA(s_win, GWL_STYLE, (LONG)(style | WS_OVERLAPPEDWINDOW));
+        SetWindowPlacement(s_win, &s_place);
+        SetWindowPos(s_win, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+}
+
 /* the mouse: where the pointer is (points, from the client area's top
    left), how far it moved since the last, the buttons held */
 static void pointer_event(HWND h, WPARAM wp, LPARAM lp)
@@ -175,6 +202,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
     switch (m) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        /* Alt+Enter (bit 29: Alt held) and F11; bit 30: a repeat */
+        if (wp == VK_F11 || (wp == VK_RETURN && m == WM_SYSKEYDOWN && (lp & (1 << 29)))) {
+            if (!(lp & (1 << 30)))
+                toggle_full_screen();
+            return 0;
+        }
         key_event(wp, 1);
         if (m == WM_SYSKEYDOWN && wp != VK_F4)
             return 0;                 /* Alt alone must not open the window menu */
@@ -183,6 +216,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
     case WM_SYSKEYUP:
         key_event(wp, 0);
         return 0;
+    case WM_SYSCHAR:
+        return 0;                     /* Alt+key: no beep for a missing menu */
     case WM_SETFOCUS:
     case WM_KILLFOCUS: {
         int i;
