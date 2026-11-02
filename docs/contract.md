@@ -1,8 +1,8 @@
-# The game contract, version 2.10
+# The game contract, version 2.11
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.10: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.11: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,15 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.11:** `nshvc_ext_window_edges(on)`: on a larger screen, a window whose edge is at the
+  console's own (left 0, right 255) reaches every column past it, so a window spanning the
+  console's line spans the screen; off (the default) a column past the console's edges is
+  outside both windows, as before. `nshvc_ext_text_input(on)`: on a touch screen with no
+  hardware keyboard, the system's on-screen keyboard while on, what is typed reaching the
+  key hook as virtual keys (letters, digits, space, Backspace, Return), each a press then
+  a release; nothing elsewhere. `nshvc_keyboard_attached()`: whether the player has a
+  hardware keyboard. The host interface (not the contract) adds `host_text_input` and
+  `host_keyboard_attached`.
 - **2.10:** `nshvc_ext_layer_outside` takes maps 128 tiles wide: size 4 (128 x 32) and
   5 (128 x 64), rows of 128 entries, so a layer whose scroll wraps at 1,024 pixels wraps
   there outside the console's picture too.

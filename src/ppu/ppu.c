@@ -723,6 +723,8 @@ void ppu_ext_layer_clip(int layer, int on)
     cur.clip = (uint8_t)((cur.clip & ~(1u << layer)) | (on ? 1u : 0u) << layer);
 }
 
+void ppu_ext_window_edges(int on) { cur.wedges = on != 0; }
+
 void ppu_ext_vram_copy(int to_page, int from_page)
 {
     if (to_page < 1 || to_page >= vram_pages || from_page < 0 || from_page >= vram_pages)
@@ -1664,9 +1666,22 @@ static void draw_obj(unsigned line)
 }
 
 /* ---- windows ---- */
+/* whether column x (the hardware's, 0-255 its picture's) is inside the
+   window mask; past the picture each window is outside but that, its
+   edges open (nshvc_ext_window_edges), a window from column 0 reaches every
+   column left of it and one to column 255 every column right */
 static uint8_t win_mask(uint8_t sel, uint8_t logic, int x)
 {
-    int w1 = x >= s->wh[0] && x <= s->wh[1], w2 = x >= s->wh[2] && x <= s->wh[3];
+    int x1 = x, x2 = x, w1, w2;
+    if (s->wedges && x < 0) {
+        x1 = s->wh[0] == 0 ? 0 : x;
+        x2 = s->wh[2] == 0 ? 0 : x;
+    } else if (s->wedges && x > 255) {
+        x1 = s->wh[1] == 255 ? 255 : x;
+        x2 = s->wh[3] == 255 ? 255 : x;
+    }
+    w1 = x1 >= s->wh[0] && x1 <= s->wh[1];
+    w2 = x2 >= s->wh[2] && x2 <= s->wh[3];
     int e1 = sel & 2, e2 = sel & 8;
     if (!e1 && !e2)
         return 0;
@@ -2192,7 +2207,7 @@ static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vba
     o[8] = l->bghofs[2] | (uint32_t)l->bghofs[3] << 16;
     o[9] = l->bgvofs[0] | (uint32_t)l->bgvofs[1] << 16;
     o[10] = l->bgvofs[2] | (uint32_t)l->bgvofs[3] << 16;
-    o[11] = l->fixed_r | l->fixed_g << 8 | l->fixed_b << 16;
+    o[11] = l->fixed_r | l->fixed_g << 8 | l->fixed_b << 16 | (uint32_t)l->wedges << 24;
     o[12] = (uint16_t)l->m7a | (uint32_t)(uint16_t)l->m7b << 16;
     o[13] = (uint16_t)l->m7c | (uint32_t)(uint16_t)l->m7d << 16;
     o[14] = (uint16_t)l->m7x | (uint32_t)(uint16_t)l->m7y << 16;

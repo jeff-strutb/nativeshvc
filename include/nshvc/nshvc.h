@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 10
+#define NSHVC_VERSION_MINOR 11
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -330,7 +330,8 @@ void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value));
    or 239 with overscan) or where nshvc_ext_screen_origin puts it, drawn
    exactly as on the console; the rest of the screen is drawn by the same
    rules, past the console's edges: the backgrounds and Mode 7 go on at
-   their scroll, windows are outside both windows, colour maths and
+   their scroll, windows are outside both windows (nshvc_ext_window_edges
+   opens their edges at the console's), colour maths and
    brightness as on the line; a column carries its line's state (a change
    in the line included), a row above or below the console's lines the
    nearest line's. Sprites, from the console's column 0 and line 1
@@ -386,6 +387,15 @@ void nshvc_ext_layer_page(int layer, int page);
    picture's edge is cut at it; off (the default), it goes on past them
    by the console's rules. (Since 2.7.) */
 void nshvc_ext_layer_clip(int layer, int on);
+/* The windows on a larger screen (nshvc_ext_screen), from the next line
+   drawn: on, a window's edge at the console's own edge is open, so a
+   window whose left edge (WH0, WH2) is 0 reaches every column left of the
+   console's picture, and one whose right edge (WH1, WH3) is 255 every
+   column right of it: a window spanning the console's line spans the
+   screen. Off (the default), past the console's edges a column is outside
+   both windows. Inside the console's 256 columns it changes nothing.
+   (Since 2.11.) */
+void nshvc_ext_window_edges(int on);
 /* Background layer 0-3 (BG1-4)'s map outside the console's picture on a
    larger screen (nshvc_ext_screen), from the next frame: past the
    console's 256 columns and its lines the layer reads its map entries
@@ -496,6 +506,18 @@ void nshvc_safe_area(float *left, float *top, float *right, float *bottom);
 /* the window's size in points (headless: the renderer's target, a point a
    pixel) */
 void nshvc_window_size(float *w, float *h);
+/* Text entry: on, a touch screen with no hardware keyboard shows the
+   system's on-screen keyboard (iOS), until off hides it. What is typed
+   reaches the game through the key hook (nshvc_hooks.key) as virtual
+   keys, each a press then a release: a letter as 'A'-'Z' (either case), a
+   digit as '0'-'9', space 0x20, Backspace 0x08, Return 0x0D; anything else
+   is not sent. Harmless where there is a hardware keyboard (its keys come
+   as always, and nothing is shown) and on hosts with no touch screen;
+   callable from the game's thread. (Since 2.11.) */
+void nshvc_ext_text_input(int on);
+/* 1 when the player has a hardware keyboard: always on macOS and Windows,
+   on iOS while one is attached, never headless. (Since 2.11.) */
+int nshvc_keyboard_attached(void);
 /* Buttons the game holds for a joypad's player (a touch scheme's), the
    joypad's bits: kept until changed, joined with the console's own
    controls (keyboard, game controllers, a script) at each frame. */

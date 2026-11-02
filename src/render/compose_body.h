@@ -80,7 +80,7 @@
 #define CP_S_TSW 6       /* tsw, cgwsel, cgadsub, clip */
 #define CP_S_HOFS 7      /* bghofs, two a word */
 #define CP_S_VOFS 9
-#define CP_S_FIXED 11    /* the fixed colour: r, g, b */
+#define CP_S_FIXED 11    /* the fixed colour: r, g, b; the windows' edges open (nshvc_ext_window_edges) */
 #define CP_S_M7AB 12
 #define CP_S_M7CD 13
 #define CP_S_M7XY 14
@@ -483,11 +483,24 @@ CP_FN U32 cp_obj(U32 si, U32 p, U32 x)
     return 0u;
 }
 
+/* (ppu.c win_mask) past the picture each window is outside but that, its
+   edges open, a window from column 0 reaches every column left of it and
+   one to column 255 every column right */
 CP_FN U32 cp_win(U32 si, U32 sel, U32 logic, I32 x)
 {
-    U32 w1 = x >= I_(cp_b(si, U_(CP_S_WH), 0u)) && x <= I_(cp_b(si, U_(CP_S_WH), 1u)) ? 1u : 0u;
-    U32 w2 = x >= I_(cp_b(si, U_(CP_S_WH), 2u)) && x <= I_(cp_b(si, U_(CP_S_WH), 3u)) ? 1u : 0u;
-    U32 e1 = sel & 2u, e2 = sel & 8u;
+    I32 l1 = I_(cp_b(si, U_(CP_S_WH), 0u)), r1 = I_(cp_b(si, U_(CP_S_WH), 1u));
+    I32 l2 = I_(cp_b(si, U_(CP_S_WH), 2u)), r2 = I_(cp_b(si, U_(CP_S_WH), 3u));
+    I32 x1 = x, x2 = x;
+    U32 w1, w2, e1 = sel & 2u, e2 = sel & 8u;
+    if (cp_b(si, U_(CP_S_FIXED), 3u) != 0u && x < 0) {
+        x1 = l1 == 0 ? 0 : x;
+        x2 = l2 == 0 ? 0 : x;
+    } else if (cp_b(si, U_(CP_S_FIXED), 3u) != 0u && x > 255) {
+        x1 = r1 == 255 ? 255 : x;
+        x2 = r2 == 255 ? 255 : x;
+    }
+    w1 = x1 >= l1 && x1 <= r1 ? 1u : 0u;
+    w2 = x2 >= l2 && x2 <= r2 ? 1u : 0u;
     if (e1 == 0u && e2 == 0u)
         return 0u;
     if ((sel & 1u) != 0u) w1 ^= 1u;

@@ -559,3 +559,7 @@ int host_pad_read(int index, host_pad *o)
 }
 
 void host_safe_area(float *l, float *t, float *r, float *b) { *l = *t = *r = *b = 0; }
+
+void host_text_input(int on) { (void)on; }
+
+int host_keyboard_attached(void) { return 1; }

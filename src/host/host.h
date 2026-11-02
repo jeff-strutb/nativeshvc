@@ -111,6 +111,14 @@ int host_pad_read(int index, host_pad *p);
 /* the window's edges a notch or rounded corners cover, in points (host/ios;
    the others 0) */
 void host_safe_area(float *left, float *top, float *right, float *bottom);
+/* text entry (nshvc_ext_text_input): on, a touch host with no hardware
+   keyboard shows the system's on-screen keyboard, its keys sent as
+   HOST_EV_KEY, each down then up (letters 'A'-'Z', digits, 0x20, 0x08,
+   0x0D); off hides it. The others: nothing (host/ios; any thread) */
+void host_text_input(int on);
+/* 1 when the player has a hardware keyboard (host/ios: one attached; the
+   desktop hosts 1; host/null 0) */
+int host_keyboard_attached(void);
 
 /* ---- process ---------------------------------------------------------------------- */
 /* the program's name, before host_init: dir names the save folder, title

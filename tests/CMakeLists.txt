@@ -91,3 +91,7 @@ if(NOT MSVC)
   target_compile_options(present_check PRIVATE -ffp-contract=off)
   target_compile_options(canvas_check PRIVATE -ffp-contract=off)
 endif()
+
+add_executable(window_edges unit/window_edges.c)
+target_link_libraries(window_edges PRIVATE nshvc)
+set_target_properties(window_edges PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

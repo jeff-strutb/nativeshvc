@@ -55,6 +55,7 @@ void nshvc_ext_vram(int kb) { ppu_ext_vram(kb); }
 void nshvc_ext_vram_page(int page) { ppu_ext_vram_page(page); }
 void nshvc_ext_layer_page(int layer, int page) { ppu_ext_layer_page(layer, page); }
 void nshvc_ext_layer_clip(int layer, int on) { ppu_ext_layer_clip(layer, on); }
+void nshvc_ext_window_edges(int on) { ppu_ext_window_edges(on); }
 void nshvc_ext_layer_outside(int layer, const uint16_t *map, int size) { ppu_ext_layer_outside(layer, map, size); }
 void nshvc_ext_vram_copy(int to_page, int from_page) { ppu_ext_vram_copy(to_page, from_page); }
 void nshvc_ext_vram_direct(int page) { ppu_ext_vram_direct(page); }
@@ -90,6 +91,8 @@ void nshvc_set_hooks(const nshvc_hooks *h)
 }
 const char *nshvc_save_dir(void) { return host_save_dir(); }
 void nshvc_safe_area(float *l, float *t, float *r, float *b) { host_safe_area(l, t, r, b); }
+void nshvc_ext_text_input(int on) { host_text_input(on); }
+int nshvc_keyboard_attached(void) { return host_keyboard_attached(); }
 
 void nshvc_window_size(float *w, float *h)
 {

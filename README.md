@@ -96,6 +96,7 @@ what its Enhanced mode does.
 | a layer's own map past the console's picture | a background reads other map entries outside the console's 256 columns and lines | `nshvc_ext_layer_outside` |
 | a layer's picture from the game's texels over the whole screen | a background drawn from texels by the screen's pixels, at the window's resolution | `nshvc_ext_canvas_screen` |
 | a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
+| windows across a larger screen | a window whose edge is at the console's own reaching every column past it | `nshvc_ext_window_edges` |
 | no sprite repeats above the picture | Y page 0's 256-row wrap kept to the console's own rows | `nshvc_ext_sprite_wrap(0)` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
@@ -104,7 +105,9 @@ what its Enhanced mode does.
 
 They are described in [docs/nativeshvc.md](docs/nativeshvc.md#the-extensions). The front end
 adds what an Enhanced mode's controls and display are built from: key, touch and frame
-hooks, overlays, buttons the game holds itself, the safe area and the window's size.
+hooks, overlays, buttons the game holds itself, the safe area, the window's size, and
+text entry: the system's on-screen keyboard on a touch screen, typed keys reaching the key
+hook (`nshvc_ext_text_input`, `nshvc_keyboard_attached`).
 
 The picture on the window is not an enhancement: in both modes nativeshvc draws at the
 window's own resolution, the pixel art with sharp bilinear filtering and the Mode 7 plane
@@ -269,8 +272,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.10.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.10: behaviour exact, each
+Version 2.11.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.11: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is

@@ -18,7 +18,9 @@
  *   touch     every touch, as it lands, moves and lifts (HOST_EV_TOUCH):
  *             what it means is the game's; the view's safe area
  *             (host_safe_area)
- *   keys      a hardware keyboard's HID usage, as a Win32 virtual key
+ *   keys      a hardware keyboard's HID usage, as a Win32 virtual key; with
+ *             none attached, the system's keyboard while the game asks for
+ *             text (host_text_input), each typed character a key
  *   sound     a RemoteIO output unit pulling the game's mixer
  *   pads      GameController.framework, as on macOS
  *
@@ -173,6 +175,86 @@ static void kb_event(long u, int down)
     key_event(hid_vk(u), down);
 }
 
+/* ---- text entry: the system's keyboard (host_text_input) -------------------------- */
+/* A view of no size that takes text: the first responder while text entry
+   is on and no hardware keyboard is attached, so the system shows its
+   keyboard; what is typed goes to the game as keys, each down then up. A
+   hardware keyboard's keys come through the view controller's presses, as
+   always, so with one attached the view stays out of the way. */
+static _Atomic int s_text_on, s_hwkb;
+
+/* a typed character's virtual key, 0 for one not sent */
+static int text_vk(unichar c)
+{
+    if (c >= 'a' && c <= 'z')
+        return 'A' + (c - 'a');
+    if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+        return c;
+    if (c == ' ')
+        return 0x20;
+    if (c == '\n' || c == '\r')
+        return 0x0D;
+    return 0;
+}
+
+static void text_key(int vk)
+{
+    key_event(vk, 1);
+    key_event(vk, 0);
+}
+
+@interface PortText : UIView <UIKeyInput>
+@end
+
+@implementation PortText
+- (BOOL)canBecomeFirstResponder { return YES; }
+- (BOOL)hasText { return YES; }     /* Backspace is always sent */
+- (void)insertText:(NSString *)text
+{
+    NSUInteger i;
+    for (i = 0; i < text.length; i++) {
+        int vk = text_vk([text characterAtIndex:i]);
+        if (vk)
+            text_key(vk);
+    }
+}
+- (void)deleteBackward { text_key(0x08); }
+- (UIKeyboardType)keyboardType { return UIKeyboardTypeASCIICapable; }
+- (UITextAutocorrectionType)autocorrectionType { return UITextAutocorrectionTypeNo; }
+- (UITextAutocapitalizationType)autocapitalizationType { return UITextAutocapitalizationTypeNone; }
+- (UITextSpellCheckingType)spellCheckingType { return UITextSpellCheckingTypeNo; }
+- (UITextSmartQuotesType)smartQuotesType { return UITextSmartQuotesTypeNo; }
+- (UITextSmartDashesType)smartDashesType { return UITextSmartDashesTypeNo; }
+- (UIReturnKeyType)returnKeyType { return UIReturnKeyDone; }
+@end
+
+static PortText *s_text;
+static UIViewController *s_vc;
+
+/* (main thread) the keyboard shown while text entry is on and no hardware
+   keyboard is attached, else the view controller first again (a hardware
+   keyboard's presses) */
+static void text_update(void)
+{
+    if (!s_text || !s_vc)
+        return;
+    if (atomic_load(&s_text_on) && !atomic_load(&s_hwkb)) {
+        if (!s_text.isFirstResponder)
+            [s_text becomeFirstResponder];
+    } else if (s_text.isFirstResponder) {
+        [s_text resignFirstResponder];
+        [s_vc becomeFirstResponder];
+    }
+}
+
+void host_text_input(int on)
+{
+    atomic_store(&s_text_on, on != 0);
+    dispatch_async(dispatch_get_main_queue(), ^{ text_update(); });
+}
+
+int host_keyboard_attached(void) { return atomic_load(&s_hwkb); }
+
 /* ---- touch: every touch to the game (HOST_EV_TOUCH), in points ------------------- */
 /* What a touch means is the game's (nshvc_hooks.touch): the host only says
    where each finger is, as it lands, moves and lifts. A touch's id is
@@ -317,6 +399,25 @@ static _Atomic float s_ptw, s_pth;    /* the view's in points */
     s_controls = [[PortTouch alloc] initWithFrame:CGRectZero];
     s_controls.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [s_view addSubview:s_controls];
+    s_text = [[PortText alloc] initWithFrame:CGRectMake(0, 0, 1, 1)];
+    s_text.alpha = 0;
+    [s_view addSubview:s_text];
+    s_vc = self;
+    atomic_store(&s_hwkb, GCKeyboard.coalescedKeyboard != nil);
+    [[NSNotificationCenter defaultCenter] addObserverForName:GCKeyboardDidConnectNotification object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *n) {
+                                                      (void)n;
+                                                      atomic_store(&s_hwkb, 1);
+                                                      text_update();
+                                                  }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:GCKeyboardDidDisconnectNotification object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *n) {
+                                                      (void)n;
+                                                      atomic_store(&s_hwkb, GCKeyboard.coalescedKeyboard != nil);
+                                                      text_update();
+                                                  }];
     self.view = s_view;
 }
 - (void)viewDidLayoutSubviews
@@ -333,6 +434,7 @@ static _Atomic float s_ptw, s_pth;    /* the view's in points */
 {
     [super viewDidAppear:animated];
     [self becomeFirstResponder];
+    text_update();
 }
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)ev
 {

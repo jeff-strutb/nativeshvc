@@ -34,6 +34,7 @@ typedef struct {
     uint8_t page[5];          /* the VRAM page BG1-4 and the sprites read (nshvc_ext_layer_page) */
     uint8_t clip;             /* BG1-4 and the sprites (bits 0-4) kept to the console's picture
                                  (nshvc_ext_layer_clip) */
+    uint8_t wedges;           /* the windows open at the picture's edges (nshvc_ext_window_edges) */
 } PpuScreen;
 
 /* A frame, everything its picture is drawn from: each line's screen state
@@ -171,6 +172,7 @@ void ppu_ext_vram(int kb);
 void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
 void ppu_ext_layer_clip(int layer, int on);
+void ppu_ext_window_edges(int on);
 void ppu_ext_sprite_wrap(int on);
 void ppu_ext_layer_outside(int layer, const uint16_t *map, int size);
 void ppu_ext_vram_copy(int to_page, int from_page);
