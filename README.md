@@ -31,6 +31,10 @@ code.
 nativeshvc was created by Jeffrey Wilbur, so that every Super Nintendo decompilation can
 share one console instead of building its own.
 
+## Using AI for your decompilation/recompilation?
+
+A single prompt: “Integrate the game with **nativesvhc**. It is the console to this cartridge.”
+
 ## Project Purpose
 
 A decompilation that is byte exact recovers the game's code, but code alone
