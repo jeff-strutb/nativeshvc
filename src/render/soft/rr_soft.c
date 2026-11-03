@@ -117,12 +117,9 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
     rr_ref_overlay(s_px, s_w, s_h, argb, w, h, q);
 }
 
-uint64_t rr_present(uint64_t not_before)
+void rr_present(void)
 {
-    uint64_t drawn = host_ticks_ns();
-    host_sleep_until(not_before);
     host_present(s_px, s_w, s_h, (float)s_w / (float)s_h);
-    return drawn;
 }
 
 int rr_read(uint32_t *argb)

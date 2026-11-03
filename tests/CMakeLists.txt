@@ -72,11 +72,6 @@ if(NSHVC_HOST STREQUAL "macos")
   add_executable(pointer_macos unit/pointer_macos.m)
   target_link_libraries(pointer_macos PRIVATE nshvc "-framework AppKit")
   set_target_properties(pointer_macos PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-  # the pictures against the display: none waits behind others, the
-  # display never paces the console (Metal, or Vulkan through MoltenVK)
-  add_executable(pace_macos unit/pace_macos.m)
-  target_link_libraries(pace_macos PRIVATE nshvc "-framework AppKit" "-framework QuartzCore" "-framework Metal")
-  set_target_properties(pace_macos PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()
 
 add_executable(canvas_check unit/canvas_check.c)
@@ -96,12 +91,6 @@ if(NOT MSVC)
   target_compile_options(present_check PRIVATE -ffp-contract=off)
   target_compile_options(canvas_check PRIVATE -ffp-contract=off)
 endif()
-
-# rr_pace.h against a model display: none waits behind another
-add_executable(pace_model unit/pace_model.c)
-target_include_directories(pace_model PRIVATE ${PROJECT_SOURCE_DIR}/src/render)
-target_link_libraries(pace_model PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
-set_target_properties(pace_model PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
 add_executable(window_edges unit/window_edges.c)
 target_link_libraries(window_edges PRIVATE nshvc)

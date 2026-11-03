@@ -23,16 +23,6 @@ void host_sleep_ms(uint32_t ms)
         ;
 }
 
-void host_sleep_until(uint64_t t)
-{
-    uint64_t now;
-    while ((now = host_ticks_ns()) < t) {
-        uint64_t left = t - now;
-        if (left > 2000000ull)
-            host_sleep_ms((uint32_t)(left / 1000000ull) - 1);
-    }
-}
-
 void host_thread_interactive(void)
 {
 #ifdef __APPLE__

@@ -29,9 +29,6 @@ extern "C" {
 /* ---- time ----------------------------------------------------------------- */
 uint64_t host_ticks_ns(void);                 /* monotonic, arbitrary origin */
 void     host_sleep_ms(uint32_t ms);
-/* back at host_ticks_ns t, to the microsecond (slept to within 2 ms, then
-   spun); at once when t is past */
-void     host_sleep_until(uint64_t t);
 /* the calling thread keeps time for the game (paces frames): ask the OS to
    wake it on time (no timer coalescing) */
 void     host_thread_interactive(void);

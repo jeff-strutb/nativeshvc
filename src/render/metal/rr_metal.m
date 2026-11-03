@@ -5,15 +5,10 @@
  * go on with the sharp bilinear shader (rr_size.h's weight, in the shader:
  * fwidth gives the texels to one target pixel); a frame with Mode 7 with
  * rr_mode7.h's arithmetic in a fragment shader. The shader source is
- * compiled at start-up, so the build needs no Metal toolchain step. Each
- * frame's drawing is waited for, then the frame copied into a drawable and
- * presented only as rr_pace.h allows, timed by the copy's end on the GPU
- * and the drawable's time on the glass: none waits behind another in the
- * layer's queue, and the queue never paces the console.
+ * compiled at start-up, so the build needs no Metal toolchain step.
  */
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
-#include <TargetConditionals.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +16,6 @@
 #include "rr.h"
 #include "rr_size.h"
 #include "rr_mode7.h"
-#include "rr_pace.h"
 #include "host.h"
 
 CAMetalLayer *host_metal_layer(void);
@@ -797,100 +791,28 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
     }
 }
 
-/* the pictures sent, as the display tells of them (on any thread): ready
-   (the copy's end on the GPU) and on the glass, for rr_pace in the order
-   sent */
-#define PACE_RING 64
-static struct {
-    unsigned long n;
-    double sent, ready, glass;
-    int got;                        /* 1 ready, 2 the glass (0: never) */
-} s_sent[PACE_RING];
-static RrPace s_pace;
-static unsigned long s_told;        /* the last told to rr_pace */
-
-static void pace_tell(double now)
-{
-    for (;;) {
-        unsigned long n = s_told + 1;
-        int i = (int)(n % PACE_RING);
-        if (s_sent[i].n != n || n > s_pace.sent)
-            return;
-        /* a picture the display has said nothing of in half a second
-           (the window gone from the screen) never shown */
-        if (__atomic_load_n(&s_sent[i].got, __ATOMIC_ACQUIRE) != 3) {
-            if (now - s_sent[i].sent < 0.5)
-                return;
-            s_sent[i].glass = 0;
-        }
-        rr_pace_shown(&s_pace, n, s_sent[i].sent, s_sent[i].ready, s_sent[i].glass);
-        s_told = n;
-    }
-}
-
-uint64_t rr_present(uint64_t not_before)
+void rr_present(void)
 {
     @autoreleasepool {
         CAMetalLayer *ml = host_window_visible() ? host_metal_layer() : nil;
-        uint64_t drawn;
-        double off, now, at;
-        unsigned long n;
         if (!s_enc)
-            return host_ticks_ns();
+            return;
         [s_enc endEncoding];
         s_enc = nil;
-        [s_cmd commit];
-        [s_cmd waitUntilCompleted];
-        s_cmd = nil;
-        drawn = host_ticks_ns();
-        if (!ml)
-            return drawn;
-        host_sleep_until(not_before);
-        off = CACurrentMediaTime() - (double)host_ticks_ns() * 1e-9;
-        now = CACurrentMediaTime();
-        pace_tell(now);
-        n = rr_pace_send(&s_pace, now, &at);
-        if (!n)
-            return drawn;
-        if (at > now)
-            host_sleep_until((uint64_t)((at - off) * 1e9));
-        {
-            /* sent: from here (the drawable's ask, the copy) to ready */
-            double sent = CACurrentMediaTime();
+        if (ml) {
             id<CAMetalDrawable> dr = [ml nextDrawable];
-            id<MTLCommandBuffer> c = [s_q commandBuffer];
-            int i = (int)(n % PACE_RING);
-            s_sent[i].n = n;
-            s_sent[i].sent = sent;
-            s_sent[i].ready = s_sent[i].sent;
-            s_sent[i].glass = 0;
-            __atomic_store_n(&s_sent[i].got, 0, __ATOMIC_RELEASE);
             if (dr && (int)[dr texture].width == s_rw && (int)[dr texture].height == s_rh) {
-                id<MTLBlitCommandEncoder> b = [c blitCommandEncoder];
+                id<MTLBlitCommandEncoder> b = [s_cmd blitCommandEncoder];
                 [b copyFromTexture:s_col sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
                         sourceSize:MTLSizeMake((NSUInteger)s_rw, (NSUInteger)s_rh, 1)
                          toTexture:[dr texture] destinationSlice:0 destinationLevel:0
                  destinationOrigin:MTLOriginMake(0, 0, 0)];
                 [b endEncoding];
-#if TARGET_OS_SIMULATOR
-                /* the simulator tells nothing of the glass: sent unpaced */
-                __atomic_store_n(&s_sent[i].got, 3, __ATOMIC_RELEASE);
-#else
-                [c addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-                    s_sent[i].ready = cb.GPUEndTime;
-                    __atomic_fetch_or(&s_sent[i].got, 1, __ATOMIC_RELEASE);
-                }];
-                [dr addPresentedHandler:^(id<MTLDrawable> d) {
-                    s_sent[i].glass = d.presentedTime;
-                    __atomic_fetch_or(&s_sent[i].got, 2, __ATOMIC_RELEASE);
-                }];
-#endif
-                [c presentDrawable:dr];
-            } else
-                __atomic_store_n(&s_sent[i].got, 3, __ATOMIC_RELEASE);
-            [c commit];
+                [s_cmd presentDrawable:dr];
+            }
         }
-        return drawn;
+        [s_cmd commit];
+        s_cmd = nil;
     }
 }
 

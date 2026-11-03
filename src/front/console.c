@@ -6,11 +6,7 @@
  * Time is the console's: a frame each 1/60.0988 s (NTSC; 1/50.007 s PAL)
  * against the wall clock, the sound drained at the DSP's rate (32,040 Hz)
  * and resampled to the device's (windowed sinc), the rate trimmed by up to
- * 0.5% to keep 50 ms buffered. The display never paces it: each picture
- * goes to the window a steady time after its frame's start (the longest a
- * frame of late took to run and draw), and one that would wait behind
- * another on a display that shows them in order is held back
- * (render/rr_pace.h).
+ * 0.5% to keep 50 ms buffered.
  *
  * The controls: the keyboard, game controllers, the mouse and touches,
  * onto whatever is plugged into the controller ports (input.c).
@@ -547,9 +543,8 @@ int console_picture_at(float x, float y, int *dot, int *line)
 /* ---- the frame-rate meter (NSHVC_FPS=1, NSHVC_FPS_LOG=FILE) ----
    Over the last whole second of the window's run: frames presented and
    console frames run a second, the longest time between two presents,
-   and the longest each frame spent running the console, presenting (its
-   picture drawn, then sent at its steady time) and waiting for its time.
-   NSHVC_FPS=1 draws it at the top left;
+   and the longest each frame spent running the console, presenting and
+   waiting for its time. NSHVC_FPS=1 draws it at the top left;
    NSHVC_FPS_LOG=FILE writes a line a presented frame: its number, its
    present's time from the first (ms), the time since the last present,
    and the time it spent running, presenting and waiting. */
@@ -632,14 +627,6 @@ static void fps_frame(uint64_t shown, uint64_t ran, uint64_t presented, uint64_t
     }
 }
 
-/* the frame running's start, its due time (0 the first); each frame's time
-   from its start to its picture drawn, the last 128; the picture sent no
-   sooner than the longest of those after its frame's start, so that the
-   pictures reach the display a frame apart as on the console, however
-   long each frame took to run and draw (rr_present, render/rr_pace.h) */
-static uint64_t frame_start, drawn_ns[128];
-static unsigned drawn_n;
-
 static void show(void)
 {
     int tw, th, w, h, d[4];
@@ -674,15 +661,7 @@ static void show(void)
     draw_overlays(tw, th);
     if (fps_on > 0)
         fps_draw();
-    {
-        uint64_t steady = 0, drawn;
-        unsigned i;
-        for (i = 0; i < 128; i++)
-            steady = drawn_ns[i] > steady ? drawn_ns[i] : steady;
-        drawn = rr_present(frame_start ? frame_start + steady : 0);
-        if (frame_start && drawn > frame_start)
-            drawn_ns[drawn_n++ % 128] = drawn - frame_start;
-    }
+    rr_present();
 }
 
 /* NSHVC_RRCHECK=1 (headless, any RENDER): each finished frame shown by the
@@ -747,7 +726,7 @@ static void rr_check(void)
         show_picture(d);
         rr_ref_image(want, tw, th, px, pw, ph, d);
     }
-    rr_present(0);
+    rr_present();
     rr_read(got);
     for (i = 0; i < tw * th; i++) {
         int sh, worst = 0;
@@ -887,15 +866,17 @@ static void frame(void)
         if (!next_due || now > next_due + 100000000ull)
             next_due = now;
         next_due += frame_ns;
-        host_sleep_until(next_due);
-        now = host_ticks_ns();
+        while ((now = host_ticks_ns()) < next_due) {
+            uint64_t left = next_due - now;
+            if (left > 2000000ull)
+                host_sleep_ms((uint32_t)(left / 1000000ull) - 1);
+        }
         if (fps_on > 0 || fps_log) {
             uint64_t shown = fps_frame_start + fps_ran_ns + fps_present_ns;
             fps_frame(fps_frame_start ? shown : now, fps_ran_ns, fps_present_ns,
                       fps_frame_start ? now - shown : 0);
         }
         fps_frame_start = now;
-        frame_start = next_due;
     }
 }
 

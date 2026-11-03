@@ -583,18 +583,6 @@ the software backend's drawing and what the GPU backends' shaders compute, in in
 the blends, so every backend takes the same texels; each backend's output is checked
 against it. The backends also draw a port's overlays.
 
-The display never paces the console. Each frame's picture goes to the window a steady time
-after the frame starts, the longest any of the last 128 frames took to run and draw, so
-the pictures arrive a frame apart however long each took; and no picture waits in the swap
-chain behind another. Metal, and Vulkan in FIFO with the display's timing (MoltenVK), learn
-the display's refreshes, and how long before one a picture must be ready to make it, from
-the times the display reports each picture on the glass
-([`rr_pace.h`](src/render/rr_pace.h)); a picture that could make only the refresh the last
-one is due on is held back, so each reaches the glass on the first refresh it can. Vulkan
-elsewhere presents in MAILBOX (the newest picture takes a waiting one's place), else
-IMMEDIATE. On a 60.00 Hz display the console's 60.0988 Hz shows as one picture not shown
-each ten seconds.
-
 ### Sound
 
 The S-DSP ([`mixer.c`](src/dsp/mixer.c): BRR decoding, Gaussian interpolation, envelopes,
@@ -622,13 +610,12 @@ time, files and the save folder, a window, input, audio.
 
 ### What a player gets
 
-- A frame each 1/60.0988 s (NTSC), paced against the wall clock, never by the display: each
-  picture on the glass the first refresh it can make (see Picture, above). `NSHVC_FPS=1` shows a
+- A frame each 1/60.0988 s (NTSC), paced against the wall clock. `NSHVC_FPS=1` shows a
   meter at the window's top left (frames presented and console frames run a second, and
   over the last second the longest time between presents and the longest each frame spent
-  running, presenting (its picture drawn, then sent at its steady time) and waiting);
-  `NSHVC_FPS_LOG=FILE` writes a line a presented frame (its number, its time from the
-  first, the time since the last, and its run, present and wait times, in ms).
+  running, presenting and waiting); `NSHVC_FPS_LOG=FILE` writes a line a presented frame
+  (its number, its time from the first, the time since the last, and its run, present
+  and wait times, in ms).
 - Two controller ports, with whatever the game plugs in: joypads, a mouse, a multitap, a
   Super Scope or Justifiers. The keyboard and game controllers drive the joypads, the mouse
   drives the mouse, and the pointer or a touch aims the light guns (see "Controllers");
