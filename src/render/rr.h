@@ -70,8 +70,11 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
 int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
                      const struct RrM7Samples *s);
 
-/* the frame done: shown in the window, when there is one */
-void rr_present(void);
+/* the frame done: drawn, then sent to the window, when there is one, no
+   sooner than not_before (host_ticks_ns; 0 at once), and to a display
+   that shows pictures in order a refresh each only should it not wait
+   behind another (rr_pace.h). The time it was drawn (host_ticks_ns). */
+uint64_t rr_present(uint64_t not_before);
 /* the last presented frame, read back: rr_target's w x h pixels into argb;
    0 when this backend keeps none */
 int  rr_read(uint32_t *argb);

@@ -595,14 +595,21 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
     glDisable(GL_BLEND);
 }
 
-void rr_present(void)
+uint64_t rr_present(uint64_t not_before)
 {
-    if (s_window) {
+    uint64_t drawn;
+    if (!s_window)
+        return host_ticks_ns();
+    glFinish();
+    drawn = host_ticks_ns();
+    host_sleep_until(not_before);
+    {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, s_fbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glBlitFramebuffer(0, 0, s_rw, s_rh, 0, 0, s_rw, s_rh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
         gl_ctx_swap();
     }
+    return drawn;
 }
 
 int rr_read(uint32_t *argb)

@@ -12,18 +12,28 @@
  * The window surface is the one OS-specific part: a CAMetalLayer on macOS,
  * an HWND on Windows. Without one (headless) frames are drawn and read
  * back, nothing is shown.
+ *
+ * The display never paces the console: each frame's drawing is waited
+ * for, then the frame is blitted and presented. In MAILBOX (where the
+ * surface has it) the newest picture takes a waiting one's place; in FIFO
+ * with the display's timing (VK_GOOGLE_display_timing: MoltenVK) only as
+ * rr_pace.h allows, so that none waits behind another; else IMMEDIATE.
  */
 #if defined(__APPLE__)
 #define VK_USE_PLATFORM_METAL_EXT
 #endif
 #include <vulkan/vulkan.h>
 #include <stdio.h>
+#if defined(__APPLE__)
+#include <time.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
 #include "rr.h"
 #include "rr_size.h"
 #include "rr_mode7.h"
+#include "rr_pace.h"
 #include "rr_spv.h"
 #include "host.h"
 
@@ -66,6 +76,19 @@ static VkCommandPool s_pool;
 static VkCommandBuffer s_cmd;
 static VkFence s_fence;
 static int s_recording, s_submitted, s_cleared;
+/* the present's own blit, after the frame's drawing is done */
+static VkCommandBuffer s_pcmd;
+static VkFence s_pfence;
+static int s_psubmitted;
+/* the display's timing (VK_GOOGLE_display_timing) for rr_pace in FIFO:
+   the pictures' send times by number, and the clock its times are on (0
+   CLOCK_MONOTONIC, 1 the Mac's mach time; -1 not yet known) */
+static int s_timing, s_paced;
+static PFN_vkGetPastPresentationTimingGOOGLE s_past;
+static RrPace s_pace;
+#define PACE_RING 64
+static double s_sent_t[PACE_RING];
+static int s_clock = -1;
 static uint32_t s_clear_argb;
 
 static VkImage s_col;
@@ -339,7 +362,7 @@ static int make_device(void)
     VkDeviceQueueCreateInfo qi = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     VkDeviceCreateInfo ci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     VkExtensionProperties ext[256];
-    const char *want[2];
+    const char *want[3];
     if (!VK_OK(vkEnumeratePhysicalDevices(s_inst, &nd, devs)) || nd == 0)
         return 0;
     s_phys = VK_NULL_HANDLE;
@@ -362,6 +385,8 @@ static int make_device(void)
         want[nw++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     if (has_ext(ext, ne, "VK_KHR_portability_subset"))
         want[nw++] = "VK_KHR_portability_subset";
+    if ((s_timing = has_ext(ext, ne, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)))
+        want[nw++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
     qi.queueFamilyIndex = s_qfam;
     qi.queueCount = 1;
     qi.pQueuePriorities = &prio;
@@ -372,6 +397,10 @@ static int make_device(void)
     if (!VK_OK(vkCreateDevice(s_phys, &ci, NULL, &s_dev)))
         return 0;
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
+    if (s_timing)
+        s_past = (PFN_vkGetPastPresentationTimingGOOGLE)vkGetDeviceProcAddr(s_dev,
+                                                                            "vkGetPastPresentationTimingGOOGLE");
+    s_timing = s_past != NULL;
     return 1;
 }
 
@@ -1044,9 +1073,10 @@ int rr_open(void)
     cai.commandPool = s_pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
-    if (!VK_OK(vkAllocateCommandBuffers(s_dev, &cai, &s_cmd)))
+    if (!VK_OK(vkAllocateCommandBuffers(s_dev, &cai, &s_cmd)) || !VK_OK(vkAllocateCommandBuffers(s_dev, &cai, &s_pcmd)))
         return 0;
-    if (!VK_OK(vkCreateFence(s_dev, &fci, NULL, &s_fence)) || !VK_OK(vkCreateSemaphore(s_dev, &sci, NULL, &s_sem_acquire)))
+    if (!VK_OK(vkCreateFence(s_dev, &fci, NULL, &s_fence)) || !VK_OK(vkCreateFence(s_dev, &fci, NULL, &s_pfence)) ||
+        !VK_OK(vkCreateSemaphore(s_dev, &sci, NULL, &s_sem_acquire)))
         return 0;
     s_pass_clear = make_pass(1);
     s_pass_load = make_pass(0);
@@ -1093,6 +1123,10 @@ static void wait_frame(void)
     if (s_submitted) {
         vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
         s_submitted = 0;
+    }
+    if (s_psubmitted) {
+        vkWaitForFences(s_dev, 1, &s_pfence, VK_TRUE, UINT64_MAX);
+        s_psubmitted = 0;
     }
 }
 
@@ -1424,7 +1458,22 @@ static int swap_make(void)
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.preTransform = caps.currentTransform;
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    {
+        /* MAILBOX; else FIFO with the display's timing; else IMMEDIATE;
+           else FIFO */
+        VkPresentModeKHR m[16];
+        uint32_t nm = 16, k;
+        int mailbox = 0, immediate = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(s_phys, s_surface, &nm, m);
+        for (k = 0; k < nm; k++) {
+            mailbox |= m[k] == VK_PRESENT_MODE_MAILBOX_KHR;
+            immediate |= m[k] == VK_PRESENT_MODE_IMMEDIATE_KHR;
+        }
+        ci.presentMode = mailbox ? VK_PRESENT_MODE_MAILBOX_KHR
+                         : s_timing || !immediate ? VK_PRESENT_MODE_FIFO_KHR
+                                                  : VK_PRESENT_MODE_IMMEDIATE_KHR;
+        s_paced = ci.presentMode == VK_PRESENT_MODE_FIFO_KHR && s_timing;
+    }
     ci.clipped = VK_TRUE;
     if (!VK_OK(vkCreateSwapchainKHR(s_dev, &ci, NULL, &s_swap)))
         return 0;
@@ -1444,54 +1493,79 @@ static int swap_make(void)
     return 1;
 }
 
-/* the record copied into its images, the picture composed (one triangle
-   over 256 x 224, row 0 the first line), then drawn over d as rr_image
-   draws */
-void rr_present(void)
+/* now on a clock the display's times may be on (0 host_ticks_ns's, 1 the
+   Mac's mach time), in seconds */
+static double pace_clock(int c)
+{
+#if defined(__APPLE__)
+    if (c == 1)
+        return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9;
+#endif
+    (void)c;
+    return (double)host_ticks_ns() * 1e-9;
+}
+
+/* the pictures on the glass, as the display tells of them, to rr_pace in
+   the order sent; one it has said nothing of in half a second (the swap
+   chain made again) never shown */
+static void pace_tell(void)
+{
+    VkPastPresentationTimingGOOGLE t[16];
+    uint32_t n = 16, i;
+    double host = (double)host_ticks_ns() * 1e-9;
+    if (s_past(s_dev, s_swap, &n, t) < 0)
+        n = 0;
+    for (i = 0; i < n; i++) {
+        double glass = (double)t[i].actualPresentTime * 1e-9, off;
+        unsigned long id = t[i].presentID;
+        if (s_clock < 0) {
+            /* the clock: the one the picture was on the glass on within
+               the last second */
+            int c;
+            for (c = 0; c < 2 && s_clock < 0; c++)
+                if (pace_clock(c) - glass >= 0 && pace_clock(c) - glass < 1.0)
+                    s_clock = c;
+            if (s_clock < 0) {
+                fprintf(stderr, "rr: vulkan: the display's times on no clock known; not paced\n");
+                s_paced = 0;
+                return;
+            }
+        }
+        off = pace_clock(s_clock) - host;
+        while (s_pace.seen + 1 < id && s_pace.seen < s_pace.sent)
+            rr_pace_shown(&s_pace, s_pace.seen + 1, 0, 0, 0);
+        if (id == s_pace.seen + 1) {
+            double sent = s_sent_t[id % PACE_RING] + off;
+            rr_pace_shown(&s_pace, id, sent, sent, glass);
+        }
+    }
+    if (s_pace.seen < s_pace.sent && host - s_sent_t[(s_pace.seen + 1) % PACE_RING] > 0.5)
+        rr_pace_shown(&s_pace, s_pace.seen + 1, 0, 0, 0);
+}
+
+/* the frame's drawing (and its copy kept for a read back) run and waited
+   for; then, with a window, the frame blitted onto a swapchain image and
+   presented no sooner than not_before, should rr_pace allow it in FIFO */
+uint64_t rr_present(uint64_t not_before)
 {
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VkBufferImageCopy cp;
+    VkImageBlit b;
     uint32_t img = 0;
-    int show = 0;
+    uint64_t drawn;
+    unsigned long n = 0;
     if (!s_recording)
-        return;
+        return host_ticks_ns();
     if (!s_cleared) {                              /* nothing drawn: the clear alone */
         pass_begin();
         vkCmdEndRenderPass(s_cmd);
     }
-    if (s_surface && host_window_visible()) {
-        if (s_swap && ((int)s_swap_w != s_rw || (int)s_swap_h != s_rh))
-            swap_destroy();
-        if (!s_swap)
-            swap_make();
-        if (s_swap) {
-            VkResult r = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, s_sem_acquire, VK_NULL_HANDLE, &img);
-            if (r == VK_ERROR_OUT_OF_DATE_KHR)
-                swap_destroy();
-            else if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)
-                show = (int)s_swap_w == s_rw && (int)s_swap_h == s_rh;
-        }
-    }
+    /* the frame kept for a read back */
     barrier(s_cmd, s_col, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    if (show) {
-        VkImageBlit b;
-        barrier(s_cmd, s_swap_img[img], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        memset(&b, 0, sizeof b);
-        b.srcSubresource.aspectMask = b.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        b.srcSubresource.layerCount = b.dstSubresource.layerCount = 1;
-        b.srcOffsets[1].x = b.dstOffsets[1].x = s_rw;
-        b.srcOffsets[1].y = b.dstOffsets[1].y = s_rh;
-        b.srcOffsets[1].z = b.dstOffsets[1].z = 1;
-        vkCmdBlitImage(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_swap_img[img],
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
-        barrier(s_cmd, s_swap_img[img], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-    }
-    /* the frame kept for a read back */
     memset(&cp, 0, sizeof cp);
     cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.imageSubresource.layerCount = 1;
@@ -1499,36 +1573,93 @@ void rr_present(void)
     cp.imageExtent.height = (uint32_t)s_rh;
     cp.imageExtent.depth = 1;
     vkCmdCopyImageToBuffer(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_read, 1, &cp);
-    barrier(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     vkEndCommandBuffer(s_cmd);
     s_recording = 0;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
-    if (show) {
-        si.waitSemaphoreCount = 1;
-        si.pWaitSemaphores = &s_sem_acquire;
-        si.pWaitDstStageMask = &wait_st;
-        si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = &s_sem_done[img];
-    }
     vkQueueSubmit(s_queue, 1, &si, s_fence);
     s_submitted = 1;
-    if (show) {
+    wait_frame();
+    drawn = host_ticks_ns();
+    if (!s_surface || !host_window_visible())
+        return drawn;
+    if (s_swap && ((int)s_swap_w != s_rw || (int)s_swap_h != s_rh))
+        swap_destroy();
+    if (!s_swap)
+        swap_make();
+    if (!s_swap)
+        return drawn;
+    host_sleep_until(not_before);
+    if (s_paced) {
+        double off = s_clock >= 0 ? pace_clock(s_clock) - (double)host_ticks_ns() * 1e-9 : 0;
+        double now = (double)host_ticks_ns() * 1e-9 + off, at;
+        pace_tell();
+        if (s_paced && s_clock >= 0) {
+            if (!(n = rr_pace_send(&s_pace, now, &at)))
+                return drawn;
+            if (at > now)
+                host_sleep_until((uint64_t)((at - off) * 1e9));
+        } else if (s_paced)
+            n = ++s_pace.sent;               /* the clock not yet known: each sent */
+        if (n)
+            s_sent_t[n % PACE_RING] = (double)host_ticks_ns() * 1e-9;
+    }
+    {
+        VkResult r = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, s_sem_acquire, VK_NULL_HANDLE, &img);
+        if (r == VK_ERROR_OUT_OF_DATE_KHR || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)) {
+            swap_destroy();
+            return drawn;
+        }
+    }
+    vkResetFences(s_dev, 1, &s_pfence);
+    vkResetCommandBuffer(s_pcmd, 0);
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(s_pcmd, &bi);
+    barrier(s_pcmd, s_swap_img[img], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    memset(&b, 0, sizeof b);
+    b.srcSubresource.aspectMask = b.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.srcSubresource.layerCount = b.dstSubresource.layerCount = 1;
+    b.srcOffsets[1].x = b.dstOffsets[1].x = s_rw;
+    b.srcOffsets[1].y = b.dstOffsets[1].y = s_rh;
+    b.srcOffsets[1].z = b.dstOffsets[1].z = 1;
+    vkCmdBlitImage(s_pcmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_swap_img[img],
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
+    barrier(s_pcmd, s_swap_img[img], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    vkEndCommandBuffer(s_pcmd);
+    si.pCommandBuffers = &s_pcmd;
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &s_sem_acquire;
+    si.pWaitDstStageMask = &wait_st;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &s_sem_done[img];
+    vkQueueSubmit(s_queue, 1, &si, s_pfence);
+    s_psubmitted = 1;
+    {
         VkPresentInfoKHR pr = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+        VkPresentTimesInfoGOOGLE ti = { VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE };
+        VkPresentTimeGOOGLE pt;
         VkResult r;
         pr.waitSemaphoreCount = 1;
         pr.pWaitSemaphores = &s_sem_done[img];
         pr.swapchainCount = 1;
         pr.pSwapchains = &s_swap;
         pr.pImageIndices = &img;
+        if (n) {
+            pt.presentID = (uint32_t)n;
+            pt.desiredPresentTime = 0;
+            ti.swapchainCount = 1;
+            ti.pTimes = &pt;
+            pr.pNext = &ti;
+        }
         r = vkQueuePresentKHR(s_queue, &pr);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
             wait_frame();
             swap_destroy();
         }
     }
+    return drawn;
 }
 
 int rr_read(uint32_t *argb)

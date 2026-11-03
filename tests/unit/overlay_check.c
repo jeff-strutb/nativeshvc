@@ -58,7 +58,7 @@ int main(void)
     rr_image(pic, PW, PH, dd);
     for (i = 0; i < 4; i++)
         rr_overlay(img, OW, OH, q[i]);
-    rr_present();
+    rr_present(0);
     got = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
     want = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
     if (!got || !want || !rr_read(got))
