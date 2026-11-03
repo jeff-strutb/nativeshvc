@@ -101,6 +101,8 @@ what its Enhanced mode does.
 | a layer's picture from the game's texels over the whole screen | a background drawn from texels by the screen's pixels, at the window's resolution | `nshvc_ext_canvas_screen` |
 | a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
 | windows across a larger screen | a window whose edge is at the console's own reaching every column past it | `nshvc_ext_window_edges` |
+| windows placed on a larger screen | each line's window edges mapped onto the screen by a scale and an offset (across its whole width, or anywhere between that and the console's) | `nshvc_ext_window_map` |
+| a window at the screen's columns | window 1 or 2 from one screen column to another on every line, in place of its registers | `nshvc_ext_window_columns` |
 | no sprite repeats above the picture | Y page 0's 256-row wrap kept to the console's own rows | `nshvc_ext_sprite_wrap(0)` |
 | more sprites on a line | no 32-sprite or 34-tile line limit | `nshvc_ext_sprite_limits(0)` |
 | more VRAM | up to 256 KB in pages, the pages past the console's written directly, outside its bus and time | `nshvc_ext_vram`, `_vram_page`, `_layer_page`, `_vram_copy`, `_vram_direct` |
@@ -276,8 +278,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.11.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.11: behaviour exact, each
+Version 2.12.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.12: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is

@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.11); this page describes the interface
+[the game contract](contract.md) (2.12); this page describes the interface
 around it.
 
 ## What it is
@@ -131,6 +131,8 @@ Each is off by default.
 | `nshvc_ext_canvas_screen(layer, texels, w, h, k, priority, palette)` | a background's picture over the whole screen from the game's texels by the screen's pixels, one priority and palette, at the window's resolution (one canvas at a time) |
 | `nshvc_ext_layer_clip(layer, on)` | a background or the sprites kept to the console's picture on a larger screen: transparent past its 256 columns and lines, a sprite across the edge cut at it |
 | `nshvc_ext_window_edges(on)` | the windows on a larger screen: a window whose left edge is 0 reaches every column left of the console's picture, one whose right edge is 255 every column right of it, so a window spanning the console's line spans the screen (off: past the console's edges a column is outside both windows) |
+| `nshvc_ext_window_map(on, scale_q16, offset)` | the windows placed on a larger screen: each line's edges (WH0-WH3, HDMA's included) mapped by console column c to c * scale_q16 / 65536 (rounded down) + offset, a window from L to R covering L's column up to the one before R + 1's, on every layer, the sprites and the colour window; (65536, (W - 256) / 2) is the console's windows, (W * 256, 0) stretches them over the screen; over `nshvc_ext_window_edges` while on |
+| `nshvc_ext_window_columns(window, left, right)` | window 1 or 2 from screen column left to right on every line, in place of its registers, the map and the edges (left past right: none; left -1: the registers again) |
 | `nshvc_ext_sprite_wrap(0)` | Y page 0's sprites nowhere above the console's line 1 on a taller screen (in its own 256 rows they wrap as ever) |
 | `nshvc_ext_sprite_limits(0)` | no 32-sprite or 34-tile line limit (outside the console's columns there is none in any case) |
 | `nshvc_ext_vram(kb)`, `_vram_page`, `_layer_page` | VRAM to 256 KB in 64 KB pages: the data port's page, each layer's |

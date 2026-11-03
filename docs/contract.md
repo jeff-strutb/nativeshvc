@@ -1,8 +1,8 @@
-# The game contract, version 2.11
+# The game contract, version 2.12
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.11: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.12: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,17 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.12:** `nshvc_ext_window_map(on, scale_q16, offset)`: on a larger screen, each line's
+  window edges (WH0-WH3, HDMA's included) mapped onto the screen, console column c to
+  c * scale_q16 / 65536, rounded down, + offset: a window from L to R covers L's column up
+  to the one before R + 1's, for every layer, the sprites and the colour window, with the
+  console's masks, logic and inversion; (65536, (W - 256) / 2) is the console's windows and
+  (W * 256, 0) stretches them across the screen; it overrides `nshvc_ext_window_edges`
+  while on.
+  `nshvc_ext_window_columns(window, left, right)`: window 1 or 2 from screen column left
+  to right (inclusive) on every line, in place of its registers, the map and the edges;
+  left past right covers none, and left -1 gives the window back to its registers. Both
+  from the next line drawn, off by default.
 - **2.11:** `nshvc_ext_window_edges(on)`: on a larger screen, a window whose edge is at the
   console's own (left 0, right 255) reaches every column past it, so a window spanning the
   console's line spans the screen; off (the default) a column past the console's edges is

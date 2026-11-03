@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 11
+#define NSHVC_VERSION_MINOR 12
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -331,7 +331,9 @@ void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value));
    exactly as on the console; the rest of the screen is drawn by the same
    rules, past the console's edges: the backgrounds and Mode 7 go on at
    their scroll, windows are outside both windows (nshvc_ext_window_edges
-   opens their edges at the console's), colour maths and
+   opens their edges at the console's, nshvc_ext_window_map places them
+   on the screen, nshvc_ext_window_columns places one at the screen's
+   columns), colour maths and
    brightness as on the line; a column carries its line's state (a change
    in the line included), a row above or below the console's lines the
    nearest line's. Sprites, from the console's column 0 and line 1
@@ -396,6 +398,33 @@ void nshvc_ext_layer_clip(int layer, int on);
    both windows. Inside the console's 256 columns it changes nothing.
    (Since 2.11.) */
 void nshvc_ext_window_edges(int on);
+/* The windows' edges mapped onto a larger screen (nshvc_ext_screen), from
+   the next line drawn: on, the edges each line has (WH0 and WH1 for
+   window 1, WH2 and WH3 for window 2, HDMA's included) are placed on the
+   screen by scale_q16 (the screen's columns a console column, 16.16
+   fixed point, above 0) and offset (the screen's column console column 0
+   maps to, -16777216 to 16777216): console column c maps to
+   c * scale_q16 / 65536, rounded down, + offset, and a window from L to R
+   (inclusive) covers the screen's columns L maps to up to the one before
+   R + 1's, those on the screen; a window whose L is past its R, none.
+   The map (65536, (W - 256) / 2) on a screen W wide (the console's
+   picture at its centre) is the console's windows; (W * 256, 0) stretches
+   them across the whole screen. Every layer, the sprites and the colour
+   window take it, their masks, logic and inversion the console's; a row
+   above or below the console's lines has the nearest line's. It
+   overrides nshvc_ext_window_edges while on; a window given columns
+   (nshvc_ext_window_columns) keeps them. Off (the default; scale_q16 and
+   offset unused), the windows are the console's. (Since 2.12.) */
+void nshvc_ext_window_map(int on, int32_t scale_q16, int offset);
+/* Window 1 or 2's edges as the screen's columns (0 to 8191, inclusive:
+   past the screen's width a column is not on it), from the next line
+   drawn: on every line the window is from column left to right, in place
+   of its WH registers (and nshvc_ext_window_map and _window_edges); a
+   left past right covers none. Every layer, the sprites and the colour
+   window that use the window take it, with their masks, logic and
+   inversion. left = -1 gives the window back to its registers (the
+   default). (Since 2.12.) */
+void nshvc_ext_window_columns(int window, int left, int right);
 /* Background layer 0-3 (BG1-4)'s map outside the console's picture on a
    larger screen (nshvc_ext_screen), from the next frame: past the
    console's 256 columns and its lines the layer reads its map entries

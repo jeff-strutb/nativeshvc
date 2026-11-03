@@ -19,6 +19,7 @@
 #define PPU_OAM_EXT     (544 + 128 + 128)
 #define PPU_VRAM_PAGES  4       /* VRAM in 64 KB pages, up to 256 KB (nshvc_ext_vram) */
 #define PPU_MAX_HEIGHT  239
+#define PPU_WMAP_OFFSET (1 << 24)   /* nshvc_ext_window_map's offset, either way */
 
 /* The screen state a line is drawn from, as it stood at the line's
    horizontal blank. */
@@ -35,6 +36,10 @@ typedef struct {
     uint8_t clip;             /* BG1-4 and the sprites (bits 0-4) kept to the console's picture
                                  (nshvc_ext_layer_clip) */
     uint8_t wedges;           /* the windows open at the picture's edges (nshvc_ext_window_edges) */
+    uint8_t wmap;             /* the windows' edges mapped onto the screen (nshvc_ext_window_map) */
+    uint8_t wcols;            /* windows 1 and 2 (bits 0, 1) at screen columns (nshvc_ext_window_columns) */
+    uint16_t wcol[4];         /* those columns: window 1's left and right, window 2's */
+    int32_t wmap_scale, wmap_offset;  /* the map: screen columns a console column (16.16), the offset */
 } PpuScreen;
 
 /* A frame, everything its picture is drawn from: each line's screen state
@@ -173,6 +178,8 @@ void ppu_ext_vram_page(int page);
 void ppu_ext_layer_page(int layer, int page);
 void ppu_ext_layer_clip(int layer, int on);
 void ppu_ext_window_edges(int on);
+void ppu_ext_window_map(int on, int32_t scale_q16, int offset);
+void ppu_ext_window_columns(int window, int left, int right);
 void ppu_ext_sprite_wrap(int on);
 void ppu_ext_layer_outside(int layer, const uint16_t *map, int size);
 void ppu_ext_vram_copy(int to_page, int from_page);

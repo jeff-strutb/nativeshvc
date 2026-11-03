@@ -56,6 +56,8 @@ void nshvc_ext_vram_page(int page) { ppu_ext_vram_page(page); }
 void nshvc_ext_layer_page(int layer, int page) { ppu_ext_layer_page(layer, page); }
 void nshvc_ext_layer_clip(int layer, int on) { ppu_ext_layer_clip(layer, on); }
 void nshvc_ext_window_edges(int on) { ppu_ext_window_edges(on); }
+void nshvc_ext_window_map(int on, int32_t scale_q16, int offset) { ppu_ext_window_map(on, scale_q16, offset); }
+void nshvc_ext_window_columns(int window, int left, int right) { ppu_ext_window_columns(window, left, right); }
 void nshvc_ext_layer_outside(int layer, const uint16_t *map, int size) { ppu_ext_layer_outside(layer, map, size); }
 void nshvc_ext_vram_copy(int to_page, int from_page) { ppu_ext_vram_copy(to_page, from_page); }
 void nshvc_ext_vram_direct(int page) { ppu_ext_vram_direct(page); }

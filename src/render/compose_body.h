@@ -70,7 +70,7 @@
 #define CP_TOP 25        /* the hardware's line 1's row */
 #define CP_HEADER 26
 
-#define CP_ST 24         /* a state's words */
+#define CP_ST 28         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */
 #define CP_S_BGSC 1
 #define CP_S_NBA 2       /* bgnba[0], bgnba[1], m7sel, setini */
@@ -80,7 +80,9 @@
 #define CP_S_TSW 6       /* tsw, cgwsel, cgadsub, clip */
 #define CP_S_HOFS 7      /* bghofs, two a word */
 #define CP_S_VOFS 9
-#define CP_S_FIXED 11    /* the fixed colour: r, g, b; the windows' edges open (nshvc_ext_window_edges) */
+#define CP_S_FIXED 11    /* the fixed colour: r, g, b; the windows: edges open (nshvc_ext_window_edges)
+                            | mapped onto the screen << 1 (_window_map) | windows 1, 2 at columns << 2
+                            (_window_columns) */
 #define CP_S_M7AB 12
 #define CP_S_M7CD 13
 #define CP_S_M7XY 14
@@ -91,6 +93,9 @@
 #define CP_S_VBASE 19
 #define CP_S_LAYER 20    /* BG1-4 each: plain (no offset-per-tile, mosaic, hires, canvas or
                             map outside) | bpp << 1 | tile width's shift << 5 | height's << 8 */
+#define CP_S_WCOL 24     /* windows 1 and 2's screen columns (nshvc_ext_window_columns): left,
+                            right, a word each */
+#define CP_S_WMAP 26     /* the windows' map (nshvc_ext_window_map): its scale (16.16), its offset */
 
 #define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept; name */
 
@@ -483,24 +488,40 @@ CP_FN U32 cp_obj(U32 si, U32 p, U32 x)
     return 0u;
 }
 
-/* (ppu.c win_mask) past the picture each window is outside but that, its
-   edges open, a window from column 0 reaches every column left of it and
-   one to column 255 every column right */
+/* (ppu.c wmap_col) the screen's column console column c (0-256) maps to:
+   c * scale / 65536 rounded down, plus the offset, in two parts that stay
+   inside 32 bits */
+CP_FN I32 cp_wmap(U32 si, I32 c)
+{
+    U32 k = cp_sw(si, U_(CP_S_WMAP));
+    return c * I_(k >> 16) + I_((U_(c) * (k & 0xFFFFu)) >> 16) + I_(cp_sw(si, U_(CP_S_WMAP) + 1u));
+}
+
+/* (ppu.c win_in) whether column x (the hardware's) is inside window n
+   (0, 1): at its screen columns; mapped onto the screen, L to R covering
+   the columns L maps to up to the one before R + 1's; else past the
+   picture outside but that, its edges open, a window from column 0
+   reaches every column left of it and one to column 255 every column
+   right */
+CP_FN U32 cp_win_in(U32 si, U32 n, I32 x)
+{
+    I32 l = I_(cp_b(si, U_(CP_S_WH), 2u * n)), r = I_(cp_b(si, U_(CP_S_WH), 2u * n + 1u));
+    I32 sx = x + I_(FD_(CP_SL));
+    U32 f = cp_b(si, U_(CP_S_FIXED), 3u);
+    if (((f >> (2u + n)) & 1u) != 0u)
+        return sx >= I_(cp_h(si, U_(CP_S_WCOL) + n, 0u)) && sx <= I_(cp_h(si, U_(CP_S_WCOL) + n, 1u)) ? 1u : 0u;
+    if ((f & 2u) != 0u)
+        return sx >= cp_wmap(si, l) && sx < cp_wmap(si, r + 1) ? 1u : 0u;
+    if ((f & 1u) != 0u && x < 0 && l == 0)
+        x = 0;
+    else if ((f & 1u) != 0u && x > 255 && r == 255)
+        x = 255;
+    return x >= l && x <= r ? 1u : 0u;
+}
+
 CP_FN U32 cp_win(U32 si, U32 sel, U32 logic, I32 x)
 {
-    I32 l1 = I_(cp_b(si, U_(CP_S_WH), 0u)), r1 = I_(cp_b(si, U_(CP_S_WH), 1u));
-    I32 l2 = I_(cp_b(si, U_(CP_S_WH), 2u)), r2 = I_(cp_b(si, U_(CP_S_WH), 3u));
-    I32 x1 = x, x2 = x;
-    U32 w1, w2, e1 = sel & 2u, e2 = sel & 8u;
-    if (cp_b(si, U_(CP_S_FIXED), 3u) != 0u && x < 0) {
-        x1 = l1 == 0 ? 0 : x;
-        x2 = l2 == 0 ? 0 : x;
-    } else if (cp_b(si, U_(CP_S_FIXED), 3u) != 0u && x > 255) {
-        x1 = r1 == 255 ? 255 : x;
-        x2 = r2 == 255 ? 255 : x;
-    }
-    w1 = x1 >= l1 && x1 <= r1 ? 1u : 0u;
-    w2 = x2 >= l2 && x2 <= r2 ? 1u : 0u;
+    U32 w1 = cp_win_in(si, 0u, x), w2 = cp_win_in(si, 1u, x), e1 = sel & 2u, e2 = sel & 8u;
     if (e1 == 0u && e2 == 0u)
         return 0u;
     if ((sel & 1u) != 0u) w1 ^= 1u;

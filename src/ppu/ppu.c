@@ -725,6 +725,33 @@ void ppu_ext_layer_clip(int layer, int on)
 
 void ppu_ext_window_edges(int on) { cur.wedges = on != 0; }
 
+void ppu_ext_window_map(int on, int32_t scale_q16, int offset)
+{
+    if (on && (scale_q16 <= 0 || offset < -PPU_WMAP_OFFSET || offset > PPU_WMAP_OFFSET))
+        snes_fatal("nshvc_ext_window_map(%d, %ld, %d): the scale above 0, the offset -%d to %d", on, (long)scale_q16,
+                   offset, PPU_WMAP_OFFSET, PPU_WMAP_OFFSET);
+    cur.wmap = on != 0;
+    cur.wmap_scale = on ? scale_q16 : 0;
+    cur.wmap_offset = on ? offset : 0;
+}
+
+void ppu_ext_window_columns(int window, int left, int right)
+{
+    unsigned n = (unsigned)window - 1;
+    if (window < 1 || window > 2 || left < -1 || left >= PPU_EXT_WIDTH ||
+        (left >= 0 && (right < 0 || right >= PPU_EXT_WIDTH)))
+        snes_fatal("nshvc_ext_window_columns(%d, %d, %d): windows 1 and 2, columns 0 to %d (left -1: the registers')",
+                   window, left, right, PPU_EXT_WIDTH - 1);
+    if (left < 0) {
+        cur.wcols = (uint8_t)(cur.wcols & ~(1u << n));
+        cur.wcol[2 * n] = cur.wcol[2 * n + 1] = 0;
+        return;
+    }
+    cur.wcols = (uint8_t)(cur.wcols | 1u << n);
+    cur.wcol[2 * n] = (uint16_t)left;
+    cur.wcol[2 * n + 1] = (uint16_t)right;
+}
+
 void ppu_ext_vram_copy(int to_page, int from_page)
 {
     if (to_page < 1 || to_page >= vram_pages || from_page < 0 || from_page >= vram_pages)
@@ -1666,22 +1693,39 @@ static void draw_obj(unsigned line)
 }
 
 /* ---- windows ---- */
-/* whether column x (the hardware's, 0-255 its picture's) is inside the
-   window mask; past the picture each window is outside but that, its
-   edges open (nshvc_ext_window_edges), a window from column 0 reaches every
-   column left of it and one to column 255 every column right */
+/* the screen's column console column c (0-256) maps to (nshvc_ext_window_map):
+   c * scale / 65536 rounded down, plus the offset, the product in two
+   parts so that no part passes 32 bits (compose_body.h cp_wmap's) */
+static int wmap_col(int c)
+{
+    return c * (s->wmap_scale >> 16) + ((c * (s->wmap_scale & 0xFFFF)) >> 16) + s->wmap_offset;
+}
+
+/* whether column x (the hardware's, 0-255 its picture's) is inside window
+   n (0, 1): at its screen columns (nshvc_ext_window_columns); mapped
+   onto the screen (nshvc_ext_window_map), L to R covering the columns
+   L maps to up to the one before R + 1's; else past the picture outside
+   but that, its edges open (nshvc_ext_window_edges), a window from column
+   0 reaches every column left of it and one to column 255 every column
+   right */
+static int win_in(int n, int x)
+{
+    int l = s->wh[2 * n], r = s->wh[2 * n + 1];
+    if (s->wcols >> n & 1)
+        return x + sl >= s->wcol[2 * n] && x + sl <= s->wcol[2 * n + 1];
+    if (s->wmap)
+        return x + sl >= wmap_col(l) && x + sl < wmap_col(r + 1);
+    if (s->wedges && x < 0 && l == 0)
+        x = 0;
+    else if (s->wedges && x > 255 && r == 255)
+        x = 255;
+    return x >= l && x <= r;
+}
+
+/* whether column x (the hardware's) is inside the window mask */
 static uint8_t win_mask(uint8_t sel, uint8_t logic, int x)
 {
-    int x1 = x, x2 = x, w1, w2;
-    if (s->wedges && x < 0) {
-        x1 = s->wh[0] == 0 ? 0 : x;
-        x2 = s->wh[2] == 0 ? 0 : x;
-    } else if (s->wedges && x > 255) {
-        x1 = s->wh[1] == 255 ? 255 : x;
-        x2 = s->wh[3] == 255 ? 255 : x;
-    }
-    w1 = x1 >= s->wh[0] && x1 <= s->wh[1];
-    w2 = x2 >= s->wh[2] && x2 <= s->wh[3];
+    int w1 = win_in(0, x), w2 = win_in(1, x);
     int e1 = sel & 2, e2 = sel & 8;
     if (!e1 && !e2)
         return 0;
@@ -2207,7 +2251,8 @@ static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vba
     o[8] = l->bghofs[2] | (uint32_t)l->bghofs[3] << 16;
     o[9] = l->bgvofs[0] | (uint32_t)l->bgvofs[1] << 16;
     o[10] = l->bgvofs[2] | (uint32_t)l->bgvofs[3] << 16;
-    o[11] = l->fixed_r | l->fixed_g << 8 | l->fixed_b << 16 | (uint32_t)l->wedges << 24;
+    o[11] = l->fixed_r | l->fixed_g << 8 | l->fixed_b << 16 |
+            (uint32_t)(l->wedges | l->wmap << 1 | (l->wcols & 3) << 2) << 24;
     o[12] = (uint16_t)l->m7a | (uint32_t)(uint16_t)l->m7b << 16;
     o[13] = (uint16_t)l->m7c | (uint32_t)(uint16_t)l->m7d << 16;
     o[14] = (uint16_t)l->m7x | (uint32_t)(uint16_t)l->m7y << 16;
@@ -2225,6 +2270,10 @@ static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vba
                     !(f->out_on >> n & 1);
         o[20 + n] = (uint32_t)plain | bpp << 1 | (big ? 4u : 3u) << 5 | (big ? 4u : 3u) << 8;
     }
+    o[24] = l->wcol[0] | (uint32_t)l->wcol[1] << 16;
+    o[25] = l->wcol[2] | (uint32_t)l->wcol[3] << 16;
+    o[26] = (uint32_t)l->wmap_scale;
+    o[27] = (uint32_t)l->wmap_offset;
 }
 
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
