@@ -359,6 +359,14 @@ each one, is in [tests/README.md](tests/README.md).
   5.5 to 35 times smaller than point sampling's where the plane is magnified, 4.5 to 6
   times where it is minified. On an M4 Pro, a 2560x2240 window's Mode 7 frame takes 3 to 5 ms of the GPU,
   a plain frame 0.2 to 0.4.
+- **The pictures against the display:** `rr_pace.h` against a model display (60, 59.94,
+  120 and 50 Hz; NTSC and PAL; leads of 3.5 to 20 ms; GPU steps; a compositor keeping
+  pictures longer for a while): no picture waits behind another or is held back needlessly
+  but the bounded cost of telling a deeper compositor from a queue (`tests/unit/pace_model.c`);
+  and in a real window on Metal and on Vulkan through MoltenVK (`tests/unit/pace_macos.m`):
+  each picture on the glass 16 to 33 ms after it is drawn, the frames 16,639,267 ns apart,
+  no ask for a drawable over about 1 ms, light frames and heavy ones alike. Displays faster
+  than 60 Hz and variable refresh are held in the model only.
 - **The GPU compositor:** Metal, OpenGL and Vulkan draw the console's picture themselves,
   a GPU thread a pixel, from a description of the frame the CPU makes (each row's states,
   the VRAM, and each row's sprites with the console's line limits decided), and the
@@ -583,17 +591,26 @@ the software backend's drawing and what the GPU backends' shaders compute, in in
 the blends, so every backend takes the same texels; each backend's output is checked
 against it. The backends also draw a port's overlays.
 
-The display never paces the console. Each frame's picture goes to the window a steady time
-after the frame starts, the longest any of the last 128 frames took to run and draw, so
-the pictures arrive a frame apart however long each took; and no picture waits in the swap
-chain behind another. Metal, and Vulkan in FIFO with the display's timing (MoltenVK), learn
-the display's refreshes, and how long before one a picture must be ready to make it, from
-the times the display reports each picture on the glass
-([`rr_pace.h`](src/render/rr_pace.h)); a picture that could make only the refresh the last
-one is due on is held back, so each reaches the glass on the first refresh it can. Vulkan
-elsewhere presents in MAILBOX (the newest picture takes a waiting one's place), else
-IMMEDIATE. On a 60.00 Hz display the console's 60.0988 Hz shows as one picture not shown
-each ten seconds.
+The display never paces the console, and the console's time never depends on the
+display: the frames (and their vertical blanks, which a game's code waits on) come each
+1/60.0988 s whatever the screen refreshes at, 60, 120 or 240 Hz or a variable rate. Each
+frame's picture goes to the window a steady time after the frame starts, the longest any
+of the last 128 frames took to run and draw, so the pictures arrive a frame apart however
+long each took; and no picture waits in the swap chain behind another. Metal, and Vulkan in
+FIFO with the display's timing (MoltenVK), learn the display's refreshes, and how long
+before one a picture must be ready to make it, from the times the display reports each
+picture on the glass ([`rr_pace.h`](src/render/rr_pace.h)); a picture that could make only
+the refresh the last one is due on is held back, so each reaches the glass on the first
+refresh it can. On a display as fast as the frames or faster every picture is shown; on a
+60.00 Hz display, a little slower than the frames, one picture each ten seconds is not.
+The lead is measured when the window opens (for up to a second or two a picture goes every
+two or three frames), and followed as the Mac's window server now and then keeps pictures
+a refresh longer for a while: while it does, a picture each second is held back to tell
+that from pictures waiting. On a display whose refreshes keep no fixed spacing (variable
+refresh) every picture is sent as it is ready. Vulkan elsewhere presents in MAILBOX (the
+newest picture takes a waiting one's place), else IMMEDIATE; OpenGL (Windows) presents
+unsynced. On this Mac (60 Hz, Metal) a picture is on the glass 16 to 33 ms after it is
+drawn, where a display left to pace the frames kept it 49.
 
 ### Sound
 

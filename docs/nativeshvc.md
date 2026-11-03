@@ -66,7 +66,10 @@ the reference); the renderers draw it at the window's own resolution, at any
 size and shape: the pixel art with sharp bilinear filtering, the Mode 7
 plane looked up at each window pixel and anti-aliased, a layer's canvas (an
 extension) at the window's resolution (The picture, below), and the game's
-overlays over it.
+overlays over it. The frames come each 1/60.0988 s whatever the screen's
+refresh rate; each picture goes to the screen without the display ever
+pacing them, none waiting behind another (README.md, Picture;
+`src/render/rr_pace.h`).
 
 ## The cartridge (`nshvc_cart`)
 
