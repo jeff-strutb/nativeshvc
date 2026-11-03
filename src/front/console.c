@@ -632,11 +632,16 @@ static void fps_frame(uint64_t shown, uint64_t ran, uint64_t presented, uint64_t
     }
 }
 
-/* the frame running's start, its due time (0 the first); each frame's time
-   from its start to its picture drawn, the last 128; the picture sent no
-   sooner than the longest of those after its frame's start, so that the
-   pictures reach the display a frame apart as on the console, however
-   long each frame took to run and draw (rr_present, render/rr_pace.h) */
+/* when the frame running started (0 the first; the clock's time, not its
+   due time, which a late frame is behind: its lateness would count as its
+   drawing, hold its picture later, and make the next frame later still);
+   each frame's time from its start to its picture drawn, the last 128; the
+   picture sent no sooner than the longest of those after its frame's
+   start, so that the pictures reach the display a frame apart as on the
+   console however long each frame took to run and draw, but never later
+   than three quarters of a frame after it: a frame heavier than that has
+   its picture sent when drawn, and the frames after keep their time
+   (rr_present, render/rr_pace.h) */
 static uint64_t frame_start, drawn_ns[128];
 static unsigned drawn_n;
 
@@ -679,6 +684,8 @@ static void show(void)
         unsigned i;
         for (i = 0; i < 128; i++)
             steady = drawn_ns[i] > steady ? drawn_ns[i] : steady;
+        if (steady > (snes_pal() ? 19997194ull : 16639267ull) * 3 / 4)
+            steady = (snes_pal() ? 19997194ull : 16639267ull) * 3 / 4;
         drawn = rr_present(frame_start ? frame_start + steady : 0);
         if (frame_start && drawn > frame_start)
             drawn_ns[drawn_n++ % 128] = drawn - frame_start;
@@ -895,7 +902,7 @@ static void frame(void)
                       fps_frame_start ? now - shown : 0);
         }
         fps_frame_start = now;
-        frame_start = next_due;
+        frame_start = now;
     }
 }
 

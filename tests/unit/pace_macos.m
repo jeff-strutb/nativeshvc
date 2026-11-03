@@ -8,9 +8,9 @@
  * the display's refresh; the display never paces it and no picture waits
  * behind others.
  *
- * PACE_STEP=1 makes every third frame's game run 5 ms longer, as a game
- * whose frames alternate light and heavy work: the pictures still reach
- * the display a frame apart.
+ * PACE_STEP=1 makes every third frame's game run 5 ms longer (PACE_STEP=N,
+ * N ms), as a game whose frames alternate light and heavy work: the
+ * pictures still reach the display a frame apart.
  *
  * For PACE_FRAMES frames (1500 by default, 25 s) it prints, in blocks of
  * 300 pictures, the median and the 90th percentile of the time to the
@@ -175,6 +175,10 @@ static void report(void)
 
 static void on_frame(void)
 {
+    /* the window kept above the others: a covered window is not drawn */
+    if (nframes == 1)
+        for (NSWindow *w in [NSApp windows])
+            [w setLevel:NSFloatingWindowLevel];
     if (nframes < MAXP)
         nframes++;
     wr8(0x7E0100, (uint8_t)(rd8(0x7E0100) + 1));
@@ -196,7 +200,7 @@ static void abi_nmi(void)
         frame_t[nframes] = CACurrentMediaTime();
     rd8(0x004210);
     if (step && c % 3 == 0) {
-        double until = CACurrentMediaTime() + 0.005;
+        double until = CACurrentMediaTime() + step * 1e-3;
         while (CACurrentMediaTime() < until)
             ;
     }
@@ -228,7 +232,7 @@ int main(int argc, char **argv)
     const char *f = getenv("PACE_FRAMES");
     if (f && atoi(f) > 60 && atoi(f) < MAXP)
         want_frames = atoi(f);
-    step = getenv("PACE_STEP") != NULL;
+    step = getenv("PACE_STEP") ? (atoi(getenv("PACE_STEP")) > 1 ? atoi(getenv("PACE_STEP")) : 5) : 0;
     s_next = method_setImplementation(m, (IMP)timed_next);
     rom[0x7FFC] = 0x00;
     rom[0x7FFD] = 0x80;
