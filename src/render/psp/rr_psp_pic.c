@@ -65,6 +65,8 @@
 #define V_OBJ (V_SUB + (unsigned)(s_pw * s_band * 4))
 #define V_Z (V_OBJ + (unsigned)(s_pw * s_band * 4))
 #define V_SUB2 (V_Z + (unsigned)(s_pw * s_band * 4))   /* a hires line's sub screen as its even pixels' own */
+#define V_HB V_OBJ                           /* a canvas frame's: its stripe's hires rows finished (after
+                                                its sprites: 512 x 32 of 16 bits, s_pw 256 there) */
 /* a stripe's buffers' row (pixels) and rows: PIC_W and BAND; a canvas
    frame wider (to 512 pixels), 512 and CV_BAND: its main and sub screens,
    sprites and depth (16 bits a pixel, the last: no hires line's second
@@ -771,6 +773,7 @@ static int has_out(U32 n)
 static int s_cv = -1;                        /* a canvas frame's: the canvas's layer (rr_psp_canvas) */
 static int s_cvch;                           /* and the canvas a character canvas */
 static int s_cvrec;                          /* draw_bg: the covered cells recorded, nothing drawn */
+static int s_cvoff;                          /* (draw_screen: a hires line's, where the layer is its tiles) */
 static int s_rec_lo;                         /* (rows before it recorded by the stripe before) */
 typedef struct {
     int16_t xa, xb, xc;
@@ -1116,7 +1119,7 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
         if (ys == 4u && ((((yy) >> 3) & 1u) ^ vf))                                                                 \
             ch += 16u;                                                                                             \
         ca = (nba + (ch & 0x3FFu) * (bpp * 4u)) & 0x7FFFu;                                                         \
-        if (s_cvch && n == s_cv && phase < 0 && cv_covered(ca, page, bpp, &ci_)) {                                 \
+        if (s_cvch && n == s_cv && phase < 0 && !s_cvoff && cv_covered(ca, page, bpp, &ci_)) {                                 \
             cv_cell(x, y, (w), ci_, pal, hf, vf, bpp, r0, r1, x0, x1, (int)cp_zbg(bgmode, (U32)n, prio));         \
             break;                                                                                                 \
         }                                                                                                          \
@@ -1646,6 +1649,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
     s_which = which ? 1 : 0;
     s_nmk = 0;
+    s_cvoff = hires == 1;                    /* (pseudo-hires: the canvas, the console's resolution) */
     if (mode == 7u) {
         U32 both = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
         for (n = 0; n < 2u; n++) {
@@ -1673,7 +1677,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
         }
     }
     for (n = 0; n < 4u && mode != 7u; n++) {
-        if (!cp_bpp(mode, n) || !((on >> n) & 1u) || ((int)n == s_cv && !s_cvch && !cv_mosaic(si)))
+        if (!cp_bpp(mode, n) || !((on >> n) & 1u) || ((int)n == s_cv && !s_cvch && hires != 1 && !cv_mosaic(si)))
             continue;
         ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
         sfunc(own ? (int)((cgadsub >> n) & 1u) : 0);
@@ -1755,7 +1759,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
         sceGuDepthMask(GU_FALSE);
         s_nmk = 0;
     }
-    if (s_cv >= 0 && !s_cvch && mode != 7u && cp_bpp(mode, (U32)s_cv) && ((on >> s_cv) & 1u) && !cv_mosaic(si)) {
+    if (s_cv >= 0 && !s_cvch && hires != 1 && mode != 7u && cp_bpp(mode, (U32)s_cv) && ((on >> s_cv) & 1u) && !cv_mosaic(si)) {
         /* a canvas frame: where the canvas's layer, opaque, would be the
            screen's top pixel (its depth over the depth there, where it may
            show), F_W */
@@ -1953,8 +1957,11 @@ static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned ow
     }
     sceGuDisable(GU_STENCIL_TEST);
     sceGuPixelMask(0);
-    /* the picture's rows: each channel through its lookup */
+    /* the picture's rows: each channel through its lookup (16 bits: the
+       picture's, or a canvas frame's hires rows', s_pic_off) */
     target(V_PIC + s_pic_off, s_pic_stride);
+    s_target_psm = GU_PSM_5551;
+    sceGuDrawBufferList(GU_PSM_5551, (void *)(V_PIC + s_pic_off), s_pic_stride);
     scissor(sc * x0, r0, sc * x1, r1);
     if (out != 3) {
         /* cleared, colour and stencil, by a rectangle (a clear covers the
@@ -2060,7 +2067,7 @@ static struct {
     int16_t r0[272], r1[272];                /* each target row's picture rows (ty, ty + 1, clamped) */
     uint16_t run[PIC_H];                     /* each picture row's run of rows whose states are the same */
     uint8_t A[272], B[272], two[272];        /* and its blend down's factors, whether it blends */
-    int ts;                                  /* (unused) */
+    int cpp;                                 /* the picture's columns a console pixel (2: a hires line in it) */
     unsigned int *across[2];                 /* the lists kept: the blend across (j) */
     int key[8];
 } s_cw;
@@ -2082,8 +2089,15 @@ static struct {
 static int s_cv32;
 static int s_cx0, s_cx1;                     /* the target's columns the canvas's passes are kept to (a row's part's) */
 static uint32_t *s_cvs;
+static TV __attribute__((aligned(16))) s_pcolv[2][480 * 2];   /* each i's: each target column from its picture column
+                                                                 (a hires row's finished: cv_finished) */
 static TV __attribute__((aligned(16))) s_cvcol[2][480 * 2];
 static TV __attribute__((aligned(16))) s_cvrow[2][272 * 2];
+/* on a pseudo-hires line the canvas is the console's resolution: each
+   console pixel the texel under its centre (ppu.c draw_bg), so each target
+   column's and row's for picture pixel i, j that pixel's centre's */
+static TV __attribute__((aligned(16))) s_cvcolc[2][480 * 2];
+static TV __attribute__((aligned(16))) s_cvrowc[2][272 * 2];
 static uint32_t __attribute__((aligned(64))) s_d8[16][3][256];
 static int s_d8_made;
 
@@ -2933,10 +2947,10 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
 
 /* the colour window's bits on the main screen's rows r0-r1 (finish_band's
    first) */
-static void cv_marks(uint32_t si, int r0, int r1, int x0, int x1)
+static void cv_marks(uint32_t si, int r0, int r1, int x0, int x1, unsigned buf)
 {
     room();
-    target(V_MAIN, s_pw);
+    target(buf, s_pw);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_BLEND);
     sceGuEnable(GU_STENCIL_TEST);
@@ -3004,6 +3018,9 @@ typedef struct {
 static CvGroup s_cg[CV_GROUPS];
 static int s_ncg;
 static TV __attribute__((aligned(16))) s_colv[2][480 * 2];   /* each i's: each target column from its picture column */
+static TV __attribute__((aligned(16))) s_colvp[2][2][480 * 2];   /* by i, parity: those target columns' (cv_mag_pseudo) */
+static int s_ncolvp[2][2];
+static int s_cw_z0[2];                       /* by i: the target columns over picture column 0 */
 
 static void cv_groups(int h)
 {
@@ -3101,20 +3118,41 @@ static void cv_make(void)
     for (i = 0; i < 2; i++) {
         const int *src = i ? s_cw.a->tx1 : s_cw.a->tx0;
         for (x = 0; x < n; x++) {
-            TV *v = &s_colv[i][2 * x];
-            v[0].u = (short)src[x];
+            /* (the screens': a console pixel's column; the finished hires
+               rows': the picture's) */
+            TV *v = &s_colv[i][2 * x], *p = &s_pcolv[i][2 * x];
+            v[0].u = (short)(src[x] / s_cw.cpp);
             v[0].v = 0;
             v[0].x = (short)x;
             v[0].y = 0;
             v[0].z = 0;
-            v[1].u = (short)(src[x] + 1);
+            v[1].u = (short)(src[x] / s_cw.cpp + 1);
             v[1].v = CV_ROWS;
             v[1].x = (short)(x + 1);
             v[1].y = CV_ROWS;
             v[1].z = 0;
+            p[0] = v[0];
+            p[1] = v[1];
+            p[0].u = (short)src[x];
+            p[1].u = (short)(src[x] + 1);
+        }
+    }
+    for (i = 0; i < 2; i++) {
+        const int *src = i ? s_cw.a->tx1 : s_cw.a->tx0;
+        s_ncolvp[i][0] = s_ncolvp[i][1] = 0;
+        s_cw_z0[i] = 0;
+        for (x = 0; x < n; x++) {
+            int par = src[x] & 1;
+            TV *v = &s_colvp[i][par][2 * s_ncolvp[i][par]++];
+            v[0] = s_colv[i][2 * x];
+            v[1] = s_colv[i][2 * x + 1];
+            if (src[x] == 0)
+                s_cw_z0[i] = x + 1;
         }
     }
     sceKernelDcacheWritebackRange(s_colv, sizeof s_colv);
+    sceKernelDcacheWritebackRange(s_colvp, sizeof s_colvp);
+    sceKernelDcacheWritebackRange(s_pcolv, sizeof s_pcolv);
     for (gi = 0; gi < s_ncg; gi++) {
         CvGroup *g = &s_cg[gi];
         int nr = g->Yb - g->Ya;
@@ -3174,6 +3212,8 @@ static unsigned int *cv_arena_list(unsigned int **at, uint32_t si, int what)
     return start;
 }
 
+static int part_hires(uint32_t si);
+
 static void cv_classes(void)
 {
     unsigned int *at = s_cva;
@@ -3186,6 +3226,8 @@ static void cv_classes(void)
             continue;
         if (FD_(FD_(CP_ROWS) + 4u * (U32)r + 1u) != 1u)
             continue;                        /* (a row of parts: its passes made as drawn) */
+        if (part_hires(row_state(r)))
+            continue;                        /* (a hires row: its picture's, cv_finished) */
         if (s_ncls == CV_STATES || (char *)(at + 3 * 8192 / 4) > (char *)(s_cva + sizeof s_cva / 4)) {
             /* (too many: none made, each drawn as it comes) */
             for (c = 0; c < s_cw.ph; c++)
@@ -3286,12 +3328,12 @@ static void cv_atlas(const uint32_t *desc)
     memcpy(s_cvat_key, key, sizeof key);
 }
 
-/* V_CA's rows for group g's target rows, j's: each row's texel row ey
-   (s_cvrow), picture row ey / k's records (cv_record), each a sprite of its
+/* V_CA's rows for group g's target rows: each row's texel row ey
+   (rowt: s_cvrow's or s_cvrowc's, j's), picture row ey / k's records (cv_record), each a sprite of its
    cell's texels in its character's row (flipped as the cell) into the
    texel plane's columns xa k - xb k; by image, depth and palette */
 #define CVB_IMGS 64
-static void cv_chars_rows(const CvGroup *g, int j)
+static void cv_chars_rows(const CvGroup *g, const TV *rowt)
 {
     static int cnt[CVB_IMGS * 24];
     static uint16_t bk[CV_ROWS][CVT_MAX];    /* each record's bucket */
@@ -3310,7 +3352,7 @@ static void cv_chars_rows(const CvGroup *g, int j)
     clear_rect(0, 0, 512, nr, 0, 0, 0, GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
     memset(cnt, 0, (size_t)nb * sizeof cnt[0]);
     for (t = 0; t < nr; t++) {
-        int R = s_cvrow[j][2 * (g->Ya + t - s_cw.Y0)].v / k, c;
+        int R = rowt[2 * (g->Ya + t - s_cw.Y0)].v / k, c;
         for (c = 0; c < s_ncvt[R]; c++) {
             const CvCell *e = &s_cvt[R][c];
             bk[t][c] = (uint16_t)((e->ci / pimg) * 24 + e->bk * 8 + e->pal);
@@ -3336,7 +3378,7 @@ static void cv_chars_rows(const CvGroup *g, int j)
         sceGuClutLoad(32, s_cvdl[(b % 24) / 8][b % 8]);
         v = (TV *)sceGuGetMemory(cnt[b] * 2 * (int)sizeof(TV));
         for (t = 0; t < nr; t++) {
-            int ey = s_cvrow[j][2 * (g->Ya + t - s_cw.Y0)].v, R = ey / k, sub = ey % k, c;
+            int ey = rowt[2 * (g->Ya + t - s_cw.Y0)].v, R = ey / k, sub = ey % k, c;
             for (c = 0; c < s_ncvt[R]; c++) {
                 const CvCell *e = &s_cvt[R][c];
                 int ix, cu, cvv, a0, a1;
@@ -3366,29 +3408,46 @@ static void cv_chars_rows(const CvGroup *g, int j)
     sceGuDisable(GU_STENCIL_TEST);
 }
 
-static void cv_remap(const CvGroup *g, int i, int j)
+/* V_CB for (i, j) of group g, the texels under the target pixels' centres
+   (centre 0) or under the console pixels' (1, a pseudo-hires line's):
+   its rows' texel rows into V_CA (screen: from s_cvs; characters:
+   cv_chars_rows), then each target column's texel column from them; each
+   kept while it holds (V_CA and V_CB are the blend across's after a j,
+   V_CA the finish in eighths's) */
+static const CvGroup *s_ca_g, *s_cb_g;
+static int s_ca_j, s_ca_c, s_ca_ok, s_cb_j, s_cb_i, s_cb_c, s_cb_ok;
+
+static int s_mag_dirty;                      /* V_WM, V_WS rows a pseudo-hires part's since the list made them */
+
+static void cv_canvas(const CvGroup *g, int i, int j, int centre)
 {
     int nr = g->Yb - g->Ya;
-    if (s_cvch) {
-        /* (V_CA's rows a j's: made at i 0, kept for i 1, cv_finish's
-           passes not using it but in eighths, which a full colour's are) */
-        if (i == 0)
-            cv_chars_rows(g, j);
-        room();
-        sceGuDisable(GU_BLEND);
-        sceGuDisable(GU_DEPTH_TEST);
-        sceGuDisable(GU_COLOR_TEST);
-        sceGuEnable(GU_STENCIL_TEST);
-        sceGuEnable(GU_TEXTURE_2D);
-        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-        wtarget(V_CB);
-        scissor(0, 0, s_cw.n, nr);
-        sceGuTexImage(0, 512, 16, 512, vram(V_CA));
-        sceGuTexFlush();
-        cv_copy(s_cvcol[i], s_cw.n);
-        sceGuDisable(GU_STENCIL_TEST);
+    if (s_cb_ok && s_cb_g == g && s_cb_j == j && s_cb_i == i && s_cb_c == centre)
         return;
+    room();
+    if (!(s_ca_ok && s_ca_g == g && s_ca_j == j && s_ca_c == centre)) {
+        const TV *rowt = centre ? s_cvrowc[j] : s_cvrow[j];
+        if (s_cvch) {
+            cv_chars_rows(g, rowt);
+        } else {
+            sceGuDisable(GU_BLEND);
+            sceGuDisable(GU_DEPTH_TEST);
+            sceGuDisable(GU_COLOR_TEST);
+            sceGuEnable(GU_STENCIL_TEST);
+            sceGuEnable(GU_TEXTURE_2D);
+            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+            wtarget(V_CA);
+            scissor(0, 0, 512, nr);
+            sceGuTexImage(0, 512, 512, 512, s_cvs);
+            sceGuTexFlush();
+            cv_copy(&rowt[2 * (g->Ya - s_cw.Y0)], nr);
+            sceGuDisable(GU_STENCIL_TEST);
+        }
+        s_ca_ok = 1;
+        s_ca_g = g;
+        s_ca_j = j;
+        s_ca_c = centre;
     }
     room();
     sceGuDisable(GU_BLEND);
@@ -3398,17 +3457,156 @@ static void cv_remap(const CvGroup *g, int i, int j)
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-    wtarget(V_CA);
-    scissor(0, 0, 512, nr);
-    sceGuTexImage(0, 512, 512, 512, s_cvs);
-    sceGuTexFlush();
-    cv_copy(&s_cvrow[j][2 * (g->Ya - s_cw.Y0)], nr);
     wtarget(V_CB);
     scissor(0, 0, s_cw.n, nr);
     sceGuTexImage(0, 512, 16, 512, vram(V_CA));
     sceGuTexFlush();
-    cv_copy(s_cvcol[i], s_cw.n);
+    cv_copy(centre ? s_cvcolc[i] : s_cvcol[i], s_cw.n);
     sceGuDisable(GU_STENCIL_TEST);
+    s_cb_ok = 1;
+    s_cb_g = g;
+    s_cb_j = j;
+    s_cb_i = i;
+    s_cb_c = centre;
+}
+
+/* state si's line in a frame with a hires line (its picture 2 columns a
+   console pixel): 1 a hires mode's (5, 6: its layers hires, the canvas
+   not shown), 2 pseudo-hires (the canvas the console's resolution), else 0 */
+static int part_hires(uint32_t si)
+{
+    U32 mode;
+    if (s_cw.cpp < 2)
+        return 0;
+    cp_load(si);
+    mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
+    return mode == 5u || mode == 6u ? 1 : (cp_b(si, U_(CP_S_NBA), 3u) & 8u) ? 2 : 0;
+}
+
+/* a pseudo-hires part's screens over target rows k0-k1 of group g (j's),
+   its columns s_cx0-s_cx1: a picture pixel's own screen the sub screen as
+   its own on an even column (V_SUB2), the main on an odd, its other the
+   main on an even and the sub on an odd (finish_band's 2 and 3), each
+   made the target's as cv_mag_list makes them */
+static void cv_mag_pseudo(const CvGroup *g, int i, int j, int k0, int k1)
+{
+    const unsigned src[2][2] = { { V_SUB2, V_MAIN }, { V_MAIN, V_SUB } };   /* [sc][parity] */
+    int nr = g->Yb - g->Ya, rows = s_cw.r1[g->Yb - 1 - s_cw.Y0] - g->clo + 1, sc, par;
+    for (sc = 0; sc < 2; sc++) {
+        room();
+        wtarget(sc ? V_CS : V_CM);
+        scissor(0, 0, s_cw.n, rows);
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+        for (par = 0; par < 2; par++) {
+            if (!s_ncolvp[i][par])
+                continue;
+            sceGuTexImage(0, s_pw, 32, s_pw, vram(src[sc][par] + (unsigned)((g->clo - g->s0) * s_pw * 4)));
+            sceGuTexFlush();
+            cv_mag(sc, NULL, s_colvp[i][par], s_ncolvp[i][par]);
+            sceGuEnable(GU_TEXTURE_2D);
+        }
+        wtarget(sc ? V_WS : V_WM);
+        scissor(s_cx0, k0, s_cx1, k1);
+        wtex(sc ? V_CS : V_CM, 16);
+        cv_mag(sc, NULL, g->rowv[j], nr);
+    }
+}
+
+/* after a pseudo-hires part's finish into G_i's rows k0-k1: picture
+   column 0 black (the line's first half pixel: finish_band's) */
+static void cv_first_black(int i, int k0, int k1)
+{
+    int x1 = s_cw_z0[i] < s_cx1 ? s_cw_z0[i] : s_cx1;
+    if (x1 <= s_cx0)
+        return;
+    room();
+    wtarget(i ? V_G1 : V_G0);
+    scissor(s_cx0, k0, x1, k1);
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_STENCIL_TEST);
+    sceGuPixelMask(0);
+    rect(s_cx0, k0, x1, k1, 0);
+}
+
+static void cv_finished(const CvGroup *g, int i, const int16_t *rj, int k0, int k1);
+
+/* the canvas and the colours over target rows k-k1 of group g, columns
+   s_cx0-s_cx1, for (i, j), state si (part: a row's part, NO_PART the rows'
+   own states, c their class's lists or -1) */
+static void cv_rows(const CvGroup *g, int i, int j, const int16_t *rj, int k, int k1, uint32_t si, uint32_t part, int c)
+{
+    int kind = part_hires(si);
+    if (kind == 1) {
+        cv_finished(g, i, rj, k, k1);
+        return;
+    }
+    cv_canvas(g, i, j, kind == 2);
+    if (kind == 2)
+        cv_mag_pseudo(g, i, j, k, k1);
+    cv_index_rows(g->Ya, rj, k, k1, part);
+    if (c >= 0 && kind == 0) {
+        /* (its lists: the rows scissored) */
+        room();
+        scissor(s_cx0, k, s_cx1, k1);
+        sceGuCallList(s_cvins[c]);
+        sceGuCallList(s_cvfin[c][i]);
+    } else {
+        cv_insert(si, g->Ya + k, k, k1);
+        cv_finish(si, g->Ya + k, k, k1, i ? V_G1 : V_G0);
+    }
+    if (s_cv32)
+        s_ca_ok = 0;                         /* (V_CA the finish in eighths's) */
+    if (kind == 2) {
+        cv_first_black(i, k, k1);
+        /* (the screens the target's again for the rows after, as the list made them) */
+        s_mag_dirty = 1;
+    }
+}
+
+/* G_i's rows k0-k1 of group g (j's picture rows rj): a hires line's,
+   where the canvas is not, its picture's pixels as finished (draw_picture:
+   V_HB, from the stripe's first row), each target column its picture
+   column of i (s_pcolv) into V_CM at the group's picture rows, then each
+   target row its picture row's */
+static void cv_finished(const CvGroup *g, int i, const int16_t *rj, int k0, int k1)
+{
+    int rows = s_cw.r1[g->Yb - 1 - s_cw.Y0] - g->clo + 1, k;
+    TV *v;
+    room();
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_STENCIL_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDisable(GU_COLOR_TEST);
+    sceGuPixelMask(0);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    wtarget(V_CM);
+    scissor(0, 0, s_cw.n, rows);
+    sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+    sceGuTexImage(0, 512, 16, 512, vram(V_HB + (unsigned)(g->clo - g->s0) * 1024u));
+    sceGuTexFlush();
+    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2 * s_cw.n, 0, s_pcolv[i]);
+    wtarget(i ? V_G1 : V_G0);
+    scissor(s_cx0, k0, s_cx1, k1);
+    wtex(V_CM, 16);
+    v = (TV *)sceGuGetMemory((k1 - k0) * 2 * (int)sizeof(TV));
+    for (k = k0; k < k1; k++) {
+        TV *t = &v[2 * (k - k0)];
+        int row = rj[g->Ya + k - s_cw.Y0] - g->clo;
+        t[0].u = 0;
+        t[0].v = (short)row;
+        t[0].x = 0;
+        t[0].y = (short)k;
+        t[0].z = 0;
+        t[1].u = (short)s_cw.n;
+        t[1].v = (short)(row + 1);
+        t[1].x = (short)s_cw.n;
+        t[1].y = (short)(k + 1);
+        t[1].z = 0;
+    }
+    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2 * (k1 - k0), 0, v);
 }
 
 /* group g: each of the four (i, j) made, blended across into H0, H1, then
@@ -3416,6 +3614,7 @@ static void cv_remap(const CvGroup *g, int i, int j)
 static void cv_group(const CvGroup *g)
 {
     int nr = g->Yb - g->Ya, i, j, k;
+    s_ca_ok = s_cb_ok = 0;
     for (j = 0; j < 2; j++) {
         const int16_t *rj = j ? s_cw.r1 : s_cw.r0;
         for (i = 0; i < 2; i++) {
@@ -3424,7 +3623,7 @@ static void cv_group(const CvGroup *g)
             sceGuDisable(GU_COLOR_TEST);
             sceGuDisable(GU_DEPTH_TEST);
             sceGuCallList(g->mag[i][j]);
-            cv_remap(g, i, j);
+            s_mag_dirty = 0;
             /* the canvas and the colours, a run of rows of one state at a time
                (a description has a state each line, the same or not) */
             for (k = 0; k < nr;) {
@@ -3434,6 +3633,15 @@ static void cv_group(const CvGroup *g)
                     k1++;
                 int c = s_cvcls[run], r = rj[g->Ya + k - s_cw.Y0];
                 U32 ri = FD_(CP_ROWS) + 4u * (U32)r, p0 = FD_(ri), np = FD_(ri + 1u), pk;
+                if (s_mag_dirty) {
+                    /* (a pseudo-hires part's screens made over rows before) */
+                    room();
+                    sceGuDisable(GU_BLEND);
+                    sceGuDisable(GU_COLOR_TEST);
+                    sceGuDisable(GU_DEPTH_TEST);
+                    sceGuCallList(g->mag[i][j]);
+                    s_mag_dirty = 0;
+                }
                 if (np > 1u) {
                     /* a row of parts (a state changed in the line): each
                        part's state over the target's columns whose picture
@@ -3448,39 +3656,28 @@ static void cv_group(const CvGroup *g)
                             c0 = -0x10000;
                         if (pk + 1u == np)
                             c1 = 0x10000;
-                        while (xa < s_cw.n && tx[xa] < c0)
+                        while (xa < s_cw.n && tx[xa] / s_cw.cpp < c0)
                             xa++;
-                        for (xb = xa; xb < s_cw.n && tx[xb] < c1; xb++)
+                        for (xb = xa; xb < s_cw.n && tx[xb] / s_cw.cpp < c1; xb++)
                             ;
                         if (xb <= xa)
                             continue;
                         s_cx0 = xa;
                         s_cx1 = xb;
-                        cv_index_rows(g->Ya, rj, k, k1, sp);
-                        cv_insert(sp, g->Ya + k, k, k1);
-                        cv_finish(sp, g->Ya + k, k, k1, i ? V_G1 : V_G0);
+                        cv_rows(g, i, j, rj, k, k1, sp, sp, -1);
                     }
                     s_cx0 = 0;
                     s_cx1 = s_cw.n;
                     k = k1;
                     continue;
                 }
-                cv_index_rows(g->Ya, rj, k, k1, NO_PART);
-                if (c >= 0) {
-                    /* (its lists: the rows scissored) */
-                    room();
-                    scissor(s_cx0, k, s_cx1, k1);
-                    sceGuCallList(s_cvins[c]);
-                    sceGuCallList(s_cvfin[c][i]);
-                } else {
-                    cv_insert(si, g->Ya + k, k, k1);
-                    cv_finish(si, g->Ya + k, k, k1, i ? V_G1 : V_G0);
-                }
+                cv_rows(g, i, j, rj, k, k1, si, NO_PART, c);
                 k = k1;
             }
         }
         room();
         sceGuCallList(s_cw.across[j]);
+        s_ca_ok = s_cb_ok = 0;               /* (V_CA, V_CB the blend's) */
     }
     room();
     wtarget(s_cw.fb);
@@ -3501,9 +3698,15 @@ static void cv_window(int s0, int sown)
 /* the description at word base drawn into the picture from byte off, its
    rows stride pixels apart */
 
+#define HB_MAX 320                           /* a stripe's rows' parts (32 x 9, PPU_SEGS + 1) */
+static struct {
+    uint32_t si;
+    int r, r1, x0, x1, ix, fx, wv;
+} hb[HB_MAX];
+
 static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *ph)
 {
-    int w, h, s0, r, sw, scale, sown;
+    int w, h, s0, r, sw, scale, sown, nhb = 0;
     cp_fdb = base;
     s_pic_off = off;
     s_pic_stride = stride;
@@ -3639,21 +3842,57 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
                         draw_screen(si, which, r, r1, dr0, x0, x1, hires);
                     if (s_index || s_fx)
                         index_band(si, r, r1, x0, x1, hires ? 3 : 2);
-                    if (s_cvch && !hires && mode != 7u && cp_bpp(mode, (U32)s_cv) && !cv_mosaic(si))
+                    if (s_cvch && hires != 1 && mode != 7u && cp_bpp(mode, (U32)s_cv) && !cv_mosaic(si))
                         cv_record(si, r, r1, dr0, x0, x1);
                 }
-                if (hires) {
+                if (hires == 1 && s_cv >= 0) {
+                    /* (a canvas frame's: after the stripe's screens, its
+                       sprites' buffer free, into the stripe's own rows) */
+                    if (nhb == HB_MAX)
+                        nshvc_fatal("a stripe of more than %d hires bands", HB_MAX);
+                    hb[nhb].si = si;
+                    hb[nhb].r = r;
+                    hb[nhb].r1 = r1;
+                    hb[nhb].x0 = x0;
+                    hb[nhb].x1 = x1;
+                    hb[nhb].ix = s_index;
+                    hb[nhb].fx = s_fx;
+                    hb[nhb].wv = s_wv;
+                    nhb++;
+                } else if (hires) {
                     /* the even pixels (the sub screen against the main), then
                        the odd (the main against the sub) */
                     finish_band(si, r, r1, x0, x1, V_SUB2, V_MAIN, 2);
                     finish_band(si, r, r1, x0, x1, V_MAIN, V_SUB, 3);
                 } else if (s_cv >= 0) {
-                    cv_marks(si, r, r1, x0, x1);
+                    cv_marks(si, r, r1, x0, x1, V_MAIN);
+                    if (hires == 2)
+                        cv_marks(si, r, r1, x0, x1, V_SUB2);   /* (an even pixel's own screen) */
                 } else {
                     finish_band(si, r, r1, x0, x1, V_MAIN, V_SUB, scale > 1 ? 1 : 0);
                 }
             }
             r = r1;
+        }
+        if (nhb) {
+            /* a canvas frame's hires rows finished as a picture's, into
+               the sprites' buffer (16 bits, 512 a row: V_HB), the stripe's
+               rows from its first */
+            unsigned keep_off = s_pic_off;
+            int keep_stride = s_pic_stride, b;
+            s_pic_off = V_HB - V_PIC - (unsigned)s0 * 1024u;
+            s_pic_stride = 512;
+            for (b = 0; b < nhb; b++) {
+                cp_load(hb[b].si);
+                s_index = hb[b].ix;
+                s_fx = hb[b].fx;
+                s_wv = hb[b].wv;
+                finish_band(hb[b].si, hb[b].r, hb[b].r1, hb[b].x0, hb[b].x1, V_SUB2, V_MAIN, 2);
+                finish_band(hb[b].si, hb[b].r, hb[b].r1, hb[b].x0, hb[b].x1, V_MAIN, V_SUB, 3);
+            }
+            s_pic_off = keep_off;
+            s_pic_stride = keep_stride;
+            nhb = 0;
         }
         if (s_cv >= 0)
             cv_window(s0, sown);
@@ -3730,7 +3969,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     ch = chars ? ph * kk : FD_(CP_CVH);
     /* a canvas (of characters, or over the screen at any k or none), the
        picture magnified, no hires */
-    if (!FD_(CP_CVON) || m->cpp != 1 || FD_(CP_PW) != sw || d[0] < 0 ||
+    if (!FD_(CP_CVON) || (m->cpp != 1 && m->cpp != 2) || FD_(CP_PW) != sw * (U32)m->cpp || d[0] < 0 ||
         d[1] < 0 || d[2] > 480 || d[3] > 272 || (U32)w < sw || (U32)h < ph || a->n != w || a->X0 != d[0])
         return 0;
     /* its texels a texture's, 512 x 512 at most (rr_canvas_max; at a
@@ -3747,8 +3986,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
         mos = cp_b(si, U_(CP_S_INIDISP), 3u);
         (void)mos;
-        if (mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u))
-            return 0;
+        (void)mode;
         }
     }
     s_cv = (int)n;
@@ -3773,6 +4011,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     s_cw.Y1 = d[3];
     s_cw.fb = fb;
     s_cw.ph = (int)ph;
+    s_cw.cpp = m->cpp;
     dy = (float)ph / (float)h;
     for (Y = d[1]; Y < d[3]; Y++) {
         int ty, A, q = Y - d[1], r0, r1;
@@ -3797,7 +4036,8 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
             const uint32_t *a = &FD_(FD_(CP_STATES) + row_state((int)r) * U_(CP_ST));
             const uint32_t *b = &FD_(FD_(CP_STATES) + row_state((int)r - 1) * U_(CP_ST));
             same = a == b || (a[CP_S_INIDISP] == b[CP_S_INIDISP] && a[CP_S_TSW] == b[CP_S_TSW] &&
-                              ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0x00FFFFFFu) == 0u);
+                              ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0x00FFFFFFu) == 0u &&
+                              ((a[CP_S_NBA] ^ b[CP_S_NBA]) & 0x08000000u) == 0u);
             /* (a row of parts its own) */
             same = same && FD_(FD_(CP_ROWS) + 4u * r + 1u) == 1u && FD_(FD_(CP_ROWS) + 4u * (r - 1u) + 1u) == 1u;
         }
@@ -3848,15 +4088,31 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     for (i = 0; i < 2; i++) {
         int x;
         for (x = 0; x < w; x++) {
-            int col = i ? a->tx1[x] : a->tx0[x];
+            int col = (i ? a->tx1[x] : a->tx0[x]) / m->cpp;
             int32_t u = smp->cols[3 * (d[0] + x) + 2], fu = u - 1024 * (col - m->left) + 512;
             uint32_t ex;
             TV *v = &s_cvcol[i][2 * x];
             fu = fu < 0 ? 0 : fu > 1023 ? 1023 : fu;
-            ex = m->cv_fx ? rr_cv_fit((uint32_t)col, (uint32_t)fu, (uint32_t)m->cv_fx, (uint32_t)m->pw)
+            ex = m->cv_fx ? rr_cv_fit((uint32_t)col, (uint32_t)fu, (uint32_t)m->cv_fx, (uint32_t)(m->pw / m->cpp))
                           : (uint32_t)col * (uint32_t)m->cv_k + (((uint32_t)fu * (uint32_t)m->cv_k) >> 10);
             if (ex > cw)
                 ex = cw;
+            {
+                TV *c = &s_cvcolc[i][2 * x];
+                uint32_t ec = m->cv_fx ? rr_cv_fit((uint32_t)col, 512u, (uint32_t)m->cv_fx, (uint32_t)(m->pw / m->cpp))
+                                       : (uint32_t)col * (uint32_t)m->cv_k + (uint32_t)m->cv_k / 2u;
+                ec = ec > cw ? cw : ec;
+                c[0].u = (short)ec;
+                c[0].v = 0;
+                c[0].x = (short)x;
+                c[0].y = 0;
+                c[0].z = 0;
+                c[1].u = (short)(ec + 1);
+                c[1].v = CV_ROWS;
+                c[1].x = (short)(x + 1);
+                c[1].y = CV_ROWS;
+                c[1].z = 0;
+            }
             v[0].u = (short)ex;
             v[0].v = 0;
             v[0].x = (short)x;
@@ -3870,8 +4126,9 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         }
     }
     sceKernelDcacheWritebackRange(s_cvcol, sizeof s_cvcol);
+    sceKernelDcacheWritebackRange(s_cvcolc, sizeof s_cvcolc);
     /* the lists kept, made again for a new geometry */
-    key[0] = (int)FD_(CP_PW);
+    key[0] = (int)FD_(CP_PW) | m->cpp << 16;
     key[1] = (int)ph;
     memcpy(key + 2, d, 4 * sizeof(int));
     key[6] = a->ntab;
@@ -3902,6 +4159,22 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
                                   : (uint32_t)rr * (uint32_t)m->cv_k + (((uint32_t)fv * (uint32_t)m->cv_k) >> 10);
                     if (ey > ch)
                         ey = ch;
+                    {
+                        TV *c = &s_cvrowc[j][2 * q];
+                        uint32_t ec = m->cv_fy ? rr_cv_fit((uint32_t)rr, 512u, (uint32_t)m->cv_fy, (uint32_t)m->ph)
+                                               : (uint32_t)rr * (uint32_t)m->cv_k + (uint32_t)m->cv_k / 2u;
+                        ec = ec > ch ? ch : ec;
+                        c[0].u = 0;
+                        c[0].v = (short)ec;
+                        c[0].x = 0;
+                        c[0].y = (short)(Y - g->Ya);
+                        c[0].z = 0;
+                        c[1].u = (short)(cw + 1);
+                        c[1].v = (short)(ec + 1);
+                        c[1].x = (short)(cw + 1);
+                        c[1].y = (short)(Y - g->Ya + 1);
+                        c[1].z = 0;
+                    }
                     t[0].u = 0;
                     t[0].v = (short)ey;
                     t[0].x = 0;
@@ -3916,6 +4189,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
             }
         }
         sceKernelDcacheWritebackRange(s_cvrow, sizeof s_cvrow);
+        sceKernelDcacheWritebackRange(s_cvrowc, sizeof s_cvrowc);
     }
     if (!s_to8_made)
         make_to8();

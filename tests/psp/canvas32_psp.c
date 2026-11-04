@@ -29,6 +29,11 @@
  *              from line 100 down each frame: there its tiles
  *   mode7      plain's, Mode 7 (the identity) from line 150 down each
  *              frame: those lines at the console's resolution on the PSP
+ *   hires      plain's, Mode 5 at lines 60-99 and pseudo-hires from line
+ *              150 down each frame: those lines the layer's tiles, the
+ *              frame's picture 512 across
+ *   chars      hires's with a canvas of characters instead (BG1's first
+ *              512 characters at k 2, nshvc_ext_canvas_chars)
  *   clipped    wide's with BG2 and the sprites kept to the console's picture
  *              (nshvc_ext_layer_clip)
  *   tall       clipped's on a 338 x 240 screen: rows above and below the
@@ -77,8 +82,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "clipped", "tall", "noncanvas", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_HIRES, S_CHARS, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "hires", "chars", "clipped", "tall", "noncanvas", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -219,6 +224,8 @@ static void setup(int sc)
     case S_MIDLINE:
     case S_MOSAIC:
     case S_MODE7:
+    case S_HIRES:
+    case S_CHARS:
         w(0x2C, 0x03);
         if (sc == S_MODE7) {
             static const unsigned m7[4][2] = { { 0x1B, 0x0100 }, { 0x1C, 0 }, { 0x1D, 0 }, { 0x1E, 0x0100 } };
@@ -293,6 +300,8 @@ static void setup(int sc)
     }
 }
 
+static uint8_t chars[512 * 16 * 16];  /* S_CHARS's canvas */
+
 static void make_texels(void)
 {
     size_t i;
@@ -336,6 +345,17 @@ static void frame(int sc)
             w(0x2C, (L / 20) & 1 ? 0x01 : 0x03);
         }
     }
+    if (sc == S_HIRES || sc == S_CHARS) {
+        int t[2] = { 60, 300 };
+        nshvc_wait_until(at_beam, t);
+        w(0x05, 0x05);
+        t[0] = 100;
+        nshvc_wait_until(at_beam, t);
+        w(0x05, 0x01);
+        t[0] = 150;
+        nshvc_wait_until(at_beam, t);
+        w(0x33, 0x08);
+    }
     if (sc == S_MOSAIC || sc == S_MODE7) {
         int t[2] = { sc == S_MODE7 ? 150 : 100, 300 };
         nshvc_wait_until(at_beam, t);
@@ -345,6 +365,8 @@ static void frame(int sc)
             w(0x06, 0x31);
     }
     nshvc_wait_vblank();
+    if (sc == S_HIRES || sc == S_CHARS)
+        w(0x33, 0x00);
     if (sc == S_MOSAIC)
         w(0x06, 0x00);
     if (sc == S_MODE7)
@@ -366,9 +388,18 @@ static void game(void)
     for (sc = 0; sc < NSCENES; sc++) {
         uint64_t t0, lo, hi;
         w(0x00, 0x80);
+        nshvc_ext_canvas_chars(0, 0, 0, NULL, 1);   /* (off: the next screen may not fit its k) */
         setup(sc);
         make_texels();
-        nshvc_ext_canvas_screen32(0, sc == S_NONCANVAS ? NULL : tx, TEX_W, TEX_H, 0, sc == S_PLAIN ? 0 : 1, PAL);
+        if (sc == S_CHARS) {
+            /* BG1's characters 0-511 (4 bpp, from word 0), 16 x 16 texels each */
+            size_t i;
+            for (i = 0; i < sizeof chars; i++)
+                chars[i] = (uint8_t)(rnd() & 15);
+            nshvc_ext_canvas_chars(0, 0, 512, chars, 2);
+        } else {
+            nshvc_ext_canvas_screen32(0, sc == S_NONCANVAS ? NULL : tx, TEX_W, TEX_H, 0, sc == S_PLAIN ? 0 : 1, PAL);
+        }
         w(0x00, sc == S_FADE ? 0x09 : sc == S_ADDSUB ? 0x0B : 0x0F);
         nshvc_wait_vblank();
         t0 = now_us();
