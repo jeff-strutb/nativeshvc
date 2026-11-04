@@ -59,6 +59,7 @@ static int8_t mvol_l, mvol_r, evol_l, evol_r, efb, fir[8];
 static uint8_t pmon, non, eon, released;
 static int reset_held, muted, echo_off, noise_rate;
 static int counter, every_other;
+static int c3, c5;                        /* (counter + 1,040) mod 3 and (counter + 536) mod 5 */
 static int noise;                         /* 15 bits */
 static int phase;                         /* the clock to run next, 0-31 */
 /* the shared settings as taken at clocks 27-30 */
@@ -130,12 +131,19 @@ static const uint16_t rate_phase[32] = {
     0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 0, 0,
 };
 
+/* (counter + phase) % n == 0, with no divide: n is 2^k, 3 x 2^k or 5 x
+   2^k, so the counter at its family's phase a multiple of 3 or 5 (c3, c5,
+   kept as the counter counts: 30,720 is a multiple of both) and of 2^k */
 static int rate_due(int rate)
 {
-    unsigned n = rate_frames[rate];
+    unsigned n = rate_frames[rate], x = (unsigned)counter + rate_phase[rate];
     if (!n)
         return 0;
-    return ((unsigned)counter + rate_phase[rate]) % n == 0;
+    if (n % 3 == 0)
+        return !c3 && !(x & (n / 3 - 1));
+    if (n % 5 == 0)
+        return !c5 && !(x & (n / 5 - 1));
+    return !(x & (n - 1));
 }
 
 static int clamp16(int v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
@@ -158,6 +166,8 @@ void mix_init(uint8_t *memory)
     reset_held = muted = echo_off = 1;
     noise_rate = 0;
     counter = 0;
+    c3 = 1040 % 3;
+    c5 = 536 % 5;
     every_other = 1;
     noise = 0x4000;                        /* -4000h */
     phase = 0;
@@ -645,6 +655,8 @@ static inline __attribute__((always_inline)) void shared_clock(int c)
         }
         if (--counter < 0)
             counter = COUNTER_PERIOD - 1;
+        c3 = c3 ? c3 - 1 : 2;
+        c5 = c5 ? c5 - 1 : 4;
         if (rate_due(noise_rate))
             noise = ((noise >> 1) & 0x3FFF) | (((noise ^ (noise >> 1)) & 1) << 14);
         break;

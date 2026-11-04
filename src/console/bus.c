@@ -295,10 +295,16 @@ uint8_t *snes_wram_rw(void) { return wram; }
 /* the cartridge's expansion chip (nshvc_cart.chip, cart.h), or NULL */
 static const nshvc_chip *chip;
 
+/* the clock the chip was last brought up to (cart.h: a sync to a clock it
+   has reached does nothing, so none is made) */
+static uint64_t chip_at = UINT64_MAX;
+
 static void chip_sync(void)
 {
-    if (chip && chip->sync)
+    if (chip && chip->sync && (chip_at == UINT64_MAX || snes_clock > chip_at)) {
         chip->sync();
+        chip_at = snes_clock;
+    }
 }
 
 /* the cartridge's RAM: the chip's when it owns it */
@@ -794,6 +800,8 @@ static int chip_run_ahead(uint32_t n)
     chip_ahead = 1;
     chip->sync();
     chip_ahead = 0;
+    /* (where it stopped: the step's end, or its IRQ's clock) */
+    chip_at = chip_to;
     return cart_irq;
 }
 
@@ -1626,7 +1634,7 @@ static int32_t bus_left0;            /* nshvc_bus.left as last set */
 static int bus_free;                 /* as last set: accesses take no time */
 static int bus_key = -1;             /* the regions' costs as built: MEMSEL's bit 0 | bus_free << 1 */
 
-static void bus_settle(void)
+static void bus_settle_now(void)
 {
     int32_t left = nshvc_bus.left, used = bus_left0 - left;
     if (nshvc_bus.wrote_left != NO_WRITE) {
@@ -1648,9 +1656,18 @@ static void bus_settle(void)
     bus_left0 = left;
 }
 
+/* (nothing to settle when no inline access was made since: a call's own
+   enter and leave, and the most of them) */
+static inline __attribute__((always_inline)) void bus_settle_inline(void)
+{
+    if (nshvc_bus.left != bus_left0 || nshvc_bus.wrote_left != NO_WRITE)
+        bus_settle_now();
+}
+static void bus_settle(void) { bus_settle_inline(); }
+
 static void bus_enter(void)
 {
-    bus_settle();
+    bus_settle_inline();
     nshvc_bus.left = bus_left0 = 0;
 }
 
@@ -1684,12 +1701,9 @@ static void regions_place(void)
 
 /* each region's costs: its bus time and its kind's weight in tenths, or,
    accesses taking no time, a read 1 and a write 0 */
-static void regions_cost(int free)
+static void regions_build(int key, int free)
 {
-    int key = (memsel & 1) | free << 1;
     unsigned i;
-    if (key == bus_key)
-        return;
     for (i = 0; i < 2048; i++) {
         nshvc_bus_region *g = &nshvc_bus.region[i];
         unsigned info = acc_info[memsel & 1][i >> 3][i & 7], cc = info & 15, kind = info >> 4;
@@ -1708,15 +1722,19 @@ static void bus_leave(void)
 {
     int32_t left = 0;
     int free = interrupts_held || !allowance_on;
-    bus_settle();
-    regions_cost(free);
+    bus_settle_inline();
+    if (((memsel & 1) | free << 1) != bus_key)
+        regions_build((memsel & 1) | free << 1, free);
     bus_free = free;
-    if (!snes_read_hook && !snes_write_hook && !rmw_open && !turn.on &&
-        (interrupts_held || (!(nmi_pending | timeup_flag | cart_irq) && !chip_watch(0)))) {
+    if (!snes_read_hook && !snes_write_hook && !rmw_open && !turn.on) {
         if (free) {
-            if (spin_reads < 20000000u)
+            /* No time passes in the C's accesses: nothing comes due between
+               two of its operations, from the console or the chip (whose
+               clock does not move), but an interrupt raised already. */
+            if ((interrupts_held || !(nmi_pending | timeup_flag | cart_irq)) && spin_reads < 20000000u)
                 left = (int32_t)(20000000u - spin_reads);
-        } else if (!(dma_active | dma_pending | hdma_pending) && next_event > snes_clock) {
+        } else if (!(nmi_pending | timeup_flag | cart_irq | dma_active | dma_pending | hdma_pending) &&
+                   next_event > snes_clock && !chip_watch(0)) {
             /* up to the next deadline, less 40 clocks for each refresh
                before it (so the work's own time, its refreshes added,
                ends short of it) */
@@ -2265,6 +2283,7 @@ void snes_power(void)
     nshvc_bus.left = bus_left0 = 0;
     nshvc_bus.wrote_left = NO_WRITE;
     bus_free = 0;
+    chip_at = UINT64_MAX;
     memset(wram, 0, sizeof wram);
     wram_port = 0;
     free(sram);

@@ -289,6 +289,33 @@ static void abi_reset(void)
               (long long)(taken_at - started), (long long)(accesses(seen_at(stop_at), 8, 4) - started));
     }
 
+    /* the S-CPU's costs off (contract 2.17): its accesses take no time, so
+       the chip, running, raises nothing in them however many there are
+       (work RAM's made inline); a wait then takes the IRQ at the chip's
+       clock, the interrupt's pushes taking no time either */
+    nshvc_set_cpu_costs(0);
+    cpu.p = (uint8_t)(cpu.p & ~P_I);
+    for (i = 0; i < 50; i++) {
+        uint16_t d = (uint16_t)(25 + 89 * i);
+        uint64_t before;
+        unsigned k;
+        uint8_t sum = 0;
+        n = taken;
+        start(d);
+        before = snes_now();
+        for (k = 0; k < 20000; k++) {
+            wr8(0x7E1000 + (k & 0xFFF), (uint8_t)k);
+            sum = (uint8_t)(sum + rd8(0x7E1000 + ((k * 7) & 0xFFF)));
+        }
+        check(taken == n && snes_now() == before && running, "costs off: no time in the accesses, the chip still running",
+              d, (long long)(snes_now() - before), 0);
+        nshvc_wait_until(stopped, NULL);
+        check(taken == n + 1 && taken_at == seen_at(stop_at), "costs off: a wait takes the IRQ at the chip's clock", d,
+              (long long)(taken_at - started), (long long)(seen_at(stop_at) - started));
+        (void)sum;
+    }
+    nshvc_set_cpu_costs(1);
+
     printf("%d check(s) failed\n", fails);
     exit(fails ? 1 : 0);
 }
