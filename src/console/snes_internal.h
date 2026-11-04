@@ -55,6 +55,7 @@ void apu_reset(void);
 uint8_t apu_port_read(uint8_t port);         /* the S-CPU reads $2140-$2143 */
 void apu_port_write(uint8_t port, uint8_t v);
 void apu_sync(void);                         /* the SPC700 up to the S-CPU's time */
+void apu_flush(void);                        /* the sound up to the SPC700's time */
 uint8_t apu_debug_port(int n);               /* what the S-CPU last wrote to port n */
 void apu_debug(char *out, int n);            /* the SPC700's clock and last access */
 

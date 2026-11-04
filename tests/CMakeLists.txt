@@ -1,6 +1,14 @@
 # the tests: the oracle runner (a libretro core, headless) and the test
 # cartridge (tests/rom/testcart.c on nativeshvc)
-if(NOT WIN32)   # (it loads the reference core with dlopen)
+# on the PSP, each test program with its module header (psp/module.c) and
+# its arguments from args.txt beside it (psp/args.c: the test's main is
+# nshvc_test_main there)
+if(PSP)
+  add_library(psp_module OBJECT psp/module.c psp/args.c)
+  link_libraries(psp_module)
+  add_compile_definitions(main=nshvc_test_main)
+endif()
+if(NOT WIN32 AND NOT PSP)   # (it loads the reference core with dlopen)
   add_executable(oracle oracle/oracle.c)
   target_link_libraries(oracle PRIVATE ${CMAKE_DL_LIBS})
   set_target_properties(oracle PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
@@ -108,6 +116,31 @@ foreach(t window_map window_columns)
   target_link_libraries(${t} PRIVATE nshvc)
   set_target_properties(${t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endforeach()
+
+# the PSP's host read back on the system (psp/host_check.c)
+if(NSHVC_HOST STREQUAL "psp")
+  add_executable(host_check psp/host_check.c)
+  target_include_directories(host_check PRIVATE ${PROJECT_SOURCE_DIR}/src/host)
+  target_link_libraries(host_check PRIVATE nshvc)
+  set_target_properties(host_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+endif()
+
+# on the PSP, each program's imports of the system's calls put in the form
+# its loader fills (psp-fixup-imports, as pspsdk's own build does); a
+# program whose imports it cannot fix (its warning, and nothing else) fails
+# the build
+if(PSP)
+  get_property(_tests DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(t ${_tests})
+    get_target_property(_type ${t} TYPE)
+    if(_type STREQUAL "EXECUTABLE")
+      add_custom_command(TARGET ${t} POST_BUILD
+        COMMAND sh -c "out=$(\"$0\" \"$1\" 2>&1); echo \"$out\"; case \"$out\" in *Warning*) rm -f \"$1\"; exit 1;; esac"
+          "${PSPDEV}/bin/psp-fixup-imports" "$<TARGET_FILE:${t}>"
+        VERBATIM)
+    endif()
+  endforeach()
+endif()
 
 # the game's pause (nshvc_ext_pause) and its backdrop
 add_executable(pause_check unit/pause_check.c)

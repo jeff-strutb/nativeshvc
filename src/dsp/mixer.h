@@ -74,6 +74,16 @@ void mix_voice_output_write(int v, uint8_t value);
 /* one clock (an SPC700 cycle; a frame is 32): 1, with the frame's left and
    right, on the clock that finishes one */
 int mix_clock(int16_t *left, int16_t *right);
+/* n clocks, as n calls of mix_clock: each frame made into out (left, right,
+   interleaved) while it has room for max; the frames made, at most max (a
+   run of n clocks makes n / 32 + 1 at most) */
+int mix_run(int n, int16_t *out, int max);
+/* 1 while the echo writes the sound RAM (FLG's echo-write bit clear) */
+int mix_writes_ram(void);
+/* 1 if the echo may write the byte at addr in the clocks to come before a
+   write to its settings: it writes the RAM, and addr is in its buffer at
+   the page in use or the one set, at the length in use or the one set */
+int mix_echo_may_write(uint16_t addr);
 /* the clock to run next within the frame, 0-31 */
 int mix_phase(void);
 

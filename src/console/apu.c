@@ -32,6 +32,7 @@
 #include "nshvc/spc.h"
 #include "coro.h"
 #include "jump.h"
+#include "wide.h"
 
 SpcRegs spc;
 
@@ -49,6 +50,7 @@ static uint8_t control, dsp_addr;
 static uint8_t t_target[3], t_stage[3], t_count[3];
 static unsigned t01_div, t2_div;
 static uint64_t spc_cycles, spc_target;
+static uint64_t dsp_at;               /* the cycle the DSP has run to (dsp_catch_up) */
 static uint32_t spc_carry;            /* the cost profile's tenths not yet spent (access_cycle) */
 static Coro *spc_co, *main_co;
 void (*snes_spc_run_hook)(uint16_t addr);
@@ -90,7 +92,7 @@ void apu_reset(void)
     memset(t_stage, 0, sizeof t_stage);
     memset(t_count, 0, sizeof t_count);
     t01_div = t2_div = 0;
-    spc_cycles = spc_target = 0;
+    spc_cycles = spc_target = dsp_at = 0;
     spc_carry = 0;
     atomic_store(&ring_w, 0);
     atomic_store(&ring_r, 0);
@@ -99,7 +101,7 @@ void apu_reset(void)
     if (!spclog && getenv("NSHVC_SPCLOG"))
         spclog = fopen(getenv("NSHVC_SPCLOG"), "wb");
     if (!spc_co)
-        spc_co = coro_new(spc_main, NULL, 4u << 20);
+        spc_co = coro_new(spc_main, NULL, CORO_SPC_STACK);
 }
 
 /* ---- time ---- */
@@ -111,6 +113,43 @@ static void timer_tick(int n)
         t_stage[n] = 0;
         t_count[n] = (uint8_t)((t_count[n] + 1) & 15);
     }
+}
+
+/* The DSP runs a clock a cycle, as the chip does, but behind the SPC700:
+ * its clocks are run when something could tell, up to the SPC700's cycle,
+ * and so each clock has what it would have had at its time. It reads the
+ * RAM and its registers, which only the SPC700 writes (each write waits
+ * for it); the SPC700 sees it in its registers' reads and, where the echo
+ * may have written, the RAM's; the S-CPU and the host see it in the
+ * samples, which come at least each 1,024 cycles the SPC700 hands back and
+ * at each frame's end (apu_flush). */
+static void dsp_catch_up(void)
+{
+    uint64_t cycles = spc_cycles - dsp_at;
+    dsp_at = spc_cycles;
+    /* at most 63 frames' clocks at a time, so its frames fit */
+    while (cycles) {
+        int16_t made[2 * 64];
+        unsigned k = cycles > 32u * 63u ? 32u * 63u : (unsigned)cycles;
+        int got = mix_run((int)k, made, 64), i;
+        cycles -= k;
+        for (i = 0; i < got; i++) {
+            unsigned w = atomic_load_explicit(&ring_w, memory_order_relaxed);
+            unsigned r = atomic_load_explicit(&ring_r, memory_order_acquire);
+            if (w - r < RING) {
+                ring[(w % RING) * 2] = made[2 * i];
+                ring[(w % RING) * 2 + 1] = made[2 * i + 1];
+                atomic_store_explicit(&ring_w, w + 1, memory_order_release);
+            }
+        }
+    }
+}
+
+void apu_flush(void)
+{
+    dsp_catch_up();
+    if (spc_co && !coro_stack_ok(spc_co))
+        snes_fatal("the SPC700's code used all of its stack's %u bytes", (unsigned)CORO_SPC_STACK);
 }
 
 static void spc_advance(unsigned cycles)
@@ -127,25 +166,13 @@ static void spc_advance(unsigned cycles)
         t2_div -= 16;
         timer_tick(2);
     }
-    /* the DSP a clock a cycle, so an access after this sees it where the
-       chip would be */
-    while (cycles--) {
-        unsigned w, r;
-        int16_t l, rr;
-        if (!mix_clock(&l, &rr))
-            continue;
-        w = atomic_load_explicit(&ring_w, memory_order_relaxed);
-        r = atomic_load_explicit(&ring_r, memory_order_acquire);
-        if (w - r < RING) {
-            ring[(w % RING) * 2] = l;
-            ring[(w % RING) * 2 + 1] = rr;
-            atomic_store_explicit(&ring_w, w + 1, memory_order_release);
-        }
-    }
     /* an access at or before the S-CPU's time (spc_target: its time in
        whole cycles, rounded down) is made now; one past it waits */
-    if (spc_cycles > spc_target)
+    if (spc_cycles > spc_target) {
+        if (spc_cycles - dsp_at >= 1024)
+            dsp_catch_up();
         coro_switch(spc_co, main_co);
+    }
 }
 
 /* The sound unit's time from power on, in master clocks: it starts with
@@ -198,8 +225,8 @@ void apu_port_write(uint8_t port, uint8_t v)
     port_at[port] = apu_clock();
     port_in[port] = v;
     if (spclog) {                 /* kind 2: the S-CPU's, at its time in SPC700 half cycles */
-        uint64_t m = snes_pal() ? 21281370u : 21477272u;
-        uint32_t t = (uint32_t)((unsigned __int128)port_at[port] * (2u * SPC_HZ) / m);
+        uint32_t m = snes_pal() ? 21281370u : 21477272u;
+        uint32_t t = wide_div_lo(wide_mul(port_at[port], 2u * SPC_HZ), m);
         uint8_t rec[8] = { (uint8_t)t, (uint8_t)(t >> 8), (uint8_t)(t >> 16), (uint8_t)(t >> 24), 2,
                            (uint8_t)(0xF4 + port), 0, v };
         fwrite(rec, 1, 8, spclog);
@@ -210,8 +237,8 @@ void apu_port_write(uint8_t port, uint8_t v)
    the read's half-cycle point, spc_cycles - 1/2, comes before that write */
 static uint8_t port_read(int n)
 {
-    uint64_t m = snes_pal() ? 21281370u : 21477272u;
-    if (spc_cycles && (unsigned __int128)(2 * spc_cycles - 1) * m < (unsigned __int128)port_at[n] * (2u * SPC_HZ))
+    uint32_t m = snes_pal() ? 21281370u : 21477272u;
+    if (spc_cycles && wide_less(wide_mul(2 * spc_cycles - 1, m), wide_mul(port_at[n], 2u * SPC_HZ)))
         return port_prev[n];
     return port_in[n];
 }
@@ -229,11 +256,191 @@ void spc_wr(uint16_t addr, uint8_t v);
 void spc_restart(uint16_t at, void (*entry)(void));
 void spc_boot_rom(void);
 
+/* A wait's turns that cannot end it, not made. The condition is called a
+ * cycle at a time (spc.h); where two turns in a row made the same reads,
+ * saw the same values and said no, and each read is of what only the
+ * S-CPU's port writes, a timer's count or the driver's own writes change
+ * (a port, a timer's counter, $F0-$F2 or $F8-$FC, the RAM while the DSP
+ * writes none of it), the turns after it are that turn again until one of
+ * its reads would see a change: they see what it saw and change nothing (a
+ * counter read clears a counter already 0). Their cycles pass at once, each
+ * read's cost as access_cycle takes it, the DSP and the timers running
+ * through them as a cycle at a time; they stop at the first turn with a
+ * read at or past a timer's next count or a port's last write coming into
+ * sight (port_read), and before the S-CPU's time (spc_target), where its
+ * port writes come in. A condition's result is its reads' (spc.h). */
+#define TURN_READS 16
+static int in_ipl;                           /* (below: the boot ROM's own accesses cost nothing) */
+static int turn_on, turn_n, turn_bad;
+static uint16_t turn_addr[TURN_READS];
+static uint8_t turn_val[TURN_READS];
+
+static void turn_note(uint16_t addr, uint8_t v)
+{
+    int stable = addr < 0xF0 || addr > 0xFF ? !mix_writes_ram() : addr != 0xF3;
+    if (turn_n == TURN_READS || !stable) {
+        turn_bad = 1;
+        return;
+    }
+    turn_addr[turn_n] = addr;
+    turn_val[turn_n++] = v;
+}
+
+/* the cycle a timer's counter next counts at (never: ~0) */
+static uint64_t timer_next(int n)
+{
+    unsigned period = n < 2 ? 128 : 16, div = n < 2 ? t01_div : t2_div;
+    unsigned steps = ((unsigned)(t_target[n] - t_stage[n] - 1) & 0xFFu) + 1u;   /* a target of 0 counts 256 */
+    if (!(control & (1u << n)))
+        return ~(uint64_t)0;
+    return spc_cycles + (period - div) + (uint64_t)(steps - 1) * period;
+}
+
+/* a read of port n at cycle t sees its value before the S-CPU's last
+   write (port_read's test) */
+static int port_old_at(int n, uint64_t t)
+{
+    uint32_t m = snes_pal() ? 21281370u : 21477272u;
+    return t && wide_less(wide_mul(2 * t - 1, m), wide_mul(port_at[n], 2u * SPC_HZ));
+}
+
+/* the first cycle from t at which port n shows its value after the
+   S-CPU's last write (port_old_at: old before it, new from it on), up to
+   `most` */
+static uint64_t port_new_from(int n, uint64_t t, uint64_t most)
+{
+    uint64_t lo = t, hi = most;
+    if (!port_old_at(n, t))
+        return t;
+    if (port_old_at(n, most))
+        return most;
+    while (hi - lo > 1) {                     /* old at lo, new at hi */
+        uint64_t mid = lo + (hi - lo) / 2;
+        if (port_old_at(n, mid))
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return hi;
+}
+
+/* a turn's time (its cycle, then its reads' costs) from t, the carry with
+   it */
+static uint64_t turn_time(uint64_t t, uint32_t *carry, const nshvc_cost_profile *p)
+{
+    int i;
+    t += 1;
+    for (i = 0; i < turn_n && !in_ipl; i++) {
+        uint16_t a = turn_addr[i];
+        unsigned n = 1;
+        if (p) {
+            *carry += p->spc_tenths[0][a >= 0xF0 && a <= 0xFF];
+            n += *carry / 10;
+            *carry %= 10;
+        }
+        t += n;
+    }
+    return t;
+}
+
+/* the turns after this one (its reads just made, its cycle not yet) that
+   are it again, their time passed. First whole runs of ten turns (the
+   carry's tenths come round in ten) whose reads all come before the first
+   cycle any of the tests below could stop at; then turn by turn, the
+   tests made. */
+static void skip_turns(void)
+{
+    const nshvc_cost_profile *p = snes_cart.cost_profile;
+    uint64_t next[TURN_READS], t = spc_cycles, end = spc_cycles, stop = spc_target + 1;
+    uint32_t carry = spc_carry, end_carry = spc_carry;
+    int i;
+    for (i = 0; i < turn_n; i++) {
+        uint16_t a = turn_addr[i];
+        next[i] = a >= 0xFD && a <= 0xFF ? timer_next(a - 0xFD) : ~(uint64_t)0;
+        if (next[i] < stop)
+            stop = next[i];
+        if (a >= 0xF4 && a <= 0xF7 && port_prev[a - 0xF4] != port_in[a - 0xF4]) {
+            /* reads before `at` see the value before the last write, from
+               it on the write's: none where the one before is not the
+               turn's, up to `at` where the write's is not */
+            int n = a - 0xF4;
+            uint64_t at = port_new_from(n, t + 1, stop);
+            if (at > t + 1 && port_prev[n] != turn_val[i])
+                stop = t;
+            else if (port_in[n] != turn_val[i] && at < stop)
+                stop = at;
+        }
+    }
+    if (stop > t) {
+        uint32_t c = carry;
+        uint64_t ten = t, k;
+        for (i = 0; i < 10; i++)
+            ten = turn_time(ten, &c, p);
+        ten -= t;                             /* (c is carry again) */
+        k = (stop - 1 - t) / ten;
+        if (k) {
+            t += k * ten;
+            end = t;
+        }
+    }
+    for (;;) {
+        /* the turn before's cycle, then this turn's reads */
+        t += 1;
+        for (i = 0; i < turn_n; i++) {
+            uint16_t a = turn_addr[i];
+            if (!in_ipl) {
+                unsigned n = 1;
+                if (p) {
+                    carry += p->spc_tenths[0][a >= 0xF0 && a <= 0xFF];
+                    n += carry / 10;
+                    carry %= 10;
+                }
+                t += n;
+            }
+            if (t >= next[i] || t > spc_target)
+                goto done;
+            if (a >= 0xF4 && a <= 0xF7 && port_prev[a - 0xF4] != port_in[a - 0xF4] &&
+                (port_old_at(a - 0xF4, t) ? port_prev : port_in)[a - 0xF4] != turn_val[i])
+                goto done;
+        }
+        if (t > spc_target)
+            break;
+        end = t;
+        end_carry = carry;
+    }
+done:
+    if (end > spc_cycles) {
+        spc_carry = end_carry;
+        spc_advance((unsigned)(end - spc_cycles));
+    }
+}
+
 uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx)
 {
     uint64_t from = spc_cycles;
-    while (!ready(ctx))
+    uint16_t was_addr[TURN_READS];
+    uint8_t was_val[TURN_READS];
+    int was_n = -1;
+    for (;;) {
+        int r;
+        turn_on = 1;
+        turn_n = turn_bad = 0;
+        r = ready(ctx);
+        turn_on = 0;
+        if (r)
+            break;
+        if (turn_bad || spclog) {
+            was_n = -1;
+        } else {
+            if (turn_n == was_n && !memcmp(turn_addr, was_addr, (size_t)turn_n * sizeof *turn_addr) &&
+                !memcmp(turn_val, was_val, (size_t)turn_n))
+                skip_turns();
+            was_n = turn_n;
+            memcpy(was_addr, turn_addr, sizeof turn_addr);
+            memcpy(was_val, turn_val, sizeof turn_val);
+        }
         spc_advance(1);
+    }
     return (uint32_t)(spc_cycles - from);
 }
 
@@ -267,14 +474,18 @@ uint8_t spc_rd(uint16_t addr)
     uint8_t v;
     access_cycle(addr, 0);
     dbg_last = addr;
-    if (addr < 0xF0 || addr > 0xFF)
-        return aram[addr];
-    if (spclog) {
+    if (addr < 0xF0 || addr > 0xFF) {
+        if (mix_echo_may_write(addr))
+            dsp_catch_up();
+        v = aram[addr];
+    } else {
         v = spc_rd_reg(addr);
-        spclog_put(0, addr, v);
-        return v;
+        if (spclog)
+            spclog_put(0, addr, v);
     }
-    return spc_rd_reg(addr);
+    if (turn_on)
+        turn_note(addr, v);
+    return v;
 }
 
 static uint8_t spc_rd_reg(uint16_t addr)
@@ -282,9 +493,12 @@ static uint8_t spc_rd_reg(uint16_t addr)
     uint8_t v;
     switch (addr) {
     case 0xF2: return dsp_addr;
-    case 0xF3: return mix_reg_read(dsp_addr & 0x7F);
+    case 0xF3: dsp_catch_up(); return mix_reg_read(dsp_addr & 0x7F);
     case 0xF4: case 0xF5: case 0xF6: case 0xF7: return port_read(addr - 0xF4);
-    case 0xF8: case 0xF9: return aram[addr];
+    case 0xF8: case 0xF9:
+        if (mix_echo_may_write(addr))
+            dsp_catch_up();
+        return aram[addr];
     case 0xFD: case 0xFE: case 0xFF:
         v = t_count[addr - 0xFD];
         t_count[addr - 0xFD] = 0;
@@ -295,12 +509,16 @@ static uint8_t spc_rd_reg(uint16_t addr)
 
 void spc_wr(uint16_t addr, uint8_t v)
 {
+    turn_bad |= turn_on;
     access_cycle(addr, 1);
+    dsp_catch_up();
     /* a key event the DSP has not taken yet: the next write to the DSP
        waits for it (spc.h) */
     if (addr == 0xF3 && dsp_addr < 0x80)
-        while (mix_key_unread())
+        while (mix_key_unread()) {
             spc_advance(1);
+            dsp_catch_up();
+        }
     if (spclog)
         spclog_put(1, addr, v);
     /* a write to a register lands in the RAM under it too, where the DSP,
@@ -365,6 +583,24 @@ static void ipl_cyc(unsigned n)
     spc_advance(n);
 }
 
+/* A poll loop's turns that see what the last saw, passed at once: the next
+   turn reads port n `at` cycles in and is `turn` long; while its read is at
+   or before the S-CPU's time (where the S-CPU's port writes come in) and
+   sees `seen`, the turn is the last again, its time passed. A write still
+   coming into sight (port_read) is met turn by turn. */
+static void ipl_hold(unsigned at, unsigned turn, int n, uint8_t seen)
+{
+    uint64_t t = spc_cycles + at, k;
+    if (spclog || t > spc_target || port_in[n] != seen)
+        return;
+    if (port_prev[n] != port_in[n] && port_old_at(n, t))
+        return;
+    k = (spc_target - t) / turn + 1;
+    if (k > 0xFFFFu)
+        k = 0xFFFFu;
+    spc_advance((unsigned)k * turn);
+}
+
 static int ipl_n, ipl_z;
 static uint8_t ipl_nz(uint8_t v)
 {
@@ -405,10 +641,13 @@ static void ipl(void)
     ipl_st(0xF5, 0xBB, 4, 1);
     do {
         /* FFCF cmp $F4,#$CC; FFD2 bne $FFCF */
+        uint8_t v;
         ipl_cyc(4);
-        ipl_cmp(spc_rd(0xF4), 0xCC);
+        ipl_cmp(v = spc_rd(0xF4), 0xCC);
         ipl_cyc(1);
         ipl_cyc(ipl_z ? 2 : 4);
+        if (!ipl_z)
+            ipl_hold(4, 9, 0, v);
     } while (!ipl_z);
     /* FFD4 bra $FFEF */
     ipl_cyc(4);
@@ -419,6 +658,7 @@ next:
     y = ipl_nz(spc_rd(0xF4));
     if (!ipl_z) {
         ipl_cyc(4);
+        ipl_hold(3, 7, 0, y);
         goto next;
     }
     ipl_cyc(2);
@@ -528,9 +768,10 @@ static void spc_main(void *arg)
                 snes_fatal("SPC700 jumps to $FFC0 with the boot ROM unmapped");
             if (jump_entry)
                 jump_entry();
-            else if (snes_spc_run_hook)
+            else if (snes_spc_run_hook) {
+                dsp_catch_up();               /* (the routine is found by the RAM's bytes) */
                 snes_spc_run_hook(jump_to);
-            else
+            } else
                 snes_fatal("SPC700 started with no runtime");
             snes_fatal("SPC700 code at $%04X returned", jump_to);
         }

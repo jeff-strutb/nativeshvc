@@ -62,6 +62,11 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]);
    a channel, as rr_image's). */
 struct RrMode7;
 struct RrM7Samples;
+/* 1 when the backend presents such a frame at the target's resolution
+   (rr_mode7, rr_compose_mode7: every backend's but the PSP's, the front
+   end's default); 0 when it presents it as any frame, the picture at the
+   console's resolution scaled (rr_compose, rr_image) */
+int rr_mode7_window(void);
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s);
 /* a frame presenting Mode 7 or a canvas: its picture and records drawn by
    the backend's compositor from its description (ppu.c ppu_compose_m7),

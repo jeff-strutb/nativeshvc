@@ -8,7 +8,7 @@
  * measured, and says so.
  *
  * A frame is 32 clocks, one an SPC700 cycle, and the chip does its work at
- * fixed clocks of it: each voice in nine steps (step_clock below), the
+ * fixed clocks of it: each voice in nine steps (the chart at clock_steps), the
  * echo over clocks 22-30, the shared settings taken at 27-30. A voice
  * reads its settings, and the sound memory, at the clock of the step that
  * uses them, so a change the game makes between two clocks reaches the
@@ -50,7 +50,7 @@ typedef struct {
     int out;                 /* this frame's output, 15 bits (pitch modulation, OUTX) */
     /* what the game reads back */
     uint8_t envx, outx;
-} Voice;
+} __attribute__((aligned(256))) Voice;   /* (256 bytes: a voice's address a shift of its number) */
 
 static uint8_t *mem;
 static Voice voice[8];
@@ -123,13 +123,19 @@ static const uint16_t rate_frames[32] = {
     64, 48, 40, 32, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1,
 };
 
+/* each rate's phase: its family's (rate_frames[r] % 3 == 0: 1,040; % 5 == 0:
+   536; else 0) */
+static const uint16_t rate_phase[32] = {
+    0, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536,
+    0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 536, 0, 1040, 0, 0,
+};
+
 static int rate_due(int rate)
 {
-    unsigned n = rate_frames[rate], phase;
+    unsigned n = rate_frames[rate];
     if (!n)
         return 0;
-    phase = n % 3 == 0 ? 1040 : n % 5 == 0 ? 536 : 0;
-    return ((unsigned)counter + phase) % n == 0;
+    return ((unsigned)counter + rate_phase[rate]) % n == 0;
 }
 
 static int clamp16(int v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
@@ -205,6 +211,19 @@ void mix_echo_feedback(int8_t feedback) { efb = feedback; }
 void mix_echo_filter(int tap, int8_t coefficient) { fir[tap & 7] = coefficient; }
 
 uint8_t mix_voices_ended(void) { return endx; }
+/* the echo writes the RAM while FLG lets it or its write already under way
+   was let */
+int mix_writes_ram(void) { return !echo_off || !echo_writes_off; }
+int mix_echo_may_write(uint16_t addr)
+{
+    /* an entry is 4 bytes at an index under the length (0: the one entry) */
+    int span = echo_length > echo_len_set * 0x800 ? echo_length : echo_len_set * 0x800;
+    if (!mix_writes_ram())
+        return 0;
+    if (span < 4)
+        span = 4;
+    return (uint16_t)(addr - (echo_esa << 8)) < span || (uint16_t)(addr - (echo_page << 8)) < span;
+}
 /* any write to ENDX clears it */
 void mix_clear_ended(void) { endx = endx_next = 0; }
 uint8_t mix_voice_level(int v) { return voice[v & 7].envx; }
@@ -250,7 +269,7 @@ static void decode(Voice *vc)
     }
     /* the history is read as twelve values ending before hist_next: the
        slot before index 0 is index 11 */
-    vc->hist_next = (vc->hist_next + 4) % 12;
+    vc->hist_next = vc->hist_next == 8 ? 0 : vc->hist_next + 4;
 }
 
 /* fullsnes, Gaussian interpolation: the newest four values at the pitch
@@ -259,7 +278,8 @@ static void decode(Voice *vc)
 static int interpolate(const Voice *vc)
 {
     int i = (vc->pos >> 4) & 0xFF;
-    const int16_t *h = &vc->hist[((vc->pos >> 12) + vc->hist_next) % 12];
+    int at = (vc->pos >> 12) + vc->hist_next;        /* 0-15 */
+    const int16_t *h = &vc->hist[at >= 12 ? at - 12 : at];
     int out = (gauss[0xFF - i] * h[0]) >> 10;
     out += (gauss[0x1FF - i] * h[1]) >> 10;
     out += (gauss[0x100 + i] * h[2]) >> 10;
@@ -376,7 +396,11 @@ static void step_sample(int v)
         vc->pos = --vc->kon_delay & 3 ? 0x4000 : 0;
         vc->step_pitch = 0;
     }
-    s = (non_now >> v & 1) ? (int16_t)(noise << 1) >> 1 : interpolate(vc);
+    /* (at level 0 the output is 0 whatever the sample) */
+    if (!vc->level)
+        s = 0;
+    else
+        s = (non_now >> v & 1) ? (int16_t)(noise << 1) >> 1 : interpolate(vc);
     vc->out = (s * vc->level) >> 11;
     vc->level_out = (uint8_t)(vc->level >> 4);
     /* cut at once: the reset flag, or a block that ends with no loop */
@@ -450,45 +474,57 @@ static void step_endx(int v)
 static void step_set_outx(int v) { voice[v].outx = outx_next; }
 static void step_set_envx(int v) { voice[v].envx = envx_next; }
 
-enum { ENTRY, DIRECTORY, PITCH_HIGH, FETCH, SAMPLE, DECODE, RIGHT, OUTX, ENDX, SET_OUTX, SET_ENVX, STEPS };
+/* Each clock's steps, voice by voice: fullsnes's timing chart, a voice's
+   steps 2 to 9 on consecutive clocks, three voices in hand at once, voice
+   0's step 3 spread out round the echo's clocks. The step's clocks for
+   voices 0-7:
 
-static void (*const step_fn[STEPS])(int) = {
-    step_entry, step_directory, step_pitch_high, step_fetch, step_sample, step_decode,
-    step_right, step_outx, step_endx, step_set_outx, step_set_envx,
-};
+     entry       17 20 31  2  5  8 11 14
+     directory   21  0  3  6  9 12 15 18
+     pitch high  22  1  4  7 10 13 16 19
+     fetch       25  1  4  7 10 13 16 19
+     sample      30  1  4  7 10 13 16 19
+     decode      31  2  5  8 11 14 17 20
+     right        0  3  6  9 12 15 18 21
+     outx         1  4  7 10 13 16 19 22
+     endx         2  5  8 11 14 17 20 23
+     set outx     3  6  9 12 15 18 21 24
+     set envx     4  7 10 13 16 19 22 25
 
-/* the clock of each step, voice by voice (fullsnes's timing chart): a
-   voice's steps 2 to 9 on consecutive clocks, three voices in hand at
-   once, voice 0's step 3 spread out round the echo's clocks */
-static const uint8_t step_clock[STEPS][8] = {
-    [ENTRY] = { 17, 20, 31, 2, 5, 8, 11, 14 },
-    [DIRECTORY] = { 21, 0, 3, 6, 9, 12, 15, 18 },
-    [PITCH_HIGH] = { 22, 1, 4, 7, 10, 13, 16, 19 },
-    [FETCH] = { 25, 1, 4, 7, 10, 13, 16, 19 },
-    [SAMPLE] = { 30, 1, 4, 7, 10, 13, 16, 19 },
-    [DECODE] = { 31, 2, 5, 8, 11, 14, 17, 20 },
-    [RIGHT] = { 0, 3, 6, 9, 12, 15, 18, 21 },
-    [OUTX] = { 1, 4, 7, 10, 13, 16, 19, 22 },
-    [ENDX] = { 2, 5, 8, 11, 14, 17, 20, 23 },
-    [SET_OUTX] = { 3, 6, 9, 12, 15, 18, 21, 24 },
-    [SET_ENVX] = { 4, 7, 10, 13, 16, 19, 22, 25 },
-};
-
-/* each clock's steps, built from step_clock: up to five, of up to three
-   voices (each a step << 3 | voice), in step order */
-static uint8_t clock_steps[32][6];
-static int clock_steps_n[32] = { -1 };
-
-static void build_clock_steps(void)
+   each clock's in that order (the chart's rows, then voice), called
+   directly: a switch on the clock, not a table of calls a clock looks up */
+static inline __attribute__((always_inline)) void clock_steps(int c)
 {
-    int c, s, v;
-    for (c = 0; c < 32; c++)
-        clock_steps_n[c] = 0;
-    for (s = 0; s < STEPS; s++)
-        for (v = 0; v < 8; v++) {
-            c = step_clock[s][v];
-            clock_steps[c][clock_steps_n[c]++] = (uint8_t)(s << 3 | v);
-        }
+    switch (c) {
+    case 0: step_directory(1); step_right(0); break;
+    case 1: step_pitch_high(1); step_fetch(1); step_sample(1); step_outx(0); break;
+    case 2: step_entry(3); step_decode(1); step_endx(0); break;
+    case 3: step_directory(2); step_right(1); step_set_outx(0); break;
+    case 4: step_pitch_high(2); step_fetch(2); step_sample(2); step_outx(1); step_set_envx(0); break;
+    case 5: step_entry(4); step_decode(2); step_endx(1); break;
+    case 6: step_directory(3); step_right(2); step_set_outx(1); break;
+    case 7: step_pitch_high(3); step_fetch(3); step_sample(3); step_outx(2); step_set_envx(1); break;
+    case 8: step_entry(5); step_decode(3); step_endx(2); break;
+    case 9: step_directory(4); step_right(3); step_set_outx(2); break;
+    case 10: step_pitch_high(4); step_fetch(4); step_sample(4); step_outx(3); step_set_envx(2); break;
+    case 11: step_entry(6); step_decode(4); step_endx(3); break;
+    case 12: step_directory(5); step_right(4); step_set_outx(3); break;
+    case 13: step_pitch_high(5); step_fetch(5); step_sample(5); step_outx(4); step_set_envx(3); break;
+    case 14: step_entry(7); step_decode(5); step_endx(4); break;
+    case 15: step_directory(6); step_right(5); step_set_outx(4); break;
+    case 16: step_pitch_high(6); step_fetch(6); step_sample(6); step_outx(5); step_set_envx(4); break;
+    case 17: step_entry(0); step_decode(6); step_endx(5); break;
+    case 18: step_directory(7); step_right(6); step_set_outx(5); break;
+    case 19: step_pitch_high(7); step_fetch(7); step_sample(7); step_outx(6); step_set_envx(5); break;
+    case 20: step_entry(1); step_decode(7); step_endx(6); break;
+    case 21: step_directory(0); step_right(7); step_set_outx(6); break;
+    case 22: step_pitch_high(0); step_outx(7); step_set_envx(6); break;
+    case 23: step_endx(7); break;
+    case 24: step_set_outx(7); break;
+    case 25: step_fetch(0); step_set_envx(7); break;
+    case 30: step_sample(0); break;
+    case 31: step_entry(2); step_decode(0); break;
+    }
 }
 
 /* ---- the echo, clocks 22-30 -------------------------------------------------------------
@@ -522,7 +558,7 @@ static void echo_write(int ch)
     echo_sum[ch] = 0;
 }
 
-static void echo_clock(int c)
+static inline __attribute__((always_inline)) void echo_clock(int c)
 {
     int ch;
     switch (c) {
@@ -581,7 +617,7 @@ static void echo_clock(int c)
 }
 
 /* ---- the shared settings, clocks 27-30 -------------------------------------------------- */
-static void shared_clock(int c)
+static inline __attribute__((always_inline)) void shared_clock(int c)
 {
     switch (c) {
     case 27:
@@ -611,22 +647,65 @@ static void shared_clock(int c)
     }
 }
 
-int mix_clock(int16_t *out_l, int16_t *out_r)
+/* clock c's work: a frame made, when one is, in made_l and made_r */
+static inline __attribute__((always_inline)) void clock_at(int c)
 {
-    int c = phase, i;
-    if (clock_steps_n[0] < 0)
-        build_clock_steps();
     if (c >= 27)
         shared_clock(c);
-    for (i = 0; i < clock_steps_n[c]; i++)
-        step_fn[clock_steps[c][i] >> 3](clock_steps[c][i] & 7);
+    clock_steps(c);
     if (c >= 22)
         echo_clock(c);
+}
+
+/* one clock (mix_clock, mix_run) */
+static inline __attribute__((always_inline)) void clock_once(void)
+{
+    int c = phase;
+    clock_at(c);
     phase = (c + 1) & 31;
-    if (!made)
+}
+
+/* a whole frame, clocks 0-31 in turn, each clock's work in line with its
+   clock known (no clock looked up) */
+static inline __attribute__((always_inline)) void frame_once(void)
+{
+#define CLOCKS4(c) clock_at(c); clock_at(c + 1); clock_at(c + 2); clock_at(c + 3);
+    CLOCKS4(0) CLOCKS4(4) CLOCKS4(8) CLOCKS4(12) CLOCKS4(16) CLOCKS4(20) CLOCKS4(24) CLOCKS4(28)
+#undef CLOCKS4
+}
+
+__attribute__((noinline)) int mix_run(int n, int16_t *out, int max)
+{
+    int k = 0;
+    while (n > 0) {
+        if (phase == 0 && n >= 32) {
+            frame_once();
+            n -= 32;
+        } else {
+            clock_once();
+            n--;
+        }
+        if (!made)
+            continue;
+        made = 0;
+        if (k < max) {
+            out[2 * k] = made_l;
+            out[2 * k + 1] = made_r;
+        }
+        k++;
+    }
+    return k < max ? k : max;
+}
+
+/* (one clock as a run of one: the clock's work in mix_run alone, kept in
+   line there and only there) */
+int mix_clock(int16_t *out_l, int16_t *out_r)
+{
+    int16_t f[2];
+    if (!mix_run(1, f, 1))
         return 0;
-    made = 0;
-    *out_l = made_l;
-    *out_r = made_r;
+    *out_l = f[0];
+    *out_r = f[1];
     return 1;
 }
+

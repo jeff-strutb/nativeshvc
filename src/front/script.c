@@ -30,18 +30,26 @@
  *             (M:A-B), each without its shots, dumps and saves
  *   save      NAME's history noted (passed on to each new copy)
  *   load      a new copy rebuilds NAME, and goes on from the step after
+ *
+ * The PSP runs one program and starts no other: no process holds a
+ * machine, as on Windows, and a load, which needs a new copy, is fatal.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32) && !defined(__PSP__)
+#define SCRIPT_FORK 1          /* processes: fork, and a new copy by posix_spawn */
+#endif
 #ifndef _WIN32
 #include <dirent.h>
 #include <errno.h>
+#include <unistd.h>
+#ifdef SCRIPT_FORK
 #include <spawn.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
-#include <unistd.h>
 extern char **environ;
+#endif
 #else
 #include <io.h>
 #include <windows.h>
@@ -350,7 +358,7 @@ static void input_step(const Step *s)
 }
 
 /* ---- the processes ---- */
-#ifndef _WIN32
+#ifdef SCRIPT_FORK
 static pid_t fork_run(void)
 {
     pid_t p;
@@ -463,7 +471,7 @@ static int play_for(const char *name, List *l)
     return 0;
 }
 
-#ifndef _WIN32
+#ifdef SCRIPT_FORK
 /* the play that saves state `name` (a .sfx in NSHVC_STATES with `save
    NAME`), from power-on to that save, then the main script from `resume`
    (with fork) */
@@ -491,7 +499,7 @@ static Shared own_shared;
 static int no_fork(void)
 {
     if (nofork < 0) {
-#ifdef _WIN32
+#ifndef SCRIPT_FORK
         nofork = 1;
 #else
         nofork = getenv("NSHVC_SCRIPT_NOFORK") != NULL;
@@ -613,7 +621,7 @@ static void go_on_in_new_copy(const char *plan, int resume)
     snprintf(n, sizeof n, "%u", (unsigned)shared->frames);
     env_set("NSHVC_SCRIPT_FRAMES", n);
     fflush(NULL);
-#ifndef _WIN32
+#if defined(SCRIPT_FORK)
     {
         pid_t p;
         int err = posix_spawnp(&p, self_argv[0], NULL, NULL, self_argv, environ);
@@ -621,6 +629,8 @@ static void go_on_in_new_copy(const char *plan, int resume)
             nshvc_fatal("cannot start %s: %s", self_argv[0], strerror(err));
         st = child_status(p);
     }
+#elif defined(__PSP__)
+    nshvc_fatal("load needs a new copy of the program, which this system cannot start");
 #else
     {
         char exe[MAX_PATH];
@@ -687,7 +697,7 @@ static void plan_load(const char *name)
    only ends. */
 static void hold(const char *have, int at)
 {
-#ifndef _WIN32
+#ifdef SCRIPT_FORK
     char replay[128] = "";
     for (;;) {
         int st;
@@ -738,7 +748,7 @@ static void start(void)
             plan_begin(plan, r ? atoi(r) : 0);
         return;
     }
-#ifndef _WIN32
+#ifdef SCRIPT_FORK
     {
         int i, need = 0;
         shared = (Shared *)mmap(NULL, sizeof *shared, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
@@ -763,7 +773,7 @@ static void load(const char *path)
         name[k - 6] = 0;
     if (no_fork())
         plan_load(name);
-#ifndef _WIN32
+#ifdef SCRIPT_FORK
     snprintf(shared->name, sizeof shared->name, "%s", name);
     shared->resume = step_at + 1;
     fflush(NULL);

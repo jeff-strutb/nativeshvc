@@ -322,6 +322,13 @@ int main(int argc, char **argv)
     rom = (uint8_t *)malloc(16u << 20);
     rom_size = (uint32_t)fread(rom, 1, 16u << 20, f);
     fclose(f);
+    {
+        /* the buffer the file's size (a header's bytes at most 64 KB in:
+           at least that), the rest given back (a PSP's memory is 24 MB) */
+        uint8_t *fit = (uint8_t *)realloc(rom, rom_size > 0x10000 ? rom_size : 0x10000);
+        if (fit)
+            rom = fit;
+    }
     /* the mapping, from where snestest.py put the header (its map mode
        byte), and the cartridge's RAM from the header's size byte */
     {
