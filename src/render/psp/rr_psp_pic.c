@@ -2209,8 +2209,9 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
             scissor(0, k0, s_cw.n, k1);
         /* (tested F_W, written through the pixel mask: the one bit) */
         if (sc) {
-            sceGuStencilFunc(GU_EQUAL, F_W, F_W);
-            sceGuPixelMask((uint32_t)(~F_BACK & 0xFF) << 24);
+            /* (the sub screen's full colours F_DIR: the finish's in eighths) */
+            sceGuStencilFunc(GU_EQUAL, F_W | F_DIR, F_W);
+            sceGuPixelMask((uint32_t)(~(F_BACK | F_DIR) & 0xFF) << 24);
         } else {
             sceGuStencilFunc(GU_EQUAL, (int)(F_W | ((cgadsub >> s_cv) & 1u ? F_MATH : 0u)), F_W);
             sceGuPixelMask((uint32_t)(~F_MATH & 0xFF) << 24);
@@ -2297,6 +2298,313 @@ static void cv_index_rows(int Ya, const int16_t *rj, int k0, int k1)
     cp_load(si);
 }
 
+/* Colour maths where a full colour may take part (a full-colour canvas,
+   maths on): the reference's in eighths of a console step (compose_body.h
+   cp_rgb_finish; a CGRAM colour c is 8 c there, and its rules for two
+   CGRAM colours the console's own), on the GE. Each channel 0-255 in a
+   buffer's byte, so: a screen made eighths by lookups (a CGRAM pixel's
+   times4 value doubled, a full colour's texel v as v - v / 32); adding by
+   the blend (saturating at 255, the output's 248 clamp after it),
+   subtracting by the reverse subtract (at 0); halving at the output (its
+   lookup: (s >> 4) << 3) but for an add's sum, which can pass 255: the
+   halves added, (z >> 1) + (y >> 1) + (z & y & 1), whose >> 3 is the
+   sum's >> 4; each channel out through its lookup (brightness, z + z / 32).
+   s_e8: by kind (E8_*), each channel's table (its value in its byte). */
+enum { E8_D2, E8_Z, E8_HALF, E8_LOW, E8_AND, E8_KINDS };
+static uint32_t __attribute__((aligned(64))) s_e8[E8_KINDS][3][256];
+static uint32_t __attribute__((aligned(64))) s_e8o[3][16][3][256];   /* out: plain, halved subtract, halved add */
+static int s_e8_made;
+
+static unsigned e8_out(unsigned z, unsigned b)
+{
+    if (b != 15u)
+        z = ((((z >> 3) * b + 7u) * 4370u) >> 16) << 3;
+    return z + (z >> 5);
+}
+
+static void make_e8(void)
+{
+    unsigned n, k, b;
+    for (n = 0; n < 256; n++) {
+        unsigned v[E8_KINDS];
+        v[E8_D2] = 2u * n > 255u ? 255u : 2u * n;
+        v[E8_Z] = n - (n >> 5);
+        v[E8_HALF] = n >> 1;
+        v[E8_LOW] = n & 1u;
+        v[E8_AND] = n >> 1;
+        for (k = 0; k < 3; k++) {
+            unsigned j;
+            for (j = 0; j < E8_KINDS; j++)
+                s_e8[j][k][n] = v[j] << (8u * k);
+            for (b = 0; b < 16; b++) {
+                s_e8o[0][b][k][n] = e8_out(n > 248u ? 248u : n, b) << (8u * k);
+                s_e8o[1][b][k][n] = e8_out((n >> 4) << 3, b) << (8u * k);
+                s_e8o[2][b][k][n] = e8_out((n >> 3) << 3, b) << (8u * k);
+            }
+        }
+    }
+    sceKernelDcacheWritebackRange(s_e8, sizeof s_e8);
+    sceKernelDcacheWritebackRange(s_e8o, sizeof s_e8o);
+    s_e8_made = 1;
+}
+
+/* a window buffer (rows 0-15) as an indexed texture: each channel's byte
+   an index (sceGuClutMode's shift) */
+static void ttex(unsigned off)
+{
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_T32, 0, 0, 0);
+    sceGuTexImage(0, 512, 16, 512, vram(off));
+    sceGuTexFlush();
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+}
+
+/* rows k0-k1 of the texture through tab, each channel's into its byte,
+   added (the blend on, adding) */
+static void look3(const uint32_t (*tab)[256], int k0, int k1)
+{
+    int k;
+    for (k = 0; k < 3; k++) {
+        sceGuClutMode(GU_PSM_8888, (unsigned)(8 * k), 0xFF, 0);
+        sceGuClutLoad(32, tab[k]);
+        sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
+    }
+}
+
+/* buffer to (cleared) as tab of buffer from, rows k0-k1 */
+static void e8_map(unsigned to, unsigned from, const uint32_t (*tab)[256], int k0, int k1)
+{
+    wtarget(to);
+    if (!s_prebuild)
+        scissor(0, k0, s_cw.n, k1);
+    sceGuDisable(GU_STENCIL_TEST);
+    sceGuDisable(GU_BLEND);
+    sceGuPixelMask(0);
+    rect(0, k0, s_cw.n, k1, 0);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+    ttex(from);
+    look3(tab, k0, k1);
+    sceGuDisable(GU_BLEND);
+}
+
+/* a screen (V_WM, V_WS) made eighths: its colours doubled (through V_CM),
+   its full colours (F_DIR) their texels' v - v / 32; its stencil kept */
+static void e8_screen(unsigned scr, int k0, int k1)
+{
+    e8_map(V_CM, scr, s_e8[E8_D2], k0, k1);
+    wtarget(scr);
+    if (!s_prebuild)
+        scissor(0, k0, s_cw.n, k1);
+    sceGuPixelMask(0xFF000000u);
+    wtex(V_CM, 16);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
+    sceGuEnable(GU_STENCIL_TEST);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    sceGuStencilFunc(GU_EQUAL, F_DIR, F_DIR);
+    rect(0, k0, s_cw.n, k1, 0);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+    cv_tex(GU_PSM_T32);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    look3(s_e8[E8_Z], k0, k1);
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_STENCIL_TEST);
+    sceGuPixelMask(0);
+}
+
+/* cv_finish's where a full colour may take part in colour maths: its
+   colours in eighths (above) into out */
+static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U32 bright, U32 fixc)
+{
+    int n = s_cw.n, sub = (cgwsel & 2u) != 0u, half = (cgadsub & 0x40u) != 0u, minus = (cgadsub & 0x80u) != 0u;
+    uint32_t fix8 = 0xFF000000u | (fixc >> 10 & 31u) << 19 | (fixc >> 5 & 31u) << 11 | (fixc & 31u) << 3;
+    if (!s_e8_made)
+        make_e8();
+    room();
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDisable(GU_COLOR_TEST);
+    e8_screen(V_WM, k0, k1);
+    if (sub)
+        e8_screen(V_WS, k0, k1);
+    room();
+    /* clipped: black */
+    wtarget(V_WM);
+    if (!s_prebuild)
+        scissor(0, k0, n, k1);
+    sceGuEnable(GU_STENCIL_TEST);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    sceGuPixelMask(0xFF000000u);
+    sceGuStencilFunc(GU_EQUAL, F_CLIP, F_CLIP);
+    rect(0, k0, n, k1, 0);
+    if (half) {
+        /* F_HALF: maths, not prevented or clipped, and (with the sub
+           screen) the sub screen's pixel not its backdrop */
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HALF & 0xFF) << 24);
+        sceGuStencilFunc(GU_EQUAL, F_MATH | F_HALF, F_MATH | F_PREVENT | F_CLIP);
+        if (sub) {
+            sceGuEnable(GU_ALPHA_TEST);
+            sceGuAlphaFunc(GU_EQUAL, 0, F_BACK);
+            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+            wtex(V_WS, 16);
+            sprite1(0, k0, 0, k0, n, k1 - k0);
+            sceGuDisable(GU_ALPHA_TEST);
+        } else {
+            rect(0, k0, n, k1, 0);
+        }
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    }
+    if (half && !minus) {
+        /* the halved adds: the halves, and (the sub screen) both low bits */
+        room();
+        if (sub) {
+            e8_map(V_CA, V_WM, s_e8[E8_LOW], k0, k1);
+            wtarget(V_CA);
+            sceGuEnable(GU_BLEND);
+            sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+            ttex(V_WS);
+            look3(s_e8[E8_LOW], k0, k1);
+            sceGuDisable(GU_BLEND);
+            e8_map(V_CM, V_CA, s_e8[E8_AND], k0, k1);
+        }
+        e8_map(V_CS, V_WM, s_e8[E8_HALF], k0, k1);
+        wtarget(V_WM);
+        if (!s_prebuild)
+            scissor(0, k0, n, k1);
+        sceGuEnable(GU_STENCIL_TEST);
+        sceGuStencilFunc(GU_EQUAL, F_HALF, F_HALF);
+        sceGuPixelMask(0xFF000000u);
+        wtex(V_CS, 16);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+        sprite1(0, k0, 0, k0, n, k1 - k0);
+        sceGuEnable(GU_BLEND);
+        sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+        if (sub) {
+            ttex(V_WS);
+            look3(s_e8[E8_HALF], k0, k1);
+            wtex(V_CM, 16);
+            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+            sprite1(0, k0, 0, k0, n, k1 - k0);
+        } else {
+            rect(0, k0, n, k1, times4(fixc));    /* (8 c's half) */
+        }
+        /* the others: the whole other added */
+        sceGuStencilFunc(GU_EQUAL, F_MATH, F_MATH | F_PREVENT | F_HALF);
+    } else {
+        sceGuEnable(GU_BLEND);
+        sceGuStencilFunc(GU_EQUAL, F_MATH, F_MATH | F_PREVENT);
+    }
+    sceGuBlendFunc(minus ? GU_REVERSE_SUBTRACT : GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+    if (sub) {
+        wtex(V_WS, 16);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+        sprite1(0, k0, 0, k0, n, k1 - k0);
+    } else {
+        rect(0, k0, n, k1, fix8);
+    }
+    sceGuDisable(GU_BLEND);
+    /* maths' pixels no longer their texels' own colours (F_DIR cleared: the
+       direct overwrite after is for full colours untouched by maths) */
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+    sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+    sceGuStencilFunc(GU_EQUAL, F_MATH, F_MATH | F_PREVENT);
+    rect(0, k0, n, k1, 0);
+    /* out: cleared, F_HALF copied into its stencil, then each channel
+       through the plain lookup, or the halved's */
+    room();
+    wtarget(out);
+    if (!s_prebuild)
+        scissor(0, k0, n, k1);
+    sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HALF & 0xFF) << 24);
+    sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+    rect(0, k0, n, k1, 0);
+    sceGuPixelMask(0);
+    sceGuDisable(GU_STENCIL_TEST);
+    rect(0, k0, n, k1, 0);
+    sceGuEnable(GU_STENCIL_TEST);
+    if (half) {
+        sceGuEnable(GU_ALPHA_TEST);
+        sceGuAlphaFunc(GU_EQUAL, F_HALF, F_HALF);
+        sceGuStencilFunc(GU_ALWAYS, F_HALF, 0xFF);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HALF & 0xFF) << 24);
+        wtex(V_WM, 16);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+        sprite1(0, k0, 0, k0, n, k1 - k0);
+        sceGuDisable(GU_ALPHA_TEST);
+        sceGuPixelMask(0);
+    }
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+    ttex(V_WM);
+    sceGuStencilFunc(GU_EQUAL, 0, F_HALF);
+    look3(s_e8o[0][bright], k0, k1);
+    if (half) {
+        sceGuStencilFunc(GU_EQUAL, F_HALF, F_HALF);
+        look3(s_e8o[minus ? 1 : 2][bright], k0, k1);
+        /* (out's F_HALF cleared) */
+        sceGuDisable(GU_BLEND);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HALF & 0xFF) << 24);
+        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+        rect(0, k0, n, k1, 0);
+        sceGuPixelMask(0);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    }
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_STENCIL_TEST);
+}
+
+/* the full colours on top of the main screen that no colour maths
+   reaches (F_DIR, not F_CLIP): out's pixel their texel's own colour */
+static void cv_direct(int k0, int k1, U32 bright)
+{
+    int n = s_cw.n, k;
+    /* A full colour on top of the main screen, its pixel not clipped:
+       no colour maths reaching it (cv_finish8 clears F_DIR where maths
+       does), so its colour is its texel's own through s_d8. The
+       main screen's F_DIR (not F_CLIP) into out's stencil, out's
+       colour there cleared, then each channel's lookup added. */
+    sceGuEnable(GU_STENCIL_TEST);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+    sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+    sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+    rect(0, k0, n, k1, 0);
+    sceGuEnable(GU_ALPHA_TEST);
+    sceGuAlphaFunc(GU_EQUAL, F_DIR, F_DIR | F_CLIP);
+    sceGuStencilFunc(GU_ALWAYS, F_DIR, 0xFF);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    wtex(V_WM, 16);
+    sprite1(0, k0, 0, k0, n, k1 - k0);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    sceGuStencilFunc(GU_EQUAL, F_DIR, F_DIR);
+    sceGuPixelMask(0xFF000000u);
+    rect(0, k0, n, k1, 0);
+    sceGuPixelMask(0);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    cv_tex(GU_PSM_T32);
+    for (k = 0; k < 3; k++) {
+        sceGuClutMode(GU_PSM_8888, (unsigned)(8 * k), 0xFF, 0);
+        sceGuClutLoad(32, s_d8[bright][k]);
+        sprite1(0, k0, 0, k0, n, k1 - k0);
+    }
+    sceGuDisable(GU_BLEND);
+    /* (out's F_DIR cleared again) */
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+    sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+    sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+    rect(0, k0, n, k1, 0);
+    sceGuPixelMask(0);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+    sceGuDisable(GU_STENCIL_TEST);
+}
+
 /* finish_band's colour maths and output on the window's screens' rows
    k0-k1 (the colour window's bits theirs already), into out */
 static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
@@ -2309,6 +2617,12 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
     inidisp = cp_b(si, U_(CP_S_INIDISP), 0u);
     bright = inidisp & 0x0Fu;
     fixc = cp_b(si, U_(CP_S_FIXED), 0u) | cp_b(si, U_(CP_S_FIXED), 1u) << 5 | cp_b(si, U_(CP_S_FIXED), 2u) << 10;
+    if (s_cv32 && (cgadsub & 0x3Fu) && !(inidisp & 0x80u)) {
+        /* (a full colour may take part: in eighths) */
+        cv_finish8(k0, k1, out, cgwsel, cgadsub, bright, fixc);
+        cv_direct(k0, k1, bright);
+        return;
+    }
     room();
     wtarget(V_WM);
     if (!s_prebuild)
@@ -2378,48 +2692,8 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
         sprite1(0, k0, 0, k0, n, k1 - k0);
     }
     sceGuDisable(GU_BLEND);
-    if (s_cv32) {
-        /* A full colour on top of the main screen, its pixel not clipped:
-           no colour maths reaches it (rr_psp_canvas takes no frame where
-           any could), so its colour is its texel's own through s_d8. The
-           main screen's F_DIR (not F_CLIP) into out's stencil, out's
-           colour there cleared, then each channel's lookup added. */
-        sceGuEnable(GU_STENCIL_TEST);
-        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
-        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
-        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
-        rect(0, k0, n, k1, 0);
-        sceGuEnable(GU_ALPHA_TEST);
-        sceGuAlphaFunc(GU_EQUAL, F_DIR, F_DIR | F_CLIP);
-        sceGuStencilFunc(GU_ALWAYS, F_DIR, 0xFF);
-        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-        wtex(V_WM, 16);
-        sprite1(0, k0, 0, k0, n, k1 - k0);
-        sceGuDisable(GU_ALPHA_TEST);
-        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
-        sceGuStencilFunc(GU_EQUAL, F_DIR, F_DIR);
-        sceGuPixelMask(0xFF000000u);
-        rect(0, k0, n, k1, 0);
-        sceGuPixelMask(0);
-        sceGuEnable(GU_BLEND);
-        sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
-        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-        cv_tex(GU_PSM_T32);
-        for (k = 0; k < 3; k++) {
-            sceGuClutMode(GU_PSM_8888, (unsigned)(8 * k), 0xFF, 0);
-            sceGuClutLoad(32, s_d8[bright][k]);
-            sprite1(0, k0, 0, k0, n, k1 - k0);
-        }
-        sceGuDisable(GU_BLEND);
-        /* (out's F_DIR cleared again) */
-        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
-        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
-        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
-        rect(0, k0, n, k1, 0);
-        sceGuPixelMask(0);
-        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
-        sceGuDisable(GU_STENCIL_TEST);
-    }
+    if (s_cv32)
+        cv_direct(k0, k1, bright);
 }
 
 /* the colour window's bits on the main screen's rows r0-r1 (finish_band's
@@ -2657,6 +2931,8 @@ static unsigned int *cv_arena_list(unsigned int **at, uint32_t si, int what)
     else
         cv_finish(si, s_cw.d[1], 0, CV_ROWS, what ? V_G1 : V_G0);
     bytes = (sceGuCheckList() + 16 + 63) & ~63;
+    if (bytes > 8192)
+        nshvc_fatal("a canvas finish's list of %d bytes (8192 kept)", bytes);
     sceGuFinish();
     s_prebuild = 0;
     *at += bytes / 4;
@@ -3014,13 +3290,6 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         /* (wider than 256: no layer under mosaic, its rows 256 bytes) */
         if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) || (((mos >> n) & 1u) && (mos >> 4)) ||
             (sw > (U32)PIC_W && (mos & 0x0Fu) && (mos >> 4)))
-            return 0;
-        /* a full colour: none where colour maths could reach one (the
-           canvas's own, or the sub screen's with the canvas on it; none
-           with maths prevented everywhere, CGWSEL's region 3) */
-        if ((sc & 0x20u) && (cp_b(si, U_(CP_S_TSW), 2u) & 0x3Fu) && ((cp_b(si, U_(CP_S_TSW), 1u) >> 4) & 3u) != 3u &&
-            (((cp_b(si, U_(CP_S_TSW), 2u) >> n) & 1u) ||
-             (((cp_b(si, U_(CP_S_TM), 2u) >> n) & 1u) && (cp_b(si, U_(CP_S_TSW), 1u) & 2u))))
             return 0;
     }
     s_cv = (int)n;
