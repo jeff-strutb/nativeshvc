@@ -1471,6 +1471,14 @@ static int drawable(void)
     return 1;
 }
 
+/* a canvas frame's band where the canvas's layer is under mosaic: there
+   the layer is its tiles (cp_bg's: a canvas with the mosaic's size 1) */
+static int cv_mosaic(uint32_t si)
+{
+    U32 mos = cp_b(si, U_(CP_S_INIDISP), 3u);
+    return ((mos >> s_cv) & 1u) && (mos >> 4);
+}
+
 /* one screen of a band (which: 0 main, 1 sub): its backdrop, backgrounds
    and sprites */
 /* (which: 0 the main screen, 1 the sub; 2, on a hires line, the sub as
@@ -1535,7 +1543,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
         }
     }
     for (n = 0; n < 4u && mode != 7u; n++) {
-        if (!cp_bpp(mode, n) || !((on >> n) & 1u) || (int)n == s_cv)
+        if (!cp_bpp(mode, n) || !((on >> n) & 1u) || ((int)n == s_cv && !cv_mosaic(si)))
             continue;
         ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
         sfunc(own ? (int)((cgadsub >> n) & 1u) : 0);
@@ -1594,7 +1602,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
             }
         sceGuDisable(GU_ALPHA_TEST);
     }
-    if (s_cv >= 0 && cp_bpp(mode, (U32)s_cv) && ((on >> s_cv) & 1u)) {
+    if (s_cv >= 0 && cp_bpp(mode, (U32)s_cv) && ((on >> s_cv) & 1u) && !cv_mosaic(si)) {
         /* a canvas frame: where the canvas's layer, opaque, would be the
            screen's top pixel (its depth over the depth there, where it may
            show), F_W */
@@ -3375,7 +3383,8 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         cp_load(si);                         /* (cp_b's state: the row's own) */
         mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
         mos = cp_b(si, U_(CP_S_INIDISP), 3u);
-        if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) || (((mos >> n) & 1u) && (mos >> 4)))
+        (void)mos;
+        if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u))
             return 0;
         }
     }

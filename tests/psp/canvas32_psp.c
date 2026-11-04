@@ -25,6 +25,8 @@
  *   midline    plain's, and each frame, at lines 40-200 (each 20th) part way
  *              across, BG2's scroll and the main screen's layers (BG2 on,
  *              off) written: rows of parts
+ *   mosaic     plain's, BG1 (the canvas's layer) under mosaic (size 4)
+ *              from line 100 down each frame: there its tiles
  *   clipped    wide's with BG2 and the sprites kept to the console's picture
  *              (nshvc_ext_layer_clip)
  *   tall       clipped's on a 338 x 240 screen: rows above and below the
@@ -73,8 +75,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "clipped", "tall", "noncanvas", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "clipped", "tall", "noncanvas", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -213,6 +215,7 @@ static void setup(int sc)
     case S_PLAIN:
     case S_FADE:
     case S_MIDLINE:
+    case S_MOSAIC:
         w(0x2C, 0x03);
         break;
     case S_CLIP:
@@ -322,7 +325,14 @@ static void frame(int sc)
             w(0x2C, (L / 20) & 1 ? 0x01 : 0x03);
         }
     }
+    if (sc == S_MOSAIC) {
+        int t[2] = { 100, 300 };
+        nshvc_wait_until(at_beam, t);
+        w(0x06, 0x31);
+    }
     nshvc_wait_vblank();
+    if (sc == S_MOSAIC)
+        w(0x06, 0x00);
     if (sc == S_MIDLINE) {
         w(0x0F, 0);
         w(0x0F, 0);
