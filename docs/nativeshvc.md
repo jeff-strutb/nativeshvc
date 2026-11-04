@@ -59,6 +59,7 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 | `macos` | `metal` (default), `gl`, `vulkan` |
 | `windows` | `gl` (default), `vulkan` |
 | `ios` (`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64`) | `metal` |
+| `psp` (`-DCMAKE_TOOLCHAIN_FILE=$PSPDEV/psp/share/pspdev.cmake`) | `psp` (the GE) |
 | `none` (the app supplies `src/host/host.h`) | any |
 
 The picture comes from the PPU in C (the implementation the checks hold to

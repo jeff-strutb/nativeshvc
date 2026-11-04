@@ -100,6 +100,8 @@ what its Enhanced mode does.
 | a layer's own map past the console's picture | a background reads other map entries outside the console's 256 columns and lines | `nshvc_ext_layer_outside` |
 | a layer's picture from the game's texels over the whole screen | a background drawn from texels by the screen's pixels, at the window's resolution | `nshvc_ext_canvas_screen` |
 | that picture in colours no CGRAM entry holds | the same canvas with 32-bit texels, each an index or a colour of 8 bits a channel, through the console's priority, windows, colour maths and brightness | `nshvc_ext_canvas_screen32` |
+| that picture a texel a window pixel | either screen canvas at no whole scale (k 0): its texels over the whole screen, sized to the window's pixels the screen is presented over | `nshvc_ext_canvas_screen` / `_screen32` with k 0, `nshvc_ext_canvas_presented` |
+| the game's own GPU drawing (its 3D drawn by the platform's graphics library, then handed to a canvas) | GPU memory lent to the game until the frame is presented, the GPU's state put back after (on the PSP: a screen buffer of VRAM) | `nshvc_ext_ge_vram` |
 | a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
 | windows across a larger screen | a window whose edge is at the console's own reaching every column past it | `nshvc_ext_window_edges` |
 | windows placed on a larger screen | each line's window edges mapped onto the screen by a scale and an offset (across its whole width, or anywhere between that and the console's) | `nshvc_ext_window_map` |
@@ -117,8 +119,9 @@ text entry: the system's on-screen keyboard on a touch screen, typed keys reachi
 hook (`nshvc_ext_text_input`, `nshvc_keyboard_attached`).
 
 The picture on the window is not an enhancement: in both modes nativeshvc draws at the
-window's own resolution, the pixel art with sharp bilinear filtering and the Mode 7 plane
-looked up at each window pixel and anti-aliased (see [Picture](#picture)). A canvas is: an
+window's own resolution over the whole window, each axis at its own scale, the pixel art
+with sharp bilinear filtering and the Mode 7 plane looked up at each window pixel and
+anti-aliased (see [Picture](#picture)). A canvas is: an
 Enhanced mode's picture drawn by the game at the window's resolution, which no original drew.
 
 **Pacing: an Original mode and an Enhanced mode.** The C makes the original's data
@@ -170,11 +173,15 @@ CMake, C11, no dependencies for the core:
 cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --build build/macos
 ```
 
-`NSHVC_HOST` picks the host (`null`, the default, `macos`, `windows`, `ios` or `none`) and
-`NSHVC_RENDER` the renderer (`soft`, `metal`, `gl` or `vulkan`). `NSHVC_TESTS` and
-`NSHVC_EXAMPLES` build the tests and the examples. For iOS, add
+`NSHVC_HOST` picks the host (`null`, the default, `macos`, `windows`, `ios`, `psp` or
+`none`) and `NSHVC_RENDER` the renderer (`soft`, `metal`, `gl`, `vulkan` or `psp`).
+`NSHVC_TESTS` and `NSHVC_EXAMPLES` build the tests and the examples. For iOS, add
 `-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
--DNSHVC_HOST=ios`.
+-DNSHVC_HOST=ios`. For the PSP, with the pspdev toolchain:
+
+```bash
+cmake -S . -B build/psp -DCMAKE_TOOLCHAIN_FILE=$PSPDEV/psp/share/pspdev.cmake -DNSHVC_HOST=psp && cmake --build build/psp
+```
 
 ### 2. Write the C against the machine model
 
@@ -296,6 +303,9 @@ interface, outside the standard; a game written against 2.x needs no change for 
   macOS to make exactly what `fork` makes, not on Windows itself.
 - **Linux:** no windowed host yet. The headless host is plain POSIX, but has not been
   built or run on Linux.
+- **PSP:** the host and the GE renderer are written and checked in PPSSPP (its headless
+  runner, its software GE), never on a PSP itself (see [The PSP](#the-psp)). Text entry
+  (the system's on-screen keyboard) is not done.
 
 **What is done and checked.** Every check below is against bsnes as the reference, with its
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
@@ -563,8 +573,10 @@ The PPU ([`src/ppu/ppu.c`](src/ppu/ppu.c)) makes the picture in C, a line at a t
 clock passes each line: every background mode, sprites, windows, colour maths, brightness,
 the read side and open bus, with register writes landing mid-line at their own times.
 
-The renderer backends (Metal, OpenGL, Vulkan and software; [`rr.h`](src/render/rr.h))
-draw it at the window's own resolution. The pixel art is scaled with sharp bilinear
+The renderer backends (Metal, OpenGL, Vulkan, the PSP's GE and software;
+[`rr.h`](src/render/rr.h)) draw it at the window's own resolution, over the whole window,
+each axis at its own scale (no bars: a game that wants a shape sizes its screen to the
+window's). The pixel art is scaled with sharp bilinear
 filtering: whole pixels at any size, blended only across the one window pixel each pixel
 edge falls in. The Mode 7 plane, the one thing the console draws in 3D, is not scaled up
 from the console's pixels: at each window pixel it is looked up again through its line's
@@ -581,7 +593,10 @@ hands the characters it would upload as texels at the window's resolution (the w
 pixels a console pixel, `nshvc_ext_canvas_scale`), drawn by its own code at whatever
 internal resolution it likes, and the console places them by the layer's own rules (map,
 scroll, flips, priority, windows, colour maths), the window pixel in each console pixel
-taking the texel under it. One definition in C ([`rr_mode7.h`](src/render/rr_mode7.h)) is
+taking the texel under it. A screen canvas (`nshvc_ext_canvas_screen`, `_screen32`) is a
+layer's whole picture from the game's texels; at k 0 its texels cover the screen at no
+whole scale, and a canvas the size `nshvc_ext_canvas_presented` gives is presented a texel
+a window pixel. One definition in C ([`rr_mode7.h`](src/render/rr_mode7.h)) is
 the software backend's drawing and what the GPU backends' shaders compute, in integers but
 the blends, so every backend takes the same texels; each backend's output is checked
 against it. The backends also draw a port's overlays.
@@ -593,6 +608,9 @@ noise, pitch modulation, echo) makes stereo, 16-bit samples at 32,040 a second a
 SPC700's clock runs. It works as the chip does, a clock at a time: each voice reads its
 registers and the sample data at its own clocks of the sample, and the echo its delay line,
 so a change the driver makes partway through a sample reaches exactly the voices it would.
+A run of clocks from any point of a sample is as fast as a whole sample's (the 32 clocks
+in line, entered at the run's first), so a driver whose register accesses split the
+clock into short runs costs no more than one that does not.
 
 The samples are resampled to the device's rate by a 32-tap Kaiser-windowed sinc
 ([`resample.c`](src/dsp/resample.c)), its ratio trimmed by a fraction of a percent to keep
@@ -609,7 +627,28 @@ time, files and the save folder, a window, input, audio.
 | `macos` | Cocoa window, keyboard and game controllers, Core Audio |
 | `windows` | Win32 window, keyboard, XInput controllers, WASAPI (not yet run on Windows) |
 | `ios` | full-screen view, touch controls, keyboard and game controllers, RemoteIO |
+| `psp` | the 480 x 272 screen (three buffers in VRAM), the pad and the analog stick, audio at 48 kHz, the save folder beside the program (checked in PPSSPP) |
 | `none` | nothing: the app (a builder, a libretro core) supplies `host.h` itself |
+
+### The PSP
+
+The PSP's renderer ([`src/render/psp`](src/render/psp)) draws the console's picture on the
+GE: every background mode, offset-per-tile, Mode 7, hires and pseudo-hires, mosaic,
+interlace, sprites, windows, colour maths and brightness, composed in stripes of rows from
+the frame's description, each picture pixel exactly the PPU's (checked frame by frame
+against the PPU's own picture). It is presented with sharp bilinear on the GE, within 1 a
+channel of the reference, as every backend is. Mode 7 is shown at the console's
+resolution there, the PPU's own sampling scaled like any frame, not looked up again at
+each screen pixel. A screen canvas of indices at the presented size (k 0) is drawn on the
+GE at the screen's resolution, each screen pixel the console's rules with its texel, as
+the reference draws it. What the GE does not draw (a canvas of characters or of 32-bit
+texels, a canvas at another size, a screen wider than 256 but for a canvas frame, rows
+past the console's lines, the window and layer extensions, hires with interlace) is the
+reference's drawing on the CPU, exact and slower. An Enhanced mode's own GE drawing gets a
+screen buffer of VRAM for its frame (`nshvc_ext_ge_vram`), the GE's state put back after.
+
+Measured in PPSSPP (its clock, 333 MHz), most of the test cartridges run each frame within
+1/60 s; some of the heaviest (many windows, HDMA scrolling every line) do not yet.
 
 ### What a player gets
 
