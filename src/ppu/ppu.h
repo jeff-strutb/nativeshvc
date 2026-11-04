@@ -206,6 +206,7 @@ void ppu_ext_sprite_wrap(int on);
 void ppu_ext_layer_outside(int layer, const uint16_t *map, int size);
 void ppu_ext_vram_copy(int to_page, int from_page);
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
+int ppu_canvas_k(void);
 void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
 void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
 /* the texels a console pixel spans along each axis at the window's size

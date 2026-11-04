@@ -843,6 +843,9 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     cv_now.gen++;
 }
 
+/* the canvas asked for (from the next frame): its whole k, 0 when none or
+   over the whole screen (k 0) */
+int ppu_canvas_k(void) { return cv_now.on && !cv_now.fx ? cv_now.k : 0; }
 void ppu_set_canvas_scale(int k) { cv_scale = k < 1 ? 1 : k > 64 ? 64 : k; }
 int ppu_canvas_scale(void) { return cv_scale; }
 
@@ -2600,6 +2603,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVH] = (uint32_t)f->cv_h;
     cp_w[CP_CVFX] = f->cv_on && f->cv_screen ? (uint32_t)f->cv_fx : 0u;
     cp_w[CP_CVFY] = f->cv_on && f->cv_screen ? (uint32_t)f->cv_fy : 0u;
+    cp_w[CP_CVGEN] = f->cv_on ? (uint32_t)f->cv_gen : 0u;
     cp_w[CP_TOP] = (uint32_t)f->top;
     cp_w[CP_VCOPY] = (uint32_t)vwords;
     for (v = 0; v < PPU_VERSIONS; v++) {

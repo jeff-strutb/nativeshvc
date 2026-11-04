@@ -774,6 +774,13 @@ void rr_screen_max(int *w, int *h)
     *h = 240;
 }
 
+/* a canvas's texels: a texture's, 512 x 512 (the GE's largest) */
+void rr_canvas_max(int *w, int *h)
+{
+    *w = 512;
+    *h = 512;
+}
+
 int rr_psp_across(int pw, int ph, const int d[4], RrPspAcross *a)
 {
     if (!(d[2] > d[0] && d[3] > d[1]) || !geometry(pw, ph, d))

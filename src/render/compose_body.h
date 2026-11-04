@@ -76,7 +76,9 @@
 #define CP_CVFX 35       /* a screen canvas over the whole screen (k 0): its texels across and
                             down (0: k a console pixel) */
 #define CP_CVFY 36
-#define CP_HEADER 37
+#define CP_CVGEN 37      /* the canvas's texels' count of changes (ppu.h cv_gen): the same count,
+                            the same texels */
+#define CP_HEADER 38
 
 #define CP_ST 28         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */

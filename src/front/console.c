@@ -51,6 +51,10 @@ void nshvc_ext_screen(int width, int height)
     rr_screen_max(&mw, &mh);
     if (width > mw || height > mh)
         nshvc_fatal("nshvc_ext_screen(%d, %d): this platform's screen is at most %d x %d", width, height, mw, mh);
+    rr_canvas_max(&mw, &mh);
+    if (mw > 0 && ppu_canvas_k() && (width * ppu_canvas_k() > mw || height * ppu_canvas_k() > mh))
+        nshvc_fatal("nshvc_ext_screen(%d, %d): the canvas on, at k %d, past this platform's %d x %d texels", width, height,
+                    ppu_canvas_k(), mw, mh);
     snes_ppu_catch_up();
     ppu_ext_screen(width, height);
 }
@@ -106,19 +110,37 @@ void *nshvc_ext_ge_vram(size_t *bytes)
         *bytes = p ? n : 0;
     return p;
 }
+/* a canvas past the platform's (rr_canvas_max): fatal. w x h its texels
+   (a character canvas's: none, 0), k a whole scale's (0: none) */
+static void canvas_fits(const char *what, int w, int h, int k)
+{
+    const PpuFrame *f = ppu_frame();
+    int mw, mh;
+    rr_canvas_max(&mw, &mh);
+    if (mw > 0 && (w > mw || h > mh || (k > 0 && (f->width * k > mw || f->screen_height * k > mh))))
+        nshvc_fatal("%s: %d x %d texels at k %d on a %d x %d screen: this platform's canvas is at most %d x %d texels "
+                    "(the screen times k too)",
+                    what, w ? w : f->width * k, h ? h : f->screen_height * k, k, f->width, f->screen_height, mw, mh);
+}
 void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
 {
     snes_ppu_catch_up();
+    if (texels && count > 0)
+        canvas_fits("nshvc_ext_canvas_chars", 0, 0, k);
     ppu_ext_canvas_chars(layer, word_addr, count, texels, k);
 }
 void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette)
 {
     snes_ppu_catch_up();
+    if (texels)
+        canvas_fits("nshvc_ext_canvas_screen", w, h, k);
     ppu_ext_canvas_screen(layer, texels, w, h, k, priority, palette);
 }
 void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette)
 {
     snes_ppu_catch_up();
+    if (texels)
+        canvas_fits("nshvc_ext_canvas_screen32", w, h, k);
     ppu_ext_canvas_screen32(layer, texels, w, h, k, priority, palette);
 }
 
@@ -433,13 +455,30 @@ static void sound_drain(void)
 /* the canvas's texels a console pixel along each axis for a picture shown
    w x h: the window's pixels a console pixel, rounded up (so a canvas at
    that scale has at least a texel a window pixel) */
+/* k at most the platform's canvas allows (rr_canvas_max) */
+static int canvas_k_max(int k)
+{
+    const PpuFrame *f = ppu_frame();
+    int mw, mh, kw, kh;
+    rr_canvas_max(&mw, &mh);
+    if (mw <= 0)
+        return k;
+    kw = mw / f->width;
+    kh = mh / f->screen_height;
+    if (k > kw)
+        k = kw;
+    if (k > kh)
+        k = kh;
+    return k < 1 ? 1 : k;
+}
+
 static void canvas_scale(int w, int h)
 {
     const PpuFrame *f = ppu_frame();
     presented_w = w;
     presented_h = h;
     int kx = (w + f->width - 1) / f->width, ky = (h + f->screen_height - 1) / f->screen_height;
-    ppu_set_canvas_scale(kx > ky ? kx : ky);
+    ppu_set_canvas_scale(canvas_k_max(kx > ky ? kx : ky));
 }
 
 static long cpu_frames;                      /* frames drawn from the CPU's picture or records (rr_image, rr_mode7) */
@@ -540,6 +579,12 @@ __attribute__((weak)) void rr_screen_max(int *w, int *h)
 }
 
 __attribute__((weak)) int rr_mode7_plain(void) { return 0; }
+
+__attribute__((weak)) void rr_canvas_max(int *w, int *h)
+{
+    *w = 0;
+    *h = 0;
+}
 
 __attribute__((weak)) int rr_mode7_window(int what)
 {
@@ -1130,7 +1175,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         double sx, sy;
         shot_scale(&sx, &sy);
         if (sx > 0)
-            ppu_set_canvas_scale((int)ceil(sx > sy ? sx : sy));
+            ppu_set_canvas_scale(canvas_k_max((int)ceil(sx > sy ? sx : sy)));
     }
     if (counts_f) {
         nshvc_set_read_hook(count_read);

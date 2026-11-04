@@ -77,6 +77,11 @@ int rr_mode7_plain(void);
 /* the largest screen the platform draws on its GPU (nshvc_ext_screen):
    width and height; the front end's default the contract's (8192) */
 void rr_screen_max(int *w, int *h);
+/* the most texels a canvas (nshvc_ext_canvas_chars, _screen) spans on its
+   GPU, across and down: a character canvas's screen times k, a screen
+   canvas's texels (at a whole k, its screen times k too); the front end's
+   default none (0) */
+void rr_canvas_max(int *w, int *h);
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s);
 /* a frame presenting Mode 7 or a canvas: its picture and records drawn by
    the backend's compositor from its description (ppu.c ppu_compose_m7),

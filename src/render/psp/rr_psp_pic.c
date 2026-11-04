@@ -758,6 +758,86 @@ static int has_out(U32 n)
     return ob != 0u && ((FD_(ob) >> n) & 1u) != 0u;
 }
 
+/* ---- a canvas of characters (nshvc_ext_canvas_chars) ----
+   A character the canvas covers (ppu.c cv_char) is drawn by none of its
+   layer's tiles: on each screen its cells are marks at its depth (F_W
+   where the canvas, opaque, would be on top: draw_screen), and its cells'
+   places are recorded by picture row (cv_record), from which each target
+   row's texels are drawn from the canvas's characters (cv_chars_rows): the
+   texel plane the screen canvas's is (texel column x k + sx of picture
+   column x), a row at a time. A record's texels: its character's pixel row
+   py (flipped), the columns xa-xb of the cell from xc, flips, palette and
+   colour depth (0, 1, 2: 2, 4, 8 bits). */
+static int s_cv = -1;                        /* a canvas frame's: the canvas's layer (rr_psp_canvas) */
+static int s_cvch;                           /* and the canvas a character canvas */
+static int s_cvrec;                          /* draw_bg: the covered cells recorded, nothing drawn */
+static int s_rec_lo;                         /* (rows before it recorded by the stripe before) */
+typedef struct {
+    int16_t xa, xb, xc;
+    uint16_t ci;
+    uint8_t py, hf, vf, pal, bk;
+} CvCell;
+#define CVT_MAX 160                          /* a row's records: a part's cells each (65 a 512 screen) */
+static CvCell (*s_cvt)[CVT_MAX];             /* by picture row */
+static uint8_t s_ncvt[PIC_H];
+#define MK_MAX 8192
+static CV s_mk[MK_MAX * 2];                  /* a screen's marks (draw_screen) */
+static int s_nmk;
+
+/* whether character address ca of the layer (on VRAM page `page`, at bpp)
+   is the canvas's, its character *ci (ppu.c cv_char) */
+static int cv_covered(U32 ca, U32 page, U32 bpp, U32 *ci)
+{
+    U32 wpc = bpp * 4u, a = ca & 0x7FFFu, rel;
+    if (FD_(CP_CVADDR) >= 0x8000u)
+        a |= page << 15;
+    if (a < FD_(CP_CVADDR))
+        return 0;
+    rel = a - FD_(CP_CVADDR);
+    if (rel % wpc != 0u || rel / wpc >= FD_(CP_CVCOUNT))
+        return 0;
+    *ci = rel / wpc;
+    return 1;
+}
+
+/* a covered cell at (x, y), w across and 8 down, kept to rows r0-r1 and
+   columns x0-x1: recorded (s_cvrec), or its mark at depth z */
+static void cv_cell(int x, int y, int w, U32 ci, U32 pal, U32 hf, U32 vf, U32 bpp, int r0, int r1, int x0, int x1, int z)
+{
+    int xa = x > x0 ? x : x0, xb = x + w < x1 ? x + w : x1, ya = y > r0 ? y : r0, yb = y + 8 < r1 ? y + 8 : r1, R;
+    if (xb <= xa || yb <= ya)
+        return;
+    if (s_cvrec) {
+        for (R = ya < s_rec_lo ? s_rec_lo : ya; R < yb; R++) {
+            CvCell *c;
+            if (s_ncvt[R] == CVT_MAX)
+                nshvc_fatal("a canvas row of more than %d cells", CVT_MAX);
+            c = &s_cvt[R][s_ncvt[R]++];
+            c->xa = (int16_t)xa;
+            c->xb = (int16_t)xb;
+            c->xc = (int16_t)x;
+            c->ci = (uint16_t)ci;
+            c->py = (uint8_t)(vf ? 7 - (R - y) : R - y);
+            c->hf = (uint8_t)hf;
+            c->vf = (uint8_t)vf;
+            c->pal = (uint8_t)pal;
+            c->bk = (uint8_t)(bpp == 2u ? 0 : bpp == 4u ? 1 : 2);
+        }
+        return;
+    }
+    if (s_nmk == MK_MAX)
+        nshvc_fatal("a screen's canvas marks past %d", MK_MAX);
+    {
+        CV *v = &s_mk[2 * s_nmk++];
+        v[0].c = v[1].c = 0;
+        v[0].x = (short)xa;
+        v[0].y = (short)(ya - s_y0);
+        v[1].x = (short)xb;
+        v[1].y = (short)(yb - s_y0);
+        v[0].z = v[1].z = (short)z;
+    }
+}
+
 /* the tiles of background n over rows r0-r1 (the band's, dr0 the first's
    hardware row) and columns x0-x1, at their depths, by the texture they
    come from and their palette */
@@ -1011,6 +1091,7 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
     Atlas *a = atlas(words, cp_sw(si, U_(CP_S_VBASE)) + (page << 15), tk);
     Clut *c;
     BgTex g;
+    U32 ci_;
     if (phase >= 0)
         xs = 4u;                             /* (hires: 16 texels a tile across) */
     direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
@@ -1035,6 +1116,12 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
         if (ys == 4u && ((((yy) >> 3) & 1u) ^ vf))                                                                 \
             ch += 16u;                                                                                             \
         ca = (nba + (ch & 0x3FFu) * (bpp * 4u)) & 0x7FFFu;                                                         \
+        if (s_cvch && n == s_cv && phase < 0 && cv_covered(ca, page, bpp, &ci_)) {                                 \
+            cv_cell(x, y, (w), ci_, pal, hf, vf, bpp, r0, r1, x0, x1, (int)cp_zbg(bgmode, (U32)n, prio));         \
+            break;                                                                                                 \
+        }                                                                                                          \
+        if (s_cvrec)                                                                                               \
+            break;                                                                                                 \
         t = (int)(ca / (bpp * 4u));                                                                                \
         /* a 2-bit tile's palette is its CLUT window (b), others' the CSA or a direct colour's palette */          \
         b = kind == 0 ? (int)((mode == 0u ? (U32)n * 8u : 0u) + pal) : (int)pal;                                   \
@@ -1047,7 +1134,11 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
             (int)cp_zbg(bgmode, (U32)n, prio));                                                                    \
     } while (0)
     /* the cells made, drawn (bg_flush) */
-#define FLUSH() bg_flush(&g)
+#define FLUSH()          \
+    do {                 \
+        if (!s_cvrec)    \
+            bg_flush(&g); \
+    } while (0)
     if (phase < 0 && ((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4)) {
         bg_mosaic(si, n, r0, r1, x0, x1, &g, xs, ys, bpp, nba, hofs, vofs);
     } else if ((mode == 2u || mode == 4u) && n < 2) {
@@ -1429,8 +1520,6 @@ static void draw_obj_rows(uint32_t si, uint32_t part, int ga, int gb, int x0, in
 
 /* whether the frame is one drawn here: its features, and its VRAM pages
    each an atlas */
-static int s_cv = -1;                        /* a canvas frame's: the canvas's layer (rr_psp_canvas) */
-
 static int drawable(void)
 {
     U32 r, ph = FD_(CP_PH), keys[ATLASES];
@@ -1491,6 +1580,34 @@ static int cv_mosaic(uint32_t si)
     return ((mos >> s_cv) & 1u) && (mos >> 4);
 }
 
+/* a canvas of characters: the covered cells of its layer over rows r0-r1,
+   columns x0-x1, recorded (cv_cell), on either screen or not (the texels
+   under a mark, which is a screen's) */
+static void cv_record(uint32_t si, int r0, int r1, I32 dr0, int x0, int x1)
+{
+    int n = s_cv, sl = (int)FD_(CP_SL), cut[4] = { x0, x1, x1, x1 }, q, out = has_out((U32)n);
+    U32 on = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
+    if (!((on >> n) & 1u))
+        return;
+    if (out) {
+        /* (draw_screen's pieces: left of, on and right of the console's
+           picture, each from its map) */
+        cut[1] = x0 > sl ? x0 : sl < x1 ? sl : x1;
+        cut[2] = x0 > sl + 256 ? x0 : sl + 256 < x1 ? sl + 256 : x1;
+        if (cut[2] < cut[1])
+            cut[2] = cut[1];
+    }
+    s_cvrec = 1;
+    for (q = 0; q < 3; q++) {
+        if (cut[q + 1] <= cut[q])
+            continue;
+        s_out = out && q != 1;
+        draw_bg(si, n, r0, r1, dr0, cut[q], cut[q + 1], -1);
+    }
+    s_out = 0;
+    s_cvrec = 0;
+}
+
 /* one screen of a band (which: 0 main, 1 sub): its backdrop, backgrounds
    and sprites */
 /* (which: 0 the main screen, 1 the sub; 2, on a hires line, the sub as
@@ -1528,6 +1645,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     sceGuColorFunc(GU_NOTEQUAL, CLEAR, 0xFFFFFF);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
     s_which = which ? 1 : 0;
+    s_nmk = 0;
     if (mode == 7u) {
         U32 both = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
         for (n = 0; n < 2u; n++) {
@@ -1555,7 +1673,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
         }
     }
     for (n = 0; n < 4u && mode != 7u; n++) {
-        if (!cp_bpp(mode, n) || !((on >> n) & 1u) || ((int)n == s_cv && !cv_mosaic(si)))
+        if (!cp_bpp(mode, n) || !((on >> n) & 1u) || ((int)n == s_cv && !s_cvch && !cv_mosaic(si)))
             continue;
         ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
         sfunc(own ? (int)((cgadsub >> n) & 1u) : 0);
@@ -1614,7 +1732,30 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
             }
         sceGuDisable(GU_ALPHA_TEST);
     }
-    if (s_cv >= 0 && mode != 7u && cp_bpp(mode, (U32)s_cv) && ((on >> s_cv) & 1u) && !cv_mosaic(si)) {
+    if (s_cvch && s_nmk) {
+        /* a canvas of characters: its covered cells' marks (cv_cell), each
+           at its depth, F_W where it would be on top (its layer's window's
+           F_HIDE made again, the sprites' made since) */
+        CV *v;
+        sceGuDisable(GU_COLOR_TEST);
+        (void)layer_spans(si, s_cv, r0, r1, x0, x1, sp);
+        sceGuDepthMask(GU_TRUE);
+        sfunc(F_W);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_W & 0xFF) << 24);
+        sceGuDisable(GU_TEXTURE_2D);
+        for (k = 0; k < s_nmk; k += 1024) {
+            int nk = s_nmk - k < 1024 ? s_nmk - k : 1024;
+            room();
+            scissor(x0, r0 - s_y0, x1, r1 - s_y0);
+            v = (CV *)sceGuGetMemory(nk * 2 * (int)sizeof(CV));
+            memcpy(v, s_mk + 2 * k, (size_t)nk * 2 * sizeof(CV));
+            sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2 * nk, 0, v);
+        }
+        sceGuPixelMask(0);
+        sceGuDepthMask(GU_FALSE);
+        s_nmk = 0;
+    }
+    if (s_cv >= 0 && !s_cvch && mode != 7u && cp_bpp(mode, (U32)s_cv) && ((on >> s_cv) & 1u) && !cv_mosaic(si)) {
         /* a canvas frame: where the canvas's layer, opaque, would be the
            screen's top pixel (its depth over the depth there, where it may
            show), F_W */
@@ -2181,7 +2322,7 @@ static const uint32_t *cv_clut(uint32_t si)
     static uint32_t key[CV_CLUTS][3], frame[CV_CLUTS];
     static int last;
     U32 mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u, n = (U32)s_cv, bpp = cp_bpp(mode, n);
-    U32 pal = (FD_(CP_CVSCREEN) >> 2) & 7u, pw = cp_sw(si, U_(CP_S_PAL));
+    U32 pal = s_cvch ? 0u : (FD_(CP_CVSCREEN) >> 2) & 7u, pw = cp_sw(si, U_(CP_S_PAL));
     U32 direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
     int i, k;
     Clut *c;
@@ -2203,10 +2344,19 @@ static const uint32_t *cv_clut(uint32_t si)
     f = direct ? NULL : pal_f(pw);
     for (k = 0; k < 256; k++) {
         U32 pix = (U32)k & ((1u << bpp) - 1u);
-        tab[i][k] = !pix ? CLEAR
-                    : bpp == 8u ? (direct ? c->direct[pal][pix] : f[pix])
-                    : bpp == 4u ? f[pal * 16u + pix]
-                                : f[(mode == 0u ? n * 32u : 0u) + pal * 4u + pix];
+        if (s_cvch)
+            /* (a character canvas's texel: its tile's palette in its bits,
+               cv_chars_rows; a direct colour's palette bits added after,
+               cv_index_rows) */
+            tab[i][k] = !pix ? CLEAR
+                        : bpp == 8u ? (direct ? c->direct[0][pix] : f[pix])
+                        : bpp == 4u ? f[(U32)k & 127u]
+                                    : f[(mode == 0u ? n * 32u : 0u) + ((U32)k & 31u)];
+        else
+            tab[i][k] = !pix ? CLEAR
+                        : bpp == 8u ? (direct ? c->direct[pal][pix] : f[pix])
+                        : bpp == 4u ? f[pal * 16u + pix]
+                                    : f[(mode == 0u ? n * 32u : 0u) + pal * 4u + pix];
     }
     sceKernelDcacheWritebackRange(tab[i], sizeof tab[i]);
     key[i][0] = cp_fdb + pw;
@@ -2289,6 +2439,16 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
    be on top (F_W), through each row's palette (a colour 0's CLEAR
    dropped): a CLUT and a sprite each run of rows of one palette */
 #define NO_PART 0xFFFFFFFFu                 /* (cv_index_rows: the rows' own states) */
+static uint32_t __attribute__((aligned(64))) s_cvpb[256];   /* a direct colour's palette bits (times4), CLEAR past 7 */
+
+/* whether state si's canvas layer is in direct colour (8 bits, CGWSEL) */
+static int cv_direct_rows(uint32_t si)
+{
+    U32 mode;
+    cp_load(si);
+    mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
+    return cp_bpp(mode, (U32)s_cv) == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
+}
 static const uint32_t *s_rowclut[PIC_H];    /* each picture row's canvas palette, made in frame s_rowclut_f[r] */
 static unsigned s_rowclut_f[PIC_H];
 
@@ -2348,6 +2508,23 @@ static void cv_index_rows(int Ya, const int16_t *rj, int k0, int k1, uint32_t sp
             sceGuClutLoad(32, tab);
             scissor(s_cx0, k, s_cx1, ka);
             sprite1(0, k, 0, k, s_cw.n, ka - k);
+            if (s_cvch && cv_direct_rows(sp != NO_PART ? sp : row_state(rj[Ya + k - s_cw.Y0]))) {
+                /* a character canvas in direct colour: its tiles' palette
+                   bits (the texel's green) added, bits of their own (each
+                   channel's value 4 c: c's bits apart, so a sum), the
+                   stencil as the colours left it */
+                sceGuClutMode(GU_PSM_8888, 8, 0xFF, 0);
+                sceGuClutLoad(32, s_cvpb);
+                sceGuEnable(GU_BLEND);
+                sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+                sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+                sceGuPixelMask(0xFF000000u);
+                sprite1(0, k, 0, k, s_cw.n, ka - k);
+                sceGuDisable(GU_BLEND);
+                sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+                sceGuPixelMask((uint32_t)(~(sc ? F_BACK : F_MATH) & 0xFF) << 24);
+                sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+            }
         }
     }
     sceGuDisable(GU_COLOR_TEST);
@@ -3046,9 +3223,173 @@ static void cv_copy(const TV *v, int nv)
 
 /* V_CB for the (i, j) of group g: its rows' texel rows (j's) into V_CA,
    then each target column's texel column (i's) from them into V_CB */
+/* A character canvas's characters for the GE (cv_atlas): images of 512 x
+   512 texels (a byte each, T8), each character 8k x 8k of them, 512 / 8k
+   across and down an image, made again when the canvas changes (CP_CVGEN).
+   s_cvdl: drawing them, each colour depth's and palette's lookup: a texel's
+   value (its depth's bits) to red, the palette's bits above (a tile's
+   index, ppu.c draw_bg's: cv_clut takes it), the palette to green (direct
+   colour's: cv_index_rows); 0 to red 0, green 255 (CLEAR in both). */
+static uint8_t *s_cvat;
+static size_t s_cvat_cap;
+static uint32_t s_cvat_key[4];
+static int s_cvimgs;
+static uint32_t __attribute__((aligned(64))) s_cvdl[3][8][256];
+static int s_cvdl_made;
+
+static void cv_atlas(const uint32_t *desc)
+{
+    U32 k = FD_(CP_CVK), cnt = FD_(CP_CVCOUNT), len = FD_(CP_CVLEN), key[4];
+    size_t need, k8 = 8u * k, ch = k8 * k8;
+    U32 per = 512u / (U32)k8, pimg = per * per, ci, y;
+    const uint8_t *t = (const uint8_t *)(desc + FD_(CP_CV));
+    key[0] = FD_(CP_CVGEN);
+    key[1] = k;
+    key[2] = cnt;
+    key[3] = len;
+    if (!s_cvdl_made) {
+        int b, p, v;
+        for (b = 0; b < 3; b++)
+            for (p = 0; p < 8; p++)
+                for (v = 0; v < 256; v++) {
+                    unsigned bpp = b == 0 ? 2u : b == 1 ? 4u : 8u, m = (unsigned)v & ((1u << bpp) - 1u);
+                    unsigned e = bpp == 8u ? m : (unsigned)p << bpp | m;
+                    s_cvdl[b][p][v] = m ? (uint32_t)p << 8 | e : 0x0000FF00u;
+                }
+        for (v = 0; v < 256; v++)
+            s_cvpb[v] = v < 8 ? times4(cp_direct(0u, (U32)v)) : CLEAR;
+        sceKernelDcacheWritebackRange(s_cvdl, sizeof s_cvdl);
+        sceKernelDcacheWritebackRange(s_cvpb, sizeof s_cvpb);
+        s_cvdl_made = 1;
+    }
+    if (s_cvat && !memcmp(key, s_cvat_key, sizeof key))
+        return;
+    s_cvimgs = (int)((cnt + pimg - 1u) / pimg);
+    need = (size_t)s_cvimgs * 512u * 512u;
+    if (need > s_cvat_cap) {
+        free(s_cvat);
+        if (!(s_cvat = (uint8_t *)memalign(64, need)))
+            nshvc_fatal("no memory for the canvas's characters (%u bytes)", (unsigned)need);
+        s_cvat_cap = need;
+    }
+    for (ci = 0; ci < cnt; ci++) {
+        U32 img = ci / pimg, at = ci % pimg;
+        uint8_t *o = s_cvat + (size_t)img * 512u * 512u + (size_t)(at / per) * k8 * 512u + (at % per) * k8;
+        size_t from = (size_t)ci * ch;
+        for (y = 0; y < (U32)k8; y++, o += 512, from += k8) {
+            size_t have = from >= len ? 0 : len - from < k8 ? len - from : k8;
+            memcpy(o, t + from, have);
+            memset(o + have, 0, k8 - have);
+        }
+    }
+    sceKernelDcacheWritebackRange(s_cvat, (unsigned)need);
+    memcpy(s_cvat_key, key, sizeof key);
+}
+
+/* V_CA's rows for group g's target rows, j's: each row's texel row ey
+   (s_cvrow), picture row ey / k's records (cv_record), each a sprite of its
+   cell's texels in its character's row (flipped as the cell) into the
+   texel plane's columns xa k - xb k; by image, depth and palette */
+#define CVB_IMGS 64
+static void cv_chars_rows(const CvGroup *g, int j)
+{
+    static int cnt[CVB_IMGS * 24];
+    static uint16_t bk[CV_ROWS][CVT_MAX];    /* each record's bucket */
+    int nr = g->Yb - g->Ya, t, b, k = (int)FD_(CP_CVK), k8 = 8 * k, per = 512 / k8, pimg = per * per;
+    int nb = s_cvimgs * 24;
+    if (s_cvimgs > CVB_IMGS)
+        nshvc_fatal("a canvas of %d character images (%d)", s_cvimgs, CVB_IMGS);
+    room();
+    wtarget(V_CA);
+    scissor(0, 0, 512, nr);
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_COLOR_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuPixelMask(0);
+    clear_rect(0, 0, 512, nr, 0, 0, 0, GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
+    memset(cnt, 0, (size_t)nb * sizeof cnt[0]);
+    for (t = 0; t < nr; t++) {
+        int R = s_cvrow[j][2 * (g->Ya + t - s_cw.Y0)].v / k, c;
+        for (c = 0; c < s_ncvt[R]; c++) {
+            const CvCell *e = &s_cvt[R][c];
+            bk[t][c] = (uint16_t)((e->ci / pimg) * 24 + e->bk * 8 + e->pal);
+            cnt[bk[t][c]]++;
+        }
+    }
+    /* (alpha 0: the stencil's) */
+    sceGuEnable(GU_STENCIL_TEST);
+    sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+    for (b = 0; b < nb; b++) {
+        TV *v;
+        int n = 0;
+        if (!cnt[b])
+            continue;
+        room();
+        sceGuTexImage(0, 512, 512, 512, s_cvat + (size_t)(b / 24) * 512u * 512u);
+        sceGuTexFlush();
+        sceGuClutLoad(32, s_cvdl[(b % 24) / 8][b % 8]);
+        v = (TV *)sceGuGetMemory(cnt[b] * 2 * (int)sizeof(TV));
+        for (t = 0; t < nr; t++) {
+            int ey = s_cvrow[j][2 * (g->Ya + t - s_cw.Y0)].v, R = ey / k, sub = ey % k, c;
+            for (c = 0; c < s_ncvt[R]; c++) {
+                const CvCell *e = &s_cvt[R][c];
+                int ix, cu, cvv, a0, a1;
+                if (bk[t][c] != b)
+                    continue;
+                ix = e->ci % pimg;
+                cu = (ix % per) * k8;
+                cvv = (ix / per) * k8 + e->py * k + (e->vf ? k - 1 - sub : sub);
+                a0 = (e->xa - e->xc) * k;
+                a1 = (e->xb - e->xc) * k;
+                v[0].u = (short)(e->hf ? cu + k8 - a0 : cu + a0);
+                v[0].v = (short)cvv;
+                v[0].x = (short)(e->xa * k);
+                v[0].y = (short)t;
+                v[0].z = 0;
+                v[1].u = (short)(e->hf ? cu + k8 - a1 : cu + a1);
+                v[1].v = (short)(cvv + 1);
+                v[1].x = (short)(e->xb * k);
+                v[1].y = (short)(t + 1);
+                v[1].z = 0;
+                v += 2;
+                n++;
+            }
+        }
+        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2 * n, 0, v - 2 * n);
+    }
+    sceGuDisable(GU_STENCIL_TEST);
+}
+
 static void cv_remap(const CvGroup *g, int i, int j)
 {
     int nr = g->Yb - g->Ya;
+    if (s_cvch) {
+        /* (V_CA's rows a j's: made at i 0, kept for i 1, cv_finish's
+           passes not using it but in eighths, which a full colour's are) */
+        if (i == 0)
+            cv_chars_rows(g, j);
+        room();
+        sceGuDisable(GU_BLEND);
+        sceGuDisable(GU_DEPTH_TEST);
+        sceGuDisable(GU_COLOR_TEST);
+        sceGuEnable(GU_STENCIL_TEST);
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+        wtarget(V_CB);
+        scissor(0, 0, s_cw.n, nr);
+        sceGuTexImage(0, 512, 16, 512, vram(V_CA));
+        sceGuTexFlush();
+        cv_copy(s_cvcol[i], s_cw.n);
+        sceGuDisable(GU_STENCIL_TEST);
+        return;
+    }
     room();
     sceGuDisable(GU_BLEND);
     sceGuDisable(GU_DEPTH_TEST);
@@ -3298,6 +3639,8 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
                         draw_screen(si, which, r, r1, dr0, x0, x1, hires);
                     if (s_index || s_fx)
                         index_band(si, r, r1, x0, x1, hires ? 3 : 2);
+                    if (s_cvch && !hires && mode != 7u && cp_bpp(mode, (U32)s_cv) && !cv_mosaic(si))
+                        cv_record(si, r, r1, dr0, x0, x1);
                 }
                 if (hires) {
                     /* the even pixels (the sub screen against the main), then
@@ -3314,6 +3657,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
         }
         if (s_cv >= 0)
             cv_window(s0, sown);
+        s_rec_lo = s1;
     }
     s_index = s_fx = s_wv = 0;
     list_run();
@@ -3368,8 +3712,8 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
 int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned fb, const RrPspAcross *a,
                   const struct RrMode7 *m, const struct RrM7Samples *smp)
 {
-    U32 sc, n, r, ph, sw, cw, ch;
-    int w, h, pw, phh, Y, key[8], i;
+    U32 sc, n, r, ph, sw, cw, ch, kk;
+    int w, h, pw, phh, Y, key[8], i, chars;
     float dy;
     (void)words;
     rr_cp_fd = desc;
@@ -3379,14 +3723,21 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     h = d[3] - d[1];
     ph = FD_(CP_PH);
     sw = FD_(CP_SW);
-    cw = FD_(CP_CVW);
-    ch = FD_(CP_CVH);
-    /* a screen canvas (at any k, or over the whole screen), its texels and
-       the clear ones past them a texture's (512), the picture magnified,
-       one part a row, no hires */
-    if (!FD_(CP_CVON) || !(sc & 1u) || cw > 511u || ch > 511u || m->cpp != 1 || FD_(CP_PW) != sw || d[0] < 0 ||
+    kk = FD_(CP_CVK);
+    chars = FD_(CP_CVON) && !(sc & 1u);
+    /* a character canvas's texel plane: the screen times k (cv_chars_rows) */
+    cw = chars ? sw * kk : FD_(CP_CVW);
+    ch = chars ? ph * kk : FD_(CP_CVH);
+    /* a canvas (of characters, or over the screen at any k or none), the
+       picture magnified, no hires */
+    if (!FD_(CP_CVON) || m->cpp != 1 || FD_(CP_PW) != sw || d[0] < 0 ||
         d[1] < 0 || d[2] > 480 || d[3] > 272 || (U32)w < sw || (U32)h < ph || a->n != w || a->X0 != d[0])
         return 0;
+    /* its texels a texture's, 512 x 512 at most (rr_canvas_max; at a
+       whole k, the screen times k too, the texel past the canvas's the
+       clear one) */
+    if (cw > 512u || ch > 512u || (kk && !FD_(CP_CVFX) && (sw * kk > 512u || ph * kk > 512u)))
+        nshvc_fatal("a canvas of %u x %u texels at k %u on a %u x %u screen: past the PSP's 512 x 512", cw, ch, kk, sw, ph);
     n = FD_(CP_CVLAYER);
     for (r = 0; r < ph; r++) {
         U32 ri = FD_(CP_ROWS) + 4u * r, si, mode, mos, pk;
@@ -3401,10 +3752,12 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         }
     }
     s_cv = (int)n;
+    s_cvch = chars;
     s_pw = sw > (U32)PIC_W ? 512 : PIC_W;
     s_band = sw > (U32)PIC_W ? CV_BAND : BAND;
     if (!drawable()) {
         s_cv = -1;
+        s_cvch = 0;
         s_pw = PIC_W;
         s_band = BAND;
         return 0;
@@ -3452,10 +3805,18 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     }
     /* the canvas's texels for the GE (s_cvs): indices in red, full
        colours CV_RGB-marked; the column and row past them clear */
-    if (!s_cvs && !(s_cvs = (uint32_t *)memalign(64, (size_t)512 * 512 * 4)))
-        nshvc_fatal("no memory for the canvas");
     s_cv32 = (sc & 0x20u) != 0u;
-    for (Y = 0; Y < (int)ch; Y++) {
+    if (chars) {
+        /* its characters for the GE; its records, by picture row, the
+           stripes' (cv_record) */
+        if (!s_cvt && !(s_cvt = (CvCell(*)[CVT_MAX])malloc((size_t)PIC_H * sizeof *s_cvt)))
+            nshvc_fatal("no memory for the canvas's records");
+        cv_atlas(desc);
+        memset(s_ncvt, 0, sizeof s_ncvt);
+        s_rec_lo = 0;
+    } else if (!s_cvs && !(s_cvs = (uint32_t *)memalign(64, (size_t)512 * 512 * 4)))
+        nshvc_fatal("no memory for the canvas");
+    for (Y = 0; Y < (int)ch && !chars; Y++) {
         uint32_t *o = s_cvs + (size_t)Y * 512u;
         U32 X;
         if (s_cv32) {
@@ -3470,10 +3831,16 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
             for (X = 0; X < cw; X++)
                 o[X] = t[X];
         }
-        o[cw] = 0;
+        if (cw < 512u)
+            o[cw] = 0;
     }
-    memset(s_cvs + (size_t)ch * 512u, 0, (size_t)(cw + 1) * 4);
-    sceKernelDcacheWritebackRange(s_cvs, (unsigned)((ch + 1) * 512u * 4u));
+    if (!chars) {
+        /* (the row and column past the texels clear: read where the canvas
+           is narrower than the screen times k, so not at 512) */
+        if (ch < 512u)
+            memset(s_cvs + (size_t)ch * 512u, 0, (size_t)(cw < 512u ? cw + 1 : cw) * 4);
+        sceKernelDcacheWritebackRange(s_cvs, (unsigned)((ch < 512u ? ch + 1 : ch) * 512u * 4u));
+    }
     if (s_cv32 && !s_d8_made)
         make_d8();
     /* each target column's texel column under its centre clamped into
@@ -3556,6 +3923,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     cv_classes();
     draw_picture(0, 0, 512, &pw, &phh);
     s_cv = -1;
+    s_cvch = 0;
     s_cv32 = 0;
     s_pw = PIC_W;
     s_band = BAND;
