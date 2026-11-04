@@ -15,9 +15,15 @@
    (and 5 bits are what it keeps of 8 written): so 16 bits hold it exactly,
    and a picture 512 wide fits where one of 32 bits 256 wide would */
 int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph);
+/* an interlaced frame's woven picture (rr.h rr_compose_woven), ww x wh:
+   each description (desc's words from base0, base1) drawn as above, its
+   rows a woven row of each parity's (even, odd); 0 when either has what is
+   not drawn on the GE, or the picture is wider than 256 (it would not fit) */
+int rr_psp_picture_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1);
 /* the picture, uncached */
 const uint16_t *rr_psp_picture_pixels(void);
-#define rr_psp_picture_stride 512
+/* its rows' distance, in pixels: 512, or a woven picture's 256 */
+extern int rr_psp_picture_stride;
 /* a picture pixel as 0xFFRRGGBB */
 static inline uint32_t rr_psp_picture_argb(uint16_t p)
 {

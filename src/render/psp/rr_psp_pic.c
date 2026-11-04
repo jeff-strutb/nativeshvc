@@ -76,6 +76,12 @@ static unsigned int __attribute__((aligned(64))) s_list[256 * 1024];
 #define LIST_ROOM (64 * 1024)                /* bytes kept free: far more than any one step adds (a bucket's
                                                 tiles: 256 sprites, 5 KB) */
 
+/* the picture drawn into: its first byte past V_PIC, its rows' distance
+   (pixels); the rows' distance its readers see (a woven picture's 256) */
+int rr_psp_picture_stride = 512;
+static unsigned s_pic_off;
+static int s_pic_stride = 512;
+
 static unsigned s_target_off;                /* the buffer drawn into (target()) */
 static int s_target_w, s_target_psm;
 
@@ -84,7 +90,7 @@ static void target(unsigned off, int w)
 {
     s_target_off = off;
     s_target_w = w;
-    s_target_psm = off == V_PIC ? GU_PSM_5551 : GU_PSM_8888;
+    s_target_psm = off >= V_PIC && off < V_PIC + 512 * 240 * 2 ? GU_PSM_5551 : GU_PSM_8888;
     sceGuDrawBufferList(s_target_psm, (void *)off, w);
 }
 
@@ -278,8 +284,9 @@ static Clut *clut(uint32_t key, int direct)
 {
     Clut *c = NULL;
     int i, k;
+    uint32_t at = cp_fdb + key;                /* (the palette's word in all the descriptions) */
     for (i = 0; i < CLUTS; i++)
-        if (s_clut[i] && s_clut[i]->frame == s_frame && s_clut[i]->key == key) {
+        if (s_clut[i] && s_clut[i]->frame == s_frame && s_clut[i]->key == at) {
             c = s_clut[i];
             break;
         }
@@ -301,11 +308,11 @@ static Clut *clut(uint32_t key, int direct)
         if (!s_clut[i] && !(s_clut[i] = (Clut *)memalign(64, sizeof(Clut))))
             nshvc_fatal("no memory for the palettes");
         c = s_clut[i];
-        c->key = key;
+        c->key = at;
         c->frame = s_frame;
         c->have_c = c->have_direct = c->have_ext = 0;
         for (k = 0; k < 256; k++)
-            c->f[k] = times4((rr_cp_fd[key + ((unsigned)k >> 1)] >> (16u * ((unsigned)k & 1u))) & 0xFFFFu);
+            c->f[k] = times4((FD_(key + ((unsigned)k >> 1)) >> (16u * ((unsigned)k & 1u))) & 0xFFFFu);
         sceKernelDcacheWritebackRange(c->f, sizeof c->f);
     }
     if (direct != 2 && !c->have_c) {
@@ -723,7 +730,7 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
 /* (out of line: its loops their own registers, not the caller's) */
 static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1, int phase)
 {
-    const uint16_t *words = (const uint16_t *)(rr_cp_fd + FD_(CP_VRAM));
+    const uint16_t *words = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM));
     U32 ld = cp_st[U_(CP_S_LAYER) + (U32)n], bpp = (ld >> 1) & 15u, xs = (ld >> 5) & 7u, ys = (ld >> 8) & 7u;
     U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u), mode = bgmode & 7u, page = cp_b(si, U_(CP_S_PAGE), (U32)n);
     U32 hofs = (((n >> 1) == 0 ? cp_st[CP_S_HOFS] : cp_st[CP_S_HOFS + 1]) >> (16u * ((U32)n & 1u))) & 0xFFFFu;
@@ -866,7 +873,7 @@ static uint8_t __attribute__((aligned(64))) s_m7[2][256 * 256];   /* by layer: a
    finds it (ppu.c draw_m7), 0 where the wrap mode leaves it clear */
 static void m7_fill(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1)
 {
-    const uint16_t *v = (const uint16_t *)(rr_cp_fd + FD_(CP_VRAM)) + cp_sw(si, U_(CP_S_VBASE)) +
+    const uint16_t *v = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM)) + cp_sw(si, U_(CP_S_VBASE)) +
                         (cp_b(si, U_(CP_S_PAGE), 0u) << 15);
     U32 mosaic = cp_b(si, U_(CP_S_INIDISP), 3u), m7sel = cp_b(si, U_(CP_S_NBA), 2u);
     I32 msize = (mosaic & (1u << n)) ? (I32)(mosaic >> 4) + 1 : 1, sl = I_(FD_(CP_SL));
@@ -969,7 +976,7 @@ static void draw_m7(uint32_t si, int n, int r0, int r1, int x0, int x1)
    << 1 | maths (palettes 4-7) << 3 (cp_obj) */
 static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
 {
-    const uint16_t *words = (const uint16_t *)(rr_cp_fd + FD_(CP_VRAM));
+    const uint16_t *words = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM));
     U32 at = FD_(FD_(CP_PARTS) + 4u * part + 2u), n = FD_(FD_(CP_PARTS) + 4u * part + 3u), i;
     U32 obsel = cp_b(si, U_(CP_S_INIDISP), 1u), page = cp_b(si, U_(CP_S_PAGE4), 0u);
     U32 base = (obsel & 7u) << 13, gap = (((obsel >> 3) & 3u) + 1u) << 12;
@@ -1344,7 +1351,7 @@ static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned ow
     sceGuDisable(GU_STENCIL_TEST);
     sceGuPixelMask(0);
     /* the picture's rows: each channel through its lookup */
-    target(V_PIC, rr_psp_picture_stride);
+    target(V_PIC + s_pic_off, s_pic_stride);
     scissor(sc * x0, r0, sc * x1, r1);
     if (out != 3) {
         /* cleared, colour and stencil, by a rectangle (a clear covers the
@@ -1414,14 +1421,15 @@ static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned ow
         rect(0, r0, 1, r1, 0xFF000000u);     /* (the line's first half pixel) */
 }
 
-int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
+/* the description at word base drawn into the picture from byte off, its
+   rows stride pixels apart */
+
+static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *ph)
 {
     int w, h, s0, r, sw, scale;
-    (void)words;
-    rr_cp_fd = desc;
-    cp_fdb = 0;
-    if (!drawable())
-        return 0;
+    cp_fdb = base;
+    s_pic_off = off;
+    s_pic_stride = stride;
     if (!s_to8_made)
         make_to8();
     s_frame++;
@@ -1547,6 +1555,77 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
     sceGuSync(0, 0);
     *pw = w;
     *ph = h;
+    return 1;
+}
+
+/* the woven picture's rows of one parity kept from the last woven frame:
+   the description they were drawn from (its finished frame's), their
+   parity; 0 once the picture is drawn over */
+static uint32_t *s_kept;
+static size_t s_kept_n, s_kept_cap;
+static int s_kept_par = -1;
+
+/* n words the same (a word at a time: the C library's compares bytes) */
+static int same_words(const uint32_t *a, const uint32_t *b, size_t n)
+{
+    while (n--)
+        if (*a++ != *b++)
+            return 0;
+    return 1;
+}
+
+int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
+{
+    (void)words;
+    rr_cp_fd = desc;
+    cp_fdb = 0;
+    if (!drawable())
+        return 0;
+    s_kept_par = -1;
+    rr_psp_picture_stride = 512;
+    return draw_picture(0, 0, 512, pw, ph);
+}
+
+int rr_psp_picture_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1)
+{
+    const uint32_t base[2] = { base0, base1 };
+    int f, pw, ph;
+    (void)words;
+    rr_cp_fd = desc;
+    if (ww > 256)
+        return 0;
+    for (f = 0; f < 2; f++) {
+        cp_fdb = base[f];
+        if (!drawable() || (int)FD_(CP_PW) != ww || 2 * (int)FD_(CP_PH) != wh)
+            return 0;
+    }
+    /* each parity's rows: the picture's buffer a row of 512 pixels a woven
+       pair of rows, the odd 256 pixels on (seen 256 a row). A parity whose
+       description is the one the last woven frame's rows of it were drawn
+       from (the frame before: then the finished one) is there already. */
+    for (f = 0; f < 2; f++) {
+        size_t n = base[f] ? words - base[f] : base[!f] ? base[!f] : words;
+        if (f == s_kept_par && n == s_kept_n && same_words(desc + base[f], s_kept, n))
+            continue;
+        draw_picture(base[f], (unsigned)f * 256 * 2, 512, &pw, &ph);
+    }
+    /* the finished frame's (at word 0) kept, with its parity */
+    s_kept_par = -1;
+    for (f = 0; f < 2; f++)
+        if (!base[f] && base[!f]) {
+            size_t n = base[!f];
+            if (n > s_kept_cap) {
+                free(s_kept);
+                s_kept = (uint32_t *)malloc(n * sizeof *s_kept);
+                s_kept_cap = s_kept ? n : 0;
+            }
+            if (n <= s_kept_cap) {
+                memcpy(s_kept, desc, n * sizeof *desc);
+                s_kept_n = n;
+                s_kept_par = f;
+            }
+        }
+    rr_psp_picture_stride = 256;
     return 1;
 }
 
