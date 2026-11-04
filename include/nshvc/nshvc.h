@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 15
+#define NSHVC_VERSION_MINOR 16
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -648,8 +648,11 @@ const char *nshvc_ext_key_name(int vk);
 /* ---- the picture on the window ------------------------------------------------ */
 /* The game draws in the console's own pixels (its screen at most what
    nshvc_ext_screen asked for) and nativeshvc draws the frame at the
-   window's own resolution, as large as the window holds at its shape: the
-   pixel art as whole pixels (sharp bilinear: the picture scaled, blended
+   window's own resolution over the whole window, each axis at its own
+   scale (no bars: a game sizes its screen, nshvc_ext_screen, to the
+   window's shape as it likes; since 2.16, before which the frame kept a
+   television's 4:3 for the console's 256 x 224, centred): the pixel art as
+   whole pixels (sharp bilinear: the picture scaled, blended
    only across the one window pixel an edge falls in), and the Mode 7
    plane, the one thing the console draws in 3D, looked up through its
    line's matrix at each window pixel and anti-aliased by the pixel's

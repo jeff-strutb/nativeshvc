@@ -1,8 +1,8 @@
-# The game contract, version 2.15
+# The game contract, version 2.16
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.15: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.16: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,12 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.16:** the frame is presented over the whole window on every host, each axis at its
+  own scale, sharp bilinear (and Mode 7 and a canvas at the window's resolution as
+  before), with no bars: a game that wants a shape sizes its screen with
+  `nshvc_ext_screen`. Before, the frame kept a television's 4:3 for the console's
+  256 x 224 (a wider screen the same shape of pixel), centred. `nshvc_ext_canvas_presented`
+  gives the window's size.
 - **2.15:** a screen canvas at no whole scale: `nshvc_ext_canvas_screen` and
   `nshvc_ext_canvas_screen32` with k 0 take w x h texels (each up to 65,535) over the
   whole W x H screen: a point x console pixels across it (y down) takes texel
