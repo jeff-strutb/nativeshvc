@@ -2665,10 +2665,33 @@ static void e8_screen(unsigned scr, int k0, int k1)
 
 /* cv_finish's where a full colour may take part in colour maths: its
    colours in eighths (above) into out */
+/* the fixed colour over target rows k0-k1, n columns: the rows' one, or
+   (s_fixvar) each row's own (s_rowfix: its picture row's, cv_rows), as
+   times4's (e8 0) or eighths' (8 c, e8 1) */
+static U32 s_rowfix[CV_ROWS];
+static int s_fixvar;
+
+static void fix_rects(int k0, int k1, int n, U32 fixc, int e8)
+{
+    int k;
+    for (k = k0; k < k1; k++) {
+        U32 c = s_fixvar ? s_rowfix[k] : fixc;
+        uint32_t v = e8 ? 0xFF000000u | (c >> 10 & 31u) << 19 | (c >> 5 & 31u) << 11 | (c & 31u) << 3 : times4(c);
+        int ka = k + 1;
+        if (!s_fixvar)
+            ka = k1;
+        else
+            while (ka < k1 && s_rowfix[ka] == c)
+                ka++;
+        room();
+        rect(0, k, n, ka, v);
+        k = ka - 1;
+    }
+}
+
 static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U32 bright, U32 fixc)
 {
     int n = s_cw.n, sub = (cgwsel & 2u) != 0u, half = (cgadsub & 0x40u) != 0u, minus = (cgadsub & 0x80u) != 0u;
-    uint32_t fix8 = 0xFF000000u | (fixc >> 10 & 31u) << 19 | (fixc >> 5 & 31u) << 11 | (fixc & 31u) << 3;
     if (!s_e8_made)
         make_e8();
     room();
@@ -2738,7 +2761,7 @@ static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U3
             sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
             sprite1(0, k0, 0, k0, n, k1 - k0);
         } else {
-            rect(0, k0, n, k1, times4(fixc));    /* (8 c's half) */
+            fix_rects(k0, k1, n, fixc, 0);    /* (8 c's half) */
         }
         /* the others: the whole other added */
         sceGuStencilFunc(GU_EQUAL, F_MATH, F_MATH | F_PREVENT | F_HALF);
@@ -2752,7 +2775,7 @@ static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U3
         sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
         sprite1(0, k0, 0, k0, n, k1 - k0);
     } else {
-        rect(0, k0, n, k1, fix8);
+        fix_rects(k0, k1, n, fixc, 1);
     }
     sceGuDisable(GU_BLEND);
     /* maths' pixels no longer their texels' own colours (F_DIR cleared: the
@@ -2910,7 +2933,7 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
             wtex(V_WS, 16);
             sprite1(0, k0, 0, k0, n, k1 - k0);
         } else {
-            rect(0, k0, n, k1, times4(fixc));
+            fix_rects(k0, k1, n, fixc, 0);
         }
         if (cgadsub & 0x40u) {
             sceGuStencilFunc(GU_EQUAL, F_HALF, F_HALF);
@@ -3545,7 +3568,19 @@ static void cv_rows(const CvGroup *g, int i, int j, const int16_t *rj, int k, in
     if (kind == 2)
         cv_mag_pseudo(g, i, j, k, k1);
     cv_index_rows(g->Ya, rj, k, k1, part);
-    if (c >= 0 && kind == 0) {
+    s_fixvar = 0;
+    if (part == NO_PART) {
+        int t;
+        U32 f0 = row_fixed(rj[g->Ya + k - s_cw.Y0]);
+        for (t = k; t < k1; t++) {
+            s_rowfix[t] = row_fixed(rj[g->Ya + t - s_cw.Y0]);
+            s_fixvar |= s_rowfix[t] != f0;
+        }
+        /* (a class's lists made with its first row's) */
+        if (c >= 0 && f0 != row_fixed(s_cw.run[rj[g->Ya + k - s_cw.Y0]]))
+            c = -1;
+    }
+    if (c >= 0 && kind == 0 && !s_fixvar) {
         /* (its lists: the rows scissored) */
         room();
         scissor(s_cx0, k, s_cx1, k1);
@@ -3557,6 +3592,7 @@ static void cv_rows(const CvGroup *g, int i, int j, const int16_t *rj, int k, in
     }
     if (s_cv32)
         s_ca_ok = 0;                         /* (V_CA the finish in eighths's) */
+    s_fixvar = 0;
     if (kind == 2) {
         cv_first_black(i, k, k1);
         /* (the screens the target's again for the rows after, as the list made them) */
@@ -4035,8 +4071,8 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         if (r) {
             const uint32_t *a = &FD_(FD_(CP_STATES) + row_state((int)r) * U_(CP_ST));
             const uint32_t *b = &FD_(FD_(CP_STATES) + row_state((int)r - 1) * U_(CP_ST));
+            /* (the fixed colour each row's own: fix_rects) */
             same = a == b || (a[CP_S_INIDISP] == b[CP_S_INIDISP] && a[CP_S_TSW] == b[CP_S_TSW] &&
-                              ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0x00FFFFFFu) == 0u &&
                               ((a[CP_S_NBA] ^ b[CP_S_NBA]) & 0x08000000u) == 0u);
             /* (a row of parts its own) */
             same = same && FD_(FD_(CP_ROWS) + 4u * r + 1u) == 1u && FD_(FD_(CP_ROWS) + 4u * (r - 1u) + 1u) == 1u;
