@@ -1064,6 +1064,12 @@ uint8_t bus_read_b(uint8_t reg)
                 latch_counters();
             return snes_mdr;
         }
+        if (reg == 0x3E) {
+            unsigned v, len;
+            uint64_t h;
+            counters(&v, &h, &len);
+            ppu_stat_catch_up(v, (unsigned)h, vblank_line);
+        }
         return ppu_read(reg);
     }
     if (reg >= 0x40 && reg < 0x80) {

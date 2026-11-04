@@ -173,6 +173,9 @@ static uint8_t cgaddr, cg_flip, cg_latch;
 static uint16_t oam_at;
 static uint8_t oam_latch;
 static uint8_t range_over, time_over;
+static const PpuFrame *stat_f;        /* (ppu_stat_catch_up) */
+static int stat_row;
+static unsigned stat_rec;
 static unsigned mosaic_y;
 /* what the read side keeps: the two PPUs' open bus, the counters' latch */
 static uint8_t ppu1_mdr, ppu2_mdr;
@@ -1009,6 +1012,9 @@ void ppu_frame_start(void)
     }
     mosaic_y = 1;
     range_over = time_over = 0;
+    stat_f = making;
+    stat_row = 0;
+    stat_rec = 0;
     making->field = field;
     making->interlace = cur.setini & 0x01;
 }
@@ -1675,6 +1681,8 @@ static int obj_row(unsigned s, unsigned y, unsigned h, int r, unsigned *row)
    its tiles the console draws (-1 none). The first 32 sprites in range of
    its 256 columns (range over past them), then their tiles in those
    columns from the last in the list, up to 34 (time over past them). */
+static unsigned obj_items, obj_tiles;      /* obj_eval's last: the sprites in range (at most 32), tiles kept */
+
 static void obj_eval(int keep[128])
 {
     unsigned first = s->oam_prio ? (s->oamaddr >> 1) & 0x7F : 0;
@@ -1702,6 +1710,8 @@ static void obj_eval(int keep[128])
         }
         list[n++] = sp;
     }
+    obj_items = n;
+    obj_tiles = 0;
     for (k = n; k-- > 0;) {
         unsigned sp = list[k];
         uint8_t hi = (uint8_t)(d_oam[0x200 + (sp >> 2)] >> ((sp & 3) * 2));
@@ -1717,11 +1727,66 @@ static void obj_eval(int keep[128])
         if (tiles + on > 34) {
             time_over = 1;
             keep[sp] = (int)(34 - tiles);
+            obj_tiles = 34;
             break;
         }
         tiles += on;
+        obj_tiles = tiles;
         keep[sp] = (int)on;
     }
+}
+
+/* STAT77's flags are the console's work on each line (the reference's
+   Object::fetch, at its end, whatever the screens show but in forced
+   blank), worked out here when they are read, from the frame's recorded
+   lines: row r evaluated on the hardware's line r, its flags set at dot
+   clock 1080 and 8 clocks a tile fetched (or a sprite past the display's
+   last line, no tiles fetched there) later; up to line 240. stat_f the
+   frame the beam is in, stat_row its next row, stat_rec the lines
+   recorded of it so far. */
+void ppu_stat_catch_up(unsigned v, unsigned h, unsigned vdisp)
+{
+    const PpuScreen *keep_s = s;
+    const uint8_t *keep_oam = d_oam;
+    int keep_row = draw_row, keep_arr[128];
+    unsigned r;
+    if (!stat_f)
+        return;
+    for (r = (unsigned)stat_row; r <= v && r <= 240; r++) {
+        unsigned line = r ? r : 1;
+        uint8_t ro = range_over, to = time_over;
+        unsigned dur;
+        const PpuScreen *st = &cur;
+        const uint8_t *om = live_oam();
+        if (line < stat_rec || (stat_f != making && line <= (unsigned)stat_f->height)) {
+            st = &stat_f->line[stat_f->st[line]];
+            om = stat_f->oam[stat_f->version[line]];
+        } else if (r < vdisp) {
+            break;                           /* (its line not recorded yet: the beam's own, before its blank) */
+        }
+        if (r == v && h < 1080)
+            break;
+        if (st->inidisp & 0x80) {
+            stat_row = (int)r + 1;
+            continue;
+        }
+        s = st;
+        d_oam = om;
+        draw_row = (int)r;
+        obj_eval(keep_arr);
+        dur = r + 1 >= vdisp ? 8 * obj_items : 8 * obj_tiles;
+        if (r + 1 >= vdisp)
+            time_over = to;                  /* (no tiles fetched there) */
+        if (r == v && h < 1080 + dur) {
+            range_over = ro;
+            time_over = to;
+            break;
+        }
+        stat_row = (int)r + 1;
+    }
+    s = keep_s;
+    d_oam = keep_oam;
+    draw_row = keep_row;
 }
 
 static void draw_obj(unsigned line)
@@ -2173,6 +2238,7 @@ void ppu_render_lines(unsigned first, unsigned end)
         making->pl[line] = making->pl[line - 1];
         making->version[line] = making->version[line - 1];
         making->segs[line] = 0;
+        stat_rec = line + 1;
         /* (the line before's palette CGRAM as this one's, nothing written) */
         making->pal_same[line] = 1;
         pal_line = line;
@@ -2193,6 +2259,7 @@ void ppu_render_line(unsigned line)
     if (mosaic_y == 0)
         mosaic_y = 1;
     record_line(line);
+    stat_rec = line + 1;
     making->mosaic_row[line] = (uint8_t)mosaic_y;
     if (draw_lines) {
         d_field = making->field;
