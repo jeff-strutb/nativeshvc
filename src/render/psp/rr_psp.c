@@ -52,6 +52,7 @@ static unsigned int __attribute__((aligned(64))) s_list[128 * 1024];
 static const HostPspScreen *s_screen;
 static void *s_fb;                           /* the frame's buffer (the GE's address) */
 static int s_listing;                        /* a display list is open */
+static int s_on;                             /* the frame's overlays so far (rr_overlay) */
 
 static uint32_t *uncached(void *p) { return (uint32_t *)((uintptr_t)p | 0x40000000u); }
 static void *vram(unsigned off) { return (char *)sceGeEdramGetAddr() + off; }
@@ -124,6 +125,7 @@ void rr_begin(uint32_t argb)
     if (!s_screen)
         return;
     list_done();
+    s_on = 0;                                /* (the overlays' textures free: the GE done) */
     s_fb = s_screen->target();
     list_open();
     sceGuClearColor(abgr(argb | 0xFF000000u));
@@ -815,27 +817,85 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
             fb[(size_t)y * STRIDE + (size_t)x] = abgr(s_cpu[y * TW + x]);
 }
 
-/* rr_ref_overlay on the frame itself: its rows STRIDE apart (the columns
-   past TW off the screen), the image's channels in the frame's order (the
-   blend treats each alike) */
+/* An overlay on the GE (rr_ref_overlay's): the image in a texture of
+   powers of 2, its last column and row repeated past it (the bilinear
+   filter clamped at its edge as rr_texel clamps), its parallelogram two
+   triangles, filtered bilinear and blended by its alpha. Each overlay of a
+   frame its own texture until the GE has drawn it. */
+#define OVERLAYS 16
+static uint32_t *s_obuf[OVERLAYS];
+static size_t s_ocap[OVERLAYS];
+
+typedef struct {
+    float u, v, x, y, z;
+} OV;
+
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
 {
-    static uint32_t *swapped;
-    static size_t cap;
-    size_t i, n = (size_t)w * (size_t)h;
+    int W, H, x, y, i;
+    uint32_t *t;
+    OV *v;
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    float c[4][4];
     if (!s_screen || w <= 0 || h <= 0)
         return;
-    if (n > cap) {
-        free(swapped);
-        swapped = (uint32_t *)malloc(n * 4);
-        cap = swapped ? n : 0;
-        if (!swapped)
-            return;
+    if (w > 511 || h > 511)
+        nshvc_fatal("an overlay of %dx%d (511 the PSP's most)", w, h);
+    if (s_on == OVERLAYS) {
+        /* (every texture this frame's: the GE done with them) */
+        list_done();
+        s_on = 0;
     }
-    for (i = 0; i < n; i++)
-        swapped[i] = abgr(argb[i]);
-    list_done();
-    rr_ref_overlay(uncached(s_fb), STRIDE, TH, swapped, w, h, q);
+    for (W = 1; W < w + 1; W <<= 1)
+        ;
+    for (H = 1; H < h + 1; H <<= 1)
+        ;
+    if (s_ocap[s_on] < (size_t)W * (size_t)H) {
+        free(s_obuf[s_on]);
+        s_obuf[s_on] = (uint32_t *)memalign(64, (size_t)W * (size_t)H * 4);
+        s_ocap[s_on] = s_obuf[s_on] ? (size_t)W * (size_t)H : 0;
+        if (!s_obuf[s_on])
+            nshvc_fatal("no memory for an overlay of %dx%d", w, h);
+    }
+    t = s_obuf[s_on++];
+    for (y = 0; y <= h; y++) {
+        const uint32_t *src = argb + (size_t)(y < h ? y : h - 1) * (size_t)w;
+        uint32_t *o = t + (size_t)y * (size_t)W;
+        for (x = 0; x < w; x++)
+            o[x] = abgr(src[x]);
+        o[w] = o[w - 1];
+    }
+    sceKernelDcacheWritebackRange(t, (unsigned)((size_t)W * (size_t)(h + 1) * 4));
+    list_open();
+    c[0][0] = q[0], c[0][1] = q[1], c[0][2] = 0, c[0][3] = 0;
+    c[1][0] = q[2], c[1][1] = q[3], c[1][2] = (float)w, c[1][3] = 0;
+    c[2][0] = q[4], c[2][1] = q[5], c[2][2] = 0, c[2][3] = (float)h;
+    c[3][0] = q[2] + q[4] - q[0], c[3][1] = q[3] + q[5] - q[1], c[3][2] = (float)w, c[3][3] = (float)h;
+    v = (OV *)sceGuGetMemory(6 * sizeof(OV));
+    /* (the GE takes a pixel at 7/16 of it, its centre less one of its
+       sixteenths; the reference at its centre: the parallelogram moved a
+       sixteenth up and left) */
+    for (i = 0; i < 6; i++) {
+        v[i].x = c[ix[i]][0] - 1.0f / 16.0f;
+        v[i].y = c[ix[i]][1] - 1.0f / 16.0f;
+        v[i].z = 0;
+        v[i].u = c[ix[i]][2];
+        v[i].v = c[ix[i]][3];
+    }
+    sceGuScissor(0, 0, TW, TH);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexImage(0, W, H, W, t);
+    sceGuTexFlush();
+    sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+    sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 6, 0, v);
+    sceGuDisable(GU_BLEND);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 }
 
 void rr_present(void)
