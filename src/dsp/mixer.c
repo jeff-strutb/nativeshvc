@@ -242,6 +242,17 @@ int8_t mix_voice_output(int v) { return (int8_t)voice[v & 7].outx; }
 void mix_voice_level_write(int v, uint8_t value) { voice[v & 7].envx = envx_next = value; }
 void mix_voice_output_write(int v, uint8_t value) { voice[v & 7].outx = outx_next = value; }
 int mix_phase(void) { return phase; }
+/* the clocks to run until a KON or KOFF written now is taken: at clock 30
+   of a frame whose clock 29 left every_other set (it flips there) */
+int mix_key_clocks(void)
+{
+    int p = phase, e = every_other;
+    if (p <= 29)
+        return (e ^ 1) ? 31 - p : 63 - p;
+    if (p == 30)
+        return e ? 1 : 33;
+    return (e ^ 1) ? 32 : 64;
+}
 
 void mix_voice_states(int32_t *o)
 {

@@ -1,8 +1,8 @@
-# The game contract, version 2.17
+# The game contract, version 2.18
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.17: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.18: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,12 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.18:** a cartridge's chip may give the S-CPU its memory directly (`cart.h`
+  `direct_read`, `direct_write`, `nshvc_cart_direct_changed`): the 8 KB ranges where the
+  S-CPU's accesses are plain memory while the chip says so, made inline like work RAM's.
+  The sound driver's C takes no time with the costs off, as the S-CPU's does, and its waits
+  (`spc_wait_until`) look again where what they read can next change, not a cycle at a
+  time; a write to the DSP after KON or KOFF waits to the clock the DSP takes it.
 - **2.17:** nothing in the console runs unless something looks at it. The beam's line and
   dot, HVBJOY, the counters and the refresh are worked out from the clock where they are
   read; the console stops only at its deadlines (an interrupt, the NMI's flag, the

@@ -86,6 +86,8 @@ int mix_writes_ram(void);
 int mix_echo_may_write(uint16_t addr);
 /* the clock to run next within the frame, 0-31 */
 int mix_phase(void);
+/* the clocks to run until a KON or KOFF written now is taken */
+int mix_key_clocks(void);
 
 /* the replay check's view: each voice's envelope level and stage (0
    release, 1 attack, 2 decay, 3 sustain), play position, block address and

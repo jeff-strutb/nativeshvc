@@ -58,6 +58,10 @@ static void abi_reset(void)
             nshvc_ext_screen_origin(w, h);
         if (getenv("NSHVC_TEST_NOLIMITS"))
             nshvc_ext_sprite_limits(0);
+        /* NSHVC_TEST_COSTS_OFF: the C's accesses take no time, the S-CPU's
+           and the sound driver's (a game's Enhanced mode) */
+        if (getenv("NSHVC_TEST_COSTS_OFF"))
+            nshvc_set_cpu_costs(0);
         /* NSHVC_TEST_VRAM_PAGE=n: everything the cartridge puts in VRAM, and
            every layer's reads, in page n of 256 KB */
         if (getenv("NSHVC_TEST_VRAM_KB"))

@@ -14,7 +14,9 @@
  * clock (1,025,280 Hz, the DSP's 32,040 samples a second), and before it
  * the weight of its kind from the cartridge's cost profile (nshvc.h
  * spc_tenths, docs/cost-profile.md; 0 with none): the driver's own work
- * around it. The C states no time. The clock also
+ * around it; with the costs off (nshvc_set_cpu_costs(0), a game's
+ * Enhanced mode) its accesses take no time, as the S-CPU's do. The C
+ * states no time. The clock also
  * moves on where the code waits for the hardware (spc_wait_until: a
  * timer's counter, a port), the DSP and the timers running meanwhile. So
  * an S-CPU that writes a port's index a cycle before its byte (a word to
@@ -48,10 +50,13 @@ void spc_wr(uint16_t addr, uint8_t v);
    $FD-$FF, a port the S-CPU writes). `ready` makes the loop's reads
    (spc_rd: real accesses, a counter's read clearing it as the original's
    does) and says whether the loop ends; it is called at once, and while
-   it says no the sound unit's clock moves on a cycle at a time, the DSP,
-   the timers and the S-CPU running meanwhile. Returns the SPC700 cycles
-   waited. (A loop of reads with no wait sees the clock move too, a cycle
-   an access.) */
+   it says no the sound unit's clock moves on to where what it read can
+   next change (a timer's next count; a port where the S-CPU's write comes
+   into sight, or past the S-CPU's time, where its next can come), the
+   DSP, the timers and the S-CPU running meanwhile. Returns the SPC700
+   cycles waited. (A loop of reads with no wait sees the clock move too, a
+   cycle an access, with the costs on; with them off it never ends, and
+   20,000,000 reads with no write stop the run.) */
 uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx);
 
 static inline uint16_t spc_dp(uint8_t d) { return (uint16_t)(spc.p ? 0x0100 | d : d); }

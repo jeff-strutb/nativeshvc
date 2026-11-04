@@ -6,6 +6,10 @@
  * the ROM read for the chip (nshvc_cart_rom) with its own bits passed on.
  *
  *   chip              runs the checks; exit 0 when every one holds
+ *   chip --direct     the same with the chip giving its RAM to the S-CPU
+ *                     directly while it is not busy (cart.h direct_read,
+ *                     direct_write, contract 2.18): its accesses made with
+ *                     nothing of the chip's, until the chip says otherwise
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,6 +130,35 @@ static uint8_t *chip_ram(uint32_t *size)
     return ram;
 }
 
+/* --direct: the RAM at $70 the S-CPU's directly, but while `busy` (the
+   chip at work on it: the S-CPU's reads see $EE, its writes are lost) */
+static int busy;
+static const uint8_t *chip_direct_read(uint32_t addr)
+{
+    return (uint8_t)(addr >> 16) == 0x70 && !busy ? &ram[addr & 0xE000] : NULL;
+}
+static uint8_t *chip_direct_write(uint32_t addr)
+{
+    return (uint8_t)(addr >> 16) == 0x70 && !busy ? &ram[addr & 0xE000] : NULL;
+}
+static int busy_read(uint32_t addr, uint8_t *v)
+{
+    if (busy && (uint8_t)(addr >> 16) == 0x70) {
+        reads++;
+        *v = 0xEE;
+        return 1;
+    }
+    return chip_read(addr, v);
+}
+static int busy_write(uint32_t addr, uint8_t v)
+{
+    if (busy && (uint8_t)(addr >> 16) == 0x70) {
+        writes++;
+        return 1;
+    }
+    return chip_write(addr, v);
+}
+
 static const nshvc_chip toy = {
     .name = "toy",
     .read = chip_read,
@@ -134,6 +167,18 @@ static const nshvc_chip toy = {
     .rom_at = chip_rom_at,
     .ram = chip_ram,
 };
+
+static const nshvc_chip toy_direct = {
+    .name = "toy, direct",
+    .read = busy_read,
+    .write = busy_write,
+    .peek = chip_peek,
+    .rom_at = chip_rom_at,
+    .ram = chip_ram,
+    .direct_read = chip_direct_read,
+    .direct_write = chip_direct_write,
+};
+static int direct_mode;
 
 /* ---- the code ---- */
 static int irq_taken, irq_ack;
@@ -180,6 +225,39 @@ static void abi_reset(void)
     check(irq_taken == 1, "the IRQ masked by the I flag: not taken");
     nshvc_cart_irq(0);
 
+    if (direct_mode) {
+        int r0, w0, i, same = 1;
+        /* the first access the chip's; then the 8 KB its directly */
+        rd8(0x702000);
+        r0 = reads;
+        w0 = writes;
+        for (i = 0; i < 0x2000; i++)
+            wr8(0x702000 + (uint32_t)i, (uint8_t)(i * 13));
+        for (i = 0; i < 0x2000; i++)
+            same &= rd8(0x702000 + (uint32_t)i) == (uint8_t)(i * 13) && ram[0x2000 + i] == (uint8_t)(i * 13);
+        check(same && reads == r0 && writes <= w0 + 1,
+              "direct: 8,192 writes and reads of the chip's RAM made with nothing of the chip's, the RAM its own");
+        /* the chip at work: its answers no longer stand, the S-CPU's
+           accesses its again */
+        busy = 1;
+        nshvc_cart_direct_changed();
+        r0 = reads;
+        check(rd8(0x702345) == 0xEE && reads == r0 + 1, "direct: the chip busy (its answers changed): the read the chip's");
+        wr8(0x702345, 0x11);
+        check(ram[0x2345] != 0x11, "direct: and the write the chip's (lost while it is busy)");
+        busy = 0;
+        nshvc_cart_direct_changed();
+        check(rd8(0x702345) == (uint8_t)(0x345 * 13), "direct: the chip done: the RAM read again");
+        r0 = reads;
+        check(rd8(0x702346) == (uint8_t)(0x346 * 13) && reads == r0, "direct: and directly again after that");
+        /* the console's own registers never directly, though the chip's
+           answers would give them */
+        r0 = reads;
+        rd8(0x003000);
+        rd8(0x003000);
+        check(reads == r0 + 2, "direct: the chip's register at $3000 still the chip's");
+    }
+
     printf("%d check(s) failed\n", fails);
     exit(fails ? 1 : 0);
 }
@@ -189,16 +267,17 @@ static const nshvc_routine routines[] = {
     { 0x009000, abi_irq, "irq", 0 },
 };
 
-int main(void)
+int main(int argc, char **argv)
 {
     nshvc_cart cart;
+    direct_mode = argc > 1 && !strcmp(argv[1], "--direct");
     memset(&cart, 0, sizeof cart);
     cart.title = "chip";
     cart.map = NSHVC_CHIP;
     cart.rom_size = ROM_SIZE;
     cart.rom_read = rom_read;
     cart.sram_size = sizeof ram;
-    cart.chip = &toy;
+    cart.chip = direct_mode ? &toy_direct : &toy;
     cart.routines = routines;
     cart.routine_count = 2;
     nshvc_power(&cart);

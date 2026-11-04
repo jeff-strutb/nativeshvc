@@ -56,6 +56,19 @@ struct nshvc_chip {
     uint8_t *(*ram)(uint32_t *size);
     /* for NSHVC_DEBUG: whether it is running */
     int (*busy)(void);
+    /* Where the S-CPU's accesses are plain memory, with nothing of the
+       chip's in them (contract 2.18): for the 8 KB at bank:offset `addr` (8
+       KB aligned), the first of the bytes the S-CPU reads there
+       (direct_read) or writes (direct_write), or NULL (the chip answers
+       them). Asked for a range the S-CPU's access reaches after the chip
+       answered it there; the answer stands until the chip calls
+       nshvc_cart_direct_changed(), which it does before anything changes
+       what such an access would do: the chip starting work that reads or
+       writes those bytes, or taking the bus to them, or a register that
+       remaps them. Accesses made directly still take their time (and the
+       cost profile's weights), and the chip is not synced for them. */
+    const uint8_t *(*direct_read)(uint32_t addr);
+    uint8_t *(*direct_write)(uint32_t addr);
 };
 
 /* ---- what the connector gives a chip ---- */
@@ -72,6 +85,9 @@ void nshvc_cart_irq(int level);
 /* a byte of the cartridge's ROM at file offset `off` (mirrored as the
    console decodes a size that is not a power of two); `who`: NSHVC_ROM_* */
 uint8_t nshvc_cart_rom(uint32_t off, int who);
+/* the chip's direct answers (direct_read, direct_write) no longer stand:
+   the console asks again */
+void nshvc_cart_direct_changed(void);
 /* the data bus's open value (what a read the chip leaves unanswered sees) */
 uint8_t nshvc_open_bus(void);
 /* the cartridge's routine with C at bank:address (nshvc_cart.routines), or

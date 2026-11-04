@@ -295,6 +295,9 @@ uint8_t *snes_wram_rw(void) { return wram; }
 /* the cartridge's expansion chip (nshvc_cart.chip, cart.h), or NULL */
 static const nshvc_chip *chip;
 
+static void direct_ask(uint32_t addr);
+static int chip_direct;                  /* the chip gives direct answers (cart.h) */
+
 /* the clock the chip was last brought up to (cart.h: a sync to a clock it
    has reached does nothing, so none is made) */
 static uint64_t chip_at = UINT64_MAX;
@@ -1576,6 +1579,8 @@ static uint8_t access_rd(uint32_t addr, int game)
     snes_mdr = v;
     if (snes_read_hook)
         snes_read_hook(addr, v);
+    if (chip_direct && kind != NSHVC_KIND_WRAM)
+        direct_ask(addr);
     return v;
 }
 
@@ -1612,7 +1617,8 @@ static void between(void)
 {
     if (rmw_open)
         return;
-    if (chip_watch(1))
+    /* (the chip brought up to now already: nothing to look at) */
+    if ((chip_at == UINT64_MAX || snes_clock > chip_at) && chip_watch(1))
         chip_sync();
     /* (none raised: none to take) */
     if (nmi_pending | timeup_flag | cart_irq)
@@ -1854,8 +1860,11 @@ static void access_wr(uint32_t addr, uint8_t value, int game)
         snes_write_hook(addr, value);
     if (kind == NSHVC_KIND_WRAM)
         *wram_at(addr) = value;
-    else
+    else {
         bus_write(addr, value, 0);
+        if (chip_direct)
+            direct_ask(addr);
+    }
 }
 
 /* a write ends the read-modify-write whose read came before it */
@@ -2297,6 +2306,7 @@ void snes_power(void)
     sram = NULL;
     sram_mask = 0;
     chip = snes_cart.chip;
+    chip_direct = chip && (chip->direct_read || chip->direct_write);
     /* the cartridge's RAM, but where its chip owns it */
     if (!(chip && chip->ram) && snes_cart.sram_size) {
         for (n = 1; n < snes_cart.sram_size; n <<= 1)
@@ -2359,6 +2369,7 @@ void snes_power(void)
     refresh_next = refresh_of(0);
     events_next();
     regions_place();
+    nshvc_cart_direct_changed();
 }
 
 /* ---- the cartridge connector's side (cart.h) ---- */
@@ -2379,6 +2390,44 @@ void nshvc_cart_irq_at(int level, uint64_t clock)
 }
 void nshvc_cart_irq(int level) { nshvc_cart_irq_at(level, nshvc_cart_clock()); }
 uint8_t nshvc_cart_rom(uint32_t off, int who) { return snes_rom_byte(snes_rom_mirror(off), who); }
+
+/* the chip's direct answers given (their regions), and the regions asked */
+static uint16_t direct_list[2048];
+static unsigned direct_n;
+static uint8_t direct_asked[2048];
+
+/* after an access the call made to the region of `addr`: the chip asked
+   once, until it says its answers changed, whether the S-CPU's accesses
+   there may be made directly (cart.h direct_read, direct_write) */
+static void direct_ask(uint32_t addr)
+{
+    unsigned r = addr >> 13 & 0x7FF;
+    nshvc_bus_region *g = &nshvc_bus.region[r];
+    if (direct_asked[r] || g->rd || g->wr)
+        return;
+    /* (never over the console's own registers: $2000-$5FFF of banks $00-$3F
+       and $80-$BF) */
+    if (!(addr & 0x400000) && ((r & 7) == 1 || (r & 7) == 2))
+        return;
+    direct_asked[r] = 1;
+    direct_list[direct_n++] = (uint16_t)r;
+    if (chip->direct_read)
+        g->rd = chip->direct_read(addr & 0xFFE000);
+    if (chip->direct_write)
+        g->wr = chip->direct_write(addr & 0xFFE000);
+}
+
+/* (the regions' pointers are what each inline access looks at: cleared,
+   the next is the call) */
+void nshvc_cart_direct_changed(void)
+{
+    while (direct_n) {
+        unsigned r = direct_list[--direct_n];
+        nshvc_bus.region[r].rd = NULL;
+        nshvc_bus.region[r].wr = NULL;
+        direct_asked[r] = 0;
+    }
+}
 uint8_t nshvc_open_bus(void) { return snes_mdr; }
 nshvc_coro *nshvc_coro_new(void (*fn)(void *), void *arg, size_t stack) { return (nshvc_coro *)coro_new(fn, arg, stack); }
 nshvc_coro *nshvc_coro_current(void) { return (nshvc_coro *)coro_current(); }
