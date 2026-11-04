@@ -278,7 +278,7 @@ static void make_calls(int ph, const int d[4]);
    across cannot be the GE's (above) */
 static int geometry(int pw, int ph, const int d[4])
 {
-    int key[6] = { pw, ph, d[0], d[1], d[2], d[3] }, X1, x, i, a, b, k, n, cap = 1;
+    int key[6] = { pw, ph, d[0], d[1], d[2], d[3] }, X1, x, i, k, n, cap = 1;
     float dx;
     s_asked++;
     for (i = 0; i < 2; i++)
@@ -329,115 +329,49 @@ static int geometry(int pw, int ph, const int d[4])
         nshvc_fatal("no memory for a picture %d wide", n);
     dx = (float)pw / (float)(d[2] - d[0]);
     {
-    /* the weights met so far and their tables: a column at a weight met
-       already takes its table (the columns repeat a few weights) */
-    float *seen_t = (float *)malloc((size_t)n * sizeof(float));
-    int *seen_tab = (int *)malloc((size_t)n * sizeof(int)), nseen = 0, j;
-    if (!seen_t || !seen_tab)
-        nshvc_fatal("no memory for a picture %d wide", n);
+    /* each column's table by its weight W (rr_mix in whole 256ths): rr_mix
+       is a + ((b - a) W + 128 >> 8) a channel, so H+(d) = (d W + 128) >> 8
+       and H-(d) = -((-d W + 128) >> 8), exactly, no exceptions; one table a
+       W met (a W of 0, a alone) */
+    int wtab[257], W;
+    for (W = 0; W < 257; W++)
+        wtab[W] = -1;
     for (x = 0; x < n; x++) {
-        int tx, hp[256], hm[256];
+        int tx;
         float t = rr_sharp(((float)(s_g->X0 + x - d[0]) + 0.5f) * dx, dx, &tx);
         s_g->tx0[x] = tx < 0 ? 0 : tx >= pw ? pw - 1 : tx;
         s_g->tx1[x] = tx + 1 < 0 ? 0 : tx + 1 >= pw ? pw - 1 : tx + 1;
         s_g->tab[x] = -1;
         if (!(t > 0) || s_g->tx0[x] == s_g->tx1[x])
             continue;
-        for (j = 0; j < nseen && memcmp(&seen_t[j], &t, sizeof t); j++)
-            ;
-        if (j < nseen) {
-            s_g->tab[x] = seen_tab[j];
-            s_g->count[seen_tab[j]]++;
+        W = rr_mix_w(t);
+        if (W <= 0)
             continue;
-        }
-        {
-            /* each difference's value the one most of its pairs give, over
-               every pair of channel values (a full-colour canvas has any):
-               rr_mix is a + g(b - a) by its definition (whole 256ths), so
-               none is an exception, which the count here holds it to */
-            static short votes[2][256][256];      /* all 0 between columns: each cleared after */
-            int ne = 0, *ex = &s_g->ex[s_g->ntab][0][0];
-            for (a = 0; a < 256; a++)
-                for (b = 0; b < 256; b++) {
-                    int ea = a, eb = b;
-                    int v = (int)(rr_mix(0xFF000000u | (uint32_t)ea, 0xFF000000u | (uint32_t)eb, t) & 0xFFu);
-                    int sg = eb >= ea ? 0 : 1, dd = sg ? ea - eb : eb - ea, hv = sg ? ea - v : v - ea;
-                    if (hv < 0) {
-                        memset(votes, 0, sizeof votes);
-                        free(seen_t);
-                        free(seen_tab);
-                        return 0;
-                    }
-                    votes[sg][dd][hv]++;
-                }
-            for (i = 0; i < 256; i++) {
-                int sg, best;
-                for (sg = 0; sg < 2; sg++) {
-                    int *h = sg ? hm : hp;
-                    h[i] = -1;
-                    for (best = 0, k = 0; k < 256; k++)
-                        if (votes[sg][i][k] > best) {
-                            best = votes[sg][i][k];
-                            h[i] = k;
-                        }
-                }
+        if (W > 256)                             /* (t within 1: rr_sharp's) */
+            return 0;
+        if (wtab[W] < 0) {
+            k = s_g->ntab;
+            if (k + 1 > cap) {
+                /* room for more tables: twice as many */
+                uint32_t (*c)[2][256] = (uint32_t(*)[2][256])memalign(64, (size_t)(2 * cap) * sizeof *c);
+                if (!c)
+                    nshvc_fatal("no memory for a picture %d wide", n);
+                memcpy(c, s_g->clut, (size_t)k * sizeof *c);
+                free(s_g->clut);
+                s_g->clut = c;
+                cap *= 2;
             }
-            for (a = 0; a < 256; a++)
-                for (b = 0; b < 256; b++) {
-                    int ea = a, eb = b;
-                    int v = (int)(rr_mix(0xFF000000u | (uint32_t)ea, 0xFF000000u | (uint32_t)eb, t) & 0xFFu);
-                    int got = eb >= ea ? ea + hp[eb - ea] : ea - hm[ea - eb];
-                    if (got == v)
-                        continue;
-                    if (ne == 48 || (v - got != 1 && v - got != -1)) {
-                        memset(votes, 0, sizeof votes);
-                        free(seen_t);
-                        free(seen_tab);
-                        return 0;
-                    }
-                    ex[3 * ne] = ea;
-                    ex[3 * ne + 1] = eb;
-                    ex[3 * ne + 2] = v - got;
-                    ne++;
-                }
-            for (a = 0; a < 256; a++)
-                for (b = 0; b < 256; b++) {
-                    int ea = a, eb = b;
-                    int v = (int)(rr_mix(0xFF000000u | (uint32_t)ea, 0xFF000000u | (uint32_t)eb, t) & 0xFFu);
-                    int sg = eb >= ea ? 0 : 1;
-                    votes[sg][sg ? ea - eb : eb - ea][sg ? ea - v : v - ea] = 0;
-                }
-            s_g->nex[s_g->ntab] = ne;
+            for (i = 0; i < 256; i++) {
+                uint32_t p = (uint32_t)((i * W + 128) >> 8), m = (uint32_t)(-((-i * W + 128) >> 8));
+                s_g->clut[k][0][i] = p | p << 8 | p << 16;
+                s_g->clut[k][1][i] = m | m << 8 | m << 16;
+            }
+            s_g->nex[k] = 0;
+            wtab[W] = s_g->ntab++;
         }
-        k = s_g->ntab;
-        if (k + 1 > cap) {
-            /* room for more tables: twice as many */
-            uint32_t (*c)[2][256] = (uint32_t(*)[2][256])memalign(64, (size_t)(2 * cap) * sizeof *c);
-            if (!c)
-                nshvc_fatal("no memory for a picture %d wide", n);
-            memcpy(c, s_g->clut, (size_t)k * sizeof *c);
-            free(s_g->clut);
-            s_g->clut = c;
-            cap *= 2;
-        }
-        for (i = 0; i < 256; i++) {
-            uint32_t p = (uint32_t)(hp[i] < 0 ? 0 : hp[i]), m = (uint32_t)(hm[i] < 0 ? 0 : hm[i]);
-            s_g->clut[k][0][i] = p | p << 8 | p << 16;
-            s_g->clut[k][1][i] = m | m << 8 | m << 16;
-        }
-        for (i = 0; i < s_g->ntab && (memcmp(s_g->clut[i], s_g->clut[k], sizeof s_g->clut[k]) || s_g->nex[i] != s_g->nex[k] ||
-                                     memcmp(s_g->ex[i], s_g->ex[k], (size_t)s_g->nex[k] * 3 * sizeof(int)));
-             i++)
-            ;
-        if (i == s_g->ntab)
-            s_g->ntab++;
-        s_g->tab[x] = i;
-        s_g->count[i]++;
-        seen_t[nseen] = t;
-        seen_tab[nseen++] = i;
+        s_g->tab[x] = wtab[W];
+        s_g->count[wtab[W]]++;
     }
-    free(seen_t);
-    free(seen_tab);
     }
     /* each table's columns together */
     for (i = 1; i < s_g->ntab; i++)
@@ -851,13 +785,12 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
                      const struct RrM7Samples *s)
 {
     RrPspAcross a;
-    (void)s;
     if (!s_screen)
         return 0;
     list_done();
     if (!rr_psp_across(m->pw, m->ph, d, &a))
         return 0;
-    return rr_psp_canvas(desc, words, d, (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr()), &a);
+    return rr_psp_canvas(desc, words, d, (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr()), &a, m, s);
 }
 
 /* ---- on the CPU, over the frame the GE drew ---- */

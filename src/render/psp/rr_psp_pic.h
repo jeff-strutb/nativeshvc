@@ -49,7 +49,10 @@ int rr_psp_across(int pw, int ph, const int d[4], RrPspAcross *a);
    each of the picture pixels under each target pixel with the canvas's
    texel there, blended as the picture is; 0 when the frame has what is
    not drawn so (the caller draws it) */
-int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned fb, const RrPspAcross *a);
+struct RrMode7;
+struct RrM7Samples;
+int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned fb, const RrPspAcross *a,
+                  const struct RrMode7 *m, const struct RrM7Samples *s);
 
 /* VRAM past the screen's buffers: the picture (512 x 240, 16 bits), then
    what the picture's drawing uses only while drawing it (offsets from

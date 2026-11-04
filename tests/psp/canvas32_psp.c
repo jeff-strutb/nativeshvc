@@ -18,6 +18,8 @@
  *   onsub      the canvas on the sub screen: BG2 and the backdrop adding it
  *   both       the canvas on both screens, the main adding the sub, halved
  *
+ * canvas32k2_psp (CANVAS32_SCALED): a 338 x 224 screen, the canvas at k 2.
+ *
  *   canvas32_psp --headless --frames 64      (with NSHVC_RRCHECK=1)
  *
  * Prints each scene's time a frame; the renderer check's report at exit.
@@ -44,13 +46,22 @@ static uint64_t now_us(void)
 #include "nshvc/machine.h"
 
 /* the console's picture: its own 256 x 224, or (CANVAS32_SCREEN) a larger
-   screen (nshvc_ext_screen) */
-#ifdef CANVAS32_SCREEN
+   screen (nshvc_ext_screen); (CANVAS32_SCALED) a wider screen with the
+   canvas at k 2, its 480 x 272 texels short of the screen's 676 x 448 (the
+   rest clear) */
+#if defined CANVAS32_SCALED
+#define SC_W 338
+#define SC_H 224
+#define CV_K 2
+#elif defined CANVAS32_SCREEN
 #define SC_W 320
 #define SC_H 240
 #else
 #define SC_W 256
 #define SC_H 224
+#endif
+#ifndef CV_K
+#define CV_K 0
 #endif
 #define TEX_W 480
 #define TEX_H 272
@@ -104,7 +115,7 @@ static void setup(int sc)
 {
     int i;
     hdma(0);
-#ifdef CANVAS32_SCREEN
+#if defined CANVAS32_SCREEN || defined CANVAS32_SCALED
     nshvc_ext_screen(SC_W, SC_H);
 #endif
     w(0x15, 0x80);
@@ -200,17 +211,25 @@ static void game(void)
     wr8(0x004200, 0x00);
     hdma_tables();
     for (sc = 0; sc < NSCENES; sc++) {
-        uint64_t t0;
+        uint64_t t0, lo, hi;
         w(0x00, 0x80);
         setup(sc);
         make_texels();
-        nshvc_ext_canvas_screen32(0, tx, TEX_W, TEX_H, 0, sc == S_PLAIN ? 0 : 1, PAL);
+        nshvc_ext_canvas_screen32(0, tx, TEX_W, TEX_H, CV_K, sc == S_PLAIN ? 0 : 1, PAL);
         w(0x00, sc == S_FADE ? 0x09 : sc == S_ADDSUB ? 0x0B : 0x0F);
         nshvc_wait_vblank();
         t0 = now_us();
-        for (f = 0; f < FRAMES; f++)
+        lo = ~0ull;
+        hi = 0;
+        for (f = 0; f < FRAMES; f++) {
+            uint64_t t1 = now_us(), dt;
             nshvc_wait_vblank();
-        printf("canvas32_psp %-9s %llu us a frame\n", scene_name[sc], (unsigned long long)((now_us() - t0) / FRAMES));
+            dt = now_us() - t1;
+            lo = dt < lo ? dt : lo;
+            hi = dt > hi ? dt : hi;
+        }
+        printf("canvas32_psp %-9s %llu us a frame (%llu-%llu)\n", scene_name[sc], (unsigned long long)((now_us() - t0) / FRAMES),
+               (unsigned long long)lo, (unsigned long long)hi);
     }
     for (;;)
         nshvc_wait_vblank();
