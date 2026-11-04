@@ -94,15 +94,32 @@ static void target(unsigned off, int w)
     sceGuDrawBufferList(s_target_psm, (void *)off, w);
 }
 
-/* the display list finished and begun again before it could fill: the
-   GE's state carries over (its registers are its own) but the buffer drawn
-   into, which sceGuStart sets again to the GU's own (rr_psp's screen) */
+/* the list run and begun again before it could fill: the GE's state
+   carries over (its registers are its own) but the buffer drawn into,
+   which sceGuStart sets again to the GU's own (rr_psp's screen) */
+/* The picture's list is a call list run by a list of its own (list_run):
+   a direct list asks the system for each draw (its stall address), a call
+   list for none */
+static unsigned int __attribute__((aligned(64))) s_run[64];
+
+static void list_begin(void) { sceGuStart(GU_CALL, s_list); }
+
+/* the list so far run to its end (the GE done with it) */
+static void list_run(void)
+{
+    int bytes = sceGuFinish();
+    sceKernelDcacheWritebackRange(s_list, (unsigned)(bytes + 64));
+    sceGuStart(GU_DIRECT, s_run);
+    sceGuCallList(s_list);
+    sceGuFinish();
+    sceGuSync(0, 0);
+}
+
 static void room(void)
 {
     if (sceGuCheckList() > (int)sizeof s_list - LIST_ROOM) {
-        sceGuFinish();
-        sceGuSync(0, 0);
-        sceGuStart(GU_DIRECT, s_list);
+        list_run();
+        list_begin();
         target(s_target_off, s_target_w);
     }
 }
@@ -297,9 +314,8 @@ static Clut *clut(uint32_t key, int direct)
             /* every slot this frame's (a palette changed line by line): the
                list run to its end, the GE having read the palettes, and
                begun again (room()'s), the slots free */
-            sceGuFinish();
-            sceGuSync(0, 0);
-            sceGuStart(GU_DIRECT, s_list);
+            list_run();
+            list_begin();
             target(s_target_off, s_target_w);
             for (i = 0; i < CLUTS; i++)
                 s_clut[i]->frame = 0;
@@ -974,6 +990,24 @@ static void draw_m7(uint32_t si, int n, int r0, int r1, int x0, int x1)
 /* the sprites of row r's part p (columns x0-x1) into the sprite buffer, in
    reverse order so the first is on top; each pixel's stencil 1 | priority
    << 1 | maths (palettes 4-7) << 3 (cp_obj) */
+/* a row's sprite tiles, in order, a draw for each run of them with the
+   same stencil, palette and texture image (state sent as it changes) */
+#define OB_MAX 128
+static TV s_ob[OB_MAX][2];
+static int s_ob_n;
+
+static void ob_flush(void)
+{
+    TV *v;
+    if (!s_ob_n)
+        return;
+    room();
+    v = (TV *)sceGuGetMemory(s_ob_n * 2 * (int)sizeof(TV));
+    memcpy(v, s_ob, (size_t)s_ob_n * 2 * sizeof(TV));
+    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, s_ob_n * 2, 0, v);
+    s_ob_n = 0;
+}
+
 static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
 {
     const uint16_t *words = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM));
@@ -992,6 +1026,8 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
     sceGuTexMode(GU_PSM_T4, 0, 0, 0);
     sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8);
     sceGuClutLoad(32, c->c[1]);
+    {
+    int cur_ref = -1, cur_pal = -1, cur_img = -1;
     for (i = n; i-- > 0;) {
         U32 e = FD_(CP_SPR) + (at + i) * U_(CP_SE), f = FD_(e + 1u), name = FD_(e + 2u), col;
         I32 sxp = I_(FD_(e)), keep = I_((f >> 18) & 63u) - 1, first = sxp > -8 ? 0 : (-sxp - 8) / 8 + 1;
@@ -1015,29 +1051,36 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
         }
         if (!nt)
             continue;
-        room();
-        sceGuStencilFunc(GU_ALWAYS, (int)(1u | prio << 1 | (pal >= 4u ? 8u : 0u)), 0xFF);
-        sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8u + pal);
-        /* a draw for each texture image the tiles are in (they overlap
-           nothing of each other: their columns are their own) */
+        /* the sprite's tiles of each texture image they are in (they
+           overlap nothing of each other: their columns are their own),
+           after those before them */
         for (k = 0; k < 2; k++) {
-            TV *v;
-            int cnt = 0;
-            for (j = 0; j < nt; j++)
-                cnt += img[j] == k;
-            if (!cnt)
-                continue;
-            sceGuTexImage(0, 128, 512, 128, tile_image(a, 1, k << 10));
-            sceGuTexFlush();
-            v = (TV *)sceGuGetMemory(cnt * 2 * (int)sizeof(TV));
-            for (j = 0, cnt = 0; j < nt; j++)
-                if (img[j] == k) {
-                    v[2 * cnt] = tv[j][0];
-                    v[2 * cnt + 1] = tv[j][1];
-                    cnt++;
+            int ref = (int)(1u | prio << 1 | (pal >= 4u ? 8u : 0u));
+            for (j = 0; j < nt; j++) {
+                if (img[j] != k)
+                    continue;
+                if (ref != cur_ref || (int)pal != cur_pal || k != cur_img || s_ob_n == OB_MAX) {
+                    ob_flush();
+                    room();
+                    if (ref != cur_ref)
+                        sceGuStencilFunc(GU_ALWAYS, ref, 0xFF);
+                    if ((int)pal != cur_pal)
+                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8u + pal);
+                    if (k != cur_img) {
+                        sceGuTexImage(0, 128, 512, 128, tile_image(a, 1, k << 10));
+                        sceGuTexFlush();
+                    }
+                    cur_ref = ref;
+                    cur_pal = (int)pal;
+                    cur_img = k;
                 }
-            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, cnt * 2, 0, v);
+                s_ob[s_ob_n][0] = tv[j][0];
+                s_ob[s_ob_n][1] = tv[j][1];
+                s_ob_n++;
+            }
         }
+    }
+    ob_flush();
     }
 }
 
@@ -1437,7 +1480,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
     h = (int)FD_(CP_PH);
     sw = (int)FD_(CP_SW);
     scale = w / sw;                          /* (2: a frame with a hires line) */
-    sceGuStart(GU_DIRECT, s_list);
+    list_begin();
     sceGuDepthBuffer((void *)V_Z, PIC_W);
     sceGuOffset(2048 - 240, 2048 - 136);
     sceGuViewport(2048, 2048, 480, 272);
@@ -1551,8 +1594,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
         }
     }
     s_index = s_fx = 0;
-    sceGuFinish();
-    sceGuSync(0, 0);
+    list_run();
     *pw = w;
     *ph = h;
     return 1;
