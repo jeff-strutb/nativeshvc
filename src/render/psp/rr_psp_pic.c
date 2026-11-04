@@ -1008,7 +1008,53 @@ static void ob_flush(void)
     s_ob_n = 0;
 }
 
-static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
+/* The rows from r (before s1) whose sprites draw together (draw_obj_rows):
+   each a part alone, of the same state and index band (ix: each row's),
+   its sprites the same as r's (their X, name, columns, flips, palette,
+   priority, kept) but their rows, each on by 1 or -1 a row, the same each
+   row (step[i]); the end of them */
+static int obj_rows(int r, int s1, const int *ix, signed char *step)
+{
+    U32 ri = FD_(CP_ROWS) + 4u * (U32)r, part = FD_(ri), si = FD_(FD_(CP_PARTS) + 4u * part + 1u);
+    U32 at = FD_(FD_(CP_PARTS) + 4u * part + 2u), n = FD_(FD_(CP_PARTS) + 4u * part + 3u), i;
+    const uint32_t *st = &FD_(FD_(CP_STATES) + si * U_(CP_ST));
+    int g = r + 1;
+    if (n > 128u)
+        return g;
+    for (; g < s1; g++) {
+        U32 rj = FD_(CP_ROWS) + 4u * (U32)g, pj = FD_(rj), sj = FD_(FD_(CP_PARTS) + 4u * pj + 1u);
+        U32 atj = FD_(FD_(CP_PARTS) + 4u * pj + 2u);
+        if (FD_(rj + 1u) != 1u || FD_(FD_(CP_PARTS) + 4u * pj + 3u) != n || ix[g - r] != ix[0] ||
+            (sj != si && memcmp(&FD_(FD_(CP_STATES) + sj * U_(CP_ST)), st, CP_ST * sizeof(uint32_t))))
+            break;
+        for (i = 0; i < n; i++) {
+            U32 e = FD_(CP_SPR) + (at + i) * U_(CP_SE), ej = FD_(CP_SPR) + (atj + i) * U_(CP_SE);
+            U32 f = FD_(e + 1u), fj = FD_(ej + 1u);
+            if (FD_(ej) != FD_(e) || FD_(ej + 2u) != FD_(e + 2u) || ((fj ^ f) & ~0xFFu))
+                break;
+            if (g == r + 1) {
+                /* the step: the first two rows' */
+                U32 u = ((fj & 0xFFu) - (f & 0xFFu)) & 0xFFu;
+                step[i] = (signed char)(u == 1u ? 1 : u == 0xFFu ? -1 : 0);
+                if (!step[i])
+                    break;
+            } else if ((U32)(((int)(f & 0xFFu) + step[i] * (g - r)) & 0xFF) != (fj & 0xFFu)) {
+                break;
+            }
+        }
+        if (i < n)
+            break;
+    }
+    return g;
+}
+
+/* The sprites of rows ga-gb's part `part` (each row's the same sprites,
+   their rows on by step[i], 1 or -1, a row: obj_rows) into the sprite
+   buffer, in reverse order so the first is on top (each row's order, so
+   each pixel as its row's alone); each sprite in pieces as tall as its rows
+   stay in one row of its tiles; each pixel's stencil 1 | priority << 1 |
+   maths (palettes 4-7) << 3 (cp_obj). (A row alone: gb ga + 1.) */
+static void draw_obj_rows(uint32_t si, uint32_t part, int ga, int gb, int x0, int x1, const signed char *step)
 {
     const uint16_t *words = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM));
     U32 at = FD_(FD_(CP_PARTS) + 4u * part + 2u), n = FD_(FD_(CP_PARTS) + 4u * part + 3u), i;
@@ -1021,7 +1067,7 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
         return;
     a = atlas(words, cp_sw(si, U_(CP_S_VBASE)) + (page << 15), 1);
     c = s_index ? &s_iclut : clut(cp_sw(si, U_(CP_S_PAL)), 0);
-    scissor(x0, r - s_y0, x1, r - s_y0 + 1);
+    scissor(x0, ga - s_y0, x1, gb - s_y0);
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_T4, 0, 0, 0);
     sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8);
@@ -1031,10 +1077,17 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
     for (i = n; i-- > 0;) {
         U32 e = FD_(CP_SPR) + (at + i) * U_(CP_SE), f = FD_(e + 1u), name = FD_(e + 2u), col;
         I32 sxp = I_(FD_(e)), keep = I_((f >> 18) & 63u) - 1, first = sxp > -8 ? 0 : (-sxp - 8) / 8 + 1;
-        U32 row = f & 0xFFu, cols = (f >> 8) & 15u, hflip = (f >> 12) & 1u, pal = (f >> 13) & 7u, prio = (f >> 16) & 3u;
+        U32 row0 = f & 0xFFu, cols = (f >> 8) & 15u, hflip = (f >> 12) & 1u, pal = (f >> 13) & 7u, prio = (f >> 16) & 3u;
         U32 cc;
+        int d = step ? step[i] : 1, ra, L;
+        for (ra = ga; ra < gb; ra += L) {
+        U32 row = (row0 + (U32)(d * (ra - ga))) & 0xFFu;
         TV tv[16][2];
         int img[16], nt = 0, k, j;
+        /* the rows from ra in this row of the sprite's tiles */
+        L = d > 0 ? 8 - (int)(row & 7u) : (int)(row & 7u) + 1;
+        if (L > gb - ra)
+            L = gb - ra;
         for (cc = 0; cc < cols; cc++) {
             U32 t, ca;
             int T;
@@ -1047,7 +1100,11 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
             ca = (base + t * 16u + ((name & 0x100u) != 0u ? gap : 0u)) & 0x7FFFu;
             T = (int)(ca / 16u);
             img[nt] = T >> 10;
-            put(tv[nt++], sl + sxp + I_(cc) * 8, r - s_y0, 8, 1, tile_u(T), tile_v(T) + (int)(row & 7u), (int)hflip, 0, 0);
+            if (d > 0)
+                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tile_v(T) + (int)(row & 7u), (int)hflip, 0, 0);
+            else                             /* (its rows up the tile: flipped) */
+                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tile_v(T) + (int)(row & 7u) - L + 1,
+                    (int)hflip, 1, 0);
         }
         if (!nt)
             continue;
@@ -1078,6 +1135,7 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
                 s_ob[s_ob_n][1] = tv[j][1];
                 s_ob_n++;
             }
+        }
         }
     }
     ob_flush();
@@ -1544,8 +1602,12 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
         sceGuEnable(GU_COLOR_TEST);
         sceGuColorFunc(GU_NOTEQUAL, CLEAR, 0xFFFFFF);
         sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-        for (r = s0; r < s1; r++) {
+        for (r = s0; r < s1;) {
             U32 ri = FD_(CP_ROWS) + 4u * (U32)r, p0 = FD_(ri), np = FD_(ri + 1u), k;
+            int gb = r + 1;
+            signed char step[128];
+            if (np == 1u)
+                gb = obj_rows(r, s1, band_ix + (r - s0), step);
             for (k = 0; k < np; k++) {
                 U32 part = p0 + k, si = FD_(FD_(CP_PARTS) + 4u * part + 1u);
                 int x0 = (int)(FD_(FD_(CP_PARTS) + 4u * part) + FD_(CP_SL));
@@ -1553,8 +1615,9 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
                 cp_load(si);
                 s_index = band_ix[r - s0];
                 if (!(cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u) && ((cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u)) & 0x10u))
-                    draw_obj_row(si, part, r, x0, x1);
+                    draw_obj_rows(si, part, r, gb, x0, x1, gb > r + 1 ? step : NULL);
             }
+            r = gb;
         }
         sceGuDisable(GU_COLOR_TEST);
         sceGuDisable(GU_STENCIL_TEST);
