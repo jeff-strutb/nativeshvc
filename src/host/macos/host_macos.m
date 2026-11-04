@@ -186,12 +186,27 @@ static CGColorSpaceRef s_rgb;
     key_event(k, down);
 }
 /* the mouse: where the pointer is in the view (points, from the top
-   left), how far it moved, the buttons held */
+   left), how far it moved, the buttons held. The buttons are kept from
+   each button's own press and release, not read from the buttons held when
+   the event is handled: a click let go before then (a trackpad's tap, or
+   any click quicker than a frame) would read as no press at all. */
+static unsigned s_buttons;
+
 static void mouse_event(NSView *v, NSEvent *ev)
 {
     host_event e;
     NSPoint p = [v convertPoint:[ev locationInWindow] fromView:nil];
-    NSUInteger b = [NSEvent pressedMouseButtons];
+    NSInteger n = [ev buttonNumber];
+    unsigned bit = n == 0 ? 1u : n == 1 ? 2u : n == 2 ? 4u : 0u;
+    switch ([ev type]) {
+    case NSEventTypeLeftMouseDown: s_buttons |= 1u; break;
+    case NSEventTypeLeftMouseUp: s_buttons &= ~1u; break;
+    case NSEventTypeRightMouseDown: s_buttons |= 2u; break;
+    case NSEventTypeRightMouseUp: s_buttons &= ~2u; break;
+    case NSEventTypeOtherMouseDown: s_buttons |= bit; break;
+    case NSEventTypeOtherMouseUp: s_buttons &= ~bit; break;
+    default: break;
+    }
     memset(&e, 0, sizeof e);
     e.type = HOST_EV_MOUSE;
     e.x = (float)p.x;
@@ -201,7 +216,7 @@ static void mouse_event(NSView *v, NSEvent *ev)
         e.dx = (float)[ev deltaX];
         e.dy = (float)[ev deltaY];
     }
-    e.buttons = (int)((b & 1) | (b >> 1 & 1) << 1 | (b >> 2 & 1) << 2);
+    e.buttons = (int)s_buttons;
     qpush(&e);
 }
 - (void)mouseMoved:(NSEvent *)ev { mouse_event(self, ev); }
@@ -244,6 +259,7 @@ static void mouse_event(NSView *v, NSEvent *ev)
     for (i = 0; i < 128; i++)
         if (s_down[i])
             key_event((uint16_t)i, 0);
+    s_buttons = 0;                      /* and the mouse's: their releases go elsewhere */
     memset(&e, 0, sizeof e);
     e.type = HOST_EV_FOCUS;
     e.down = 0;
