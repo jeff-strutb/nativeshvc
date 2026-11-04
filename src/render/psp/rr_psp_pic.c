@@ -370,6 +370,46 @@ static const uint32_t *pal_f(uint32_t key)
     return s_palf[h];
 }
 
+/* A picture row's palette (an index band's rows', the canvas's rows'),
+   kept across frames by the row: made again only when its words are not
+   those it was made from (a palette changed line by line, the same each
+   frame, made once); a row whose palette's word is the row before's (this
+   frame's) takes that row's. A row's own made once a frame at most, so
+   one taken this frame stands until the frame is drawn. The canvas's
+   table from it (cv_clut's) kept too, with what it was made for. */
+static uint32_t s_rpw[PIC_H][128];          /* the words each row's was made from */
+static uint32_t __attribute__((aligned(64))) s_rpf[PIC_H][256];
+static uint32_t __attribute__((aligned(64))) s_rpcv[PIC_H][256];
+static uint32_t s_rpck[PIC_H], s_rpckf[PIC_H], s_rpkey[PIC_H], s_rpfr[PIC_H];
+static int16_t s_rpsrc[PIC_H];
+static uint8_t s_rpok[PIC_H];
+static uint32_t row_state(int r);
+static uint32_t state_word(uint32_t si, int w);
+
+static int pal_row(int r)
+{
+    uint32_t key = state_word(row_state(r), CP_S_PAL), k;
+    const uint32_t *w;
+    if (s_rpfr[r] == s_frame)
+        return s_rpsrc[r];
+    s_rpfr[r] = s_frame;
+    s_rpkey[r] = key;
+    if (r > 0 && s_rpfr[r - 1] == s_frame && s_rpkey[r - 1] == key)
+        return s_rpsrc[r] = s_rpsrc[r - 1];
+    w = &FD_(key);
+    for (k = 0; k < 128 && s_rpok[r] && s_rpw[r][k] == w[k]; k++)
+        ;
+    if (k < 128) {
+        memcpy(s_rpw[r], w, sizeof s_rpw[r]);
+        for (k = 0; k < 256; k++)
+            s_rpf[r][k] = times4((w[k >> 1] >> (16u * (k & 1u))) & 0xFFFFu);
+        sceKernelDcacheWritebackRange(s_rpf[r], sizeof s_rpf[r]);
+        s_rpck[r] = 0;
+        s_rpok[r] = 1;
+    }
+    return s_rpsrc[r] = (int16_t)r;
+}
+
 /* (direct: 1 direct colour's tables too, -1 Mode 7 BG2's (ext), 2 the full
    table alone: an index band's rows; each table made when first asked) */
 static Clut *clut(uint32_t key, int direct)
@@ -1828,7 +1868,7 @@ static void index_band(uint32_t si, int r0, int r1, int x0, int x1, int screens)
         sceGuTexFlush();
         sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
         for (r = r0; r < r1 && s_index; r++) {
-            const uint32_t *f = pal_f(state_word(row_state(r), CP_S_PAL));
+            const uint32_t *f = s_rpf[pal_row(r)];
             TV *v;
             room();
             v = (TV *)sceGuGetMemory(2 * sizeof(TV));
@@ -2488,8 +2528,48 @@ static unsigned s_rowclut_f[PIC_H];
 static const uint32_t *row_clut(int r)
 {
     if (s_rowclut_f[r] != s_frame) {
-        cp_load(row_state(r));
-        s_rowclut[r] = cv_clut(row_state(r));
+        uint32_t si = row_state(r);
+        U32 mode, bpp, n = (U32)s_cv, pal, direct, ck;
+        cp_load(si);
+        mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
+        bpp = cp_bpp(mode, n);
+        direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
+        if (direct) {
+            s_rowclut[r] = cv_clut(si);
+        } else {
+            /* (with the row's palette, kept across frames: pal_row) */
+            int sl = pal_row(r), k;
+            pal = s_cvch ? 0u : (FD_(CP_CVSCREEN) >> 2) & 7u;
+            ck = 1u | mode << 1 | (U32)s_cvch << 4 | pal << 5 | n << 8;
+            if (s_rpck[sl] != ck && s_rpckf[sl] == s_frame && sl != r) {
+                /* (the row before's table this frame's, for another mode:
+                   the palette into the row's own) */
+                memcpy(s_rpw[r], s_rpw[sl], sizeof s_rpw[r]);
+                memcpy(s_rpf[r], s_rpf[sl], sizeof s_rpf[r]);
+                sceKernelDcacheWritebackRange(s_rpf[r], sizeof s_rpf[r]);
+                s_rpok[r] = 1;
+                s_rpck[r] = 0;
+                s_rpckf[r] = 0;
+                s_rpsrc[r] = (int16_t)r;
+                sl = r;
+            }
+            s_rpckf[sl] = s_frame;
+            if (s_rpck[sl] != ck) {
+                const uint32_t *f = s_rpf[sl];
+                uint32_t *t = s_rpcv[sl];
+                for (k = 0; k < 256; k++) {
+                    U32 pix = (U32)k & ((1u << bpp) - 1u);
+                    t[k] = !pix ? CLEAR
+                           : s_cvch ? (bpp == 8u ? f[pix] : bpp == 4u ? f[(U32)k & 127u]
+                                                                      : f[(mode == 0u ? n * 32u : 0u) + ((U32)k & 31u)])
+                                    : (bpp == 8u ? f[pix] : bpp == 4u ? f[pal * 16u + pix]
+                                                                      : f[(mode == 0u ? n * 32u : 0u) + pal * 4u + pix]);
+                }
+                sceKernelDcacheWritebackRange(t, 256 * sizeof *t);
+                s_rpck[sl] = ck;
+            }
+            s_rowclut[r] = s_rpcv[sl];
+        }
         s_rowclut_f[r] = s_frame;
     }
     return s_rowclut[r];
