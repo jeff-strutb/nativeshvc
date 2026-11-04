@@ -306,7 +306,7 @@ static int geometry(int pw, int ph, const int d[4])
     s_g->X0 = d[0] < 0 ? 0 : d[0];
     X1 = d[2] > TW ? TW : d[2];
     n = s_g->n = X1 - s_g->X0;
-    if (n <= 0 || pw > 512 || ph > 240)
+    if (n <= 0 || pw > 512 || ph > 480)          /* (a woven picture 480 rows) */
         return 0;
     s_g->stride = (n + 63) & ~63;
     s_g->rows = (RR_PSP_V_END - RR_PSP_V_SCRATCH) / (3 * s_g->stride * 4) - 1;
@@ -518,7 +518,7 @@ static void column_rects(const int *cols, int k, int rs, uint32_t c)
 static void picture_texture(void)
 {
     sceGuTexMode(GU_PSM_5551, 0, 0, 0);
-    sceGuTexImage(0, 512, 256, rr_psp_picture_stride, vram(RR_PSP_V_PICTURE));
+    sceGuTexImage(0, 512, 512, rr_psp_picture_stride, vram(RR_PSP_V_PICTURE));
     sceGuTexFlush();
 }
 
@@ -745,11 +745,11 @@ static void scale_ge(int pw, int ph, const int d[4])
 /* the picture on the GE (rr_psp_pic.c), scaled on the GE where the
    geometry allows (scale_ge), else read back and presented as rr_image
    presents one */
+static int present_picture(int pw, int ph, const int d[4]);
+
 int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
 {
-    static uint32_t *pic;
-    const uint16_t *v;
-    int pw, ph, x, y;
+    int pw, ph;
     (void)w;
     (void)h;
     if (!s_screen)
@@ -757,6 +757,17 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
     list_done();
     if (!rr_psp_picture(desc, words, &pw, &ph))
         return 0;
+    return present_picture(pw, ph, d);
+}
+
+/* the picture drawn (rr_psp_pic.c), pw x ph: scaled on the GE where the
+   geometry allows (scale_ge), else read back and presented as rr_image
+   presents one */
+static int present_picture(int pw, int ph, const int d[4])
+{
+    static uint32_t *pic;
+    const uint16_t *v;
+    int x, y;
     if (d[2] > d[0] && d[3] > d[1] && geometry(pw, ph, d)) {
         list_open();
         s_cur_off = (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr());
@@ -777,14 +788,12 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
 int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_t base0, uint32_t base1,
                      const int d[4])
 {
-    (void)desc;
-    (void)words;
-    (void)ww;
-    (void)wh;
-    (void)base0;
-    (void)base1;
-    (void)d;
-    return 0;
+    if (!s_screen)
+        return 0;
+    list_done();
+    if (!rr_psp_picture_woven(desc, words, ww, wh, base0, base1))
+        return 0;
+    return present_picture(ww, wh, d);
 }
 
 /* Mode 7 and a canvas presented as any frame: the picture at the

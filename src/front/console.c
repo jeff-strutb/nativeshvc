@@ -414,8 +414,12 @@ static void show_picture(const int d[4])
     } else if (on && f->versions > 0) {
         /* an interlaced frame: woven from its description and, for the
            rows that are the frame before's, that one's */
-        static uint32_t *both;
-        static size_t cap;
+        static uint32_t *both, *kept;
+        static size_t cap, kept_n, kept_cap;
+        /* the description last composed as the finished frame's: the next
+           frame's frame before (the same record, whole until then) */
+        static const PpuFrame *kept_f;
+        static long kept_no = -2;
         int ww, wh, from[2];
         size_t na, nb = 0;
         const uint32_t *a;
@@ -429,7 +433,13 @@ static void show_picture(const int d[4])
             if (both) {
                 memcpy(both, a, na * sizeof *both);
                 if (from[0] | from[1]) {
-                    const uint32_t *b = ppu_compose(ppu_frame_before(), &nb);
+                    const uint32_t *b;
+                    if (kept && kept_f == ppu_frame_before() && kept_no + 1 == frame_no) {
+                        b = kept;
+                        nb = kept_n;
+                    } else {
+                        b = ppu_compose(ppu_frame_before(), &nb);
+                    }
                     if (na + nb > cap) {
                         uint32_t *g = (uint32_t *)realloc(both, (na + nb) * sizeof *both);
                         if (g) {
@@ -441,6 +451,18 @@ static void show_picture(const int d[4])
                         memcpy(both + na, b, nb * sizeof *both);
                     else
                         nb = (size_t)-1;
+                }
+                if (na > kept_cap) {
+                    free(kept);
+                    kept = (uint32_t *)malloc(na * sizeof *kept);
+                    kept_cap = kept ? na : 0;
+                }
+                kept_f = NULL;
+                if (kept) {
+                    memcpy(kept, both, na * sizeof *kept);
+                    kept_n = na;
+                    kept_f = f;
+                    kept_no = frame_no;
                 }
                 if (nb != (size_t)-1 &&
                     rr_compose_woven(both, na + nb, ww, wh, from[0] ? (uint32_t)na : 0, from[1] ? (uint32_t)na : 0, d))
