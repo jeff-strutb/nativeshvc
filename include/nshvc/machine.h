@@ -26,15 +26,116 @@
 
 #include <stdint.h>
 
+/* Multi-byte accesses (rd16, wr16, rd24) are little-endian and linear in
+   the 24-bit space, the low byte first, as the CPU makes them (the order is
+   part of the behaviour). Each call is one operation: no interrupt comes
+   between its bytes.
+
+   Built with NSHVC_BUS_INLINE (the nshvc library's CMake target sets it for
+   the code that links it), rd8, wr8, rd16 and wr16 are inline: an access
+   to work RAM, or to ROM a chip does not answer, with nothing of the
+   console's due before it ends, takes its time and its byte here, the same
+   as the call would (nativeshvc's bus state, nshvc_bus below; the C never
+   touches it). Anything else is the call. Without it, each is a call: a
+   decomp's verification harness that answers them itself builds without
+   it. */
+uint8_t nshvc_bus_rd8(uint32_t addr);
+void nshvc_bus_wr8(uint32_t addr, uint8_t value);
+uint16_t nshvc_bus_rd16(uint32_t addr);
+void nshvc_bus_wr16(uint32_t addr, uint16_t value);
+
+/* By 8 KB of the 24-bit space (addr >> 13): where reads and writes may be
+   made directly (NULL: the call), and what each costs, in tenths of a
+   master clock; `left`, the tenths that may be spent before the console
+   must look (an access that would leave none is the call); `wrote_left`,
+   `left` at the last direct write; `mdr`, the data bus's last value. */
+typedef struct {
+    const uint8_t *rd;
+    uint8_t *wr;
+    int32_t cost_rd, cost_wr;
+} nshvc_bus_region;
+
+typedef struct {
+    int32_t left, wrote_left;
+    uint8_t mdr;
+    nshvc_bus_region region[2048];
+} nshvc_bus_state;
+
+extern nshvc_bus_state nshvc_bus;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define NSHVC_LIKELY(x) __builtin_expect(!!(x), 1)
+#else
+#define NSHVC_LIKELY(x) (x)
+#endif
+
+static inline uint8_t nshvc_bus_rd8_inline(uint32_t addr)
+{
+    const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
+    int32_t left = nshvc_bus.left - r->cost_rd;
+    if (NSHVC_LIKELY(r->rd && left > 0)) {
+        uint8_t v = r->rd[addr & 0x1FFF];
+        nshvc_bus.left = left;
+        nshvc_bus.mdr = v;
+        return v;
+    }
+    return nshvc_bus_rd8(addr);
+}
+
+static inline void nshvc_bus_wr8_inline(uint32_t addr, uint8_t value)
+{
+    const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
+    int32_t left = nshvc_bus.left - r->cost_wr;
+    if (NSHVC_LIKELY(r->wr && left > 0)) {
+        r->wr[addr & 0x1FFF] = value;
+        nshvc_bus.left = nshvc_bus.wrote_left = left;
+        nshvc_bus.mdr = value;
+        return;
+    }
+    nshvc_bus_wr8(addr, value);
+}
+
+/* (both bytes in one 8 KB: the same region's cost twice) */
+static inline uint16_t nshvc_bus_rd16_inline(uint32_t addr)
+{
+    const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
+    int32_t left = nshvc_bus.left - 2 * r->cost_rd;
+    uint32_t o = addr & 0x1FFF;
+    if (NSHVC_LIKELY(r->rd && left > 0 && o != 0x1FFF)) {
+        uint8_t hi = r->rd[o + 1];
+        nshvc_bus.left = left;
+        nshvc_bus.mdr = hi;
+        return (uint16_t)(r->rd[o] | hi << 8);
+    }
+    return nshvc_bus_rd16(addr);
+}
+
+static inline void nshvc_bus_wr16_inline(uint32_t addr, uint16_t value)
+{
+    const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
+    int32_t left = nshvc_bus.left - 2 * r->cost_wr;
+    uint32_t o = addr & 0x1FFF;
+    if (NSHVC_LIKELY(r->wr && left > 0 && o != 0x1FFF)) {
+        r->wr[o] = (uint8_t)value;
+        r->wr[o + 1] = (uint8_t)(value >> 8);
+        nshvc_bus.left = nshvc_bus.wrote_left = left;
+        nshvc_bus.mdr = (uint8_t)(value >> 8);
+        return;
+    }
+    nshvc_bus_wr16(addr, value);
+}
+
+#ifdef NSHVC_BUS_INLINE
+static inline uint8_t rd8(uint32_t addr) { return nshvc_bus_rd8_inline(addr); }
+static inline void wr8(uint32_t addr, uint8_t value) { nshvc_bus_wr8_inline(addr, value); }
+static inline uint16_t rd16(uint32_t addr) { return nshvc_bus_rd16_inline(addr); }
+static inline void wr16(uint32_t addr, uint16_t value) { nshvc_bus_wr16_inline(addr, value); }
+#else
 uint8_t rd8(uint32_t addr);
 void wr8(uint32_t addr, uint8_t value);
-
-/* Multi-byte accesses are little-endian and linear in the 24-bit space,
-   the low byte first, as the CPU makes them (the order is part of the
-   behaviour). Each call is one operation: no interrupt comes between its
-   bytes. */
 uint16_t rd16(uint32_t addr);
 void wr16(uint32_t addr, uint16_t value);
+#endif
 uint32_t rd24(uint32_t addr);
 
 /* A read-modify-write instruction (ASL, LSR, ROL, ROR, INC, DEC, TSB, TRB
@@ -58,12 +159,14 @@ void wr16_rmw(uint32_t addr, uint16_t value);
    counter, a chip's flag, the sound unit's reply). `ready` makes the
    loop's reads (rd8 and the rest: real accesses, their side effects as the
    original's) and says whether the loop ends; it is called at once, and
-   while it says no the console's clock moves on in steps of a few of the
-   S-CPU's cycles, everything else running meanwhile (lines drawn, HDMA,
-   DMA, the sound unit, the cartridge's chip), each interrupt taken at the
-   clock it comes due, before `ready` is called again. A change a line, the
-   IRQ's time or the chip's IRQ makes is seen at its own clock; another
-   (a port the sound unit writes, a chip's register) within 64 clocks.
+   while it says no the console's clock moves on to where what it read can
+   next change (a status bit or a counter as the beam reaches it, a flag as
+   it rises), the hardware's work meanwhile done (HDMA, DMA, the sound unit
+   and the cartridge's chip where they are looked at), each interrupt taken
+   at the clock it comes due, before `ready` is called again. A change a
+   line, the IRQ's time or the chip's IRQ makes is seen at its own clock;
+   another the console cannot foresee (a port the sound unit writes, a
+   chip's register, a read with an effect of its own) within 64 clocks.
    Returns the master clocks waited (21.477 MHz): a counter the original
    ticked in each turn of the loop is that over the turn's length. Fatal
    with interrupts held (nshvc_hold_interrupts) and between rd8_rmw and its

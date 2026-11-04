@@ -55,6 +55,9 @@ uint32_t snes_rom_mirror(uint32_t off);
 
 /* ---- time ---- */
 extern uint64_t snes_clock;            /* master clocks since power on */
+/* the clock with the inline accesses made so far in it (machine.h
+   NSHVC_BUS_INLINE): snes_clock is settled only where the console looks */
+uint64_t snes_now(void);
 uint32_t snes_frame(void);             /* frames begun since power on */
 unsigned snes_vcounter(void);
 unsigned snes_hcounter(void);          /* dots, 0-339 */
@@ -98,6 +101,9 @@ const uint8_t *snes_aram(void);
 
 /* ---- power ---- */
 void snes_power(void);
+/* the picture's lines whose horizontal blank has passed, recorded: before
+   a change to the PPU made outside its registers (nshvc_ext_*) */
+void snes_ppu_catch_up(void);
 uint8_t *snes_sram(void);
 uint32_t snes_sram_size(void);           /* its size (the chip's when the chip owns it) */
 const uint8_t *snes_wram(void);

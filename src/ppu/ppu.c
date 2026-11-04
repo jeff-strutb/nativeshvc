@@ -785,6 +785,31 @@ void ppu_ext_vram_direct(int page)
 
 int ppu_vram_direct(void) { return direct_page; }
 
+/* A DMA's run of n bytes to the VRAM data port ($2118-$2119; the B-bus
+   register of byte i is b[i]), in order, as n ppu_write calls make them:
+   in one line's time with no event in it (dma.c vram_run), so whether
+   VRAM is open stays as it is; not while the port writes a page directly
+   (dma.c takes those with no time) */
+void ppu_vram_port_run(const uint8_t *b, const uint8_t *v, unsigned n)
+{
+    static const uint16_t inc[4] = { 1, 32, 128, 128 };
+    int open = vram_open();
+    unsigned i, step = inc[vmain & 3], hi_steps = vmain & 0x80;
+    if (open && n)
+        dirty = 1;
+    for (i = 0; i < n; i++) {
+        int hi = b[i] == 0x19;
+        if (open) {
+            uint32_t a = port_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
+            vram[a] = hi ? (uint16_t)((vram[a] & 0x00FF) | v[i] << 8) : (uint16_t)((vram[a] & 0xFF00) | v[i]);
+        }
+        if (!hi == !hi_steps)
+            vmaddr = (uint16_t)(vmaddr + step);
+    }
+    if (open)
+        vram_gen += n;
+}
+
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
 {
     size_t len;

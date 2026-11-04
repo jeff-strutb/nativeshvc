@@ -8,9 +8,14 @@
 #include "ppu.h"
 #include "mixer.h"
 #include "mixer_regs.h"
+#include "nshvc/machine.h"
 
 /* ---- bus.c ---- */
-extern uint8_t snes_mdr;                    /* the data bus's last value (open bus) */
+#define snes_mdr (nshvc_bus.mdr)            /* the data bus's last value (open bus) */
+/* the inline accesses' clock settled (bus_enter) and their limit set again
+   (bus_leave), round a change made outside an access */
+void snes_bus_enter(void);
+void snes_bus_leave(void);
 /* one byte on the A bus for DMA (no CPU overhead, no interrupt) */
 uint8_t bus_read_a(uint32_t addr);
 void bus_write_a(uint32_t addr, uint8_t v);
@@ -47,6 +52,9 @@ void hdma_line(void);                        /* each line's horizontal blank */
 int hdma_enabled(void);                      /* a channel set in HDMAEN */
 int hdma_active(void);                       /* one whose table has not ended */
 extern unsigned dma_clocks;                  /* the unit's clocks since it took the bus */
+uint64_t snes_run_limit(void);               /* where a run of the DMA unit's bytes must stop */
+void dma_wrote_a(void);                      /* HDMA or DMA wrote the A bus (memory a wait may read) */
+void snes_ppu_catch_up_now(void);            /* the lines' records up to now (the clock settled) */
 extern uint8_t dma_hdmaen;
 
 

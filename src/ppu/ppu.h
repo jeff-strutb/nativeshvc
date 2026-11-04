@@ -208,6 +208,7 @@ void ppu_ext_vram_direct(int page);
 /* the page the data port's writes go to directly (nshvc_ext_vram_direct),
    or -1 */
 int ppu_vram_direct(void);
+void ppu_vram_port_run(const uint8_t *b, const uint8_t *v, unsigned n);
 /* a write to $21C0-$21C5: ignored with no VRAM past 64 KB, else masked to its pages */
 void ppu_ext_page_reg(uint8_t reg, uint8_t v);
 

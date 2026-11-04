@@ -1,8 +1,8 @@
-# The game contract, version 2.16
+# The game contract, version 2.17
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.16: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.17: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,19 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.17:** nothing in the console runs unless something looks at it. The beam's line and
+  dot, HVBJOY, the counters and the refresh are worked out from the clock where they are
+  read; the console stops only at its deadlines (an interrupt, the NMI's flag, the
+  vertical blank's and the frame's start, HDMA while it runs). A wait
+  (`nshvc_wait_until`) looks again where what its condition read can next change, not
+  every few of the S-CPU's cycles: what it sees, and the clock it sees it at, are the
+  same as before for a status bit, a counter, an interrupt's flag and memory; a port the
+  sound unit writes and a chip's register are still seen within 64 clocks. The
+  cartridge's chip is brought up to the console's clock where the S-CPU or a DMA looks
+  at it, where its IRQ could be taken and once a frame (`cart.h`), no longer once a line;
+  the sound unit at its ports and once a frame. With `NSHVC_BUS_INLINE` (the library's
+  target sets it), `rd8`, `wr8`, `rd16` and `wr16` to work RAM, and ROM a chip does not
+  answer, are made inline (`machine.h`).
 - **2.16:** the frame is presented over the whole window on every host, each axis at its
   own scale, sharp bilinear (and Mode 7 and a canvas at the window's resolution as
   before), with no bars: a game that wants a shape sizes its screen with

@@ -141,7 +141,7 @@ static void abi_reset(void)
     wait_line(120);
     nshvc_set_cpu_costs(0);
     nshvc_ext_vram_direct(2);
-    t = snes_clock;
+    t = snes_now();
     wr8(0x002115, 0x80);
     wr16(0x002116, 0x4000);
     wr8(0x004300, 0x01);
@@ -150,7 +150,7 @@ static void abi_reset(void)
     wr8(0x004304, 0x7E);
     wr16(0x004305, 2000);
     wr8(0x00420B, 0x01);
-    check(snes_clock == t, "a DMA of 2,000 bytes to the direct page takes no time", (long long)(snes_clock - t), 0);
+    check(snes_now() == t, "a DMA of 2,000 bytes to the direct page takes no time", (long long)(snes_now() - t), 0);
     {
         const uint16_t *v = nshvc_vram() + (2u << 15);
         int bad = 0;
@@ -168,10 +168,10 @@ static void abi_reset(void)
     wr8(0x004314, 0x7E);
     wr16(0x004315, 4);
     wr8(0x002121, 0x10);
-    t = snes_clock;
+    t = snes_now();
     wr8(0x00420B, 0x03);
-    check(snes_clock - t >= 8 + 8 + 4 * 8 && snes_clock - t <= 8 + 8 + 4 * 8 + 16 + 40,
-          "with a CGRAM channel too: the unit's time for its 4 bytes only", (long long)(snes_clock - t), 48);
+    check(snes_now() - t >= 8 + 8 + 4 * 8 && snes_now() - t <= 8 + 8 + 4 * 8 + 16 + 40,
+          "with a CGRAM channel too: the unit's time for its 4 bytes only", (long long)(snes_now() - t), 48);
     nshvc_ext_vram_direct(-1);
     nshvc_set_cpu_costs(1);
 

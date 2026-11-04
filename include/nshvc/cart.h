@@ -40,7 +40,8 @@ struct nshvc_chip {
        DMA and a look alike, as it does a mapping's. */
     int (*rom_at)(uint32_t addr, uint32_t *off);
     /* the chip brought up to the clock nshvc_cart_clock gives: made before
-       the S-CPU's accesses to it, once a line, and, while it runs, where
+       the S-CPU's accesses to it, once a frame (the vertical blank's start),
+       and, while it runs, where
        the S-CPU could take its IRQ. That clock can be ahead of the
        S-CPU's, through time in which the S-CPU makes no access, and comes
        back to the clock the chip's IRQ rises at (nshvc_cart_irq_at): the

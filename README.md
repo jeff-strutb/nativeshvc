@@ -286,8 +286,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.16.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.16: behaviour exact, each
+Version 2.17.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.17: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -447,7 +447,7 @@ nativeshvc is the console, and implements no expansion chip itself. A cartridge'
 hardware (the Super FX, the SA-1, a DSP) is the cartridge's, as on the console, and plugs in
 through the connector in [`cart.h`](include/nshvc/cart.h): the chip powers on with the
 console, answers the S-CPU's accesses to the addresses it decodes, is brought up to the
-console's clock before those accesses, once a line and in the S-CPU's waits, drives the
+console's clock before those accesses, once a frame and in the S-CPU's waits, drives the
 IRQ line at its own clock (`nshvc_cart_irq_at`: the S-CPU sees a rise from
 the clock the chip raised it at, as on the console), and may own the cartridge's RAM. A board the chip decodes (`NSHVC_CHIP`) tells the console where its ROM
 is (`rom_at`), and the console reads that ROM as it reads a mapping's. A cartridge with a
@@ -544,7 +544,7 @@ The SPC700's C, and a cartridge chip's that has a processor, run on coroutines o
 ([`src/console/coro.c`](src/console/coro.c), a few instructions of assembly on arm64 and
 x86-64, fibers on Windows; a chip's through `cart.h`), each with its own clock. Whenever
 the S-CPU could see what one of them does (its registers, its RAM, the sound ports, a
-chip's IRQ) and once a line, the S-CPU brings it up to its own time, and it hands back when
+chip's IRQ) and once a frame, the S-CPU brings it up to its own time, and it hands back when
 it gets there. Through a step of a wait, a chip runs to the step's end, or stops where its
 IRQ rises.
 One runs at a time, on a deterministic schedule, with no threads: the same input gives the

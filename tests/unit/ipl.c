@@ -48,9 +48,9 @@ static void on_write(uint32_t addr, uint8_t value)
 {
     (void)value;
     if ((addr & 0xFFFF) == 0x2140)
-        index_at = snes_clock;
+        index_at = snes_now();
     else if ((addr & 0xFFFF) == 0x2141 && word >= 0)
-        gap[word] = (long)(snes_clock - index_at);
+        gap[word] = (long)(snes_now() - index_at);
 }
 
 /* ---- the driver: the boot ROM's protocol in C, untimed ---- */

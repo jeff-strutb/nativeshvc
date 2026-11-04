@@ -246,8 +246,20 @@ static void frame_done(void)
 }
 
 void nshvc_set_frame_hook(void (*fn)(void)) { user_frame_hook = fn; }
-void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value)) { snes_write_hook = fn; }
-void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value)) { snes_read_hook = fn; }
+/* (a hook sees every access: the inline ones too, as calls) */
+void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value))
+{
+    snes_bus_enter();
+    snes_write_hook = fn;
+    snes_bus_leave();
+}
+
+void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value))
+{
+    snes_bus_enter();
+    snes_read_hook = fn;
+    snes_bus_leave();
+}
 
 void nshvc_power(const nshvc_cart *cart)
 {

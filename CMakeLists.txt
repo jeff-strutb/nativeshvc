@@ -56,6 +56,9 @@ add_library(nshvc STATIC
   src/front/console.c
   src/front/input.c
   src/front/script.c)
+# the code that links nshvc makes its work RAM and ROM accesses inline
+# (machine.h NSHVC_BUS_INLINE); nativeshvc itself makes them as calls
+target_compile_definitions(nshvc INTERFACE NSHVC_BUS_INLINE=1)
 
 target_include_directories(nshvc
   PUBLIC include
