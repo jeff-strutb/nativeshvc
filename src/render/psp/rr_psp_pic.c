@@ -159,9 +159,11 @@ typedef struct {
     uint32_t frame;                          /* the frame it was last brought up to date in */
     uint64_t gen;                            /* its copy's count of VRAM writes (CP_VGEN) then */
     uint16_t shadow[0x8000];                 /* the words its textures were decoded from */
-    uint8_t *tex[5];                         /* 2, 4, 8 bits: 4096, 2048, 1024 tiles; then 2 and 4 bits
+    uint8_t *tex[6];                         /* 2, 4, 8 bits: 4096, 2048, 1024 tiles; then 2 and 4 bits
                                                 split, each row's texels 0, 2, 4, 6, 1, 3, 5, 7 (a hires
-                                                layer's screens each take half: tex_kind 3, 4) */
+                                                layer's screens each take half: tex_kind 3, 4); then
+                                                Mode 7's 256 characters, a byte a texel (the words' high
+                                                bytes), 16 across: kind 5 */
     uint8_t dirty[4096];                     /* this frame: the 8-word runs that changed */
 } Atlas;
 
@@ -169,12 +171,16 @@ typedef struct {
 static Atlas *s_atlas[ATLASES];
 static uint32_t s_frame;
 
-static const int k_tiles[5] = { 4096, 2048, 1024, 4096, 2048 };
+static const int k_tiles[6] = { 4096, 2048, 1024, 4096, 2048, 256 };
+#define M7_CHARS 5                           /* (Mode 7's characters' kind) */
 
 /* tile t of a kind (0: 2 bits, 1: 4, 2: 8; 3, 4: 2 and 4 split): its
    texture image (1,024 tiles each, 16 across), and its texel there */
 static uint8_t *tile_image(Atlas *a, int kind, int t) { return a->tex[kind] + (size_t)(t >> 10) * (kind == 2 ? 128 * 512 : 64 * 512); }
-static size_t kind_bytes(int kind) { return kind == 2 ? 128 * 512 : (size_t)64 * 512 * (size_t)(4 >> (kind % 3)); }
+static size_t kind_bytes(int kind)
+{
+    return kind == M7_CHARS ? 128 * 128 : kind == 2 ? 128 * 512 : (size_t)64 * 512 * (size_t)(4 >> (kind % 3));
+}
 static int tile_u(int t) { return (t & 15) * 8; }
 static int tile_v(int t) { return ((t >> 4) & 63) * 8; }
 
@@ -185,6 +191,13 @@ static void decode_tile(Atlas *a, int kind, int t)
     uint8_t *img = tile_image(a, kind, t);
     int bpp = 2 << (kind % 3), y, x, p, words = bpp * 4, u = tile_u(t), v = tile_v(t), sp = kind >= 3;
     unsigned at = (unsigned)t * (unsigned)words;
+    if (kind == M7_CHARS) {
+        /* (a Mode 7 character: 64 words, a texel each in its high byte) */
+        for (y = 0; y < 8; y++)
+            for (x = 0; x < 8; x++)
+                img[(size_t)(v + y) * 128 + (size_t)(u + x)] = (uint8_t)(w[((unsigned)t * 64u + (unsigned)(y * 8 + x)) & 0x7FFFu] >> 8);
+        return;
+    }
     for (y = 0; y < 8; y++) {
         uint8_t px[8];
         for (x = 0; x < 8; x++) {
@@ -241,7 +254,7 @@ static Atlas *atlas(const uint16_t *words, uint32_t base, int kind)
             memset(s_atlas[oldest], 0, sizeof(Atlas));
         }
         a = s_atlas[oldest];
-        for (i = 0; i < 5; i++) {
+        for (i = 0; i < 6; i++) {
             free(a->tex[i]);
             a->tex[i] = NULL;
         }
@@ -267,8 +280,8 @@ static Atlas *atlas(const uint16_t *words, uint32_t base, int kind)
             }
         if (any) {
             memcpy(a->shadow, src, sizeof a->shadow);
-            for (i = 0; i < 5; i++) {
-                int words_a = 8 << (i % 3);  /* 8, 16, 32 words a tile */
+            for (i = 0; i < 6; i++) {
+                int words_a = i == M7_CHARS ? 64 : 8 << (i % 3);   /* 8, 16, 32 words a tile; 64 Mode 7's */
                 if (!a->tex[i])
                     continue;
                 for (t = 0; t < k_tiles[i]; t++) {
@@ -1195,111 +1208,179 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
 #undef FLUSH
 }
 
-/* ---- Mode 7 (cp_m7): each console pixel's byte of the plane, the CPU's,
-   drawn as a texture of them ---- */
-#define M7_W 512                             /* (a row: the widest screen's, 512) */
-static uint8_t __attribute__((aligned(64))) s_m7[2][M7_W * 256];   /* by layer: a picture row a texture row */
+/* ---- Mode 7 (cp_m7) on the GE ----
+   Along a line the plane's texel under column x is ((tx0 + da x) >> 8,
+   (ty0 + dc x) >> 8) (ppu.c draw_m7: the matrix's a and c a column, back a
+   column when flipped), so a line is spans of columns over one texel each:
+   for each, its tile from the map (the VRAM's low bytes; the wrap mode's
+   tile 0, or none, outside the plane), and a sprite of that one texel of
+   the tile's character (the characters' image: the VRAM's high bytes,
+   atlas kind M7_CHARS) magnified over the span, its colour the GE's (a
+   palette, or EXTBG's two priorities each its own). Where the line steps
+   a texel a column (da 256, dc 0) a span is the run of a tile's row, its
+   texels one to one. Under mosaic a span is a block (the texel at its
+   first column), of the rows whose block starts on the same line. The
+   band's spans made once for both screens (m7_spans), drawn for each
+   window span (draw_m7). */
+typedef struct {
+    TV *v;                                   /* the band's sprites */
+    int n, cap;
+} M7Spans;
+static M7Spans s_m7s[2];                    /* by layer: BG1, EXTBG's BG2 */
 
-/* layer n's (BG1, or EXTBG's BG2) bytes over rows r0-r1 of the band, its
-   columns x0-x1: the pixel's texel by the line's matrix as the console
-   finds it (ppu.c draw_m7), 0 where the wrap mode leaves it clear */
-static void m7_fill(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1)
+static TV *m7_put(M7Spans *s)
 {
-    const uint16_t *v = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM)) + cp_sw(si, U_(CP_S_VBASE)) +
-                        (cp_b(si, U_(CP_S_PAGE), 0u) << 15);
+    if (s->n == s->cap) {
+        int cap = s->cap ? 2 * s->cap : 4096;
+        TV *v = (TV *)realloc(s->v, (size_t)cap * 2 * sizeof(TV));
+        if (!v)
+            nshvc_fatal("no memory for Mode 7's spans");
+        s->v = v;
+        s->cap = cap;
+    }
+    return s->v + 2 * s->n++;
+}
+
+/* a span's sprite: texel (px, py) of the plane (repeated: its low 10 bits)
+   over columns xa-xb of rows ra-rb, one to one across from it (len 0: one
+   texel magnified) */
+static void m7_sprite(M7Spans *s, const uint8_t *map, U32 wrap, I32 px, I32 py, int xa, int xb, int ra, int rb, int one)
+{
+    U32 tile;
+    TV *v;
+    if (((px | py) & ~0x3FF) != 0) {
+        if (wrap == 0x80u)
+            return;                          /* (outside the plane: clear) */
+        tile = wrap == 0xC0u ? 0u : map[2u * (U_((py >> 3) & 127) << 7 | U_((px >> 3) & 127))];
+    } else {
+        tile = map[2u * (U_(py >> 3) << 7 | U_(px >> 3))];
+    }
+    v = m7_put(s);
+    v[0].u = (short)(tile_u((int)tile) + (px & 7));
+    v[0].v = (short)(tile_v((int)tile) + (py & 7));
+    v[0].x = (short)xa;
+    v[0].y = (short)(ra - s_y0);
+    v[0].z = 0;
+    v[1].u = (short)(v[0].u + (one ? xb - xa : 1));
+    v[1].v = (short)(v[0].v + 1);
+    v[1].x = (short)xb;
+    v[1].y = (short)(rb - s_y0);
+    v[1].z = 0;
+}
+
+/* layer n's spans (BG1, or EXTBG's BG2) over rows r0-r1 of the band, its
+   columns x0-x1 */
+static void m7_spans(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1)
+{
+    const uint8_t *map = (const uint8_t *)((const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM)) + cp_sw(si, U_(CP_S_VBASE)) +
+                                           (cp_b(si, U_(CP_S_PAGE), 0u) << 15));
     U32 mosaic = cp_b(si, U_(CP_S_INIDISP), 3u), m7sel = cp_b(si, U_(CP_S_NBA), 2u);
     I32 msize = (mosaic & (1u << n)) ? (I32)(mosaic >> 4) + 1 : 1, sl = I_(FD_(CP_SL));
     I32 a = cp_s16(cp_h(si, U_(CP_S_M7AB), 0u)), b = cp_s16(cp_h(si, U_(CP_S_M7AB), 1u));
     I32 c = cp_s16(cp_h(si, U_(CP_S_M7CD), 0u)), d = cp_s16(cp_h(si, U_(CP_S_M7CD), 1u));
     I32 cx = cp_sext13(I_(cp_h(si, U_(CP_S_M7XY), 0u))), cy = cp_sext13(I_(cp_h(si, U_(CP_S_M7XY), 1u)));
     I32 hofs = cp_sext13(I_(cp_h(si, U_(CP_S_M7OFS), 0u))), vofs = cp_sext13(I_(cp_h(si, U_(CP_S_M7OFS), 1u)));
-    I32 x0c = cp_clip10(hofs - cx), y0c = cp_clip10(vofs - cy);
+    I32 x0c = cp_clip10(hofs - cx), y0c = cp_clip10(vofs - cy), step = (m7sel & 1u) ? -1 : 1;
     U32 wrap = m7sel & 0xC0u;
-    int r, x;
-    for (r = r0; r < r1; r++) {
-        uint8_t *o = s_m7[n] + (size_t)r * M7_W;
-        I32 y = msize > 1 ? I_(FD_(FD_(CP_ROWS) + 4u * (U32)r + 3u)) : dr0 + (r - r0) + 1;
-        I32 ox, oy, tx, ty, sx, step;
+    M7Spans *s = &s_m7s[n];
+    int ra, rb;
+    s->n = 0;
+    for (ra = r0; ra < r1; ra = rb) {
+        I32 y, ox, oy, tx, ty, da = step * a, dc = step * c;
+        int x;
+        if (msize > 1) {
+            U32 my = FD_(FD_(CP_ROWS) + 4u * (U32)ra + 3u);
+            for (rb = ra + 1; rb < r1 && FD_(FD_(CP_ROWS) + 4u * (U32)rb + 3u) == my; rb++)
+                ;
+            y = I_(my);
+        } else {
+            rb = ra + 1;
+            y = dr0 + (ra - r0) + 1;
+        }
         if (m7sel & 2u)
             y = 255 - y;
         ox = ((a * x0c) & ~63) + ((b * y) & ~63) + ((b * y0c) & ~63) + cx * 256;
         oy = ((c * x0c) & ~63) + ((d * y) & ~63) + ((d * y0c) & ~63) + cy * 256;
-        /* the plane's position at the first column, then a column's step
-           (the matrix's a, c; a flip steps back) */
-        sx = msize > 1 ? cp_floor_to(x0 - sl, msize) : x0 - sl;
-        step = (m7sel & 1u) ? -1 : 1;
-        if (m7sel & 1u)
-            sx = 255 - sx;
-        tx = ox + a * sx;
-        ty = oy + c * sx;
-        if (msize == 1 && x1 > x0) {
-            /* the plane repeating (its map's 128 tiles a row and column,
-               wrapped), or the span's ends on it and so all of it (a
-               line): its map's and characters' bytes read straight */
-            I32 ex = tx + step * a * (x1 - 1 - x0), ey = ty + step * c * (x1 - 1 - x0);
-            if (!(wrap & 0x80u) || (((tx | ty | ex | ey) >> 8) & ~0x3FF) == 0) {
-                const uint8_t *vb = (const uint8_t *)v;
-                I32 da = step * a, dc = step * c;
-                for (x = x0; x < x1; x++) {
-                    U32 tile = vb[((U_(ty >> 11) & 127u) << 8) | ((U_(tx >> 11) & 127u) << 1)];
-                    o[x] = vb[(tile << 7 | (U_(ty >> 4) & 0x70u) | (U_(tx >> 7) & 0x0Eu)) + 1u];
-                    tx += da;
-                    ty += dc;
+        if (msize > 1) {
+            /* blocks of msize columns from the hardware's column 0 */
+            I32 bx;
+            for (bx = cp_floor_to(x0 - sl, msize); bx + sl < x1; bx += msize) {
+                I32 s2 = (m7sel & 1u) ? 255 - bx : bx;
+                int xa = bx + sl < x0 ? x0 : bx + sl, xb = bx + sl + msize > x1 ? x1 : bx + sl + msize;
+                m7_sprite(s, map, wrap, (ox + a * s2) >> 8, (oy + c * s2) >> 8, xa, xb, ra, rb, 0);
+            }
+            continue;
+        }
+        {
+            I32 sx = (m7sel & 1u) ? 255 - (x0 - sl) : x0 - sl;
+            tx = ox + a * sx;
+            ty = oy + c * sx;
+        }
+        for (x = x0; x < x1;) {
+            I32 px = tx >> 8, py = ty >> 8;
+            int xs = x;
+            if (da == 256 && dc == 0) {
+                /* (one to one: the rest of the tile's row, its texels in order) */
+                int k = 8 - (px & 7);
+                if (k > x1 - x)
+                    k = x1 - x;
+                if (((px | py) & ~0x3FF) != 0 && (wrap & 0x80u)) {
+                    /* (outside the plane: a texel a span, the wrap mode's) */
+                    k = 1;
+                    m7_sprite(s, map, wrap, px, py, x, x + 1, ra, rb, 0);
+                } else {
+                    m7_sprite(s, map, wrap, px, py, x, x + k, ra, rb, 1);
                 }
+                x += k;
+                tx += 256 * k;
                 continue;
             }
-        }
-        for (x = x0; x < x1; x++) {
-            I32 px, py;
-            U32 tile;
-            if (msize > 1 && x > x0) {
-                I32 s2 = cp_floor_to(x - sl, msize);
-                if (m7sel & 1u)
-                    s2 = 255 - s2;
-                tx = ox + a * s2;
-                ty = oy + c * s2;
-            }
-            px = tx >> 8;
-            py = ty >> 8;
-            if (((px | py) & ~0x3FF) != 0) {
-                if (wrap == 0x80u) {
-                    o[x] = 0;
-                    goto next;
-                }
-                tile = wrap == 0xC0u ? 0u : v[((py >> 3) & 127) << 7 | ((px >> 3) & 127)] & 0xFFu;
-            } else {
-                tile = v[(py >> 3) << 7 | (px >> 3)] & 0xFFu;
-            }
-            o[x] = (uint8_t)(v[(tile * 64u + U_(py & 7) * 8u + U_(px & 7)) & 0x7FFFu] >> 8);
-        next:
-            if (msize == 1) {
-                tx += step * a;
-                ty += step * c;
-            }
+            do {
+                x++;
+                tx += da;
+                ty += dc;
+            } while (x < x1 && (tx >> 8) == px && (ty >> 8) == py);
+            m7_sprite(s, map, wrap, px, py, xs, x, ra, rb, 0);
         }
     }
 }
 
-/* layer n's bytes (m7_fill) over the band's rows r0-r1, columns x0-x1, at
-   its depth: BG1's colours (direct where CGWSEL says), EXTBG's BG2 its
-   two priorities' each at its own */
+/* layer n's spans (m7_spans) over the band's rows r0-r1, columns x0-x1
+   (the window's span: the scissor), at its depth: BG1's colours (direct
+   where CGWSEL says), EXTBG's BG2 its two priorities' each at its own */
 static void draw_m7(uint32_t si, int n, int r0, int r1, int x0, int x1)
 {
+    const uint16_t *words = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM));
     U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u);
-    int direct = n == 0 && (cp_b(si, U_(CP_S_TSW), 1u) & 1u), p;
+    int direct = n == 0 && (cp_b(si, U_(CP_S_TSW), 1u) & 1u), p, k;
     Clut *c = s_index ? &s_iclut : clut(cp_sw(si, U_(CP_S_PAL)), n ? -1 : direct);
+    Atlas *a = atlas(words, cp_sw(si, U_(CP_S_VBASE)) + (cp_b(si, U_(CP_S_PAGE), 0u) << 15), M7_CHARS);
+    const M7Spans *s = &s_m7s[n];
+    (void)r0;
+    (void)r1;
+    (void)x0;
+    (void)x1;
+    if (!s->n)
+        return;
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_T8, 0, 0, 0);
-    sceGuTexImage(0, M7_W, 256, M7_W, s_m7[n]);
+    sceGuTexImage(0, 128, 128, 128, a->tex[M7_CHARS]);
     sceGuTexFlush();
     sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
     for (p = 0; p < (n ? 2 : 1); p++) {
-        TV *v;
+        int z = (int)cp_zbg(bgmode, (U32)n, (U32)p);
         room();
         sceGuClutLoad(32, n ? c->ext[p] : direct ? c->direct[0] : c->c[2]);
-        v = (TV *)sceGuGetMemory(2 * sizeof(TV));
-        put(v, x0, r0 - s_y0, x1 - x0, r1 - r0, x0, r0, 0, 0, (int)cp_zbg(bgmode, (U32)n, (U32)p));
-        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+        for (k = 0; k < s->n; k += 1024) {
+            int nk = s->n - k < 1024 ? s->n - k : 1024, i;
+            TV *v;
+            room();
+            v = (TV *)sceGuGetMemory(nk * 2 * (int)sizeof(TV));
+            memcpy(v, s->v + 2 * k, (size_t)nk * 2 * sizeof(TV));
+            for (i = 0; i < 2 * nk; i++)
+                v[i].z = (short)z;
+            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2 * nk, 0, v);
+        }
     }
 }
 
@@ -1521,10 +1602,12 @@ static int drawable(void)
             if ((mode == 5u || mode == 6u) && (cp_b(si, U_(CP_S_NBA), 3u) & 0x01u))
                 nshvc_fatal("an interlaced hires frame: past the PSP's picture (512 x 240, 256 x 480 interlaced)");
             for (n = 0; n < 5u; n++) {
-                U32 key = cp_sw(si, U_(CP_S_VBASE)) + ((n < 4u ? cp_b(si, U_(CP_S_PAGE), n) : cp_b(si, U_(CP_S_PAGE4), 0u)) << 15);
+                U32 key = cp_sw(si, U_(CP_S_VBASE)) +
+                          ((n < 4u ? cp_b(si, U_(CP_S_PAGE), mode == 7u ? 0u : n) : cp_b(si, U_(CP_S_PAGE4), 0u)) << 15);
                 int j;
-                /* (Mode 7's plane read from the VRAM's words: m7_fill) */
-                if (!((tmts >> n) & 1u) || (n < 4u && (mode == 7u || !cp_bpp(mode, n))))
+                /* (Mode 7's map from the VRAM's words, its characters page
+                   0's atlas's: m7_spans; EXTBG's BG2 BG1's) */
+                if (!((tmts >> n) & 1u) || (n < 4u && (mode == 7u ? n > 1u : !cp_bpp(mode, n))))
                     continue;
                 for (j = 0; j < nkeys && keys[j] != key; j++)
                     ;
@@ -1619,17 +1702,9 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
         for (n = 0; n < 2u; n++) {
             if ((n && !(cp_b(si, U_(CP_S_NBA), 3u) & 0x40u)) || !((both >> n) & 1u))
                 continue;
-            /* the bytes once a band (the main screen's turn), both screens';
-               EXTBG's BG2 BG1's own (the same texel) unless their mosaic
-               differs */
-            if (!which) {
-                U32 mos = cp_b(si, U_(CP_S_INIDISP), 3u);
-                if (n && !(((mos ^ (mos >> 1)) & 1u) && (mos >> 4)) && ((both & 1u) != 0u))
-                    memcpy(s_m7[1] + (size_t)r0 * M7_W, s_m7[0] + (size_t)r0 * M7_W, (size_t)(r1 - r0) * M7_W);
-                else
-                    m7_fill(si, (int)n, r0, r1, dr0, x0, x1);
-                sceKernelDcacheWritebackRange(s_m7[n] + (size_t)r0 * M7_W, (unsigned)(r1 - r0) * M7_W);
-            }
+            /* the spans once a band (the main screen's turn), both screens' */
+            if (!which)
+                m7_spans(si, (int)n, r0, r1, dr0, x0, x1);
             if (!((on >> n) & 1u))
                 continue;
             ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
