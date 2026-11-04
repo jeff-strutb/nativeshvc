@@ -323,6 +323,47 @@ static uint32_t s_t4[32768];
 static uint32_t times4_of(unsigned c) { return 0xFF000000u | (c >> 10 & 31u) << 18 | (c >> 5 & 31u) << 10 | (c & 31u) << 2; }
 static uint32_t times4(unsigned c) { return s_t4[c & 0x7FFFu]; }
 
+/* A palette's 256 colours (times4) for the GE, each palette of the frame
+   made once (an index band's rows' and the canvas's: a palette changed
+   line by line has one a row): PALS at most a frame, in a table by the
+   palette's word, the GE run to its end before more */
+#define PALS 256
+static uint32_t __attribute__((aligned(64))) s_palf[PALS][256];
+static uint32_t s_palk[PALS], s_palfr[PALS], s_paln, s_palnf;
+
+static const uint32_t *pal_f(uint32_t key)
+{
+    uint32_t at = cp_fdb + key, h, k;
+    if (s_palnf != s_frame) {
+        s_palnf = s_frame;
+        s_paln = 0;
+    }
+    for (h = (at * 2654435761u) >> 24;; h = (h + 1u) & (PALS - 1u)) {
+        if (s_palfr[h] != s_frame)
+            break;
+        if (s_palk[h] == at)
+            return s_palf[h];
+    }
+    if (s_paln == PALS * 3 / 4) {
+        /* (the table this frame's, three quarters full: the list run, the
+           GE having read them, and begun again) */
+        list_run();
+        list_begin();
+        retarget();
+        for (k = 0; k < PALS; k++)
+            s_palfr[k] = 0;
+        s_paln = 0;
+        h = (at * 2654435761u) >> 24;
+    }
+    for (k = 0; k < 256; k++)
+        s_palf[h][k] = times4((FD_(key + (k >> 1)) >> (16u * (k & 1u))) & 0xFFFFu);
+    sceKernelDcacheWritebackRange(s_palf[h], sizeof s_palf[h]);
+    s_palk[h] = at;
+    s_palfr[h] = s_frame;
+    s_paln++;
+    return s_palf[h];
+}
+
 /* (direct: 1 direct colour's tables too, -1 Mode 7 BG2's (ext), 2 the full
    table alone: an index band's rows; each table made when first asked) */
 static Clut *clut(uint32_t key, int direct)
@@ -1534,11 +1575,11 @@ static void index_band(uint32_t si, int r0, int r1, int x0, int x1, int screens)
         sceGuTexFlush();
         sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
         for (r = r0; r < r1 && s_index; r++) {
-            Clut *c = clut(state_word(row_state(r), CP_S_PAL), 2);
+            const uint32_t *f = pal_f(state_word(row_state(r), CP_S_PAL));
             TV *v;
             room();
             v = (TV *)sceGuGetMemory(2 * sizeof(TV));
-            sceGuClutLoad(32, c->f);
+            sceGuClutLoad(32, f);
             sceGuTexFlush();
             put(v, x0, r - s_y0, x1 - x0, 1, x0, r - s_y0, 0, 0, 0);
             sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
@@ -2035,6 +2076,7 @@ static const uint32_t *cv_clut(uint32_t si)
     U32 direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
     int i, k;
     Clut *c;
+    const uint32_t *f;
     if (frame[last] == s_frame && key[last][0] == cp_fdb + pw && key[last][1] == mode && key[last][2] == direct)
         return tab[last];
     for (i = 0; i < CV_CLUTS && frame[i] == s_frame; i++)
@@ -2048,13 +2090,14 @@ static const uint32_t *cv_clut(uint32_t si)
         memset(frame, 0, sizeof frame);
         i = 0;
     }
-    c = clut(pw, direct ? 1 : 0);
+    c = direct ? clut(pw, 1) : NULL;
+    f = direct ? NULL : pal_f(pw);
     for (k = 0; k < 256; k++) {
         U32 pix = (U32)k & ((1u << bpp) - 1u);
         tab[i][k] = !pix ? CLEAR
-                    : bpp == 8u ? (direct ? c->direct[pal][pix] : c->f[pix])
-                    : bpp == 4u ? c->f[pal * 16u + pix]
-                                : c->f[(mode == 0u ? n * 32u : 0u) + pal * 4u + pix];
+                    : bpp == 8u ? (direct ? c->direct[pal][pix] : f[pix])
+                    : bpp == 4u ? f[pal * 16u + pix]
+                                : f[(mode == 0u ? n * 32u : 0u) + pal * 4u + pix];
     }
     sceKernelDcacheWritebackRange(tab[i], sizeof tab[i]);
     key[i][0] = cp_fdb + pw;
