@@ -95,6 +95,16 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
 int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
                      const struct RrM7Samples *s);
 
+/* The console's picture, w x h, drawn by the compositor from the frame's
+   description (as rr_compose draws it; wp an interlaced frame's weave as
+   rr_compose_woven's: ww, base0, base1, else all 0) apart from the frame
+   being drawn, and read back into argb (0xAARRGGBB, top row first): the
+   console's picture as the GPU makes it (nshvc_picture). 0 when it cannot. */
+int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], uint32_t *argb);
+/* With no window: the target w x h from the next frame (rr_target's;
+   RR_SIZE's until then). With a window, its size stands: fatal. */
+void rr_size(int w, int h);
+
 /* the frame done: shown in the window, when there is one */
 void rr_present(void);
 /* the last presented frame, read back: rr_target's w x h pixels into argb;

@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "gl_api.h"
+#include "nshvc/nshvc.h"
 #include "rr.h"
 #include "rr_size.h"
 #include "rr_mode7.h"
@@ -334,11 +335,13 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
     return compose(desc, words, ww, wh, wp, d);
 }
 
-static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], const int d[4])
+/* the picture (s_pic, w x h) drawn by the compositor; the target's
+   framebuffer bound again after, or (keep) the picture's left bound */
+static int compose_pic(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], int keep)
 {
     static const float q[6][4] = { { -1, -1, 0, 0 }, { 1, -1, 1, 0 }, { -1, 1, 0, 1 },
                                    { -1, 1, 0, 1 }, { 1, -1, 1, 0 }, { 1, 1, 1, 1 } };
-    if (!s_cp || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
+    if (!s_cp || w <= 0 || h <= 0)
         return 0;
     /* the picture, row 0 the texture's first (as rr_image's), drawn into
        by the compositor; then shown as rr_image shows it */
@@ -369,12 +372,43 @@ static int compose(const uint32_t *desc, size_t words, int w, int h, const uint3
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    if (keep)
+        return 1;
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
     glViewport(0, 0, s_rw, s_rh);
     glActiveTexture(GL_TEXTURE0);
+    return 1;
+}
+
+static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], const int d[4])
+{
+    if (d[2] <= d[0] || d[3] <= d[1] || !compose_pic(desc, words, w, h, wp, 0))
+        return 0;
     draw(s_pic, w, h, d);
     return 1;
+}
+
+int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], uint32_t *argb)
+{
+    /* (the picture's row 0 the texture's first: read as it is, top first) */
+    if (!compose_pic(desc, words, w, h, wp, 1))
+        return 0;
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, argb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+    glViewport(0, 0, s_rw, s_rh);
+    glActiveTexture(GL_TEXTURE0);
+    return 1;
+}
+
+void rr_size(int w, int h)
+{
+    if (s_window)
+        nshvc_fatal("rr_size(%d, %d): the window sets the target's size", w, h);
+    if (w > 0 && h > 0 && (w != s_rw || h != s_rh))
+        targets(w, h);
 }
 
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])

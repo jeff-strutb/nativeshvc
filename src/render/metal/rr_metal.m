@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "nshvc/nshvc.h"
 #include "rr.h"
 #include "rr_size.h"
 #include "rr_mode7.h"
@@ -869,6 +870,48 @@ void rr_present(void)
         [s_cmd commit];
         s_cmd = nil;
     }
+}
+
+int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], uint32_t *argb)
+{
+    @autoreleasepool {
+        static id<MTLTexture> t;
+        id<MTLCommandBuffer> c;
+        id<MTLComputeCommandEncoder> ce;
+        id<MTLBuffer> b;
+        uint32_t w4[4] = { wp[0], wp[1], wp[2], 0 };
+        if (!s_cp || w <= 0 || h <= 0)
+            return 0;
+        if (!t || (int)t.width != w || (int)t.height != h) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                           width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+            td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            td.storageMode = MTLStorageModeShared;
+            t = [s_dev newTextureWithDescriptor:td];
+        }
+        b = [s_dev newBufferWithBytes:desc length:words * 4 options:MTLResourceStorageModeShared];
+        c = [s_q commandBuffer];
+        ce = [c computeCommandEncoder];
+        [ce setComputePipelineState:s_cp];
+        [ce setBuffer:b offset:0 atIndex:0];
+        [ce setBytes:w4 length:16 atIndex:1];
+        [ce setTexture:t atIndex:0];
+        [ce dispatchThreads:MTLSizeMake((NSUInteger)w, (NSUInteger)h, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [ce endEncoding];
+        [c commit];
+        [c waitUntilCompleted];
+        [t getBytes:argb bytesPerRow:(NSUInteger)w * 4 fromRegion:MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h)
+           mipmapLevel:0];
+        return 1;
+    }
+}
+
+void rr_size(int w, int h)
+{
+    if (host_metal_layer())
+        nshvc_fatal("rr_size(%d, %d): the window sets the target's size", w, h);
+    if (w > 0 && h > 0 && (w != s_rw || h != s_rh))
+        targets(w, h);
 }
 
 int rr_read(uint32_t *argb)

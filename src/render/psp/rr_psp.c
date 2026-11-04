@@ -827,6 +827,33 @@ void rr_present(void)
     s_screen->show();
 }
 
+/* the picture drawn on the GE apart from the frame (into its buffer,
+   rr_psp_pic.c), read back: 5551, each channel widened as the GE widens it */
+int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], uint32_t *argb)
+{
+    const uint16_t *v;
+    int pw = w, ph = h, x, y;
+    if (!s_screen || w <= 0 || h <= 0)
+        return 0;
+    list_done();
+    if (wp[0] ? !rr_psp_picture_woven(desc, words, (int)wp[0], h, wp[1], wp[2]) : !rr_psp_picture(desc, words, &pw, &ph))
+        return 0;
+    if (pw != w || ph != h)
+        nshvc_fatal("rr_picture: the picture drawn %dx%d, asked %dx%d", pw, ph, w, h);
+    v = rr_psp_picture_pixels();
+    for (y = 0; y < h; y++)
+        for (x = 0; x < w; x++)
+            argb[(size_t)y * (size_t)w + (size_t)x] = rr_psp_picture_argb(v[(size_t)y * (size_t)rr_psp_picture_stride + (size_t)x]);
+    return 1;
+}
+
+/* the PSP's target is its screen's */
+void rr_size(int w, int h)
+{
+    if (w != TW || h != TH)
+        nshvc_fatal("rr_size(%d, %d): the PSP's target is its screen, %d x %d", w, h, TW, TH);
+}
+
 int rr_read(uint32_t *argb)
 {
     const uint32_t *fb;

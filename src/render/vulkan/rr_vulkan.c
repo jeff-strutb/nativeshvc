@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "nshvc/nshvc.h"
 #include "rr.h"
 #include "rr_size.h"
 #include "rr_mode7.h"
@@ -731,7 +732,8 @@ static int cp_image(int w, int h)
     vkDeviceWaitIdle(s_dev);
     image_destroy(&s_cimg, &s_cimg_mem, &s_cimg_view);
     s_cw = s_ch = 0;
-    if (!image_fmt(w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &s_cimg,
+    if (!image_fmt(w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &s_cimg,
                    &s_cimg_mem, &s_cimg_view))
         return 0;
     di.sampler = s_smp;
@@ -1541,6 +1543,94 @@ void rr_present(void)
             wait_frame();
             swap_destroy();
         }
+    }
+}
+
+/* the picture apart from any frame (between them): the compositor into
+   its image, copied to a buffer the CPU reads; its bytes R, G, B, A, so
+   each word's red and blue swapped */
+int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], uint32_t *argb)
+{
+    static VkBuffer pb;
+    static VkDeviceMemory pm;
+    static uint8_t *pmap;
+    static VkDeviceSize psize;
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkBufferImageCopy cp;
+    uint32_t pc[4];
+    long off;
+    size_t i, n = (size_t)w * (size_t)h;
+    if (!s_cp || s_recording || w <= 0 || h <= 0)
+        return 0;
+    wait_frame();
+    if ((VkDeviceSize)n * 4 > psize) {
+        if (pb) {
+            vkDestroyBuffer(s_dev, pb, NULL);
+            vkFreeMemory(s_dev, pm, NULL);
+            pb = VK_NULL_HANDLE;
+        }
+        psize = (VkDeviceSize)n * 4;
+        if (!make_buffer(psize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &pb, &pm, &pmap))
+            return 0;
+    }
+    vkResetFences(s_dev, 1, &s_fence);
+    vkResetCommandBuffer(s_cmd, 0);
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(s_cmd, &bi);
+    s_recording = 1;
+    s_ring_used = 0;
+    if (!cp_image(w, h) || !ring_fit(words * 4 + 512) || (off = ring_put(desc, words * 4)) < 0) {
+        vkEndCommandBuffer(s_cmd);
+        s_recording = 0;
+        return 0;
+    }
+    pc[0] = (uint32_t)off;
+    pc[1] = wp[0];
+    pc[2] = wp[1];
+    pc[3] = wp[2];
+    barrier(s_cmd, s_cimg, s_cimg_fresh ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    s_cimg_fresh = 0;
+    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cp);
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_cplayout, 0, 1, &s_cset, 0, NULL);
+    vkCmdPushConstants(s_cmd, s_cplayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    vkCmdDispatch(s_cmd, (uint32_t)(w + 31) / 32, (uint32_t)(h + 7) / 8, 1);
+    barrier(s_cmd, s_cimg, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    memset(&cp, 0, sizeof cp);
+    cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    cp.imageSubresource.layerCount = 1;
+    cp.imageExtent.width = (uint32_t)w;
+    cp.imageExtent.height = (uint32_t)h;
+    cp.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(s_cmd, s_cimg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pb, 1, &cp);
+    barrier(s_cmd, s_cimg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    vkEndCommandBuffer(s_cmd);
+    s_recording = 0;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &s_cmd;
+    vkQueueSubmit(s_queue, 1, &si, s_fence);
+    s_submitted = 1;
+    wait_frame();
+    for (i = 0; i < n; i++) {
+        uint32_t v;
+        memcpy(&v, pmap + 4 * i, 4);
+        argb[i] = (v & 0xFF00FF00u) | (v >> 16 & 0xFFu) | (v & 0xFFu) << 16;
+    }
+    return 1;
+}
+
+void rr_size(int w, int h)
+{
+    if (s_surface)
+        nshvc_fatal("rr_size(%d, %d): the window sets the target's size", w, h);
+    if (w > 0 && h > 0 && (w != s_rw || h != s_rh)) {
+        wait_frame();
+        targets(w, h);
     }
 }
 

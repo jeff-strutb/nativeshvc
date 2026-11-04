@@ -33,7 +33,6 @@
 #include "backdrop.h"
 
 /* ---- the public calls ---- */
-const uint32_t *nshvc_picture(int *width, int *height) { return ppu_picture(width, height); }
 uint32_t nshvc_frames(void) { return (uint32_t)ppu_frames(); }
 int nshvc_audio_take(int16_t *lr, int max) { return snes_audio_take(lr, max); }
 int nshvc_audio_queued(void) { return snes_audio_queued(); }
@@ -483,25 +482,23 @@ static void canvas_scale(int w, int h)
 
 static long cpu_frames;                      /* frames drawn from the CPU's picture or records (rr_image, rr_mode7) */
 
-/* The last frame's picture over target rectangle d, drawn by the
-   renderer's compositor from the frame's description (render/compose_body.h),
-   an interlaced frame's woven from its own and the one before's; a frame
-   never made (no VRAM taken: before the first) none, the target's black.
-   The picture is the GPU's: a renderer that cannot draw it is fatal. */
-static void show_picture(const int d[4])
+/* The finished frame's description for the compositor: its picture w x h;
+   wp an interlaced frame's weave (rr_compose_woven's ww, base0, base1: its
+   own and, for the rows that are the frame before's, that one's), else
+   zeros. 0 when there is no picture to draw: a frame never made (no VRAM
+   taken: before the first). */
+static int frame_desc(const uint32_t **desc, size_t *words, int *w, int *h, uint32_t wp[3])
 {
     const PpuFrame *f = ppu_frame();
+    wp[0] = wp[1] = wp[2] = 0;
     if (f->versions == 0)
-        return;
+        return 0;
     if (!f->interlace) {
-        size_t nw;
-        const uint32_t *desc = ppu_compose(f, &nw);
-        if (!rr_compose(desc, nw, ppu_frame_width(f), f->screen_height, d))
-            nshvc_fatal("the renderer (%s) cannot draw the frame's picture", rr_name());
-        return;
+        *desc = ppu_compose(f, words);
+        *w = ppu_frame_width(f);
+        *h = f->screen_height;
+        return 1;
     } else {
-        /* an interlaced frame: woven from its description and, for the
-           rows that are the frame before's, that one's */
         static uint32_t *both, *kept;
         static size_t cap, kept_n, kept_cap;
         /* the description last composed as the finished frame's: the next
@@ -552,13 +549,86 @@ static void show_picture(const int d[4])
                     kept_f = f;
                     kept_no = frame_no;
                 }
-                if (nb != (size_t)-1 &&
-                    rr_compose_woven(both, na + nb, ww, wh, from[0] ? (uint32_t)na : 0, from[1] ? (uint32_t)na : 0, d))
-                    return;
+                if (nb != (size_t)-1) {
+                    *desc = both;
+                    *words = na + nb;
+                    *w = ww;
+                    *h = wh;
+                    wp[0] = (uint32_t)ww;
+                    wp[1] = from[0] ? (uint32_t)na : 0;
+                    wp[2] = from[1] ? (uint32_t)na : 0;
+                    return 1;
+                }
             }
         }
+        nshvc_fatal("no memory for the interlaced frame's descriptions");
     }
-    nshvc_fatal("the renderer (%s) cannot draw the interlaced frame's woven picture", rr_name());
+    return 0;
+}
+
+/* The last frame's picture over target rectangle d, drawn by the
+   renderer's compositor from the frame's description (render/compose_body.h),
+   an interlaced frame's woven; a frame never made none, the target's
+   black. The picture is the GPU's: a renderer that cannot draw it is
+   fatal. */
+static void show_picture(const int d[4])
+{
+    const uint32_t *desc;
+    size_t nw;
+    int w, h, ok;
+    uint32_t wp[3];
+    if (!frame_desc(&desc, &nw, &w, &h, wp))
+        return;
+    ok = wp[0] ? rr_compose_woven(desc, nw, w, h, wp[1], wp[2], d) : rr_compose(desc, nw, w, h, d);
+    if (!ok)
+        nshvc_fatal("the renderer (%s) cannot draw the frame's picture", rr_name());
+}
+
+/* the renderer, open when a picture is asked for with none presented yet */
+static int rr_opened;
+
+static void rr_need(void)
+{
+    if (!rr_opened) {
+        if (!rr_open())
+            nshvc_fatal("the renderer (%s) cannot open", rr_name());
+        rr_opened = 1;
+    }
+}
+
+/* the finished frame's picture: the GPU's (rr_picture), read back */
+const uint32_t *nshvc_picture(int *width, int *height)
+{
+    static uint32_t *px;
+    static size_t cap;
+    const PpuFrame *f = ppu_frame();
+    const uint32_t *desc;
+    size_t nw, n;
+    int w = ppu_frame_width(f), h = f->screen_height, have;
+    uint32_t wp[3];
+    have = frame_desc(&desc, &nw, &w, &h, wp);
+    n = (size_t)w * (size_t)h;
+    if (n > cap) {
+        free(px);
+        px = (uint32_t *)malloc(n * 4);
+        cap = px ? n : 0;
+        if (!px)
+            nshvc_fatal("no memory for the picture of %d x %d", w, h);
+    }
+    if (have) {
+        rr_need();
+        if (!rr_picture(desc, nw, w, h, wp, px))
+            nshvc_fatal("the renderer (%s) cannot read the frame's picture back", rr_name());
+    } else {
+        size_t i;
+        for (i = 0; i < n; i++)
+            px[i] = 0xFF000000u;
+    }
+    if (width)
+        *width = w;
+    if (height)
+        *height = h;
+    return px;
 }
 
 /* ---- a frame with Mode 7 or a canvas presented (render/rr_mode7.h) ---- */
@@ -669,6 +739,11 @@ static void shot_scale(double *x, double *y)
     *y = sy;
 }
 
+static int show_mode7(int ow, int oh, const int d[4]);
+static void show_picture(const int d[4]);
+
+/* a shot's picture: the console's (nshvc_picture), or at NSHVC_SCALE the
+   frame presented by the renderer on a target that size, read back */
 const uint32_t *front_shot_picture(int *w, int *h, int *presented)
 {
     double sx, sy;
@@ -676,9 +751,7 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
     static size_t cap;
     int pw, ph, d[4];
     const uint32_t *px = nshvc_picture(&pw, &ph);
-    RrMode7 m;
-    RrM7Samples smp;
-    size_t i, len;
+    size_t len;
     shot_scale(&sx, &sy);
     *w = sx ? (int)(pw * sx + 0.5) : pw;
     *h = sy ? (int)(ph * sy + 0.5) : ph;
@@ -701,13 +774,14 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
     d[0] = d[1] = 0;
     d[2] = *w;
     d[3] = *h;
-    if (mode7_prepare(*w, *h, &m, &smp)) {
-        rr_ref_mode7(buf, *w, *h, &m, d, &smp);
-    } else {
-        for (i = 0; i < len; i++)
-            buf[i] = 0xFF000000u;
-        rr_ref_image(buf, *w, *h, px, pw, ph, d);
-    }
+    rr_need();
+    rr_size(*w, *h);
+    rr_begin(0xFF000000u);
+    if (!(rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(*w, *h, d)))
+        show_picture(d);
+    rr_present();
+    if (!rr_read(buf))
+        nshvc_fatal("the renderer (%s) cannot read the frame back", rr_name());
     return buf;
 }
 
@@ -896,12 +970,13 @@ static void show(void)
    against rr_ref_mode7 (as any frame where the renderer presents it so:
    rr_mode7_window); at exit, the frames and pixels
    that differ by more than 1 in a channel (a GPU's filtering rounds) */
-static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames;
+static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames, rr_pic_bad;
 
 static void rr_report(void)
 {
-    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 or a canvas presented), %ld differ (first at frame %ld), %ld pixels; %ld from the CPU\n",
-            rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels, cpu_frames);
+    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 or a canvas presented), %ld differ (first at frame %ld), %ld pixels; %ld from the CPU; "
+                    "%ld pictures read back differ\n",
+            rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels, cpu_frames, rr_pic_bad);
 }
 
 static void rr_check(void)
@@ -914,10 +989,11 @@ static void rr_check(void)
     RrM7Samples smp;
     int recorded = 0;
     if (rr_frames < 0) {
-        if (!rr_open()) {
+        if (!rr_opened && !rr_open()) {
             fprintf(stderr, "rrcheck: the renderer cannot open\n");
             exit(2);
         }
+        rr_opened = 1;
         atexit(rr_report);
         rr_frames = 0;
     }
@@ -994,6 +1070,24 @@ static void rr_check(void)
             }
             bad++;
         }
+    }
+    /* the picture read back from the GPU (nshvc_picture), the CPU's exactly
+       (the PSP's: none for a frame with a canvas shown, drawn only at the
+       target's resolution) */
+    if (!(ppu_frame_presents(ppu_frame()) & 6) || strcmp(rr_name(), "psp")) {
+        int gw, gh;
+        const uint32_t *g = nshvc_picture(&gw, &gh);
+        long n = 0;
+        if (gw != pw || gh != ph) {
+            n = 1;
+        } else {
+            for (i = 0; i < pw * ph; i++)
+                n += g[i] != px[i];
+        }
+        if (n && !rr_pic_bad)
+            fprintf(stderr, "rrcheck: frame %ld: the picture read back differs in %ld pixels (%d x %d, %d x %d)\n", frame_no, n,
+                    gw, gh, pw, ph);
+        rr_pic_bad += n != 0;
     }
     rr_frames++;
     if (bad) {
@@ -1182,8 +1276,9 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         /* each frame presented, the renderer open from the start (its
            GPU memory lent from the first frame: nshvc_ext_ge_vram) */
         const char *lf = getenv("NSHVC_FPS_LOG");
-        if (!rr_open())
+        if (!rr_opened && !rr_open())
             nshvc_fatal("NSHVC_PRESENT: the renderer cannot open");
+        rr_opened = 1;
         if (lf && !(fps_log = fopen(lf, "w")))
             nshvc_fatal("NSHVC_FPS_LOG: cannot write %s", lf);
         if (fps_log)
@@ -1215,10 +1310,11 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     if (!headless) {
         host_thread_interactive();
         host_window_open(PPU_WIDTH, 224, snes_cart.title);
-        if (!rr_open()) {
+        if (!rr_opened && !rr_open()) {
             host_message_box("The renderer could not start on this computer.", snes_cart.title);
             return 1;
         }
+        rr_opened = 1;
         s_rs = resample_new(NSHVC_DSP_RATE, OUT_RATE);
         host_audio_open(OUT_RATE, audio_cb, NULL);
     }
