@@ -1063,12 +1063,13 @@ static void weave_pixels(void)
 
 int ppu_woven(int *w, int *h, int from[2])
 {
-    if (!frames_done || !finished->interlace || woven_of != frames_done || woven_from[0] > 1 || woven_from[1] > 1)
+    if (!frames_done || !finished->interlace || woven_of != frames_done)
         return 0;
     *w = woven_w;
     *h = woven_h;
-    from[0] = woven_from[0];
-    from[1] = woven_from[1];
+    /* (a parity's rows the frame before's however old: weave_pixels's) */
+    from[0] = woven_from[0] ? 1 : 0;
+    from[1] = woven_from[1] ? 1 : 0;
     return 1;
 }
 

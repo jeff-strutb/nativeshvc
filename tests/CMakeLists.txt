@@ -41,6 +41,10 @@ target_include_directories(waits PRIVATE ${PROJECT_SOURCE_DIR}/src/console)
 set_target_properties(waits PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
 
+# interlaced frames presented, woven (with NSHVC_RRCHECK=1 on each renderer)
+add_executable(woven_check unit/woven_check.c)
+target_link_libraries(woven_check PRIVATE nshvc)
+set_target_properties(woven_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 add_executable(overlay_check unit/overlay_check.c)
 target_include_directories(overlay_check PRIVATE ${PROJECT_SOURCE_DIR}/src/render ${PROJECT_SOURCE_DIR}/src/host)
 target_link_libraries(overlay_check PRIVATE nshvc)

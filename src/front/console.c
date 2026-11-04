@@ -442,6 +442,8 @@ static void canvas_scale(int w, int h)
     ppu_set_canvas_scale(kx > ky ? kx : ky);
 }
 
+static long cpu_frames;                      /* frames drawn from the CPU's picture or records (rr_image, rr_mode7) */
+
 /* The last frame's picture over target rectangle d: drawn by the
    renderer's compositor from the frame's description where it has one
    (render/compose_body.h; NSHVC_COMPOSE=0: never), else the PPU's picture
@@ -519,6 +521,7 @@ static void show_picture(const int d[4])
         }
     }
     px = ppu_picture(&pw, &ph);
+    cpu_frames++;
     rr_image(px, pw, ph, d);
 }
 
@@ -806,8 +809,10 @@ static void show(void)
         ;                                /* no backdrop could be made: black */
     else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(w, h, d))
         ;
-    else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && mode7_prepare(w, h, &m, &smp))
+    else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && mode7_prepare(w, h, &m, &smp)) {
+        cpu_frames++;
         rr_mode7(&m, d, &smp);
+    }
     else
         show_picture(d);
     draw_overlays(tw, th);
@@ -827,8 +832,8 @@ static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames;
 
 static void rr_report(void)
 {
-    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 or a canvas presented), %ld differ (first at frame %ld), %ld pixels\n",
-            rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels);
+    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 or a canvas presented), %ld differ (first at frame %ld), %ld pixels; %ld from the CPU\n",
+            rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels, cpu_frames);
 }
 
 static void rr_check(void)
@@ -871,8 +876,10 @@ static void rr_check(void)
         gpu = show_mode7(tw, th, d);
         if (!mode7_prepare(tw, th, &m, &smp))
             nshvc_fatal("rrcheck: no record for the frame");
-        if (!gpu)
+        if (!gpu) {
+            cpu_frames++;
             rr_mode7(&m, d, &smp);
+        }
         rr_ref_mode7(want, tw, th, &m, d, &smp);
         rr_m7_frames++;
     } else {

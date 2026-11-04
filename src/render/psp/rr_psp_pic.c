@@ -832,8 +832,12 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
        clear: a tile's colour 0 is), drawn a run of rows at a time, each
        priority a sprite of a byte a block, magnified; direct colour (its
        palette bits the tile's) a sprite a block */
-    int bytes = !(kind == 2 && direct);
+    int bytes = !(kind == 2 && direct), i0;
     b0 = cp_floor_to(x0 - sl, m);
+    /* (each block its own byte of the row, counted from the block at the
+       screen's column 0: the GE reads the row when the list runs, after
+       every span of the band has written its blocks) */
+    i0 = (b0 - cp_floor_to(-sl, m)) / m;
     if (bytes) {
         if (!s_mos && !(s_mos = (uint8_t(*)[2][PIC_H][512])memalign(64, 4 * sizeof *s_mos)))
             nshvc_fatal("no memory for mosaic");
@@ -854,7 +858,7 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
                first meets it, each block then its pixel alone */
             U32 yy = (my + vofs) & 0x3FFu, mx = (1u << xs) - 1u, tcur = ~0u, base = 0, pr = 0, hf = 0;
             const uint8_t *row[2] = { NULL, NULL };
-            uint8_t *o[2] = { s_mos[n][0][ra], s_mos[n][1][ra] };
+            uint8_t *o[2] = { s_mos[n][0][ra] + i0, s_mos[n][1][ra] + i0 };
             int nbk = (x1 - sl - b0 + m - 1) / m;
             memset(o[0], 0, (size_t)nbk);
             memset(o[1], 0, (size_t)nbk);
@@ -944,8 +948,8 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
                 int u = tile_u(t) + (int)(px & 7u), w = tile_v(t) + (int)(py & 7u);
                 U32 c = kind == 2 ? img[w * 128 + u] : (U32)(img[w * 64 + u / 2] >> ((u & 1) * 4)) & 15u;
                 U32 ci = !c ? 0u : kind == 0 ? (mode == 0u ? (U32)n * 32u : 0u) + pal * 4u + c : kind == 1 ? pal * 16u + c : c;
-                s_mos[n][prio][ra][nb] = (uint8_t)ci;
-                s_mos[n][prio ^ 1u][ra][nb] = 0;
+                s_mos[n][prio][ra][i0 + nb] = (uint8_t)ci;
+                s_mos[n][prio ^ 1u][ra][i0 + nb] = 0;
                 continue;
             }
             b = kind == 0 ? (int)((mode == 0u ? (U32)n * 8u : 0u) + pal) : (int)pal;
@@ -976,12 +980,12 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
             sceKernelDcacheWritebackRange(s_mos[n][q][ra], 512);
             sceGuTexImage(0, 512, 1, 512, s_mos[n][q][ra]);
             sceGuTexFlush();
-            v[0].u = 0;
+            v[0].u = (short)i0;
             v[0].v = 0;
             v[0].x = (short)(b0 + sl);
             v[0].y = (short)(ra - s_y0);
             v[0].z = (short)z[q];
-            v[1].u = (short)nb;
+            v[1].u = (short)(i0 + nb);
             v[1].v = 1;
             v[1].x = (short)(b0 + sl + nb * m);
             v[1].y = (short)(rb - s_y0);
@@ -1431,8 +1435,7 @@ static int drawable(void)
 {
     U32 r, ph = FD_(CP_PH), keys[ATLASES];
     int nkeys = 0;
-    if ((FD_(CP_PW) != FD_(CP_SW) && FD_(CP_PW) != 2u * FD_(CP_SW)) || FD_(CP_PW) > 512u || ph > PIC_H ||
-        (FD_(CP_CVON) && s_cv < 0))
+    if ((FD_(CP_PW) != FD_(CP_SW) && FD_(CP_PW) != 2u * FD_(CP_SW)) || FD_(CP_PW) > 512u || ph > PIC_H)
         return 0;
     for (r = 0; r < ph; r++) {
         U32 ri = FD_(CP_ROWS) + 4u * r, p0 = FD_(ri), np = FD_(ri + 1u), k;
@@ -1443,6 +1446,15 @@ static int drawable(void)
                 continue;
             mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
             tmts = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
+            /* a canvas presented on a line of a frame drawn as any picture
+               (not the canvas path's): none (ppu.c pres_is_cv: elsewhere
+               the canvas shows nothing, its layer there its tiles) */
+            if (FD_(CP_CVON) && s_cv < 0) {
+                U32 cn = FD_(CP_CVLAYER), mos = cp_b(si, U_(CP_S_INIDISP), 3u);
+                if (mode != 7u && cp_bpp(mode, cn) && ((tmts >> cn) & 1u) && mode != 5u && mode != 6u &&
+                    !(cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) && !(((mos >> cn) & 1u) && (mos >> 4)))
+                    return 0;
+            }
             /* (the windows' columns, map and edges: cp_win's, spans' own)
                hires with the screen interlaced: 512 x 448, past the PSP's
                picture (its 122,880 pixels: 512 x 240, or 256 x 480 woven) */
