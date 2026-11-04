@@ -80,6 +80,8 @@ static int s_pw = PIC_W, s_band = BAND;
 #define F_BACK 0x80                          /* the sub screen's: its backdrop */
 #define F_W 0x10                             /* a canvas frame's: the canvas, opaque, would be on top here */
 #define F_DIR 0x20                           /* a full-colour canvas's: its texel a colour, on top of the main screen */
+#define F_HIDE 0x40                          /* a screen's, while a layer is drawn on a band whose rows' windows
+                                                differ: the layer's window hides it here (hide_mask) */
 
 #define CLEAR 0x00FFFFFFu                    /* a tile's colour 0 */
 
@@ -509,18 +511,48 @@ static void put(TV *o, int x, int y, int w, int h, int u, int v, int hf, int vf,
     o[1].z = (short)z;
 }
 
-/* the spans of columns x0-x1 (the picture's) where `keep(x)` holds */
+/* the spans of columns x0-x1 (the picture's) where `keep(x)` holds: keep
+   a function of the loaded state's windows (cp_win), so the same between
+   the columns where either window's test can change (cp_win_in: its WH
+   edges and the clamps at the console's columns 0 and 256, the map's
+   edges, the columns'), and taken once each piece */
 typedef int (*SpanFn)(uint32_t si, int n, int x);
 static int spans(uint32_t si, int n, int x0, int x1, SpanFn keep, int out[][2])
 {
-    int x, k = 0, on = 0;
-    for (x = x0; x < x1; x++) {
-        int v = keep(si, n, x);
+    int p[16], np = 0, i, j, k = 0, on = 0, sl = (int)FD_(CP_SL), w;
+    U32 f = cp_b(si, U_(CP_S_FIXED), 3u);
+    for (w = 0; w < 2; w++) {
+        int l = (int)cp_b(si, U_(CP_S_WH), 2u * (U32)w), r = (int)cp_b(si, U_(CP_S_WH), 2u * (U32)w + 1u);
+        p[np++] = sl + l;
+        p[np++] = sl + r + 1;
+        if ((f >> (2u + (U32)w)) & 1u) {
+            p[np++] = (int)cp_h(si, U_(CP_S_WCOL) + (U32)w, 0u);
+            p[np++] = (int)cp_h(si, U_(CP_S_WCOL) + (U32)w, 1u) + 1;
+        }
+        if (f & 2u) {
+            p[np++] = (int)cp_wmap(si, l);
+            p[np++] = (int)cp_wmap(si, r + 1);
+        }
+    }
+    p[np++] = sl;
+    p[np++] = sl + 256;
+    /* the pieces' starts within x0-x1, in order */
+    for (i = 1; i < np; i++)
+        for (j = i; j > 0 && p[j - 1] > p[j]; j--) {
+            int t = p[j];
+            p[j] = p[j - 1];
+            p[j - 1] = t;
+        }
+    for (i = -1; i < np; i++) {
+        int a = i < 0 ? x0 : p[i], v;
+        if (a < x0 || a >= x1 || (i >= 0 && a == x0) || (i > 0 && p[i - 1] == a))
+            continue;
+        v = keep(si, n, a);
         if (v && !on) {
-            out[k][0] = x;
+            out[k][0] = a;
             on = 1;
         } else if (!v && on) {
-            out[k++][1] = x;
+            out[k++][1] = a;
             on = 0;
         }
     }
@@ -548,6 +580,77 @@ static int region_of(uint32_t si, int which, int x)
 
 static int clipped(uint32_t si, int n, int x) { (void)n; return region_of(si, 0, x); }
 static int prevented(uint32_t si, int n, int x) { (void)n; return region_of(si, 1, x); }
+static int hidden(uint32_t si, int n, int x) { return !shows(si, n, x); }
+
+/* A band whose rows differ in their windows alone (their edges: WH, the
+   columns, the map, the edges' flags; draw_picture's bands) is drawn as
+   one: each layer over the whole band, kept off the pixels its window
+   hides on each row by F_HIDE (hide_mask, then the stencil's test, sfunc),
+   and the colour window's regions each row's own (row_spans). */
+static int s_wv;                             /* the band's rows' windows differ */
+static uint32_t row_state(int r);
+
+/* layer n's (4 the sprites) F_HIDE over rows r0-r1, columns x0-x1, of the
+   screen drawn (s_which): cleared, then set where each row's window hides
+   it; the depth test left on, the stencil's operation the layers' */
+static void hide_mask(int n, int r0, int r1, int x0, int x1)
+{
+    int r, k, ns, sp[130][2], nv = 0;
+    U32 keep[CP_ST];
+    CV *v;
+    room();
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+    sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HIDE & 0xFF) << 24);
+    sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+    scissor(x0, r0 - s_y0, x1, r1 - s_y0);
+    rect(x0, r0 - s_y0, x1, r1 - s_y0, 0);
+    v = (CV *)sceGuGetMemory((unsigned)(r1 - r0) * 4u * 2u * sizeof(CV));
+    memcpy(keep, cp_st, sizeof keep);
+    for (r = r0; r < r1; r++) {
+        cp_load(row_state(r));               /* (cp_b's state: the row's own) */
+        ns = spans(row_state(r), n, x0, x1, hidden, sp);
+        if (ns > 4)
+            nshvc_fatal("a window's row in %d spans", ns);
+        for (k = 0; k < ns; k++, nv++) {
+            v[2 * nv].c = v[2 * nv + 1].c = 0;
+            v[2 * nv].x = (short)sp[k][0];
+            v[2 * nv].y = (short)(r - s_y0);
+            v[2 * nv + 1].x = (short)sp[k][1];
+            v[2 * nv + 1].y = (short)(r + 1 - s_y0);
+            v[2 * nv].z = v[2 * nv + 1].z = 0;
+        }
+    }
+    memcpy(cp_st, keep, sizeof keep);
+    if (nv) {
+        sceGuStencilFunc(GU_ALWAYS, F_HIDE, 0xFF);
+        sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2 * nv, 0, v);
+    }
+    sceGuPixelMask(0);
+    sceGuEnable(GU_DEPTH_TEST);
+}
+
+/* the stencil's test and value for a layer's pixels: always (or, s_wv,
+   where F_HIDE is not), value ref */
+static void sfunc(int ref)
+{
+    if (s_wv)
+        sceGuStencilFunc(GU_EQUAL, ref, F_HIDE);
+    else
+        sceGuStencilFunc(GU_ALWAYS, ref, 0xFF);
+}
+
+/* layer n's spans on the band: its window's (one state), or (s_wv) the
+   whole band, the mask made (hide_mask) */
+static int layer_spans(uint32_t si, int n, int r0, int r1, int x0, int x1, int out[][2])
+{
+    if (!s_wv)
+        return spans(si, n, x0, x1, shows, out);
+    hide_mask(n, r0, r1, x0, x1);
+    out[0][0] = x0;
+    out[0][1] = x1;
+    return 1;
+}
 
 /* the tiles of background n over rows r0-r1 (the band's, dr0 the first's
    hardware row) and columns x0-x1, at their depths, by the texture they
@@ -1309,8 +1412,8 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
             }
             if (!((on >> n) & 1u))
                 continue;
-            sceGuStencilFunc(GU_ALWAYS, own ? (int)((cgadsub >> n) & 1u) : 0, 0xFF);
-            ns = spans(si, (int)n, x0, x1, shows, sp);
+            ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
+            sfunc(own ? (int)((cgadsub >> n) & 1u) : 0);
             for (k = 0; k < ns; k++) {
                 scissor(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0);
                 draw_m7(si, (int)n, r0, r1, sp[k][0], sp[k][1]);
@@ -1320,8 +1423,8 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     for (n = 0; n < 4u && mode != 7u; n++) {
         if (!cp_bpp(mode, n) || !((on >> n) & 1u) || (int)n == s_cv)
             continue;
-        sceGuStencilFunc(GU_ALWAYS, own ? (int)((cgadsub >> n) & 1u) : 0, 0xFF);
-        ns = spans(si, (int)n, x0, x1, shows, sp);
+        ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
+        sfunc(own ? (int)((cgadsub >> n) & 1u) : 0);
         for (k = 0; k < ns; k++) {
             scissor(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0);
             draw_bg(si, (int)n, r0, r1, dr0, sp[k][0], sp[k][1], hires == 1 ? (which ? 0 : 1) : -1);
@@ -1330,14 +1433,14 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     if ((on >> 4) & 1u) {
         /* the sprite buffer at each priority's depth, its maths' bit its stencil's */
         sceGuDisable(GU_COLOR_TEST);
+        ns = layer_spans(si, 4, r0, r1, x0, x1, sp);
         sceGuEnable(GU_ALPHA_TEST);
         sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-        ns = spans(si, 4, x0, x1, shows, sp);
         for (p = 0; p < 4; p++)
             for (m = 0; m < 2; m++) {
                 U32 z = cp_zobj(mode, (U32)p);
                 sceGuAlphaFunc(GU_EQUAL, 1 | p << 1 | m << 3, 0x0F);
-                sceGuStencilFunc(GU_ALWAYS, own ? (int)(m && ((cgadsub >> 4) & 1u)) : 0, 0xFF);
+                sfunc(own ? (int)(m && ((cgadsub >> 4) & 1u)) : 0);
                 for (k = 0; k < ns; k++) {
                     TV *v;
                     room();
@@ -1368,10 +1471,10 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
            show), F_W */
         int z = (int)cp_zbg(bgmode, (U32)s_cv, (FD_(CP_CVSCREEN) >> 1) & 1u);
         sceGuDisable(GU_COLOR_TEST);
+        ns = layer_spans(si, s_cv, r0, r1, x0, x1, sp);
         sceGuDepthMask(GU_TRUE);
-        sceGuStencilFunc(GU_ALWAYS, F_W, 0xFF);
+        sfunc(F_W);
         sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_W & 0xFF) << 24);
-        ns = spans(si, s_cv, x0, x1, shows, sp);
         for (k = 0; k < ns; k++) {
             room();
             scissor(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0);
@@ -1382,6 +1485,16 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     }
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_COLOR_TEST);
+    if (s_wv) {
+        /* (F_HIDE cleared: the finish's tests not to see it) */
+        sceGuDisable(GU_ALPHA_TEST);
+        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HIDE & 0xFF) << 24);
+        scissor(x0, r0 - s_y0, x1, r1 - s_y0);
+        rect(x0, r0 - s_y0, x1, r1 - s_y0, 0);
+        sceGuPixelMask(0);
+    }
 }
 
 /* (stripe rows' states, from the description: the row's part's) */
@@ -1450,12 +1563,38 @@ static void index_band(uint32_t si, int r0, int r1, int x0, int x1, int screens)
    even pixels (own the sub screen, other the main), the rows cleared and
    their odd pixels marked in the picture's stencil; 3 its odd pixels (own
    the main), its first black (cp_pixel) */
+/* the colour window's region (fn: clipped, prevented) over rows r0-r1,
+   columns x0-x1: rectangles, the state's spans (or, s_wv, each row's) */
+static void region_rects(uint32_t si, int r0, int r1, int x0, int x1, SpanFn fn)
+{
+    int sp[130][2], ns, k, r;
+    U32 keep[CP_ST];
+    if (!s_wv) {
+        ns = spans(si, 0, x0, x1, fn, sp);
+        for (k = 0; k < ns; k++) {
+            scissor(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0);
+            rect(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0, 0);
+        }
+        return;
+    }
+    scissor(x0, r0 - s_y0, x1, r1 - s_y0);
+    memcpy(keep, cp_st, sizeof keep);
+    for (r = r0; r < r1; r++) {
+        room();
+        cp_load(row_state(r));               /* (cp_b's state: the row's own) */
+        ns = spans(row_state(r), 0, x0, x1, fn, sp);
+        for (k = 0; k < ns; k++)
+            rect(sp[k][0], r - s_y0, sp[k][1], r + 1 - s_y0, 0);
+    }
+    memcpy(cp_st, keep, sizeof keep);
+}
+
 static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned own, unsigned other, int out)
 {
     U32 cgwsel = cp_b(si, U_(CP_S_TSW), 1u), cgadsub = cp_b(si, U_(CP_S_TSW), 2u);
     U32 inidisp = cp_b(si, U_(CP_S_INIDISP), 0u), bright = inidisp & 0x0Fu;
     U32 fixc = cp_b(si, U_(CP_S_FIXED), 0u) | cp_b(si, U_(CP_S_FIXED), 1u) << 5 | cp_b(si, U_(CP_S_FIXED), 2u) << 10;
-    int sp[130][2], ns, k, y0 = r0 - s_y0, y1 = r1 - s_y0;
+    int k, y0 = r0 - s_y0, y1 = r1 - s_y0;
     int sc = out ? 2 : 1;
     room();
     target(own, s_pw);
@@ -1466,18 +1605,10 @@ static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned ow
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
     sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_CLIP & 0xFF) << 24);
     sceGuStencilFunc(GU_ALWAYS, F_CLIP, 0xFF);
-    ns = spans(si, 0, x0, x1, clipped, sp);
-    for (k = 0; k < ns; k++) {
-        scissor(sp[k][0], y0, sp[k][1], y1);
-        rect(sp[k][0], y0, sp[k][1], y1, 0);
-    }
+    region_rects(si, r0, r1, x0, x1, clipped);
     sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_PREVENT & 0xFF) << 24);
     sceGuStencilFunc(GU_ALWAYS, F_PREVENT, 0xFF);
-    ns = spans(si, 0, x0, x1, prevented, sp);
-    for (k = 0; k < ns; k++) {
-        scissor(sp[k][0], y0, sp[k][1], y1);
-        rect(sp[k][0], y0, sp[k][1], y1, 0);
-    }
+    region_rects(si, r0, r1, x0, x1, prevented);
     scissor(x0, y0, x1, y1);
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
     /* clipped: black */
@@ -1891,21 +2022,25 @@ static void cv_across_list(int j) { cv_across(j ? V_H1 : V_H0); }
 
 /* the canvas's colours for a state: its texel's value (by its layer's
    colour depth) a colour as the GE's, 0 CLEAR */
+/* the canvas's palettes made this frame, at most (each picture row's its
+   own, and more: the GE run to its end before the slots are used again) */
+#define CV_CLUTS 256
 static const uint32_t *cv_clut(uint32_t si)
 {
-    static uint32_t __attribute__((aligned(64))) tab[8][256];
-    static uint32_t key[8][3], frame[8];
+    static uint32_t __attribute__((aligned(64))) tab[CV_CLUTS][256];
+    static uint32_t key[CV_CLUTS][3], frame[CV_CLUTS];
+    static int last;
     U32 mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u, n = (U32)s_cv, bpp = cp_bpp(mode, n);
     U32 pal = (FD_(CP_CVSCREEN) >> 2) & 7u, pw = cp_sw(si, U_(CP_S_PAL));
     U32 direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
     int i, k;
     Clut *c;
-    for (i = 0; i < 8; i++)
-        if (frame[i] == s_frame && key[i][0] == cp_fdb + pw && key[i][1] == mode && key[i][2] == direct)
-            return tab[i];
-    for (i = 0; i < 8 && frame[i] == s_frame; i++)
-        ;
-    if (i == 8) {
+    if (frame[last] == s_frame && key[last][0] == cp_fdb + pw && key[last][1] == mode && key[last][2] == direct)
+        return tab[last];
+    for (i = 0; i < CV_CLUTS && frame[i] == s_frame; i++)
+        if (key[i][0] == cp_fdb + pw && key[i][1] == mode && key[i][2] == direct)
+            return tab[last = i];
+    if (i == CV_CLUTS) {
         /* (every one this frame's: the list run, the GE done with them) */
         list_run();
         list_begin();
@@ -1926,6 +2061,7 @@ static const uint32_t *cv_clut(uint32_t si)
     key[i][1] = mode;
     key[i][2] = direct;
     frame[i] = s_frame;
+    last = i;
     return tab[i];
 }
 
@@ -1941,73 +2077,121 @@ static void cv_tex(int psm)
     sceGuTexFlush();
 }
 
+/* the canvas's full colours over the window's screens' rows k0-k1 where
+   it would be on top (F_W; its indices cv_index_rows's, before), and the
+   main screen's F_DIR there */
 static void cv_insert(uint32_t si, int Y, int k0, int k1)
 {
     U32 mode, cgadsub;
-    const uint32_t *tab;
-    int sc, pass;
+    int sc;
     (void)Y;
     cp_load(si);                             /* (cp_b's state) */
     mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
     cgadsub = cp_b(si, U_(CP_S_TSW), 2u);
-    if ((cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u) || !cp_bpp(mode, (U32)s_cv))
+    if (!s_cv32 || (cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u) || !cp_bpp(mode, (U32)s_cv))
         return;
-    tab = cv_clut(si);
     room();
-    sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
-    sceGuClutLoad(32, tab);
     sceGuDisable(GU_BLEND);
     sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_COLOR_TEST);
     sceGuEnable(GU_STENCIL_TEST);
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
-    /* the indices through the palette (a colour 0's CLEAR dropped), then
-       the full colours (opaque: their own colour, the finish's after) */
-    for (pass = 0; pass < (s_cv32 ? 2 : 1); pass++) {
-        if (pass == 0) {
-            cv_tex(GU_PSM_T32);
-            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-            sceGuEnable(GU_COLOR_TEST);
-            sceGuColorFunc(GU_NOTEQUAL, CLEAR, 0xFFFFFF);
-        } else {
-            sceGuDisable(GU_COLOR_TEST);
-            cv_tex(GU_PSM_8888);
-            sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-            sceGuEnable(GU_ALPHA_TEST);
-            sceGuAlphaFunc(GU_EQUAL, CV_RGB, CV_RGB);
-        }
-        for (sc = 0; sc < 2; sc++) {
-            wtarget(sc ? V_WS : V_WM);
-            if (!s_prebuild)
-                scissor(0, k0, s_cw.n, k1);
-            /* (tested F_W, written through the pixel mask: the one bit) */
-            if (sc) {
-                sceGuStencilFunc(GU_EQUAL, F_W, F_W);
-                sceGuPixelMask((uint32_t)(~F_BACK & 0xFF) << 24);
-            } else {
-                sceGuStencilFunc(GU_EQUAL, (int)(F_W | ((cgadsub >> s_cv) & 1u ? F_MATH : 0u)), F_W);
-                sceGuPixelMask((uint32_t)(~F_MATH & 0xFF) << 24);
-            }
-            sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
-        }
-    }
-    sceGuDisable(GU_COLOR_TEST);
-    if (s_cv32) {
-        /* the main screen's F_DIR: cleared, then set where the texel is a
-           colour and the canvas is on top (F_W) */
-        wtarget(V_WM);
+    cv_tex(GU_PSM_8888);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuEnable(GU_ALPHA_TEST);
+    sceGuAlphaFunc(GU_EQUAL, CV_RGB, CV_RGB);
+    for (sc = 0; sc < 2; sc++) {
+        wtarget(sc ? V_WS : V_WM);
         if (!s_prebuild)
             scissor(0, k0, s_cw.n, k1);
-        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
-        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
-        rect(0, k0, s_cw.n, k1, 0);
-        cv_tex(GU_PSM_8888);
-        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-        sceGuStencilFunc(GU_EQUAL, F_W | F_DIR, F_W);
+        /* (tested F_W, written through the pixel mask: the one bit) */
+        if (sc) {
+            sceGuStencilFunc(GU_EQUAL, F_W, F_W);
+            sceGuPixelMask((uint32_t)(~F_BACK & 0xFF) << 24);
+        } else {
+            sceGuStencilFunc(GU_EQUAL, (int)(F_W | ((cgadsub >> s_cv) & 1u ? F_MATH : 0u)), F_W);
+            sceGuPixelMask((uint32_t)(~F_MATH & 0xFF) << 24);
+        }
         sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
     }
+    /* the main screen's F_DIR: cleared, then set where the texel is a
+       colour and the canvas is on top (F_W) */
+    wtarget(V_WM);
+    if (!s_prebuild)
+        scissor(0, k0, s_cw.n, k1);
+    sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+    sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+    rect(0, k0, s_cw.n, k1, 0);
+    cv_tex(GU_PSM_8888);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuStencilFunc(GU_EQUAL, F_W | F_DIR, F_W);
+    sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
     sceGuDisable(GU_ALPHA_TEST);
     sceGuPixelMask(0);
     sceGuDisable(GU_STENCIL_TEST);
+}
+
+/* the canvas's indices over the window's screens' rows k0-k1 of the group
+   from target row Ya (picture rows rj, one finish's: mode and maths the same) where it would
+   be on top (F_W), through each row's palette (a colour 0's CLEAR
+   dropped): a CLUT and a sprite each run of rows of one palette */
+static const uint32_t *s_rowclut[PIC_H];    /* each picture row's canvas palette, made in frame s_rowclut_f[r] */
+static unsigned s_rowclut_f[PIC_H];
+
+static const uint32_t *row_clut(int r)
+{
+    if (s_rowclut_f[r] != s_frame) {
+        cp_load(row_state(r));
+        s_rowclut[r] = cv_clut(row_state(r));
+        s_rowclut_f[r] = s_frame;
+    }
+    return s_rowclut[r];
+}
+
+static void cv_index_rows(int Ya, const int16_t *rj, int k0, int k1)
+{
+    uint32_t si = row_state(rj[Ya + k0 - s_cw.Y0]);
+    U32 mode, cgadsub;
+    int sc, k, ka;
+    cp_load(si);
+    mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
+    cgadsub = cp_b(si, U_(CP_S_TSW), 2u);
+    if ((cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u) || !cp_bpp(mode, (U32)s_cv))
+        return;
+    room();
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuEnable(GU_STENCIL_TEST);
+    sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+    cv_tex(GU_PSM_T32);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sceGuEnable(GU_COLOR_TEST);
+    sceGuColorFunc(GU_NOTEQUAL, CLEAR, 0xFFFFFF);
+    sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+    for (sc = 0; sc < 2; sc++) {
+        wtarget(sc ? V_WS : V_WM);
+        if (sc) {
+            sceGuStencilFunc(GU_EQUAL, F_W, F_W);
+            sceGuPixelMask((uint32_t)(~F_BACK & 0xFF) << 24);
+        } else {
+            sceGuStencilFunc(GU_EQUAL, (int)(F_W | ((cgadsub >> s_cv) & 1u ? F_MATH : 0u)), F_W);
+            sceGuPixelMask((uint32_t)(~F_MATH & 0xFF) << 24);
+        }
+        for (k = k0; k < k1; k = ka) {
+            const uint32_t *tab = row_clut(rj[Ya + k - s_cw.Y0]);
+            for (ka = k + 1; ka < k1 && row_clut(rj[Ya + ka - s_cw.Y0]) == tab; ka++)
+                ;
+            room();
+            sceGuClutLoad(32, tab);
+            scissor(0, k, s_cw.n, ka);
+            sprite1(0, k, 0, k, s_cw.n, ka - k);
+        }
+    }
+    sceGuDisable(GU_COLOR_TEST);
+    sceGuPixelMask(0);
+    sceGuDisable(GU_STENCIL_TEST);
+    cp_load(si);
 }
 
 /* finish_band's colour maths and output on the window's screens' rows
@@ -2139,7 +2323,6 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
    first) */
 static void cv_marks(uint32_t si, int r0, int r1, int x0, int x1)
 {
-    int sp[130][2], ns, k, y0 = r0 - s_y0, y1 = r1 - s_y0;
     room();
     target(V_MAIN, s_pw);
     sceGuDisable(GU_DEPTH_TEST);
@@ -2148,18 +2331,10 @@ static void cv_marks(uint32_t si, int r0, int r1, int x0, int x1)
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
     sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_CLIP & 0xFF) << 24);
     sceGuStencilFunc(GU_ALWAYS, F_CLIP, 0xFF);
-    ns = spans(si, 0, x0, x1, clipped, sp);
-    for (k = 0; k < ns; k++) {
-        scissor(sp[k][0], y0, sp[k][1], y1);
-        rect(sp[k][0], y0, sp[k][1], y1, 0);
-    }
+    region_rects(si, r0, r1, x0, x1, clipped);
     sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_PREVENT & 0xFF) << 24);
     sceGuStencilFunc(GU_ALWAYS, F_PREVENT, 0xFF);
-    ns = spans(si, 0, x0, x1, prevented, sp);
-    for (k = 0; k < ns; k++) {
-        scissor(sp[k][0], y0, sp[k][1], y1);
-        rect(sp[k][0], y0, sp[k][1], y1, 0);
-    }
+    region_rects(si, r0, r1, x0, x1, prevented);
     sceGuPixelMask(0);
     sceGuDisable(GU_STENCIL_TEST);
 }
@@ -2478,6 +2653,7 @@ static void cv_group(const CvGroup *g)
                 while (k1 < nr && s_cw.run[rj[g->Ya + k1 - s_cw.Y0]] == run)
                     k1++;
                 int c = s_cvcls[run];
+                cv_index_rows(g->Ya, rj, k, k1);
                 if (c >= 0) {
                     /* (its lists: the rows scissored) */
                     room();
@@ -2540,7 +2716,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
     for (s0 = 0; s0 < h; s0 = sown) {
         /* (a canvas frame's stripe its BAND - 1 rows and the next one's
            first: its target rows' lower picture rows) */
-        int s1 = s0 + s_band < h ? s0 + s_band : h, band_end[BAND], band_ix[BAND], band_fx[BAND];
+        int s1 = s0 + s_band < h ? s0 + s_band : h, band_end[BAND], band_ix[BAND], band_fx[BAND], band_wv[BAND];
         sown = s_cv >= 0 && s1 < h ? s1 - 1 : s1;
         s_y0 = s0;
         /* the bands: rows of one part whose states are the same (a
@@ -2550,7 +2726,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
         for (r = s0; r < s1;) {
             U32 ri = FD_(CP_ROWS) + 4u * (U32)r, p0 = FD_(ri), np = FD_(ri + 1u);
             I32 dr0 = I_(FD_(ri + 2u));
-            int r1 = r + 1, ix = 0, fx = 0;
+            int r1 = r + 1, ix = 0, fx = 0, wv = 0;
             if (np == 1u) {
                 U32 si = FD_(FD_(CP_PARTS) + 4u * p0 + 1u);
                 const uint32_t *a = &FD_(FD_(CP_STATES) + si * U_(CP_ST));
@@ -2561,15 +2737,23 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
                     if (FD_(rj + 1u) != 1u || I_(FD_(rj + 2u)) != dr0 + (r1 - r))
                         break;
                     if (sj != si && memcmp(a, b, CP_ST * sizeof(uint32_t))) {
-                        /* the fixed colour's bytes (not its word's window
-                           flags), and the palette (not in direct colour) */
-                        if (((a[CP_S_TSW] | b[CP_S_TSW]) & 0x100u) || ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0xFF000000u) ||
-                            memcmp(a, b, CP_S_FIXED * sizeof(uint32_t)) ||
-                            memcmp(a + CP_S_FIXED + 1, b + CP_S_FIXED + 1, (CP_S_PAL - CP_S_FIXED - 1) * sizeof(uint32_t)) ||
-                            memcmp(a + CP_S_PAL + 1, b + CP_S_PAL + 1, (CP_ST - CP_S_PAL - 1) * sizeof(uint32_t)))
+                        /* the fixed colour's bytes, the palette (not in
+                           direct colour), and the windows' edges (WH, the
+                           columns, the map, the edges' flags: hide_mask's) */
+                        int w;
+                        if ((a[CP_S_TSW] | b[CP_S_TSW]) & 0x100u)
+                            break;
+                        for (w = 0; w < CP_ST; w++)
+                            if (a[w] != b[w] && w != CP_S_FIXED && w != CP_S_PAL && w != CP_S_WH && w != CP_S_WCOL &&
+                                w != CP_S_WCOL + 1 && w != CP_S_WMAP && w != CP_S_WMAP + 1)
+                                break;
+                        if (w < CP_ST)
                             break;
                         ix |= a[CP_S_PAL] != b[CP_S_PAL];
-                        fx |= a[CP_S_FIXED] != b[CP_S_FIXED];
+                        fx |= ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0x00FFFFFFu) != 0u;
+                        wv |= a[CP_S_WH] != b[CP_S_WH] || a[CP_S_WCOL] != b[CP_S_WCOL] || a[CP_S_WCOL + 1] != b[CP_S_WCOL + 1] ||
+                              a[CP_S_WMAP] != b[CP_S_WMAP] || a[CP_S_WMAP + 1] != b[CP_S_WMAP + 1] ||
+                              ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0xFF000000u) != 0u;
                     }
                     r1++;
                 }
@@ -2578,6 +2762,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
             for (; r < r1; r++) {
                 band_ix[r - s0] = ix;
                 band_fx[r - s0] = fx;
+                band_wv[r - s0] = wv;
             }
         }
         /* the sprites, a row (and part) at a time */
@@ -2619,6 +2804,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
             int r1 = band_end[r - s0], which;
             s_index = band_ix[r - s0];
             s_fx = band_fx[r - s0];
+            s_wv = band_wv[r - s0];
             for (k = 0; k < np; k++) {
                 U32 part = p0 + k, si = FD_(FD_(CP_PARTS) + 4u * part + 1u);
                 int x0 = k ? (int)(FD_(FD_(CP_PARTS) + 4u * part) + FD_(CP_SL)) : 0;     /* (the first from the screen's edge) */
@@ -2652,7 +2838,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
         if (s_cv >= 0)
             cv_window(s0, sown);
     }
-    s_index = s_fx = 0;
+    s_index = s_fx = s_wv = 0;
     list_run();
     *pw = w;
     *ph = h;
@@ -2766,19 +2952,17 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         s_cw.B[q] = (uint8_t)(256 - A > 255 ? 255 : 256 - A);
         s_cw.two[q] = fy > 0 && r1 != r0;
     }
-    /* the picture rows' runs of the same state (each row against the one
-       before) */
+    /* the picture rows' runs of one insert and finish (each row against
+       the one before): the same words of the state those read (cv_insert,
+       cv_finish: INIDISP's, TSW's, the fixed colour; the palette
+       cv_index_rows's and the windows the marks', each row's own) */
     for (r = 0; r < ph; r++) {
         int same = 0;
         if (r) {
             const uint32_t *a = &FD_(FD_(CP_STATES) + row_state((int)r) * U_(CP_ST));
             const uint32_t *b = &FD_(FD_(CP_STATES) + row_state((int)r - 1) * U_(CP_ST));
-            same = a == b;
-            if (!same) {
-                for (i = 0; i < CP_ST && a[i] == b[i]; i++)
-                    ;
-                same = i == CP_ST;
-            }
+            same = a == b || (a[CP_S_INIDISP] == b[CP_S_INIDISP] && a[CP_S_TSW] == b[CP_S_TSW] &&
+                              ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0x00FFFFFFu) == 0u);
         }
         s_cw.run[r] = (uint16_t)(same ? s_cw.run[r - 1] : r);
     }

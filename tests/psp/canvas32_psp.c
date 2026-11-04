@@ -21,6 +21,7 @@
  *              BG1 masked by window 2 (its edges HDMA's, each line), BG2 by
  *              window 1 (nshvc_ext_window_columns); the canvas's colour 1
  *              (CGRAM 81) rewritten each line by HDMA
+ *   windows    prevented's but CGRAM as it is (no HDMA to it)
  *
  *   canvas32_psp --headless --frames 64      (with NSHVC_RRCHECK=1)
  *
@@ -61,8 +62,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -116,7 +117,7 @@ static void hdma_prevented_tables(void)
     wr8(wh, 0);
 }
 
-static void hdma_prevented(void)
+static void hdma_prevented(int cgram)
 {
     static const uint8_t ch[3][5] = { { 0x00, 0x21, 0x00, 0x30, 0x7E }, { 0x02, 0x22, 0x00, 0x32, 0x7E }, { 0x01, 0x28, 0x00, 0x36, 0x7E } };
     int k, i;
@@ -124,7 +125,7 @@ static void hdma_prevented(void)
     for (k = 0; k < 3; k++)
         for (i = 0; i < 5; i++)
             wr8(0x004310 + 0x10u * (uint32_t)k + (uint32_t)i, ch[k][i]);
-    wr8(0x00420C, 0x0E);
+    wr8(0x00420C, (uint8_t)(cgram ? 0x0E : 0x08));
 }
 
 static void hdma(int on)
@@ -217,13 +218,14 @@ static void setup(int sc)
         w(0x31, 0x41);
         break;
     case S_PREVENTED:
+    case S_WINDOWS:
         w(0x2C, 0x03);
         w(0x2E, 0x03);                 /* BG1, BG2 windowed on the main screen */
         w(0x23, 0x28);                 /* BG1 window 2, BG2 window 1 */
         w(0x30, 0x32);                 /* maths prevented everywhere, the sub screen's */
         w(0x31, 0x03);
         nshvc_ext_window_columns(1, 60, 190);
-        hdma_prevented();
+        hdma_prevented(sc == S_PREVENTED);
         break;
     }
 }
