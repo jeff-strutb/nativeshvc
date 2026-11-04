@@ -389,6 +389,111 @@ static int compose(const uint32_t *desc, size_t words, int w, int h, const uint3
     return 1;
 }
 
+/* the pause's backdrop (rr_backdrop_make): the frame's cells, boxes in
+   floats, the tint; a cell's row 0 the frame's top */
+static const char k_bcell[] =
+    "#version 330 core\nuniform sampler2D t; uniform ivec4 P; out vec4 o;\n"
+    "void main() { ivec2 g = ivec2(gl_FragCoord.xy); vec4 s = vec4(0.0); float n = 0.0;\n"
+    "  for (int y = g.y * P.x; y < (g.y + 1) * P.x && y < P.z; y++)\n"
+    "    for (int x = g.x * P.x; x < (g.x + 1) * P.x && x < P.y; x++) {\n"
+    "      s += floor(texelFetch(t, ivec2(x, P.z - 1 - y), 0) * 255.0 + 0.5); n += 1.0; }\n"
+    "  o = s / n; }\n";
+static const char k_bbox[] =
+    "#version 330 core\nuniform sampler2D t; uniform ivec4 P; uniform int R; out vec4 o;\n"
+    "void main() { ivec2 g = ivec2(gl_FragCoord.xy); vec4 s = vec4(0.0);\n"
+    "  for (int i = -R; i <= R; i++) s += texelFetch(t, clamp(g + i * P.zw, ivec2(0), P.xy - 1), 0);\n"
+    "  o = s / float(2 * R + 1); }\n";
+static const char k_bfin[] =
+    "#version 330 core\nuniform sampler2D t; uniform vec4 T; out vec4 o;\n"
+    "void main() { vec4 c = texelFetch(t, ivec2(gl_FragCoord.xy), 0);\n"
+    "  vec3 v = c.rgb * (1.0 - T.a) + T.rgb * T.a;\n"
+    "  o = vec4(clamp(floor(v + 0.5), 0.0, 255.0) / 255.0, 1.0); }\n";
+static GLuint s_bpr[3], s_bft[2], s_bfin, s_bfbo;
+
+int rr_backdrop_make(float radius_px, uint32_t tint)
+{
+    static const float q[6][4] = { { -1, -1, 0, 0 }, { 1, -1, 1, 0 }, { -1, 1, 0, 1 },
+                                   { -1, 1, 0, 1 }, { 1, -1, 1, 0 }, { 1, 1, 1, 1 } };
+    int cell = (int)(radius_px / 4), w, h, r = radius_px > 0 ? 4 : 0, k, a = 0;
+    if (!s_bpr[0]) {
+        s_bpr[0] = program(k_vs, k_bcell);
+        s_bpr[1] = program(k_vs, k_bbox);
+        s_bpr[2] = program(k_vs, k_bfin);
+        if (!s_bpr[0] || !s_bpr[1] || !s_bpr[2])
+            return 0;
+        glGenFramebuffers(1, &s_bfbo);
+        glGenTextures(2, s_bft);
+        glGenTextures(1, &s_bfin);
+    }
+    cell = cell < 1 ? 1 : cell;
+    w = (s_rw + cell - 1) / cell;
+    h = (s_rh + cell - 1) / cell;
+    glActiveTexture(GL_TEXTURE0);
+    for (k = 0; k < 3; k++) {
+        glBindTexture(GL_TEXTURE_2D, k < 2 ? s_bft[k] : s_bfin);
+        glTexImage2D(GL_TEXTURE_2D, 0, k < 2 ? GL_RGBA32F : GL_RGBA8, w, h, 0, GL_RGBA, k < 2 ? GL_FLOAT : GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, k < 2 ? GL_NEAREST : GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, k < 2 ? GL_NEAREST : GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindVertexArray(s_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof q, q, GL_STREAM_DRAW);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_bfbo);
+    glViewport(0, 0, w, h);
+    glDisable(GL_BLEND);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_bft[0], 0);
+    glUseProgram(s_bpr[0]);
+    glBindTexture(GL_TEXTURE_2D, s_col);
+    glUniform4i(glGetUniformLocation(s_bpr[0], "P"), cell, s_rw, s_rh, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glUseProgram(s_bpr[1]);
+    glUniform1i(glGetUniformLocation(s_bpr[1], "R"), r);
+    for (k = 0; r && k < 6; k++, a = !a) {
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_bft[!a], 0);
+        glBindTexture(GL_TEXTURE_2D, s_bft[a]);
+        glUniform4i(glGetUniformLocation(s_bpr[1], "P"), w, h, !(k & 1), k & 1);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_bfin, 0);
+    glUseProgram(s_bpr[2]);
+    glBindTexture(GL_TEXTURE_2D, s_bft[a]);
+    glUniform4f(glGetUniformLocation(s_bpr[2], "T"), (float)(tint >> 16 & 0xFF), (float)(tint >> 8 & 0xFF), (float)(tint & 0xFF),
+                (float)(tint >> 24) / 255.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+    glViewport(0, 0, s_rw, s_rh);
+    return 1;
+}
+
+void rr_backdrop_draw(const float q[6])
+{
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
+                      { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
+    float v[6 * 4];
+    int i;
+    if (!s_bfin)
+        return;
+    for (i = 0; i < 6; i++) {
+        v[4 * i + 0] = c[ix[i]][0] / s_rw * 2 - 1;
+        v[4 * i + 1] = 1 - c[ix[i]][1] / s_rh * 2;
+        v[4 * i + 2] = c[ix[i]][2];
+        v[4 * i + 3] = c[ix[i]][3];
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+    glViewport(0, 0, s_rw, s_rh);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, s_bfin);
+    glBindVertexArray(s_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof v, v, GL_STREAM_DRAW);
+    glUseProgram(s_over);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}
+
 int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[3], uint32_t *argb)
 {
     /* (the picture's row 0 the texture's first: read as it is, top first) */

@@ -30,7 +30,6 @@
 #include "resample.h"
 #include "script.h"
 #include "input.h"
-#include "backdrop.h"
 
 /* ---- the public calls ---- */
 uint32_t nshvc_frames(void) { return (uint32_t)ppu_frames(); }
@@ -243,15 +242,14 @@ void nshvc_overlay_update(int id, const uint32_t *argb)
 /* ---- the game's pause (nshvc_ext_pause) ----
    While paused the machine does not run (the loop in nshvc_main), the
    sound is silence (audio_cb), and each display frame shows the last
-   frame presented before the pause, blurred and tinted (the backdrop,
-   backdrop.c), under the game's overlays. The backdrop is made once, from
-   that frame read back (rr_read) before anything else is drawn, and the
-   renderer's bilinear overlay scales it back over the target. */
+   frame presented before the pause, blurred and tinted (the backdrop),
+   under the game's overlays. The backdrop is made once by the renderer,
+   from that frame, before anything else is drawn (rr_backdrop_make), and
+   drawn back over the target each frame (rr_backdrop_draw). */
 static volatile int paused;
 static float pause_blur;
 static uint32_t pause_tint;
-static uint32_t *backdrop;
-static int backdrop_w, backdrop_h, backdrop_due;
+static int backdrop, backdrop_due;
 
 void nshvc_ext_pause(int on, float blur, uint32_t tint)
 {
@@ -264,18 +262,11 @@ void nshvc_ext_pause(int on, float blur, uint32_t tint)
 
 int nshvc_ext_paused(void) { return paused; }
 
-/* the backdrop from the last presented frame, tw x th target pixels for
-   scale target pixels a point */
-static void make_backdrop(int tw, int th, float scale)
+/* the backdrop from the last presented frame, at scale target pixels a point */
+static void make_backdrop(float scale)
 {
-    uint32_t *f = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
-    int cell;
     backdrop_due = 0;
-    free(backdrop);
-    backdrop = NULL;
-    if (f && rr_read(f))
-        backdrop = backdrop_make(f, tw, th, pause_blur * scale, pause_tint, &backdrop_w, &backdrop_h, &cell);
-    free(f);
+    backdrop = rr_backdrop_make(pause_blur * scale, pause_tint);
 }
 
 /* the overlays over the target (tw x th pixels for pw x ph points) */
@@ -930,12 +921,10 @@ static void show(void)
         /* read back before rr_target, which may size the target afresh */
         float pw, ph;
         nshvc_window_size(&pw, &ph);
-        make_backdrop(shown_tw, shown_th, pw > 0 ? (float)shown_tw / pw : 1);
+        make_backdrop(pw > 0 ? (float)shown_tw / pw : 1);
     }
-    if (!paused && backdrop) {
-        free(backdrop);
-        backdrop = NULL;
-    }
+    if (!paused)
+        backdrop = 0;
     rr_target(&tw, &th);
     /* the whole window, each axis at its own scale */
     w = tw;
@@ -950,7 +939,7 @@ static void show(void)
     rr_begin(0xFF000000u);
     if (paused && backdrop) {
         float q[6] = { 0, 0, (float)tw, 0, 0, (float)th };
-        rr_overlay(backdrop, backdrop_w, backdrop_h, q);
+        rr_backdrop_draw(q);
     } else if (paused)
         ;                                /* no backdrop could be made: black */
     else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(w, h, d))

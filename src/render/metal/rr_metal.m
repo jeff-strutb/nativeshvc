@@ -65,6 +65,33 @@ static const char k_compose_post[] =
     "  c.cp_record(g.x, g.y);\n"
     "  rec[i] = uint4(c.cp_r0, c.cp_r1, c.cp_r2, c.cp_r3); }\n";
 
+/* the pause's backdrop (rr_backdrop_make): cells, boxes, the tint */
+static NSString *const k_blur_src = @
+"#include <metal_stdlib>\n"
+"using namespace metal;\n"
+"struct BP { uint tw, th, cell, w, h, r, dx, dy; float4 tint; };\n"
+"kernel void bcell(texture2d<float, access::read> f [[texture(0)]], device float4 *o [[buffer(0)]],\n"
+"                  constant BP &p [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+"  float4 s = 0; float n = 0;\n"
+"  if (g.x >= p.w || g.y >= p.h) return;\n"
+"  for (uint y = g.y * p.cell; y < (g.y + 1) * p.cell && y < p.th; y++)\n"
+"    for (uint x = g.x * p.cell; x < (g.x + 1) * p.cell && x < p.tw; x++) { s += floor(f.read(uint2(x, y)) * 255.0 + 0.5); n += 1; }\n"
+"  o[g.y * p.w + g.x] = s / n; }\n"
+"kernel void bbox(device const float4 *a [[buffer(0)]], device float4 *o [[buffer(2)]],\n"
+"                 constant BP &p [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+"  float4 s = 0; int r = int(p.r);\n"
+"  if (g.x >= p.w || g.y >= p.h) return;\n"
+"  for (int i = -r; i <= r; i++) {\n"
+"    int x = clamp(int(g.x) + i * int(p.dx), 0, int(p.w) - 1), y = clamp(int(g.y) + i * int(p.dy), 0, int(p.h) - 1);\n"
+"    s += a[y * int(p.w) + x]; }\n"
+"  o[g.y * p.w + g.x] = s / float(2 * r + 1); }\n"
+"kernel void bfin(device const float4 *a [[buffer(0)]], texture2d<float, access::write> o [[texture(0)]],\n"
+"                 constant BP &p [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+"  float3 v;\n"
+"  if (g.x >= p.w || g.y >= p.h) return;\n"
+"  v = a[g.y * p.w + g.x].rgb * (1.0 - p.tint.a) + p.tint.rgb * p.tint.a;\n"
+"  o.write(float4(clamp(floor(v + 0.5), 0.0, 255.0) / 255.0, 1.0), g); }\n";
+
 static NSString *const k_src = @
 "#include <metal_stdlib>\n"
 "using namespace metal;\n"
@@ -869,6 +896,120 @@ void rr_present(void)
         }
         [s_cmd commit];
         s_cmd = nil;
+    }
+}
+
+static id<MTLComputePipelineState> s_bp[3];  /* the backdrop's: cells, a box, the tint */
+static id<MTLTexture> s_bd;                  /* the backdrop made */
+
+int rr_backdrop_make(float radius_px, uint32_t tint)
+{
+    @autoreleasepool {
+        static NSString *const names[3] = { @"bcell", @"bbox", @"bfin" };
+        struct {
+            uint32_t tw, th, cell, w, h, r, dx, dy;
+            float tint[4];
+        } p;
+        id<MTLCommandBuffer> c;
+        id<MTLBuffer> a, b;
+        int cell = (int)(radius_px / 4), i, k;
+        if (!s_bp[0]) {
+            NSError *err = nil;
+            id<MTLLibrary> l = [s_dev newLibraryWithSource:k_blur_src options:nil error:&err];
+            for (i = 0; i < 3; i++) {
+                id<MTLFunction> fn = l ? [l newFunctionWithName:names[i]] : nil;
+                s_bp[i] = fn ? [s_dev newComputePipelineStateWithFunction:fn error:&err] : nil;
+                if (!s_bp[i]) {
+                    fprintf(stderr, "rr: metal backdrop: %s\n", [[err description] UTF8String]);
+                    return 0;
+                }
+            }
+        }
+        cell = cell < 1 ? 1 : cell;
+        p.tw = (uint32_t)s_rw;
+        p.th = (uint32_t)s_rh;
+        p.cell = (uint32_t)cell;
+        p.w = (p.tw + p.cell - 1u) / p.cell;
+        p.h = (p.th + p.cell - 1u) / p.cell;
+        p.r = radius_px > 0 ? 4u : 0u;
+        p.dx = p.dy = 0;
+        p.tint[0] = (float)(tint >> 16 & 0xFF);
+        p.tint[1] = (float)(tint >> 8 & 0xFF);
+        p.tint[2] = (float)(tint & 0xFF);
+        p.tint[3] = (float)(tint >> 24) / 255.0f;
+        a = [s_dev newBufferWithLength:(size_t)p.w * p.h * 16 options:MTLResourceStorageModePrivate];
+        b = [s_dev newBufferWithLength:(size_t)p.w * p.h * 16 options:MTLResourceStorageModePrivate];
+        {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                           width:p.w height:p.h mipmapped:NO];
+            td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            s_bd = [s_dev newTextureWithDescriptor:td];
+        }
+        if (!a || !b || !s_bd)
+            return 0;
+        c = [s_q commandBuffer];
+        {
+            id<MTLComputeCommandEncoder> e = [c computeCommandEncoder];
+            [e setComputePipelineState:s_bp[0]];
+            [e setTexture:s_col atIndex:0];
+            [e setBuffer:a offset:0 atIndex:0];
+            [e setBytes:&p length:sizeof p atIndex:1];
+            [e dispatchThreads:MTLSizeMake(p.w, p.h, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+            [e endEncoding];
+        }
+        for (k = 0; p.r && k < 6; k++) {
+            id<MTLComputeCommandEncoder> e = [c computeCommandEncoder];
+            id<MTLBuffer> t;
+            p.dx = (uint32_t)(!(k & 1));
+            p.dy = (uint32_t)(k & 1);
+            [e setComputePipelineState:s_bp[1]];
+            [e setBuffer:a offset:0 atIndex:0];
+            [e setBuffer:b offset:0 atIndex:2];
+            [e setBytes:&p length:sizeof p atIndex:1];
+            [e dispatchThreads:MTLSizeMake(p.w, p.h, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+            [e endEncoding];
+            t = a;
+            a = b;
+            b = t;
+        }
+        {
+            id<MTLComputeCommandEncoder> e = [c computeCommandEncoder];
+            [e setComputePipelineState:s_bp[2]];
+            [e setBuffer:a offset:0 atIndex:0];
+            [e setTexture:s_bd atIndex:0];
+            [e setBytes:&p length:sizeof p atIndex:1];
+            [e dispatchThreads:MTLSizeMake(p.w, p.h, 1) threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+            [e endEncoding];
+        }
+        [c commit];
+        [c waitUntilCompleted];
+        return 1;
+    }
+}
+
+void rr_backdrop_draw(const float q[6])
+{
+    @autoreleasepool {
+        static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+        float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
+                          { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
+        size_t o = (s_vused + 15) & ~(size_t)15;
+        float *v;
+        int i;
+        if (!s_enc || !s_bd || o + 6 * 16 > VB_SIZE)
+            return;
+        s_vused = o + 6 * 16;
+        v = (float *)((char *)[s_vb[s_pi] contents] + o);
+        for (i = 0; i < 6; i++) {
+            v[4 * i + 0] = c[ix[i]][0] / s_rw * 2 - 1;
+            v[4 * i + 1] = 1 - c[ix[i]][1] / s_rh * 2;
+            v[4 * i + 2] = c[ix[i]][2];
+            v[4 * i + 3] = c[ix[i]][3];
+        }
+        [s_enc setRenderPipelineState:s_over];
+        [s_enc setVertexBuffer:s_vb[s_pi] offset:o atIndex:0];
+        [s_enc setFragmentTexture:s_bd atIndex:0];
+        [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }
 }
 

@@ -16,12 +16,13 @@ glslangValidator -V --vn k_over_frag -o over.h over.frag >/dev/null
 glslangValidator -V --vn k_m7_frag -o m7.h m7.frag >/dev/null
 glslangValidator -V --vn k_compose_comp -o compose.h compose.comp >/dev/null
 glslangValidator -V --vn k_compose_rec_comp -o compose_rec.h compose_rec.comp >/dev/null
+glslangValidator -V --vn k_blur_comp -o blur.h blur.comp >/dev/null
 {
   echo "/* rr_spv.h: SPIR-V of shaders/quad.vert, copy.frag, sharp.frag, over.frag, m7.frag,"
-  echo " * compose.comp and compose_rec.comp, written by shaders/build.sh: do not edit. */"
-  for f in vert.h copy.h sharp.h over.h m7.h compose.h compose_rec.h; do sed -n '/^const uint32_t/,$p' $f | sed 's/^const/static const/'; done
+  echo " * compose.comp, compose_rec.comp and blur.comp, written by shaders/build.sh: do not edit. */"
+  for f in vert.h copy.h sharp.h over.h m7.h compose.h compose_rec.h blur.h; do sed -n '/^const uint32_t/,$p' $f | sed 's/^const/static const/'; done
 } > ../rr_spv.h
-rm -f vert.h copy.h sharp.h over.h m7.h compose.h compose_rec.h
+rm -f vert.h copy.h sharp.h over.h m7.h compose.h compose_rec.h blur.h
 cat m7_gl.glsl m7_body.glsl > m7_gl.frag
 glslangValidator m7_gl.frag >/dev/null
 {

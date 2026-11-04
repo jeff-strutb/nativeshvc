@@ -137,6 +137,11 @@ typedef struct {
     float u, v, x, y, z;
 } Vtx;
 
+typedef struct {
+    uint32_t c;
+    short x, y, z;
+} CVtx;
+
 /* an app's image: the console draws none (its pictures are the GE's, drawn
    from their descriptions), and the PSP scales one only as the GE draws
    the picture */
@@ -764,7 +769,8 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
         list_done();
         s_on = 0;
     }
-    for (W = 1; W < w + 1; W <<= 1)
+    /* (a texture's rows at least 16 bytes apart: 4 texels) */
+    for (W = 4; W < w + 1; W <<= 1)
         ;
     for (H = 1; H < h + 1; H <<= 1)
         ;
@@ -825,6 +831,148 @@ void rr_present(void)
         return;
     list_done();
     s_screen->show();
+}
+
+/* The pause's backdrop on the GE: the frame shown halved n times, each by
+   the filter over four texels (a level a buffer past the screen's, its
+   rows a power of 2 apart), magnified back over the screen by the filter
+   (rr_backdrop_draw). A box of 2^n pixels and then a triangle of 2^n either
+   side: standard deviation 2^n / 2, so 2^n is about the box blurs' (rr.h:
+   4.47 cells of radius / 4) twice over. The tint laid over the last level
+   by the blend. The buffers free while paused (no picture is drawn). */
+static unsigned s_bd_off;
+static int s_bd_w, s_bd_h, s_bd_tw, s_bd_on, s_bd_psm;
+static float s_bd_u, s_bd_v;                 /* the screen's size on the last level */
+
+static void bd_sprite(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1)
+{
+    Vtx *v = (Vtx *)sceGuGetMemory(2 * sizeof(Vtx));
+    v[0].u = u0;
+    v[0].v = v0;
+    v[0].x = x0 - 1.0f / 16.0f;              /* (the GE's sample at 7/16 of a pixel: rr_overlay's) */
+    v[0].y = y0 - 1.0f / 16.0f;
+    v[0].z = 0;
+    v[1].u = u1;
+    v[1].v = v1;
+    v[1].x = x1 - 1.0f / 16.0f;
+    v[1].y = y1 - 1.0f / 16.0f;
+    v[1].z = 0;
+    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
+}
+
+static int pow2_at(int v)
+{
+    int p = 1;
+    while (p < v)
+        p <<= 1;
+    return p;
+}
+
+int rr_backdrop_make(float radius_px, uint32_t tint)
+{
+    const void *src;
+    unsigned off = RR_PSP_V_PICTURE;
+    int w = TW, h = TH, tbw = STRIDE, n = 0, k;
+    float want = 2.24f * radius_px;
+    if (!s_screen)
+        return 0;
+    while ((float)(3 << n) < 2.0f * want && n < 6)   /* (the nearest power of 2: past 2^n x 1.5) */
+        n++;
+    list_done();
+    list_open();
+    src = (const char *)s_screen->shown();
+    /* (the GE's drawing region the buffers' 512, not the display's 480:
+       REGION1, REGION2) */
+    sceGuSendCommandi(21, 0);
+    sceGuSendCommandi(22, (511 << 10) | 511);
+    sceGuDisable(GU_BLEND);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+    /* (no blur: the frame itself, 16 bits a pixel, the VRAM past the
+       screens' its size at 16; one to one, no filter) */
+    sceGuTexFilter(n ? GU_LINEAR : GU_NEAREST, n ? GU_LINEAR : GU_NEAREST);
+    s_bd_psm = n ? GU_PSM_8888 : GU_PSM_5650;
+    for (k = 0; k < (n ? n : 1); k++) {
+        int w2 = n ? (w + 1) / 2 : w, h2 = n ? (h + 1) / 2 : h, t2 = pow2_at(w2 + 1);
+        int uw = n ? 2 * w2 : w2, vh = n ? 2 * h2 : h2;   /* (a level's own edge copy reads to w, h: past them when odd) */
+        sceGuDrawBufferList(s_bd_psm, (void *)off, t2);
+        sceGuScissor(0, 0, w2 + 1, h2 + 1);
+        sceGuTexImage(0, pow2_at(w + 1), pow2_at(h + 1), tbw, src);
+        sceGuTexFlush();
+        if (!n) {
+            bd_sprite(1.0f / 16.0f, 1.0f / 16.0f, (float)w2 + 1.0f / 16.0f, (float)h2 + 1.0f / 16.0f, 0, 0, (float)uw, (float)vh);
+            s_bd_off = off;
+            s_bd_w = w2;
+            s_bd_h = h2;
+            s_bd_tw = t2;
+            break;
+        }
+        bd_sprite(0, 0, (float)w2, (float)h2, 0, 0, (float)uw, (float)vh);
+        /* (the last column and row again past them, for the next halving's
+           and the magnifying filter's edge: a texel of the source a pixel
+           across them) */
+        bd_sprite((float)w2, 0, (float)(w2 + 1), (float)h2, (float)(w - 1), 0, (float)w, (float)vh);
+        bd_sprite(0, (float)h2, (float)w2, (float)(h2 + 1), 0, (float)(h - 1), (float)uw, (float)h);
+        bd_sprite((float)w2, (float)h2, (float)(w2 + 1), (float)(h2 + 1), (float)(w - 1), (float)(h - 1), (float)w, (float)h);
+        src = (const char *)sceGeEdramGetAddr() + off;
+        s_bd_off = off;
+        s_bd_w = w2;
+        s_bd_h = h2;
+        s_bd_tw = t2;
+        off += (unsigned)t2 * (unsigned)(h2 + 1) * (n ? 4u : 2u);
+        off = (off + 63u) & ~63u;
+        w = w2;
+        h = h2;
+        tbw = t2;
+    }
+    /* the tint over it */
+    if (tint >> 24) {
+        CVtx *v = (CVtx *)sceGuGetMemory(2 * sizeof(CVtx));
+        uint32_t c = abgr(tint);
+        v[0].c = v[1].c = c;
+        v[0].x = v[0].y = v[0].z = 0;
+        v[1].x = (short)(s_bd_w + 1);
+        v[1].y = (short)(s_bd_h + 1);
+        v[1].z = 0;
+        sceGuDisable(GU_TEXTURE_2D);
+        sceGuEnable(GU_BLEND);
+        sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+        sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+        sceGuDisable(GU_BLEND);
+        sceGuEnable(GU_TEXTURE_2D);
+    }
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    list_done();
+    s_bd_u = (float)TW / (float)(1 << n);
+    s_bd_v = (float)TH / (float)(1 << n);
+    s_bd_on = 1;
+    return 1;
+}
+
+void rr_backdrop_draw(const float q[6])
+{
+    if (!s_bd_on)
+        return;
+    list_open();
+    sceGuDrawBuffer(GU_PSM_8888, (void *)((char *)s_fb - (char *)sceGeEdramGetAddr()), STRIDE);
+    sceGuScissor(0, 0, TW, TH);
+    sceGuDisable(GU_BLEND);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(s_bd_psm, 0, 0, 0);
+    sceGuTexImage(0, pow2_at(s_bd_tw), pow2_at(s_bd_h + 1), s_bd_tw, (const char *)sceGeEdramGetAddr() + s_bd_off);
+    sceGuTexFlush();
+    if (s_bd_psm == GU_PSM_8888) {
+        sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+        bd_sprite(q[0], q[1], q[2], q[5], 0, 0, s_bd_u, s_bd_v);
+        sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    } else {
+        /* (no blur: the frame, one to one, no filter) */
+        bd_sprite(q[0] + 1.0f / 16.0f, q[1] + 1.0f / 16.0f, q[2] + 1.0f / 16.0f, q[5] + 1.0f / 16.0f, 0, 0, s_bd_u, s_bd_v);
+    }
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
 }
 
 /* the picture drawn on the GE apart from the frame (into its buffer,

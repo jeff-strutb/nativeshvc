@@ -12,6 +12,7 @@
 #include "rr_size.h"
 #include "rr_mode7.h"
 #include "rr_compose.h"
+#include "backdrop.h"
 #include "host.h"
 
 void host_window_pixels(int *w, int *h);
@@ -197,6 +198,24 @@ int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t 
 }
 
 void rr_size(int w, int h) { size_to(w, h); }
+
+/* the backdrop by its definition (front/backdrop.c), over the frame */
+static uint32_t *s_bd;
+static int s_bdw, s_bdh;
+
+int rr_backdrop_make(float radius_px, uint32_t tint)
+{
+    int cell;
+    free(s_bd);
+    s_bd = backdrop_make(s_px, s_w, s_h, radius_px, tint, &s_bdw, &s_bdh, &cell);
+    return s_bd != NULL;
+}
+
+void rr_backdrop_draw(const float q[6])
+{
+    if (s_bd)
+        rr_ref_overlay(s_px, s_w, s_h, s_bd, s_bdw, s_bdh, q);
+}
 
 void rr_present(void)
 {

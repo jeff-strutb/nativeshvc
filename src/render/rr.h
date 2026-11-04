@@ -105,6 +105,16 @@ int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t 
    RR_SIZE's until then). With a window, its size stands: fatal. */
 void rr_size(int w, int h);
 
+/* The pause's backdrop: the last frame presented blurred and tinted by the
+   GPU and kept: at cells of radius_px / 4 pixels square (at least 1), each
+   the mean of its pixels; three box blurs across and down, each 4 cells
+   either side (none at radius_px 0); then tint (0xAARRGGBB) laid over at
+   its alpha. A platform without a compositor's arithmetic makes it as its
+   GPU makes a blur of that spread. Drawn over parallelogram q as an
+   overlay of its cells is, bilinear (rr_backdrop_draw). 0 when it cannot. */
+int rr_backdrop_make(float radius_px, uint32_t tint);
+void rr_backdrop_draw(const float q[6]);
+
 /* the frame done: shown in the window, when there is one */
 void rr_present(void);
 /* the last presented frame, read back: rr_target's w x h pixels into argb;

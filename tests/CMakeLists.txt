@@ -137,6 +137,15 @@ if(NSHVC_HOST STREQUAL "psp")
   set_target_properties(canvas32_psp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()
 
+# the game's pause (nshvc_ext_pause) and its backdrop
+add_executable(pause_check unit/pause_check.c)
+target_link_libraries(pause_check PRIVATE nshvc)
+set_target_properties(pause_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(backdrop_check unit/backdrop_check.c)
+target_include_directories(backdrop_check PRIVATE ${PROJECT_SOURCE_DIR}/src/render)
+target_link_libraries(backdrop_check PRIVATE nshvc)
+set_target_properties(backdrop_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
 # on the PSP, each program's imports of the system's calls put in the form
 # its loader fills (psp-fixup-imports, as pspsdk's own build does); a
 # program whose imports it cannot fix (its warning, and nothing else) fails
@@ -153,12 +162,3 @@ if(PSP)
     endif()
   endforeach()
 endif()
-
-# the game's pause (nshvc_ext_pause) and its backdrop
-add_executable(pause_check unit/pause_check.c)
-target_link_libraries(pause_check PRIVATE nshvc)
-set_target_properties(pause_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-add_executable(backdrop_check unit/backdrop_check.c ${PROJECT_SOURCE_DIR}/src/front/backdrop.c)
-target_include_directories(backdrop_check PRIVATE ${PROJECT_SOURCE_DIR}/src/front)
-target_link_libraries(backdrop_check PRIVATE m)
-set_target_properties(backdrop_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

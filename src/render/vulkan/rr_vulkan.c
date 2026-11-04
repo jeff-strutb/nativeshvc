@@ -431,7 +431,8 @@ static void targets(int w, int h)
     fi.layers = 1;
     VK_OK(vkCreateFramebuffer(s_dev, &fi, NULL, &s_fb));
     s_read_size = (VkDeviceSize)w * (VkDeviceSize)h * 4;
-    make_buffer(s_read_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &s_read, &s_read_mem, &s_read_map);
+    make_buffer(s_read_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &s_read, &s_read_mem,
+                &s_read_map);
     s_rw = w;
     s_rh = h;
 }
@@ -1544,6 +1545,204 @@ void rr_present(void)
             swap_destroy();
         }
     }
+}
+
+/* the pause's backdrop (rr_backdrop_make): blur.comp over the frame read
+   back (s_read), into s_bdo, copied to an image the overlays' pipeline
+   draws */
+static VkDescriptorSetLayout s_blay;
+static VkPipelineLayout s_blayout;
+static VkDescriptorPool s_bpool;
+static VkDescriptorSet s_bset;
+static VkPipeline s_bp;
+static VkBuffer s_bc, s_bdo;
+static VkDeviceMemory s_bc_mem, s_bdo_mem;
+static uint8_t *s_bc_map, *s_bdo_map;
+static VkImage s_bd;
+static VkDeviceMemory s_bd_mem;
+static VkImageView s_bd_view;
+static VkDescriptorSet s_bdset;
+static int s_bd_on;
+
+static int blur_make(void)
+{
+    VkDescriptorSetLayoutBinding b[3] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+                                          { 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL },
+                                          { 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL } };
+    VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    VkPushConstantRange pc = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 64 };
+    VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
+    VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetAllocateInfo da = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    li.bindingCount = 3;
+    li.pBindings = b;
+    if (!VK_OK(vkCreateDescriptorSetLayout(s_dev, &li, NULL, &s_blay)))
+        return 0;
+    pi.setLayoutCount = 1;
+    pi.pSetLayouts = &s_blay;
+    pi.pushConstantRangeCount = 1;
+    pi.pPushConstantRanges = &pc;
+    if (!VK_OK(vkCreatePipelineLayout(s_dev, &pi, NULL, &s_blayout)))
+        return 0;
+    dpi.maxSets = 2;
+    dpi.poolSizeCount = 2;
+    dpi.pPoolSizes = ps;
+    if (!VK_OK(vkCreateDescriptorPool(s_dev, &dpi, NULL, &s_bpool)))
+        return 0;
+    da.descriptorPool = s_bpool;
+    da.descriptorSetCount = 1;
+    da.pSetLayouts = &s_blay;
+    if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_bset)))
+        return 0;
+    da.pSetLayouts = &s_lay;
+    if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_bdset)))
+        return 0;
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = module(k_blur_comp, sizeof k_blur_comp);
+    ci.stage.pName = "main";
+    ci.layout = s_blayout;
+    return VK_OK(vkCreateComputePipelines(s_dev, VK_NULL_HANDLE, 1, &ci, NULL, &s_bp));
+}
+
+int rr_backdrop_make(float radius_px, uint32_t tint)
+{
+    struct {
+        uint32_t mode, tw, th, cell, w, h, r, dx, dy, src, dst, pad;
+        float tint[4];
+    } p;
+    VkDescriptorBufferInfo bi[3];
+    VkWriteDescriptorSet wr[3];
+    VkCommandBufferBeginInfo cbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkDescriptorImageInfo di;
+    VkWriteDescriptorSet iw = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    VkBufferImageCopy cp;
+    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    int cell = (int)(radius_px / 4), k, a = 0, i;
+    if (s_recording || (!s_bp && !blur_make()))
+        return 0;
+    wait_frame();
+    cell = cell < 1 ? 1 : cell;
+    memset(&p, 0, sizeof p);
+    p.tw = (uint32_t)s_rw;
+    p.th = (uint32_t)s_rh;
+    p.cell = (uint32_t)cell;
+    p.w = (p.tw + p.cell - 1u) / p.cell;
+    p.h = (p.th + p.cell - 1u) / p.cell;
+    p.r = radius_px > 0 ? 4u : 0u;
+    p.tint[0] = (float)(tint >> 16 & 0xFF);
+    p.tint[1] = (float)(tint >> 8 & 0xFF);
+    p.tint[2] = (float)(tint & 0xFF);
+    p.tint[3] = (float)(tint >> 24) / 255.0f;
+    if (s_bc) {
+        vkDeviceWaitIdle(s_dev);
+        vkDestroyBuffer(s_dev, s_bc, NULL);
+        vkFreeMemory(s_dev, s_bc_mem, NULL);
+        vkDestroyBuffer(s_dev, s_bdo, NULL);
+        vkFreeMemory(s_dev, s_bdo_mem, NULL);
+        image_destroy(&s_bd, &s_bd_mem, &s_bd_view);
+    }
+    if (!make_buffer((VkDeviceSize)p.w * p.h * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &s_bc, &s_bc_mem, &s_bc_map) ||
+        !make_buffer((VkDeviceSize)p.w * p.h * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &s_bdo,
+                     &s_bdo_mem, &s_bdo_map) ||
+        !image((int)p.w, (int)p.h, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, &s_bd, &s_bd_mem, &s_bd_view))
+        return 0;
+    bi[0].buffer = s_bc;
+    bi[1].buffer = s_read;
+    bi[2].buffer = s_bdo;
+    memset(wr, 0, sizeof wr);
+    for (i = 0; i < 3; i++) {
+        bi[i].offset = 0;
+        bi[i].range = VK_WHOLE_SIZE;
+        wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wr[i].dstSet = s_bset;
+        wr[i].dstBinding = (uint32_t)i;
+        wr[i].descriptorCount = 1;
+        wr[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        wr[i].pBufferInfo = &bi[i];
+    }
+    vkUpdateDescriptorSets(s_dev, 3, wr, 0, NULL);
+    di.sampler = s_smp;
+    di.imageView = s_bd_view;
+    di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    iw.dstSet = s_bdset;
+    iw.descriptorCount = 1;
+    iw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    iw.pImageInfo = &di;
+    vkUpdateDescriptorSets(s_dev, 1, &iw, 0, NULL);
+    vkResetFences(s_dev, 1, &s_fence);
+    vkResetCommandBuffer(s_cmd, 0);
+    cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(s_cmd, &cbi);
+    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_bp);
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_blayout, 0, 1, &s_bset, 0, NULL);
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    for (k = 0; k < (p.r ? 8 : 2); k++) {
+        /* the cells, the six boxes (none with no blur), the tint */
+        int last = k == (p.r ? 7 : 1);
+        p.mode = k == 0 ? 0u : last ? 2u : 1u;
+        p.dx = (uint32_t)((k - 1) & 1) ^ 1u;
+        p.dy = (uint32_t)((k - 1) & 1);
+        p.src = (uint32_t)a * p.w * p.h;
+        p.dst = (uint32_t)(a ^ (k > 0)) * p.w * p.h;
+        vkCmdPushConstants(s_cmd, s_blayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        vkCmdDispatch(s_cmd, (p.w + 31u) / 32u, (p.h + 7u) / 8u, 1);
+        vkCmdPipelineBarrier(s_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, NULL,
+                             0, NULL);
+        if (k > 0)
+            a ^= 1;
+    }
+    barrier(s_cmd, s_bd, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    memset(&cp, 0, sizeof cp);
+    cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    cp.imageSubresource.layerCount = 1;
+    cp.imageExtent.width = p.w;
+    cp.imageExtent.height = p.h;
+    cp.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, s_bdo, s_bd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    barrier(s_cmd, s_bd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    vkEndCommandBuffer(s_cmd);
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &s_cmd;
+    vkQueueSubmit(s_queue, 1, &si, s_fence);
+    s_submitted = 1;
+    wait_frame();
+    s_bd_on = 1;
+    return 1;
+}
+
+void rr_backdrop_draw(const float q[6])
+{
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
+                      { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
+    long qo;
+    VkDeviceSize vo;
+    float *v;
+    int i;
+    if (!s_recording || !s_bd_on || (qo = ring_take(6 * 16)) < 0)
+        return;
+    v = (float *)(s_ring_map + qo);
+    for (i = 0; i < 6; i++) {
+        v[4 * i + 0] = c[ix[i]][0] / s_rw * 2 - 1;
+        v[4 * i + 1] = 1 - c[ix[i]][1] / s_rh * 2;
+        v[4 * i + 2] = c[ix[i]][2];
+        v[4 * i + 3] = c[ix[i]][3];
+    }
+    pass_begin();
+    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_over);
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &s_bdset, 0, NULL);
+    vo = (VkDeviceSize)qo;
+    vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
+    vkCmdDraw(s_cmd, 6, 1, 0, 0);
+    vkCmdEndRenderPass(s_cmd);
 }
 
 /* the picture apart from any frame (between them): the compositor into
