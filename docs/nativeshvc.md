@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.15); this page describes the interface
+[the game contract](contract.md) (2.16); this page describes the interface
 around it.
 
 ## What it is
@@ -62,8 +62,8 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 | `none` (the app supplies `src/host/host.h`) | any |
 
 The picture comes from the PPU in C (the implementation the checks hold to
-the reference); the renderers draw it at the window's own resolution, at any
-size and shape: the pixel art with sharp bilinear filtering, the Mode 7
+the reference); the renderers draw it at the window's own resolution, over the whole
+window, each axis at its own scale: the pixel art with sharp bilinear filtering, the Mode 7
 plane looked up at each window pixel and anti-aliased, a layer's canvas (an
 extension) at the window's resolution (The picture, below), and the game's
 overlays over it.

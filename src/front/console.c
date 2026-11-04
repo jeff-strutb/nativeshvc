@@ -660,9 +660,9 @@ int console_picture_at(float x, float y, int *dot, int *line)
     return input_point(shown_at, (float)shown_tw / ww, f->width, f->screen_height, f->left, f->top, x, y, dot, line);
 }
 
-/* the frame as large as the window holds, centred, sharp bilinear: the
-   console's 256 x 224 at a television's 4:3, a larger screen at the same
-   shape of pixel; a frame with Mode 7 or a canvas presented by its record
+/* the frame over the whole window, each axis at its own scale, sharp
+   bilinear (no bars: the screen's shape the window's, as nshvc_ext_screen
+   sizes it to suit); a frame with Mode 7 or a canvas presented by its record
    (rr_mode7: the plane at the window's pixels, anti-aliased by each
    pixel's footprint on it; the canvas's texels) */
 /* ---- the frame-rate meter (NSHVC_FPS=1, NSHVC_FPS_LOG=FILE) ----
@@ -757,7 +757,6 @@ static void show(void)
     int tw, th, w, h, d[4];
     RrMode7 m;
     RrM7Samples smp;
-    double aspect;
     if (paused && backdrop_due && shown_tw) {
         /* read back before rr_target, which may size the target afresh */
         float pw, ph;
@@ -769,20 +768,12 @@ static void show(void)
         backdrop = NULL;
     }
     rr_target(&tw, &th);
-    {
-        const PpuFrame *f = ppu_frame();
-        aspect = 4.0 / 3.0 * ((double)f->width / PPU_WIDTH) * (224.0 / (double)f->screen_height);
-    }
-    w = (int)(th * aspect + 0.5);
+    /* the whole window, each axis at its own scale */
+    w = tw;
     h = th;
-    if (w > tw) {
-        w = tw;
-        h = (int)(tw / aspect + 0.5);
-    }
-    d[0] = (tw - w) / 2;
-    d[1] = (th - h) / 2;
-    d[2] = d[0] + w;
-    d[3] = d[1] + h;
+    d[0] = d[1] = 0;
+    d[2] = w;
+    d[3] = h;
     memcpy(shown_at, d, sizeof shown_at);
     shown_tw = tw;
     shown_th = th;
