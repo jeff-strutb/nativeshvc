@@ -248,14 +248,32 @@ typedef struct {
     uint32_t __attribute__((aligned(64))) c[3][256];
     uint32_t __attribute__((aligned(64))) direct[8][256];
     uint32_t __attribute__((aligned(64))) ext[2][256];  /* Mode 7's BG2 (EXTBG): its bytes of priority 0, 1 */
-    int have_direct, have_ext;
+    uint32_t __attribute__((aligned(64))) f[256];       /* every colour, 0 too: an index band's (s_index) */
+    int have_c, have_direct, have_ext;
 } Clut;
+
+/* An index band (rows whose states differ in their palettes alone, none in
+   direct colour): its screens drawn in palette indices (an index in a
+   pixel's red byte, s_iclut's), then each row's made its own palette's
+   colours (index_band) */
+static int s_index;
+static Clut s_iclut;
+/* a band whose rows' fixed colours differ (theirs alone, or with their
+   palettes): the sub screen's backdrop and the maths' fixed colour each
+   row's own */
+static int s_fx;
 
 #define CLUTS 16
 static Clut *s_clut[CLUTS];
 
-static uint32_t times4(unsigned c) { return 0xFF000000u | (c >> 10 & 31u) << 18 | (c >> 5 & 31u) << 10 | (c & 31u) << 2; }
+/* a 15-bit colour as the GE's, each channel times 4 (from s_t4: a load for
+   a palette's 256, made with the lookups) */
+static uint32_t s_t4[32768];
+static uint32_t times4_of(unsigned c) { return 0xFF000000u | (c >> 10 & 31u) << 18 | (c >> 5 & 31u) << 10 | (c & 31u) << 2; }
+static uint32_t times4(unsigned c) { return s_t4[c & 0x7FFFu]; }
 
+/* (direct: 1 direct colour's tables too, -1 Mode 7 BG2's (ext), 2 the full
+   table alone: an index band's rows; each table made when first asked) */
 static Clut *clut(uint32_t key, int direct)
 {
     Clut *c = NULL;
@@ -268,21 +286,37 @@ static Clut *clut(uint32_t key, int direct)
     if (!c) {
         for (i = 0; i < CLUTS && s_clut[i] && s_clut[i]->frame == s_frame; i++)
             ;
-        if (i == CLUTS)
-            nshvc_fatal("more than %d palettes in a frame", CLUTS);
+        if (i == CLUTS) {
+            /* every slot this frame's (a palette changed line by line): the
+               list run to its end, the GE having read the palettes, and
+               begun again (room()'s), the slots free */
+            sceGuFinish();
+            sceGuSync(0, 0);
+            sceGuStart(GU_DIRECT, s_list);
+            target(s_target_off, s_target_w);
+            for (i = 0; i < CLUTS; i++)
+                s_clut[i]->frame = 0;
+            i = 0;
+        }
         if (!s_clut[i] && !(s_clut[i] = (Clut *)memalign(64, sizeof(Clut))))
             nshvc_fatal("no memory for the palettes");
         c = s_clut[i];
         c->key = key;
         c->frame = s_frame;
-        c->have_direct = c->have_ext = 0;
+        c->have_c = c->have_direct = c->have_ext = 0;
+        for (k = 0; k < 256; k++)
+            c->f[k] = times4((rr_cp_fd[key + ((unsigned)k >> 1)] >> (16u * ((unsigned)k & 1u))) & 0xFFFFu);
+        sceKernelDcacheWritebackRange(c->f, sizeof c->f);
+    }
+    if (direct != 2 && !c->have_c) {
         for (k = 0; k < 256; k++) {
-            uint32_t v = times4((rr_cp_fd[key + ((unsigned)k >> 1)] >> (16u * ((unsigned)k & 1u))) & 0xFFFFu);
+            uint32_t v = c->f[k];
             c->c[0][k] = (k & 3) ? v : CLEAR;
             c->c[1][k] = (k & 15) ? v : CLEAR;
             c->c[2][k] = k ? v : CLEAR;
         }
         sceKernelDcacheWritebackRange(c, sizeof c->c);
+        c->have_c = 1;
     }
     if (direct < 0 && !c->have_ext) {
         /* a byte's low 7 bits its colour, the high its priority */
@@ -293,7 +327,7 @@ static Clut *clut(uint32_t key, int direct)
         sceKernelDcacheWritebackRange(c->ext, sizeof c->ext);
         c->have_ext = 1;
     }
-    if (direct > 0 && !c->have_direct) {
+    if (direct == 1 && !c->have_direct) {
         int p;
         for (p = 0; p < 8; p++)
             for (k = 0; k < 256; k++)
@@ -328,6 +362,17 @@ static void make_to8(void)
         }
     sceKernelDcacheWritebackRange(s_to8, sizeof s_to8);
     sceKernelDcacheWritebackRange(s_parity, sizeof s_parity);
+    for (n = 0; n < 32768; n++)
+        s_t4[n] = times4_of((unsigned)n);
+    for (n = 0; n < 256; n++) {
+        uint32_t v = 0xFF000000u | (uint32_t)n;
+        s_iclut.c[0][n] = (n & 3) ? v : CLEAR;
+        s_iclut.c[1][n] = (n & 15) ? v : CLEAR;
+        s_iclut.c[2][n] = n ? v : CLEAR;
+        s_iclut.ext[0][n] = n < 128 ? s_iclut.c[2][n] : CLEAR;
+        s_iclut.ext[1][n] = n >= 128 ? s_iclut.c[2][n & 127] : CLEAR;
+    }
+    sceKernelDcacheWritebackRange(&s_iclut, sizeof s_iclut);
     s_to8_made = 1;
 }
 
@@ -692,7 +737,7 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
     if (phase >= 0)
         xs = 4u;                             /* (hires: 16 texels a tile across) */
     direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
-    c = clut(cp_sw(si, U_(CP_S_PAL)), direct);
+    c = s_index ? &s_iclut : clut(cp_sw(si, U_(CP_S_PAL)), direct);
     g.a = a;
     g.c = c;
     g.kind = kind;
@@ -903,7 +948,7 @@ static void draw_m7(uint32_t si, int n, int r0, int r1, int x0, int x1)
 {
     U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u);
     int direct = n == 0 && (cp_b(si, U_(CP_S_TSW), 1u) & 1u), p;
-    Clut *c = clut(cp_sw(si, U_(CP_S_PAL)), n ? -1 : direct);
+    Clut *c = s_index ? &s_iclut : clut(cp_sw(si, U_(CP_S_PAL)), n ? -1 : direct);
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_T8, 0, 0, 0);
     sceGuTexImage(0, 256, 256, 256, s_m7[n]);
@@ -934,7 +979,7 @@ static void draw_obj_row(uint32_t si, uint32_t part, int r, int x0, int x1)
     if (!n)
         return;
     a = atlas(words, cp_sw(si, U_(CP_S_VBASE)) + (page << 15), 1);
-    c = clut(cp_sw(si, U_(CP_S_PAL)), 0);
+    c = s_index ? &s_iclut : clut(cp_sw(si, U_(CP_S_PAL)), 0);
     scissor(x0, r - s_y0, x1, r - s_y0 + 1);
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_T4, 0, 0, 0);
@@ -1058,7 +1103,9 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     sceGuDisable(GU_ALPHA_TEST);
     sceGuDisable(GU_BLEND);
     sceGuPixelMask(0);
-    sceGuClearColor(times4(which == 1 ? fixc : cp_pal(si, 0u)));
+    /* (an index band's: index 0, the backdrop's; the sub screen's its fixed
+       colour after, index_band) */
+    sceGuClearColor(s_index ? 0xFF000000u : times4(which == 1 ? fixc : cp_pal(si, 0u)));
     /* the backdrop's bits: its maths where it is a pixel's own, F_BACK where
        the other screen's (and on a hires line the main screen is that too) */
     sceGuClearStencil(which == 1 ? F_BACK : which == 2 || hires ? F_BACK | back_math : back_math);
@@ -1148,6 +1195,66 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     sceGuDisable(GU_COLOR_TEST);
 }
 
+/* (stripe rows' states, from the description: the row's part's) */
+static uint32_t row_state(int r) { return FD_(FD_(CP_PARTS) + 4u * FD_(FD_(CP_ROWS) + 4u * (U32)r) + 1u); }
+static uint32_t state_word(uint32_t si, int w) { return FD_(FD_(CP_STATES) + si * U_(CP_ST) + (U32)w); }
+
+/* row r's fixed colour (15 bits) */
+static U32 row_fixed(int r)
+{
+    U32 f = state_word(row_state(r), CP_S_FIXED);
+    return (f & 0xFFu) | (f >> 8 & 0xFFu) << 5 | (f >> 16 & 0xFFu) << 10;
+}
+
+/* an index band's screens (each of `screens`) made colours, each row its
+   own palette's (in place, the stencil kept); then (an index band's, or
+   one whose rows' fixed colours differ) the sub screen's backdrop its fixed
+   colour (F_BACK), each row's */
+static void index_band(uint32_t si, int r0, int r1, int x0, int x1, int screens)
+{
+    static const unsigned buf[3] = { V_MAIN, V_SUB, V_SUB2 };
+    U32 fixc = cp_b(si, U_(CP_S_FIXED), 0u) | cp_b(si, U_(CP_S_FIXED), 1u) << 5 | cp_b(si, U_(CP_S_FIXED), 2u) << 10;
+    int i, r;
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_STENCIL_TEST);
+    sceGuDisable(GU_COLOR_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDisable(GU_BLEND);
+    for (i = 0; i < screens; i++) {
+        room();
+        target(buf[i], PIC_W);
+        scissor(x0, r0 - s_y0, x1, r1 - s_y0);
+        sceGuPixelMask(0xFF000000u);
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+        sceGuTexMode(GU_PSM_T32, 0, 0, 0);
+        sceGuTexImage(0, PIC_W, BAND, PIC_W, vram(buf[i]));
+        sceGuTexFlush();
+        sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+        for (r = r0; r < r1 && s_index; r++) {
+            Clut *c = clut(state_word(row_state(r), CP_S_PAL), 2);
+            TV *v;
+            room();
+            v = (TV *)sceGuGetMemory(2 * sizeof(TV));
+            sceGuClutLoad(32, c->f);
+            sceGuTexFlush();
+            put(v, x0, r - s_y0, x1 - x0, 1, x0, r - s_y0, 0, 0, 0);
+            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+        }
+        if (buf[i] == V_SUB) {
+            sceGuEnable(GU_STENCIL_TEST);
+            sceGuStencilFunc(GU_EQUAL, F_BACK, F_BACK);
+            sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+            for (r = r0; r < r1; r++) {
+                room();
+                rect(x0, r - s_y0, x1, r + 1 - s_y0, times4(s_fx ? row_fixed(r) : fixc));
+            }
+            sceGuDisable(GU_STENCIL_TEST);
+        }
+        sceGuPixelMask(0);
+    }
+}
+
 /* The band's colour maths on a screen's pixels (own) against the other
    screen's (other), then its rows of the picture (out): 0 a pixel each; 1
    a line 512 across that is not hires, each pixel twice; 2 a hires line's
@@ -1217,7 +1324,15 @@ static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned ow
             sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
             stripe_tex(other, x0, y0, x1, y1);
         } else {
-            rect(x0, y0, x1, y1, times4(fixc));
+            if (s_fx) {
+                int r;
+                for (r = r0; r < r1; r++) {
+                    room();
+                    rect(x0, r - s_y0, x1, r + 1 - s_y0, times4(row_fixed(r)));
+                }
+            } else {
+                rect(x0, y0, x1, y1, times4(fixc));
+            }
         }
         if (cgadsub & 0x40u) {
             sceGuStencilFunc(GU_EQUAL, F_HALF, F_HALF);
@@ -1325,8 +1440,45 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
     sceGuTexFilter(GU_NEAREST, GU_NEAREST);
     sceGuTexWrap(GU_CLAMP, GU_CLAMP);
     for (s0 = 0; s0 < h; s0 += BAND) {
-        int s1 = s0 + BAND < h ? s0 + BAND : h;
+        int s1 = s0 + BAND < h ? s0 + BAND : h, band_end[BAND], band_ix[BAND], band_fx[BAND];
         s_y0 = s0;
+        /* the bands: rows of one part whose states are the same (a
+           description has a state for each line, the same or not), or
+           differ in their palettes alone (an index band: none in direct
+           colour, whose colours are not the palette's) */
+        for (r = s0; r < s1;) {
+            U32 ri = FD_(CP_ROWS) + 4u * (U32)r, p0 = FD_(ri), np = FD_(ri + 1u);
+            I32 dr0 = I_(FD_(ri + 2u));
+            int r1 = r + 1, ix = 0, fx = 0;
+            if (np == 1u) {
+                U32 si = FD_(FD_(CP_PARTS) + 4u * p0 + 1u);
+                const uint32_t *a = &FD_(FD_(CP_STATES) + si * U_(CP_ST));
+                while (r1 < s1) {
+                    U32 rj = FD_(CP_ROWS) + 4u * (U32)r1;
+                    U32 sj = FD_(FD_(CP_PARTS) + 4u * FD_(rj) + 1u);
+                    const uint32_t *b = &FD_(FD_(CP_STATES) + sj * U_(CP_ST));
+                    if (FD_(rj + 1u) != 1u || I_(FD_(rj + 2u)) != dr0 + (r1 - r))
+                        break;
+                    if (sj != si && memcmp(a, b, CP_ST * sizeof(uint32_t))) {
+                        /* the fixed colour's bytes (not its word's window
+                           flags), and the palette (not in direct colour) */
+                        if (((a[CP_S_TSW] | b[CP_S_TSW]) & 0x100u) || ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0xFF000000u) ||
+                            memcmp(a, b, CP_S_FIXED * sizeof(uint32_t)) ||
+                            memcmp(a + CP_S_FIXED + 1, b + CP_S_FIXED + 1, (CP_S_PAL - CP_S_FIXED - 1) * sizeof(uint32_t)) ||
+                            memcmp(a + CP_S_PAL + 1, b + CP_S_PAL + 1, (CP_ST - CP_S_PAL - 1) * sizeof(uint32_t)))
+                            break;
+                        ix |= a[CP_S_PAL] != b[CP_S_PAL];
+                        fx |= a[CP_S_FIXED] != b[CP_S_FIXED];
+                    }
+                    r1++;
+                }
+            }
+            band_end[r - s0] = r1;
+            for (; r < r1; r++) {
+                band_ix[r - s0] = ix;
+                band_fx[r - s0] = fx;
+            }
+        }
         /* the sprites, a row (and part) at a time */
         target(V_OBJ, PIC_W);
         scissor(0, 0, sw, BAND);
@@ -1348,30 +1500,19 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
                 int x0 = (int)(FD_(FD_(CP_PARTS) + 4u * part) + FD_(CP_SL));
                 int x1 = k + 1 < np ? (int)(FD_(FD_(CP_PARTS) + 4u * (part + 1u)) + FD_(CP_SL)) : sw;
                 cp_load(si);
+                s_index = band_ix[r - s0];
                 if (!(cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u) && ((cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u)) & 0x10u))
                     draw_obj_row(si, part, r, x0, x1);
             }
         }
         sceGuDisable(GU_COLOR_TEST);
         sceGuDisable(GU_STENCIL_TEST);
-        /* the bands: rows of one part whose states are the same (a
-           description has a state for each line, the same or not) */
         for (r = s0; r < s1;) {
             U32 ri = FD_(CP_ROWS) + 4u * (U32)r, p0 = FD_(ri), np = FD_(ri + 1u), k;
             I32 dr0 = I_(FD_(ri + 2u));
-            int r1 = r + 1, which;
-            if (np == 1u) {
-                U32 si = FD_(FD_(CP_PARTS) + 4u * p0 + 1u);
-                while (r1 < s1) {
-                    U32 rj = FD_(CP_ROWS) + 4u * (U32)r1;
-                    U32 sj = FD_(FD_(CP_PARTS) + 4u * FD_(rj) + 1u);
-                    if (FD_(rj + 1u) != 1u || I_(FD_(rj + 2u)) != dr0 + (r1 - r) ||
-                        (sj != si && memcmp(&FD_(FD_(CP_STATES) + sj * U_(CP_ST)), &FD_(FD_(CP_STATES) + si * U_(CP_ST)),
-                                            CP_ST * sizeof(uint32_t))))
-                        break;
-                    r1++;
-                }
-            }
+            int r1 = band_end[r - s0], which;
+            s_index = band_ix[r - s0];
+            s_fx = band_fx[r - s0];
             for (k = 0; k < np; k++) {
                 U32 part = p0 + k, si = FD_(FD_(CP_PARTS) + 4u * part + 1u);
                 int x0 = (int)(FD_(FD_(CP_PARTS) + 4u * part) + FD_(CP_SL));
@@ -1383,9 +1524,12 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
                 cp_load(si);
                 mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
                 hires = scale < 2 ? 0 : mode == 5u || mode == 6u ? 1 : (cp_b(si, U_(CP_S_NBA), 3u) & 8u) ? 2 : 0;
-                if (!(cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u))
+                if (!(cp_b(si, U_(CP_S_INIDISP), 0u) & 0x80u)) {
                     for (which = 0; which < (hires ? 3 : 2); which++)
                         draw_screen(si, which, r, r1, dr0, x0, x1, hires);
+                    if (s_index || s_fx)
+                        index_band(si, r, r1, x0, x1, hires ? 3 : 2);
+                }
                 if (hires) {
                     /* the even pixels (the sub screen against the main), then
                        the odd (the main against the sub) */
@@ -1398,6 +1542,7 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
             r = r1;
         }
     }
+    s_index = s_fx = 0;
     sceGuFinish();
     sceGuSync(0, 0);
     *pw = w;
