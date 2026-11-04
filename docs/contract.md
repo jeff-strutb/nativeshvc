@@ -150,7 +150,8 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 - **2.20:** each platform draws every picture on its own GPU, within the platform's limits:
   `nshvc_ext_screen` past a platform's screen is a fatal error naming it (the PSP: 512 x 240,
-  a hires or interlaced frame 256 across; elsewhere the contract's 8192 x 8192). Overlays are
+  a hires or interlaced frame 256 across, and an interlaced hires frame (512 x 448) fatal there;
+  elsewhere the contract's 8192 x 8192). Overlays are
   drawn by the platform's own filtering and blend (the PSP's GE: bilinear in sixteenths of a
   texel).
 - **2.19:** `nshvc_set_register_write_hook`: each S-CPU write to the console's own registers

@@ -1443,10 +1443,11 @@ static int drawable(void)
                 continue;
             mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
             tmts = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
-            /* (hires with the screen interlaced: its rows twice as many) */
-            /* (the windows' columns, map and edges: cp_win's, spans' own) */
+            /* (the windows' columns, map and edges: cp_win's, spans' own)
+               hires with the screen interlaced: 512 x 448, past the PSP's
+               picture (its 122,880 pixels: 512 x 240, or 256 x 480 woven) */
             if ((mode == 5u || mode == 6u) && (cp_b(si, U_(CP_S_NBA), 3u) & 0x01u))
-                return 0;
+                nshvc_fatal("an interlaced hires frame: past the PSP's picture (512 x 240, 256 x 480 interlaced)");
             for (n = 0; n < 5u; n++) {
                 U32 key = cp_sw(si, U_(CP_S_VBASE)) + ((n < 4u ? cp_b(si, U_(CP_S_PAGE), n) : cp_b(si, U_(CP_S_PAGE4), 0u)) << 15);
                 int j;
@@ -3548,7 +3549,7 @@ int rr_psp_picture_woven(const uint32_t *desc, size_t words, int ww, int wh, uin
     (void)words;
     rr_cp_fd = desc;
     if (ww > 256)
-        return 0;
+        nshvc_fatal("an interlaced frame %d across: past the PSP's picture (256 x 480 interlaced)", ww);
     for (f = 0; f < 2; f++) {
         cp_fdb = base[f];
         if (!drawable() || (int)FD_(CP_PW) != ww || 2 * (int)FD_(CP_PH) != wh)
