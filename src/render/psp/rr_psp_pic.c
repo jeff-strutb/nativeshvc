@@ -71,6 +71,10 @@
    sub screen after it) in the VRAM past the picture */
 #define CV_BAND 24
 static int s_pw = PIC_W, s_band = BAND;
+/* a stripe buffer's rows as a texture's height: the GE takes a texture's
+   size as a power of 2 (sceGuTexImage's log2), so the one at s_band or
+   above (24 read as 16 would clamp rows 16-23 to row 15) */
+#define BAND_TEX (s_band > 16 ? 32 : 16)
 
 /* the main screen's stencil */
 #define F_MATH 0x01
@@ -519,7 +523,7 @@ static void stripe_tex(unsigned off, int x0, int y0, int x1, int y1)
     TV *v = (TV *)sceGuGetMemory(2 * sizeof(TV));
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-    sceGuTexImage(0, s_pw, s_band, s_pw, vram(off));
+    sceGuTexImage(0, s_pw, BAND_TEX, s_pw, vram(off));
     sceGuTexFlush();
     v[0].u = (short)x0;
     v[0].v = (short)y0;
@@ -693,6 +697,37 @@ static int layer_spans(uint32_t si, int n, int r0, int r1, int x0, int x1, int o
     return 1;
 }
 
+/* layer n's map entry at tile (tx, ty): its map's, or (s_out: the columns
+   drawn are outside the console's picture, draw_screen's pieces) its
+   outside map's (nshvc_ext_layer_outside; cp_bg's) */
+static int s_out;
+
+static U32 bg_entry(uint32_t si, U32 n, U32 tx, U32 ty)
+{
+    U32 ob = FD_(CP_OUT), sc, off;
+    if (!s_out)
+        return cp_map_entry(si, n, tx, ty);
+    sc = (FD_(ob) >> (4u + 3u * n)) & 7u;
+    off = (ty & 31u) << 5 | (tx & 31u);
+    if (sc >= 4u) {
+        off = (ty & (sc == 4u ? 31u : 63u)) << 7 | (tx & 127u);
+    } else {
+        if ((tx & 32u) != 0u && (sc & 1u) != 0u)
+            off += 0x400u;
+        if ((ty & 32u) != 0u && (sc & 2u) != 0u)
+            off += (sc & 1u) != 0u ? 0x800u : 0x400u;
+        off &= 0xFFFu;
+    }
+    return (FD_(ob + 1u + n * 4096u + (off >> 1)) >> (16u * (off & 1u))) & 0xFFFFu;
+}
+
+/* whether layer n has an outside map this frame */
+static int has_out(U32 n)
+{
+    U32 ob = FD_(CP_OUT);
+    return ob != 0u && ((FD_(ob) >> n) & 1u) != 0u;
+}
+
 /* the tiles of background n over rows r0-r1 (the band's, dr0 the first's
    hardware row) and columns x0-x1, at their depths, by the texture they
    come from and their palette */
@@ -798,7 +833,7 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
                 if ((xx >> xs) != tcur) {
                     U32 e, py, ch, k;
                     tcur = xx >> xs;
-                    e = cp_map_entry(si, (U32)n, tcur, yy >> ys);
+                    e = bg_entry(si, (U32)n, tcur, yy >> ys);
                     hf = (e >> 14) & 1u;
                     py = yy & ((1u << ys) - 1u);
                     if ((e >> 15) & 1u)
@@ -853,7 +888,7 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
             if ((xx >> xs) != last_tx || (yy >> ys) != last_ty) {
                 last_tx = xx >> xs;
                 last_ty = yy >> ys;
-                last_e = cp_map_entry(si, (U32)n, last_tx, last_ty);
+                last_e = bg_entry(si, (U32)n, last_tx, last_ty);
             }
             e = last_e;
             px = xx & ((1u << xs) - 1u);
@@ -956,7 +991,7 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
        yy), its texels from nu across in the image (fu flipped) */
 #define CELL(xx, yy, w, nu, fu)                                                                                    \
     do {                                                                                                           \
-        U32 e = cp_map_entry(si, (U32)n, (xx) >> xs, (yy) >> ys);                                                  \
+        U32 e = bg_entry(si, (U32)n, (xx) >> xs, (yy) >> ys);                                                      \
         U32 ch = e & 0x3FFu, hf = (e >> 14) & 1u, vf = (e >> 15) & 1u, pal = (e >> 10) & 7u, prio = (e >> 13) & 1u; \
         U32 ca;                                                                                                    \
         int t, slot, b;                                                                                            \
@@ -1257,10 +1292,18 @@ static inline __attribute__((always_inline)) void obj_sprite(Atlas *a, U32 e, in
             L = gb - ra;
         for (cc = 0; cc < cols; cc++) {
             U32 t, ca;
-            int T, tv0;
-            if (FD_(CP_LIMITS) != 0u && !(keep >= 0 && I_(cc) - first < keep))
-                continue;
-            if (sl + sxp + I_(cc) * 8 + 8 <= 0)
+            int T, tv0, X = sxp + I_(cc) * 8, pa = 0, pb = 8;
+            /* the console's limits on its own columns alone (cp_obj): a tile
+               it keeps none of drawn past them only */
+            if (FD_(CP_LIMITS) != 0u && !(keep >= 0 && I_(cc) - first < keep)) {
+                if (X < 0)
+                    pb = -X < 8 ? -X : 8;
+                else if (X + 8 > 256)
+                    pa = 256 - X > 0 ? 256 - X : 0;
+                else
+                    continue;
+            }
+            if (sl + X + pb <= 0)
                 continue;
             col = hflip ? cols - 1u - cc : cc;
             t = (((name & 0xF0u) + ((row >> 3) << 4)) & 0xF0u) | ((name + col) & 0x0Fu);
@@ -1268,10 +1311,12 @@ static inline __attribute__((always_inline)) void obj_sprite(Atlas *a, U32 e, in
             T = (int)(ca / 16u);
             img[nt] = T >> 10;
             tv0 = (tile_v(T) + (int)y) >> dbl;
+            /* (columns pa-pb of the tile: its texels, flipped or not) */
             if (d > 0)
-                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tv0, (int)hflip, 0, 0);
+                put(tv[nt++], sl + X + pa, ra - s_y0, pb - pa, L, tile_u(T) + (hflip ? 8 - pb : pa), tv0, (int)hflip, 0, 0);
             else                             /* (its rows up the tile: flipped) */
-                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tv0 - L + 1, (int)hflip, 1, 0);
+                put(tv[nt++], sl + X + pa, ra - s_y0, pb - pa, L, tile_u(T) + (hflip ? 8 - pb : pa), tv0 - L + 1, (int)hflip, 1,
+                    0);
         }
         if (!nt)
             continue;
@@ -1356,7 +1401,7 @@ static int drawable(void)
     U32 r, ph = FD_(CP_PH), keys[ATLASES];
     int nkeys = 0;
     if ((FD_(CP_PW) != FD_(CP_SW) && FD_(CP_PW) != 2u * FD_(CP_SW)) || FD_(CP_SW) > (s_cv >= 0 ? 512u : (U32)PIC_W) || ph > PIC_H ||
-        (FD_(CP_CVON) && s_cv < 0) || FD_(CP_OUT))
+        (FD_(CP_CVON) && s_cv < 0))
         return 0;
     for (r = 0; r < ph; r++) {
         U32 ri = FD_(CP_ROWS) + 4u * r, p0 = FD_(ri), np = FD_(ri + 1u), k;
@@ -1467,8 +1512,23 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
         ns = layer_spans(si, (int)n, r0, r1, x0, x1, sp);
         sfunc(own ? (int)((cgadsub >> n) & 1u) : 0);
         for (k = 0; k < ns; k++) {
-            scissor(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0);
-            draw_bg(si, (int)n, r0, r1, dr0, sp[k][0], sp[k][1], hires == 1 ? (which ? 0 : 1) : -1);
+            /* (with an outside map: its pieces left of, on and right of the
+               console's picture, each from its map) */
+            int sl = (int)FD_(CP_SL), cut[4] = { sp[k][0], sp[k][1], sp[k][1], sp[k][1] }, q, out = has_out(n);
+            if (out) {
+                cut[1] = sp[k][0] > sl ? sp[k][0] : sl < sp[k][1] ? sl : sp[k][1];
+                cut[2] = sp[k][0] > sl + 256 ? sp[k][0] : sl + 256 < sp[k][1] ? sl + 256 : sp[k][1];
+                if (cut[2] < cut[1])
+                    cut[2] = cut[1];
+            }
+            for (q = 0; q < 3; q++) {
+                if (cut[q + 1] <= cut[q])
+                    continue;
+                s_out = out && q != 1;
+                scissor(cut[q], r0 - s_y0, cut[q + 1], r1 - s_y0);
+                draw_bg(si, (int)n, r0, r1, dr0, cut[q], cut[q + 1], hires == 1 ? (which ? 0 : 1) : -1);
+            }
+            s_out = 0;
         }
     }
     if ((on >> 4) & 1u) {
@@ -1489,7 +1549,7 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
                     scissor(sp[k][0], r0 - s_y0, sp[k][1], r1 - s_y0);
                     sceGuEnable(GU_TEXTURE_2D);
                     sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-                    sceGuTexImage(0, s_pw, s_band, s_pw, vram(V_OBJ));
+                    sceGuTexImage(0, s_pw, BAND_TEX, s_pw, vram(V_OBJ));
                     sceGuTexFlush();
                     v[0].u = (short)sp[k][0];
                     v[0].v = (short)(r0 - s_y0);
@@ -1571,7 +1631,7 @@ static void index_band(uint32_t si, int r0, int r1, int x0, int x1, int screens)
         sceGuEnable(GU_TEXTURE_2D);
         sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
         sceGuTexMode(GU_PSM_T32, 0, 0, 0);
-        sceGuTexImage(0, s_pw, s_band, s_pw, vram(buf[i]));
+        sceGuTexImage(0, s_pw, BAND_TEX, s_pw, vram(buf[i]));
         sceGuTexFlush();
         sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
         for (r = r0; r < r1 && s_index; r++) {
@@ -1751,7 +1811,7 @@ static void finish_band(uint32_t si, int r0, int r1, int x0, int x1, unsigned ow
     sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
     sceGuTexMode(GU_PSM_T32, 0, 0, 0);
-    sceGuTexImage(0, s_pw, s_band, s_pw, vram(own));
+    sceGuTexImage(0, s_pw, BAND_TEX, s_pw, vram(own));
     sceGuTexFlush();
     for (k = 0; k < 3; k++) {
         TV *v = (TV *)sceGuGetMemory(2 * sizeof(TV));

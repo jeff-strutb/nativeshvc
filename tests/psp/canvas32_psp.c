@@ -22,6 +22,9 @@
  *              window 1 (nshvc_ext_window_columns); the canvas's colour 1
  *              (CGRAM 81) rewritten each line by HDMA
  *   windows    prevented's but CGRAM as it is (no HDMA to it)
+ *   wide       prevented's on a 338 x 224 screen (the console's picture at
+ *              its centre), BG2 on VRAM page 1 with its own map outside the
+ *              picture (128 x 64), sprites on, some on X pages 1 and -1
  *
  *   canvas32_psp --headless --frames 64      (with NSHVC_RRCHECK=1)
  *
@@ -62,8 +65,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -128,6 +131,29 @@ static void hdma_prevented(int cgram)
     wr8(0x00420C, (uint8_t)(cgram ? 0x0E : 0x08));
 }
 
+static uint16_t outside[128 * 64];
+
+/* the sprites (8 x 8, their tiles from VRAM 0): 48 of them about the
+   screen (some outside the console's columns: the console's limits not
+   theirs), every fourth on X page 1 or -1, the rest below the picture */
+static void sprites(int on)
+{
+    int i;
+    w(0x01, 0x00);
+    w(0x02, 0);
+    w(0x03, 0);
+    for (i = 0; i < 128; i++) {
+        int shown = on && i < 48;
+        w(0x04, shown ? rnd() & 0xFF : 0);
+        w(0x04, shown ? rnd() % 220u : 240);
+        w(0x04, rnd() & 0xFF);
+        w(0x04, (rnd() & 0x3E) | 0x30);
+        nshvc_ext_sprite_page(i, shown && (i & 3) == 0 ? ((i & 4) ? 1 : -1) : 0, 0);
+    }
+    for (i = 0; i < 32; i++)
+        w(0x04, on ? rnd() & 0x55 : 0);       /* (X's ninth bit: some left of the console's picture) */
+}
+
 static void hdma(int on)
 {
     static const uint8_t ch[2][5] = { { 0x02, 0x32, 0x00, 0x20, 0x7E }, { 0x00, 0x32, 0x00, 0x28, 0x7E } };
@@ -144,9 +170,9 @@ static void setup(int sc)
     int i;
     hdma(0);
     nshvc_ext_window_columns(1, -1, 0);
-#ifdef CANVAS32_SCREEN
-    nshvc_ext_screen(SC_W, SC_H);
-#endif
+    nshvc_ext_screen(sc == S_WIDE ? 338 : SC_W, SC_H);
+    nshvc_ext_layer_outside(1, NULL, 0);
+    nshvc_ext_layer_page(1, 0);
     w(0x15, 0x80);
     w(0x16, 0);
     w(0x17, 0);
@@ -170,6 +196,7 @@ static void setup(int sc)
     w(0x0B, 0x40);
     for (i = 0x23; i <= 0x31; i++)
         w((unsigned)i, 0);
+    sprites(sc == S_WIDE);
     w(0x32, 0xE0);
     w(0x33, 0);
     switch (sc) {
@@ -219,13 +246,21 @@ static void setup(int sc)
         break;
     case S_PREVENTED:
     case S_WINDOWS:
-        w(0x2C, 0x03);
+    case S_WIDE:
+        w(0x2C, sc == S_WIDE ? 0x13 : 0x03);
         w(0x2E, 0x03);                 /* BG1, BG2 windowed on the main screen */
         w(0x23, 0x28);                 /* BG1 window 2, BG2 window 1 */
         w(0x30, 0x32);                 /* maths prevented everywhere, the sub screen's */
         w(0x31, 0x03);
         nshvc_ext_window_columns(1, 60, 190);
-        hdma_prevented(sc == S_PREVENTED);
+        hdma_prevented(sc != S_WINDOWS);
+        if (sc == S_WIDE) {
+            for (i = 0; i < 128 * 64; i++)
+                outside[i] = (uint16_t)(rnd() & 0xE3FF);
+            nshvc_ext_layer_outside(1, outside, 5);
+            nshvc_ext_vram_copy(1, 0);
+            nshvc_ext_layer_page(1, 1);
+        }
         break;
     }
 }
@@ -248,6 +283,7 @@ static void game(void)
 {
     int sc, f;
     wr8(0x004200, 0x00);
+    nshvc_ext_vram(128);
     hdma_tables();
     for (sc = 0; sc < NSCENES; sc++) {
         uint64_t t0, lo, hi;
