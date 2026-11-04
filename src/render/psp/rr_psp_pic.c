@@ -447,9 +447,236 @@ static int prevented(uint32_t si, int n, int x) { (void)n; return region_of(si, 
 static TV s_cell[2][16][8][CELLS * 2];       /* by priority, texture image (and 2 bits' palette), palette */
 static int s_cells[2][16][8];
 
+/* a layer's texture images and palettes (draw_bg, bg_flush) */
+typedef struct {
+    Atlas *a;
+    Clut *c;
+    int kind, tk, direct;                    /* the tiles' kind, the texture's (hires: split), direct colour */
+} BgTex;
+
+/* the cells made, drawn: a bucket a texture image and palette (out of
+   line: a loop's registers its own) */
+static __attribute__((noinline)) void bg_flush(const BgTex *g)
+{
+    int im, pl, p, kind = g->kind;
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(kind == 2 ? GU_PSM_T8 : GU_PSM_T4, 0, 0, 0);
+    for (im = 0; im < 16; im++)
+        for (pl = 0; pl < 8; pl++)
+            for (p = 0; p < 2; p++) {
+                int cnt = s_cells[p][im][pl], timg = kind == 0 ? im / 4 : im;
+                TV *v;
+                if (!cnt)
+                    continue;
+                room();
+                sceGuTexImage(0, 128, 512, 128, tile_image(g->a, g->tk, timg << 10));
+                sceGuTexFlush();
+                if (kind == 0) {
+                    /* the window of 4 colours the palette starts at */
+                    int b = (im & 3) * 8 + pl;
+                    sceGuClutMode(GU_PSM_8888, 0, 0x0F, 0);
+                    sceGuClutLoad(2, &g->c->c[0][b * 4]);
+                } else if (kind == 1) {
+                    sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)pl);
+                    sceGuClutLoad(32, g->c->c[1]);
+                } else {
+                    sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+                    sceGuClutLoad(32, g->direct ? g->c->direct[pl] : g->c->c[2]);
+                }
+                v = (TV *)sceGuGetMemory(cnt * 2 * (int)sizeof(TV));
+                memcpy(v, s_cell[p][im][pl], (size_t)cnt * 2 * sizeof(TV));
+                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, cnt * 2, 0, v);
+            }
+}
+
+/* mosaic's colours: a run of rows' blocks' colour bytes, by layer and
+   priority, a picture row a texture row (made on its first mosaic) */
+static uint8_t (*s_mos)[2][PIC_H][256];
+
+/* draw_bg's mosaic (out of line: its loop's registers its own) */
+static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int r1, int x0, int x1, const BgTex *g, U32 xs,
+                                            U32 ys, U32 bpp, U32 nba, U32 hofs, U32 vofs)
+{
+    U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u), mode = bgmode & 7u;
+    int sl = (int)FD_(CP_SL), kind = g->kind, direct = g->direct, pl;
+    /* mosaic (cp_bg): a block of m columns, of the rows whose block
+       starts on the same line, the layer's pixel at its first column
+       and that line (offset-per-tile's scroll that column's): a sprite
+       of the one texel, magnified (every pixel's position on it under
+       the next texel's) */
+    I32 m = (I32)(cp_b(si, U_(CP_S_INIDISP), 3u) >> 4) + 1, b0;
+    int ra, rb, z[2] = { (int)cp_zbg(bgmode, (U32)n, 0u), (int)cp_zbg(bgmode, (U32)n, 1u) };
+    int csh = bpp == 2u ? 3 : bpp == 4u ? 4 : 5;     /* (a tile's bytes, 8 bpp, a power of 2) */
+    U32 last_tx = ~0u, last_ty = ~0u, last_e = 0;
+    U32 big3 = (bgmode >> 6) & 1u, sx3 = big3 ? 4u : 3u, sy3 = big3 ? 4u : 3u;
+    U32 h3 = cp_h(si, U_(CP_S_HOFS) + 1u, 0u), v3 = cp_h(si, U_(CP_S_VOFS) + 1u, 0u);
+    /* a block's colour a byte (its palette's place and its colour, 0
+       clear: a tile's colour 0 is), drawn a run of rows at a time, each
+       priority a sprite of a byte a block, magnified; direct colour (its
+       palette bits the tile's) a sprite a block */
+    int bytes = !(kind == 2 && direct);
+    b0 = cp_floor_to(x0 - sl, m);
+    if (bytes) {
+        if (!s_mos && !(s_mos = (uint8_t(*)[2][PIC_H][256])memalign(64, 4 * sizeof *s_mos)))
+            nshvc_fatal("no memory for mosaic");
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+        sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+        sceGuClutLoad(32, g->c->c[2]);
+    }
+    for (ra = r0; ra < r1; ra = rb) {
+        U32 my = FD_(FD_(CP_ROWS) + 4u * (U32)ra + 3u);
+        I32 bx;
+        int nb = 0, q, done = 0;
+        for (rb = ra + 1; rb < r1 && FD_(FD_(CP_ROWS) + 4u * (U32)rb + 3u) == my; rb++)
+            ;
+        if (bytes && !((mode == 2u || mode == 4u) && n < 2)) {
+            /* one scroll for the run: a tile's entry, flips, palette,
+               priority and its characters' rows of pixels taken as a block
+               first meets it, each block then its pixel alone */
+            U32 yy = (my + vofs) & 0x3FFu, mx = (1u << xs) - 1u, tcur = ~0u, base = 0, pr = 0, hf = 0;
+            const uint8_t *row[2] = { NULL, NULL };
+            uint8_t *o[2] = { s_mos[n][0][ra], s_mos[n][1][ra] };
+            int nbk = (x1 - sl - b0 + m - 1) / m;
+            memset(o[0], 0, (size_t)nbk);
+            memset(o[1], 0, (size_t)nbk);
+            for (bx = b0; nb < nbk; bx += m, nb++) {
+                U32 xx = (U_(bx) + hofs) & 0x3FFu, px, c;
+                if ((xx >> xs) != tcur) {
+                    U32 e, py, ch, k;
+                    tcur = xx >> xs;
+                    e = cp_map_entry(si, (U32)n, tcur, yy >> ys);
+                    hf = (e >> 14) & 1u;
+                    py = yy & ((1u << ys) - 1u);
+                    if ((e >> 15) & 1u)
+                        py = (1u << ys) - 1u - py;
+                    ch = (e & 0x3FFu) + (py >= 8u ? 16u : 0u);
+                    pr = (e >> 13) & 1u;
+                    base = kind == 0 ? (mode == 0u ? (U32)n * 32u : 0u) + ((e >> 10) & 7u) * 4u
+                         : kind == 1 ? ((e >> 10) & 7u) * 16u : 0u;
+                    for (k = 0; k < 2; k++) {
+                        U32 ca = (nba + ((ch + k) & 0x3FFu) * (bpp * 4u)) & 0x7FFFu;
+                        int t = (int)(ca >> csh);
+                        const uint8_t *img = tile_image(g->a, kind, t);
+                        row[k] = kind == 2 ? img + (tile_v(t) + (int)(py & 7u)) * 128 + tile_u(t)
+                                           : img + (tile_v(t) + (int)(py & 7u)) * 64 + tile_u(t) / 2;
+                    }
+                }
+                px = xx & mx;
+                if (hf)
+                    px = mx - px;
+                c = kind == 2 ? row[px >> 3][px & 7u] : (U32)(row[px >> 3][(px & 7u) >> 1] >> ((px & 1u) * 4)) & 15u;
+                if (c)
+                    o[pr][nb] = (uint8_t)(base + c);
+            }
+            done = 1;
+        }
+        for (bx = b0; !done && bx + sl < x1; bx += m, nb++) {
+            U32 hc = hofs, vc = vofs, xx, yy, e, ch, hf, vf, pal, prio, ca, px, py;
+            int t, slot, b;
+            TV *v;
+            if ((mode == 2u || mode == 4u) && n < 2) {
+                I32 col = (bx + I_(hofs & 7u)) >> 3;
+                if (col > 0) {
+                    U32 tx3 = (U_(col - 1) * 8u + (h3 & ~7u)) >> sx3, hv = cp_map_entry(si, 2u, tx3, v3 >> sy3), vv;
+                    if (mode == 4u) {
+                        if (hv & 0x8000u) {
+                            if (hv & (0x2000u << n))
+                                vc = hv & 0x3FFu;
+                        } else if (hv & (0x2000u << n)) {
+                            hc = (hofs & 7u) | (hv & 0x3F8u);
+                        }
+                    } else {
+                        vv = cp_map_entry(si, 2u, tx3, (v3 + 8u) >> sy3);
+                        if (hv & (0x2000u << n))
+                            hc = (hofs & 7u) | (hv & 0x3F8u);
+                        if (vv & (0x2000u << n))
+                            vc = vv & 0x3FFu;
+                    }
+                }
+            }
+            xx = (U_(bx) + hc) & 0x3FFu;
+            yy = (my + vc) & 0x3FFu;
+            if ((xx >> xs) != last_tx || (yy >> ys) != last_ty) {
+                last_tx = xx >> xs;
+                last_ty = yy >> ys;
+                last_e = cp_map_entry(si, (U32)n, last_tx, last_ty);
+            }
+            e = last_e;
+            px = xx & ((1u << xs) - 1u);
+            py = yy & ((1u << ys) - 1u);
+            hf = (e >> 14) & 1u;
+            vf = (e >> 15) & 1u;
+            if (hf)
+                px = (1u << xs) - 1u - px;
+            if (vf)
+                py = (1u << ys) - 1u - py;
+            ch = e & 0x3FFu;
+            if (px >= 8u)
+                ch += 1u;
+            if (py >= 8u)
+                ch += 16u;
+            pal = (e >> 10) & 7u;
+            prio = (e >> 13) & 1u;
+            ca = (nba + (ch & 0x3FFu) * (bpp * 4u)) & 0x7FFFu;
+            t = (int)(ca >> csh);
+            if (bytes) {
+                /* the tile's pixel from its decoded image (draw_bg's atlas) */
+                const uint8_t *img = tile_image(g->a, kind, t);
+                int u = tile_u(t) + (int)(px & 7u), w = tile_v(t) + (int)(py & 7u);
+                U32 c = kind == 2 ? img[w * 128 + u] : (U32)(img[w * 64 + u / 2] >> ((u & 1) * 4)) & 15u;
+                U32 ci = !c ? 0u : kind == 0 ? (mode == 0u ? (U32)n * 32u : 0u) + pal * 4u + c : kind == 1 ? pal * 16u + c : c;
+                s_mos[n][prio][ra][nb] = (uint8_t)ci;
+                s_mos[n][prio ^ 1u][ra][nb] = 0;
+                continue;
+            }
+            b = kind == 0 ? (int)((mode == 0u ? (U32)n * 8u : 0u) + pal) : (int)pal;
+            slot = kind == 0 ? (t >> 10) * 4 + (b >> 3) : (t >> 10);
+            pl = kind == 2 && !direct ? 0 : b & 7;
+            if (s_cells[prio][slot][pl] >= CELLS) {
+                /* a bucket full: those made drawn (a layer's blocks in any
+                   order, their pixels apart, their depths the same) */
+                bg_flush(g);
+                memset(s_cells, 0, sizeof s_cells);
+            }
+            v = &s_cell[prio][slot][pl][2 * s_cells[prio][slot][pl]++];
+            v[0].u = (short)(tile_u(t) + (int)(px & 7u));
+            v[0].v = (short)(tile_v(t) + (int)(py & 7u));
+            v[0].x = (short)(bx + sl);
+            v[0].y = (short)(ra - s_y0);
+            v[0].z = (short)z[prio];
+            v[1].u = (short)(v[0].u + 1);
+            v[1].v = (short)(v[0].v + 1);
+            v[1].x = (short)(bx + sl + m);
+            v[1].y = (short)(rb - s_y0);
+            v[1].z = v[0].z;
+        }
+        for (q = 0; bytes && nb && q < 2; q++) {
+            TV *v;
+            room();
+            v = (TV *)sceGuGetMemory(2 * sizeof(TV));
+            sceKernelDcacheWritebackRange(s_mos[n][q][ra], 256);
+            sceGuTexImage(0, 256, 1, 256, s_mos[n][q][ra]);
+            sceGuTexFlush();
+            v[0].u = 0;
+            v[0].v = 0;
+            v[0].x = (short)(b0 + sl);
+            v[0].y = (short)(ra - s_y0);
+            v[0].z = (short)z[q];
+            v[1].u = (short)nb;
+            v[1].v = 1;
+            v[1].x = (short)(b0 + sl + nb * m);
+            v[1].y = (short)(rb - s_y0);
+            v[1].z = v[0].z;
+            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+        }
+    }
+}
+
 /* (phase: a hires layer's (modes 5, 6) texels the screen takes, 0 the even
    (the sub screen), 1 the odd (the main); -1 a layer of a screen's pixels) */
-static void draw_bg(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1, int phase)
+/* (out of line: its loops their own registers, not the caller's) */
+static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1, int phase)
 {
     const uint16_t *words = (const uint16_t *)(rr_cp_fd + FD_(CP_VRAM));
     U32 ld = cp_st[U_(CP_S_LAYER) + (U32)n], bpp = (ld >> 1) & 15u, xs = (ld >> 5) & 7u, ys = (ld >> 8) & 7u;
@@ -457,14 +684,20 @@ static void draw_bg(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1,
     U32 hofs = (((n >> 1) == 0 ? cp_st[CP_S_HOFS] : cp_st[CP_S_HOFS + 1]) >> (16u * ((U32)n & 1u))) & 0xFFFFu;
     U32 vofs = (((n >> 1) == 0 ? cp_st[CP_S_VOFS] : cp_st[CP_S_VOFS + 1]) >> (16u * ((U32)n & 1u))) & 0xFFFFu;
     U32 nbaw = cp_b(si, U_(CP_S_NBA), n < 2 ? 0u : 1u), nba = ((nbaw >> (((U32)n & 1u) * 4u)) & 0x0Fu) << 12;
-    int kind = bpp == 2u ? 0 : bpp == 4u ? 1 : 2, sl = (int)FD_(CP_SL), x, y, p, im, pl, direct, cx;
+    int kind = bpp == 2u ? 0 : bpp == 4u ? 1 : 2, sl = (int)FD_(CP_SL), x, y, pl, direct, cx;
     int tk = phase >= 0 ? kind + 3 : kind;   /* the texture's kind: hires, the split images */
     Atlas *a = atlas(words, cp_sw(si, U_(CP_S_VBASE)) + (page << 15), tk);
     Clut *c;
+    BgTex g;
     if (phase >= 0)
         xs = 4u;                             /* (hires: 16 texels a tile across) */
     direct = bpp == 8u && (cp_b(si, U_(CP_S_TSW), 1u) & 1u);
     c = clut(cp_sw(si, U_(CP_S_PAL)), direct);
+    g.a = a;
+    g.c = c;
+    g.kind = kind;
+    g.tk = tk;
+    g.direct = direct;
     memset(s_cells, 0, sizeof s_cells);
     /* the cell at band column x, row y, w across: the map's tile at (xx,
        yy), its texels from nu across in the image (fu flipped) */
@@ -491,39 +724,11 @@ static void draw_bg(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1,
         put(v, x, y - s_y0, (w), 8, tile_u(t) + (hf ? (fu) : (nu)), tile_v(t), (int)hf, (int)vf,                    \
             (int)cp_zbg(bgmode, (U32)n, prio));                                                                    \
     } while (0)
-    /* the cells made, drawn: a bucket a texture image and palette */
-#define FLUSH()                                                                                                    \
-    do {                                                                                                           \
-        sceGuEnable(GU_TEXTURE_2D);                                                                                \
-        sceGuTexMode(kind == 2 ? GU_PSM_T8 : GU_PSM_T4, 0, 0, 0);                                                  \
-        for (im = 0; im < 16; im++)                                                                                \
-            for (pl = 0; pl < 8; pl++)                                                                             \
-                for (p = 0; p < 2; p++) {                                                                          \
-                    int cnt = s_cells[p][im][pl], timg = kind == 0 ? im / 4 : im;                                  \
-                    TV *v;                                                                                         \
-                    if (!cnt)                                                                                      \
-                        continue;                                                                                  \
-                    room();                                                                                        \
-                    sceGuTexImage(0, 128, 512, 128, tile_image(a, tk, timg << 10));                                \
-                    sceGuTexFlush();                                                                               \
-                    if (kind == 0) {                                                                               \
-                        /* the window of 4 colours the palette starts at */                                        \
-                        int b = (im & 3) * 8 + pl;                                                                 \
-                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, 0);                                                    \
-                        sceGuClutLoad(2, &c->c[0][b * 4]);                                                         \
-                    } else if (kind == 1) {                                                                        \
-                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, (unsigned)pl);                                         \
-                        sceGuClutLoad(32, c->c[1]);                                                                \
-                    } else {                                                                                       \
-                        sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);                                                    \
-                        sceGuClutLoad(32, direct ? c->direct[pl] : c->c[2]);                                       \
-                    }                                                                                              \
-                    v = (TV *)sceGuGetMemory(cnt * 2 * (int)sizeof(TV));                                           \
-                    memcpy(v, s_cell[p][im][pl], (size_t)cnt * 2 * sizeof(TV));                                    \
-                    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, cnt * 2, 0, v);   \
-                }                                                                                                  \
-    } while (0)
-    if ((mode == 2u || mode == 4u) && n < 2) {
+    /* the cells made, drawn (bg_flush) */
+#define FLUSH() bg_flush(&g)
+    if (phase < 0 && ((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4)) {
+        bg_mosaic(si, n, r0, r1, x0, x1, &g, xs, ys, bpp, nba, hofs, vofs);
+    } else if ((mode == 2u || mode == 4u) && n < 2) {
         /* offset-per-tile (cp_bg): each tile column past the first its own
            scroll from BG3's map, its fine horizontal scroll the layer's
            (the cells' columns the same), so a column's cells down the band */
@@ -815,11 +1020,9 @@ static int drawable(void)
                 /* (Mode 7's plane read from the VRAM's words: m7_fill) */
                 if (!((tmts >> n) & 1u) || (n < 4u && (mode == 7u || !cp_bpp(mode, n))))
                     continue;
-                /* a plain layer, or offset-per-tile's (modes 2, 4, 6) or hires
-                   (5, 6) without mosaic */
-                if (n < 4u && !(cp_st[U_(CP_S_LAYER) + n] & 1u) &&
-                    !((((mode == 2u || mode == 4u) && n < 2u) || mode == 5u || mode == 6u) &&
-                      !(((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4))))
+                /* any layer but hires (5, 6) under mosaic */
+                if (n < 4u && !(cp_st[U_(CP_S_LAYER) + n] & 1u) && (mode == 5u || mode == 6u) &&
+                    ((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4))
                     return 0;
                 for (j = 0; j < nkeys && keys[j] != key; j++)
                     ;
