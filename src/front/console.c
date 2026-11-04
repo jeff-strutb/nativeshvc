@@ -670,7 +670,8 @@ int console_picture_at(float x, float y, int *dot, int *line)
    console frames run a second, the longest time between two presents,
    and the longest each frame spent running the console, presenting and
    waiting for its time. NSHVC_FPS=1 draws it at the top left;
-   NSHVC_FPS_LOG=FILE writes a line a presented frame: its number, its
+   NSHVC_FPS_LOG=FILE (a window's run, or headless with NSHVC_PRESENT=1,
+   its wait 0) writes a line a presented frame: its number, its
    present's time from the first (ms), the time since the last present,
    and the time it spent running, presenting and waiting. */
 static int fps_on = -1;
@@ -923,6 +924,10 @@ static void quit(void)
 
 /* After a frame: in a headless run the script's shots, dumps and buttons;
    else the window, input, save and the pace. */
+/* NSHVC_PRESENT=1 (headless): each frame presented by the renderer, opened
+   at the start (nshvc_main) */
+static int present_headless;
+
 static void frame(void)
 {
     uint16_t b0 = 0, b1 = 0;
@@ -945,6 +950,17 @@ static void frame(void)
             rc = getenv("NSHVC_RRCHECK") != NULL;
         if (rc)
             rr_check();
+        if (present_headless) {
+            /* NSHVC_PRESENT=1: the frame presented as a window presents it
+               (no pacing), its run and present timed for NSHVC_FPS_LOG */
+            uint64_t before = host_ticks_ns();
+            fps_ran_ns = fps_frame_start ? before - fps_frame_start : 0;
+            show();
+            fps_present_ns = host_ticks_ns() - before;
+            if (fps_log)
+                fps_frame(fps_frame_start ? before + fps_present_ns : before, fps_ran_ns, fps_present_ns, 0);
+            fps_frame_start = host_ticks_ns();
+        }
         if (sound_f)
             sound_drain();
         more = script_frame(&b0, &b1);
@@ -1069,6 +1085,18 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     if (script)
         script_load(script, out_dir);
     nshvc_power(cart);
+    if (headless && getenv("NSHVC_PRESENT")) {
+        /* each frame presented, the renderer open from the start (its
+           GPU memory lent from the first frame: nshvc_ext_ge_vram) */
+        const char *lf = getenv("NSHVC_FPS_LOG");
+        if (!rr_open())
+            nshvc_fatal("NSHVC_PRESENT: the renderer cannot open");
+        if (lf && !(fps_log = fopen(lf, "w")))
+            nshvc_fatal("NSHVC_FPS_LOG: cannot write %s", lf);
+        if (fps_log)
+            setvbuf(fps_log, NULL, _IOLBF, 0);
+        present_headless = 1;
+    }
     if (headless) {
         /* shots as a window NSHVC_SCALE pixels a console pixel shows them:
            the canvas's scale that window's (nshvc_ext_canvas_scale) */
