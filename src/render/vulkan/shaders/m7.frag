@@ -5,7 +5,7 @@
 // push constants give, the planes in a 2D array image.
 layout(std430, set = 0, binding = 0) readonly buffer Ring { uint w[]; };
 layout(set = 0, binding = 1) uniform usampler2DArray planet;
-layout(push_constant) uniform PC { int pw, ph, d0, d1, step_u, step_v, oP, oS, oPal, oVram, oPic, oCols, oRows, oDu, cpp, left, cvk, cvlen, oCv, cvw, cvh; } U;
+layout(push_constant) uniform PC { int pw, ph, d0, d1, step_u, step_v, oP, oS, oPal, oVram, oPic, oCols, oRows, oDu, cpp, left, cvk, cvlen, oCv, cvw, cvh, cvrgb; } U;
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 o;
 #define LD16(base, e) ((w[(base) + ((e) >> 1)] >> (16 * ((e) & 1))) & 0xFFFFu)
@@ -17,7 +17,7 @@ layout(location = 0) out vec4 o;
 #define COL_(i) int(w[U.oCols + (i)])
 #define ROW_(i) int(w[U.oRows + (i)])
 #define PLANE_(x, y, l) texelFetch(planet, ivec3((x), (y), (l)), 0).r
-#define CV_(i) ((w[U.oCv + ((i) >> 2)] >> (8 * ((i) & 3))) & 0xFFu)
+#define CV_(i) (U.cvrgb != 0 ? w[U.oCv + (i)] : (w[U.oCv + ((i) >> 2)] >> (8 * ((i) & 3))) & 0xFFu)
 #define U_pw U.pw
 #define U_ph U.ph
 #define U_d0 U.d0

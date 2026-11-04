@@ -1,8 +1,8 @@
-# The game contract, version 2.13
+# The game contract, version 2.14
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.13: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.14: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,28 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.14:** `nshvc_ext_canvas_screen32(layer, texels, w, h, k, priority, palette)`:
+  `nshvc_ext_canvas_screen` with texels of 32 bits: 0 transparent; `0x000000ii` (ii not 0)
+  CGRAM index ii, resolved as that canvas's texel ii (each line's palette, so HDMA's
+  CGRAM writes show; `palette` and the layer's colour depth as there); a top byte not 0,
+  the colour `0xrrggbb` (`0xFFrrggbb` as written), opaque. The rest is
+  `nshvc_ext_canvas_screen`'s: k, the window's resolution, the texels copied and a frame
+  showing the canvas as it stands when the frame begins, one canvas at a time (this,
+  `nshvc_ext_canvas_screen` or `nshvc_ext_canvas_chars`, the last asked for). A colour
+  goes the layer's way on every renderer, in the console's picture and the presentation
+  alike: the layer's priority, the windows (`nshvc_ext_window_columns`, `_window_map` and
+  `_window_edges` included), colour maths with the other screen or the fixed colour (a
+  per-line COLDATA included), brightness. Its precision, each channel v counted as
+  z = v - v / 32 eighths of a console step (0 to 248; a 5-bit c widened, c << 3 | c >> 2,
+  is exactly 8c, so a CGRAM colour widened gives exactly that CGRAM colour's pixel on
+  every path), and a 15-bit colour (the other screen's, the fixed colour) as 8 times its
+  5 bits:
+  - neither colour maths nor brightness takes the pixel: v itself, all 8 bits;
+  - colour maths adding or subtracting: z plus or minus the other's, clamped to 0-248,
+    kept in eighths (249 levels a channel);
+  - colour maths halving: the step's whole part, z / 16 * 8, the console's 5 bits;
+  - brightness below 15: the console's 5 bits too, z / 8 = q to (q * b + 7) / 15.
+  A result z shows as z + z / 32 (8c: c << 3 | c >> 2). Off until asked for.
 - **2.13:** `nshvc_ext_pause(on, blur, tint)`: the game's pause; the machine stops between
   two frames and its sound goes silent, the window shows the last frame presented blurred by
   `blur` points and tinted, under the game's overlays, which with input and the hooks go on;

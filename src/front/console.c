@@ -71,6 +71,10 @@ void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int
 {
     ppu_ext_canvas_screen(layer, texels, w, h, k, priority, palette);
 }
+void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette)
+{
+    ppu_ext_canvas_screen32(layer, texels, w, h, k, priority, palette);
+}
 
 void nshvc_fatal(const char *fmt, ...)
 {

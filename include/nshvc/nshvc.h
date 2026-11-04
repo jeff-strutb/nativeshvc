@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 13
+#define NSHVC_VERSION_MINOR 14
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -491,6 +491,23 @@ void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint
    layer is its tiles). One canvas at a time: this one or
    nshvc_ext_canvas_chars's, the last asked for. NULL: off. (Since 2.8.) */
 void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
+/* A screen canvas of full colour: nshvc_ext_canvas_screen's in every way
+   (the layer, size, k, priority, palette, one canvas at a time, the frame
+   taking it as it stands when the frame begins, copied here) but that
+   each texel is 32 bits: 0 transparent; 0x000000ii (ii not 0) CGRAM index
+   ii, resolved as nshvc_ext_canvas_screen's texel ii (by the line's
+   palette, so HDMA's CGRAM writes show, and `palette` as there); a top
+   byte not 0, 0xFFrrggbb as written, a colour of 8 bits a channel,
+   opaque. A colour then goes the way any of the layer's pixels goes:
+   priority, the windows, colour maths (with the other screen or the fixed
+   colour) and brightness; a colour that is a CGRAM colour widened (each
+   5-bit channel c as c << 3 | c >> 2) gives exactly that CGRAM colour's
+   pixel everywhere. Its channels are kept whole where neither colour
+   maths nor brightness takes the pixel; colour maths' adding and
+   subtracting keeps them to 1/8 of a console step (249 levels); halving
+   and a brightness below 15 come to the console's 5 bits (docs/contract.md
+   2.14). (Since 2.14.) */
+void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
    BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the

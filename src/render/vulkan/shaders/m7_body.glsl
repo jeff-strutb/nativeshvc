@@ -3,17 +3,48 @@
 // writes it into both). The prelude before it gives the data's reads:
 //   P_(i) S_(i) PAL_(i) VRAM_(i) PIC_(i) COL_(i) ROW_(i)  the record, the
 //     states' words, palettes, VRAM, the picture and the tables, by index
-//   PLANE_(x, y, layer)  a plane's pixel byte; CV_(i) the canvas's texel i;
+//   PLANE_(x, y, layer)  a plane's pixel byte; CV_(i) the canvas's texel i
+//     (a full-colour canvas's 32 bits);
 //   U_pw U_ph U_d0 U_d1 U_step_u U_step_v U_du(k) U_dv(k) U_cpp U_left
 //   U_cvk U_cvlen  the presentation; FRAG_X FRAG_Y the target pixel (top
 //   left origin); OUT the colour written
 uint m7_direct(uint c) { return (c & 7u) << 2 | ((c & 0x38u) >> 1) << 5 | ((c & 0xC0u) >> 3) << 10; }
+// a full colour's (0x1000000 | 0xRRGGBB) or a 15-bit colour's channel k in
+// eighths of a console step, and colour c out of colour maths with o and
+// brightness where either is a full colour (rr_rgb_eighths, rr_rgb_finish)
+uint rgb_eighths(uint c, uint k) {
+    if ((c & 0x1000000u) == 0u) return ((c >> (5u * k)) & 31u) << 3;
+    uint v = (c >> (16u - 8u * k)) & 0xFFu;
+    return v - (v >> 5);
+}
+uint rgb_finish(uint c, uint o, bool math, bool sub, bool halve, uint bright) {
+    uint res = 0xFF000000u;
+    for (uint k = 0u; k < 3u; k++) {
+        uint sh = 16u - 8u * k;
+        if (!math && bright == 15u && (c & 0x1000000u) != 0u) { res |= c & (0xFFu << sh); continue; }
+        uint z = rgb_eighths(c, k);
+        if (math) {
+            uint y = rgb_eighths(o, k);
+            z = sub ? (z > y ? z - y : 0u) : z + y;
+            if (halve) z = (z >> 4) << 3;
+            z = min(z, 248u);
+        }
+        if (bright != 15u) z = ((((z >> 3) * bright + 7u) * 4370u) >> 16) << 3;
+        res |= (z + (z >> 5)) << sh;
+    }
+    return res;
+}
 uint m7_finish(uint mc, uint ml, uint sc, uint sl, uint fl, uint adsub, uint wsel, uint fixc, uint bright) {
     bool clip = (fl & 0x80u) != 0u, prevent = (fl & 0x100u) != 0u;
     uint bit = ml == 5u ? 5u : ml == 6u ? 8u : ml, c = clip ? 0u : mc, r = c & 31u, g = (c >> 5) & 31u, b = (c >> 10) & 31u;
-    if (bit < 8u && ((adsub >> bit) & 1u) != 0u && !prevent) {
-        uint o; bool halve = (adsub & 0x40u) != 0u && !clip;
+    bool math = bit < 8u && ((adsub >> bit) & 1u) != 0u && !prevent, halve = false;
+    uint o = 0u;
+    if (math) {
+        halve = (adsub & 0x40u) != 0u && !clip;
         if ((wsel & 2u) != 0u) { if (sl == 5u) { o = fixc; halve = false; } else o = sc; } else o = fixc;
+    }
+    if (((c | o) & 0x1000000u) != 0u) return rgb_finish(c, o, math, (adsub & 0x80u) != 0u, halve, bright);
+    if (math) {
         if ((adsub & 0x80u) != 0u) {
             int rr = int(r) - int(o & 31u), gg = int(g) - int((o >> 5) & 31u), bb = int(b) - int((o >> 10) & 31u);
             r = rr < 0 ? 0u : uint(rr); g = gg < 0 ? 0u : uint(gg); b = bb < 0 ? 0u : uint(bb);
@@ -86,6 +117,13 @@ uint cv_compose(uvec4 p, int g, int pl, uint pix) {
     uint pal = (w3 >> 22) & 7u, z = (w3 >> 25) & 15u, n = (w3 >> 29) & 3u;
     uint mc = p.x & 0xFFFFu, sc = p.x >> 16, mz = p.y & 0xFFu, sz = (p.y >> 8) & 0xFFu, ml = (p.y >> 16) & 0xFFu, sl = p.y >> 24;
     uint g4 = uint(S_(g + 4)), g5 = uint(S_(g + 5));
+    if (pix >= 0x1000000u) {
+        // a full colour (nshvc_ext_canvas_screen32)
+        uint col = 0x1000000u | (pix & 0xFFFFFFu);
+        if ((fl & 0x08u) != 0u && z > mz) { mc = col; mz = z; ml = n; }
+        if ((fl & 0x10u) != 0u && z > sz) { sc = col; sz = z; sl = n; }
+        return m7_finish(mc, ml, sc, sl, fl, (g4 >> 16) & 0xFFu, g4 >> 24, g5 & 0xFFFFu, (g5 >> 16) & 0xFFu);
+    }
     pix &= (1u << bpp) - 1u;
     if (pix != 0u) {
         uint col = bpp == 8u ? (((g4 >> 8) & 1u) != 0u ? cv_direct(pix, pal) : PAL_(pl + int(pix))) :

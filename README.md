@@ -99,6 +99,7 @@ what its Enhanced mode does.
 | sprites past the console's coordinates | sprites anywhere on the largest screen, 512 columns and 256 rows a page | `nshvc_ext_sprite_page`, `nshvc_ext_sprite_x`, `_y` |
 | a layer's own map past the console's picture | a background reads other map entries outside the console's 256 columns and lines | `nshvc_ext_layer_outside` |
 | a layer's picture from the game's texels over the whole screen | a background drawn from texels by the screen's pixels, at the window's resolution | `nshvc_ext_canvas_screen` |
+| that picture in colours no CGRAM entry holds | the same canvas with 32-bit texels, each an index or a colour of 8 bits a channel, through the console's priority, windows, colour maths and brightness | `nshvc_ext_canvas_screen32` |
 | a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
 | windows across a larger screen | a window whose edge is at the console's own reaching every column past it | `nshvc_ext_window_edges` |
 | windows placed on a larger screen | each line's window edges mapped onto the screen by a scale and an offset (across its whole width, or anywhere between that and the console's) | `nshvc_ext_window_map` |
@@ -278,8 +279,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.12.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.12: behaviour exact, each
+Version 2.14.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.14: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
