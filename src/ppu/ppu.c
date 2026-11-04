@@ -110,6 +110,7 @@ static const PpuFrame *d_frame;
 static struct {
     int on, layer, k;
     int screen, w, h, prio, pal;      /* a screen canvas (nshvc_ext_canvas_screen) */
+    int rgb;                          /* its texels 32 bits each (nshvc_ext_canvas_screen32) */
     unsigned addr, count;
     uint8_t *data;
     size_t len, cap;
@@ -795,6 +796,7 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     memcpy(cv_now.data, texels, len);
     cv_now.on = 1;
     cv_now.screen = 0;
+    cv_now.rgb = 0;
     cv_now.layer = layer;
     cv_now.addr = word_addr;
     cv_now.count = (unsigned)count;
@@ -806,8 +808,10 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
 void ppu_set_canvas_scale(int k) { cv_scale = k < 1 ? 1 : k > 64 ? 64 : k; }
 int ppu_canvas_scale(void) { return cv_scale; }
 
-/* the frame being made takes the canvas as it stands as the frame begins */
-void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette)
+/* the frame being made takes the canvas as it stands as the frame begins:
+   texels of `size` bytes each (1, or 4 for nshvc_ext_canvas_screen32's) */
+static void canvas_screen(const char *name, int layer, const void *texels, size_t size, int w, int h, int k, int priority,
+                          int palette)
 {
     size_t len;
     if (!texels) {
@@ -817,10 +821,10 @@ void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k
     }
     if (layer < 0 || layer > 3 || w < 1 || h < 1 || k < 1 || k > 64 || priority < 0 || priority > 1 || palette < 0 ||
         palette > 7)
-        snes_fatal("nshvc_ext_canvas_screen(%d, texels, %d, %d, k %d, priority %d, palette %d): layers 0-3 (BG1-4), "
+        snes_fatal("%s(%d, texels, %d, %d, k %d, priority %d, palette %d): layers 0-3 (BG1-4), "
                    "a size of at least 1 x 1, k 1 to 64, priority 0 or 1, palette 0-7",
-                   layer, w, h, k, priority, palette);
-    len = (size_t)w * (size_t)h;
+                   name, layer, w, h, k, priority, palette);
+    len = (size_t)w * (size_t)h * size;
     if (len > cv_now.cap) {
         uint8_t *n = (uint8_t *)realloc(cv_now.data, len);
         if (!n)
@@ -831,6 +835,7 @@ void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k
     memcpy(cv_now.data, texels, len);
     cv_now.on = 1;
     cv_now.screen = 1;
+    cv_now.rgb = size == 4;
     cv_now.layer = layer;
     cv_now.addr = 0;
     cv_now.count = 0;
@@ -841,6 +846,16 @@ void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k
     cv_now.pal = palette;
     cv_now.len = len;
     cv_now.gen++;
+}
+
+void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette)
+{
+    canvas_screen("nshvc_ext_canvas_screen", layer, texels, 1, w, h, k, priority, palette);
+}
+
+void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette)
+{
+    canvas_screen("nshvc_ext_canvas_screen32", layer, texels, 4, w, h, k, priority, palette);
 }
 
 static void cv_take(void)
@@ -870,6 +885,7 @@ static void cv_take(void)
     making->cv_h = cv_now.h;
     making->cv_prio = cv_now.prio;
     making->cv_pal = cv_now.pal;
+    making->cv_rgb = cv_now.rgb;
     making->cv_len = cv_now.len;
     making->cv = cv_kept[slot];
     making->cv_gen = cv_now.gen;
@@ -1165,12 +1181,13 @@ void ppu_vblank_start(void)
 }
 
 /* ---- drawing ---------------------------------------------------------------------- */
-/* What one screen of one line holds at each pixel: a colour (15-bit BGR),
+/* What one screen of one line holds at each pixel: a colour (15-bit BGR,
+   or a full-colour canvas's, rr_mode7.h RR_RGB),
    its depth (higher in front; 0 the backdrop) and the layer it came from
    (0-3 BG1-4, 4 sprites with palettes 4-7, 5 the backdrop, 6 sprites with
    palettes 0-3, which colour maths never takes). */
 typedef struct {
-    uint16_t color;
+    uint32_t color;
     uint8_t z, layer;
     uint8_t ci;               /* the CGRAM entry its colour came from */
 } Pixel;
@@ -1180,7 +1197,7 @@ static Pixel main_px[PPU_EXT_WIDTH], sub_px[PPU_EXT_WIDTH];
 /* a layer's pixels for one line: colour, palette-0 (transparent) and
    priority */
 typedef struct {
-    uint16_t color;
+    uint32_t color;
     uint8_t opaque, prio, ci;
 } LayerPx;
 
@@ -1317,14 +1334,29 @@ static void draw_bg(int n, unsigned line, unsigned mode)
         unsigned pal = (unsigned)f->cv_pal, prio = (unsigned)f->cv_prio, c;
         for (x = 0; x < count; x++) {
             long tx = (long)x * k + k / 2, ty = (long)R * k + k / 2;
-            c = R >= 0 && tx < f->cv_w && ty < f->cv_h ? f->cv[(size_t)ty * (size_t)f->cv_w + (size_t)tx] : 0u;
-            c &= (1u << bpp) - 1u;
+            uint32_t t = 0;
+            if (R >= 0 && tx < f->cv_w && ty < f->cv_h) {
+                size_t at = (size_t)ty * (size_t)f->cv_w + (size_t)tx;
+                if (f->cv_rgb)
+                    memcpy(&t, f->cv + 4 * at, 4);
+                else
+                    t = f->cv[at];
+            }
             if (cv_capture) {
                 cv_at[x].ci1 = 1;
                 cv_at[x].px = cv_at[x].py = cv_at[x].flip = 0;
                 cv_at[x].pal = (uint8_t)pal;
                 cv_at[x].prio = (uint8_t)prio;
             }
+            if (t >= RR_RGB) {
+                /* a full colour (nshvc_ext_canvas_screen32) */
+                lp[x].opaque = 1;
+                lp[x].prio = (uint8_t)prio;
+                lp[x].color = RR_RGB | (t & 0xFFFFFFu);
+                lp[x].ci = 0;
+                continue;
+            }
+            c = t & ((1u << bpp) - 1u);
             lp[x].opaque = c != 0;
             lp[x].prio = (uint8_t)prio;
             if (!c)
@@ -2313,9 +2345,10 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     /* the canvas's texels */
     cv = n;
     if (f->cv_on) {
-        /* four texels a word, the first the low byte: in memory, the texels
-           in order on a little-endian host (every host nativeshvc builds
-           for), so one copy */
+        /* four texels a word, the first the low byte (a full-colour
+           canvas's a word each): in memory, the texels in order on a
+           little-endian host (every host nativeshvc builds for), so one
+           copy */
         size_t words = (f->cv_len + 3) / 4;
         cp_w = grow(cp_w, &cp_cap, n + words + 1, sizeof *cp_w);
         cp_w[n + words - 1] = 0;
@@ -2403,7 +2436,8 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVLEN] = (uint32_t)f->cv_len;
     cp_w[CP_M7SEG] = 0;
     cp_w[CP_OUT] = (uint32_t)outs;
-    cp_w[CP_CVSCREEN] = f->cv_on && f->cv_screen ? 1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 : 0u;
+    cp_w[CP_CVSCREEN] = f->cv_on && f->cv_screen ?
+                            1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 | (uint32_t)f->cv_rgb << 5 : 0u;
     cp_w[CP_CVW] = (uint32_t)f->cv_w;
     cp_w[CP_CVH] = (uint32_t)f->cv_h;
     cp_w[CP_TOP] = (uint32_t)f->top;
@@ -2420,11 +2454,13 @@ static uint32_t finish(const Pixel *m, const Pixel *sp, int x, uint16_t fixed, u
     int clip = region(s->cgwsel >> 6, cw);
     int prevent = region(s->cgwsel >> 4, cw);
     unsigned bit = m->layer == 5 ? 5 : m->layer == 6 ? 8 : m->layer;
-    uint16_t c = clip ? 0 : m->color;
+    uint32_t c = clip ? 0 : m->color;
     unsigned r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
-    if (bit < 8 && (s->cgadsub >> bit & 1) && !prevent) {
-        uint16_t o;
-        int halve = (s->cgadsub & 0x40) != 0 && !clip;
+    int math = bit < 8 && (s->cgadsub >> bit & 1) && !prevent;
+    uint32_t o = 0;
+    int halve = 0;
+    if (math) {
+        halve = (s->cgadsub & 0x40) != 0 && !clip;
         if (s->cgwsel & 2) {
             if (sp->layer == 5) {
                 o = fixed;
@@ -2435,8 +2471,12 @@ static uint32_t finish(const Pixel *m, const Pixel *sp, int x, uint16_t fixed, u
         } else {
             o = fixed;
         }
+    }
+    if ((c | o) & RR_RGB)
+        return rr_rgb_finish(c, o, math, (s->cgadsub & 0x80) != 0, halve, bright);
+    if (math) {
         if (s->cgadsub & 0x80) {
-            int rr = (int)r - (o & 31), gg = (int)g - ((o >> 5) & 31), bb = (int)b - ((o >> 10) & 31);
+            int rr = (int)r - (int)(o & 31), gg = (int)g - (int)((o >> 5) & 31), bb = (int)b - (int)((o >> 10) & 31);
             r = rr < 0 ? 0 : (unsigned)rr;
             g = gg < 0 ? 0 : (unsigned)gg;
             b = bb < 0 ? 0 : (unsigned)bb;
@@ -2944,6 +2984,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     m->cv_k = f->cv_on ? f->cv_k : 1;
     m->cv_w = f->cv_on && f->cv_screen ? f->cv_w : 0;
     m->cv_h = f->cv_on && f->cv_screen ? f->cv_h : 0;
+    m->cv_rgb = f->cv_on && f->cv_screen && f->cv_rgb;
     mosaic_y = keep_my;
     range_over = ro;
     time_over = to;
@@ -3007,6 +3048,7 @@ static void mode7_segs(const PpuFrame *f, RrMode7 *m, uint32_t *seg_of)
     m->cv_k = f->cv_on ? f->cv_k : 1;
     m->cv_w = f->cv_on && f->cv_screen ? f->cv_w : 0;
     m->cv_h = f->cv_on && f->cv_screen ? f->cv_h : 0;
+    m->cv_rgb = f->cv_on && f->cv_screen && f->cv_rgb;
     s = &cur;
     d_vram = vram;
     d_cgram = cgram;

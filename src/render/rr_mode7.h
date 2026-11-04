@@ -124,7 +124,61 @@ typedef struct RrMode7 {
     size_t cv_len;
     int cv_k;
     int cv_w, cv_h;           /* a screen canvas's texels across and down (0: a canvas of characters) */
+    int cv_rgb;               /* its texels 32 bits each (nshvc_ext_canvas_screen32; cv_len bytes) */
 } RrMode7;
+
+/* A full-colour canvas's colour (nshvc_ext_canvas_screen32) where a colour
+   is otherwise 15-bit BGR: RR_RGB | 0xRRGGBB. A texel of such a canvas at
+   least RR_RGB is that colour; below it, its low byte an index. */
+#define RR_RGB 0x01000000u
+
+/* channel k (0 red, 1 green, 2 blue) of colour c in eighths of a console
+   step, 0-248: a 15-bit colour's 5 bits times 8; a full colour's 8 bits v
+   as v - v / 32 (a CGRAM colour widened, c << 3 | c >> 2, exactly c times
+   8) */
+static inline unsigned rr_rgb_eighths(uint32_t c, unsigned k)
+{
+    unsigned v;
+    if (!(c & RR_RGB))
+        return ((c >> (5 * k)) & 31u) << 3;
+    v = (c >> (16 - 8 * k)) & 0xFFu;
+    return v - (v >> 5);
+}
+
+/* One screen's colour c (the clip applied) out of colour maths with o
+   (math: whether the maths takes the pixel; sub: subtracting; halve) and
+   brightness, 0xFFRRGGBB, when either colour is a full colour: the
+   console's rules (rr_m7_finish) in eighths of a step, so a CGRAM colour
+   widened gives that colour's pixel exactly. The sum or difference keeps
+   its eighths (clamped to the step's 0-31); halving and a brightness
+   below 15 take the step's whole part, the console's 5 bits; a full
+   colour neither the maths nor brightness takes is its own 8 bits. An
+   eighths value z shows as z + z / 32 (z = 8 c: c << 3 | c >> 2). */
+static inline uint32_t rr_rgb_finish(uint32_t c, uint32_t o, int math, int sub, int halve, unsigned bright)
+{
+    uint32_t out = 0xFF000000u;
+    unsigned k;
+    for (k = 0; k < 3; k++) {
+        unsigned sh = 16 - 8 * k, z;
+        if (!math && bright == 15 && (c & RR_RGB)) {
+            out |= c & (0xFFu << sh);
+            continue;
+        }
+        z = rr_rgb_eighths(c, k);
+        if (math) {
+            unsigned y = rr_rgb_eighths(o, k);
+            z = sub ? (z > y ? z - y : 0) : z + y;
+            if (halve)
+                z = z >> 4 << 3;
+            if (z > 248)
+                z = 248;
+        }
+        if (bright != 15)
+            z = ((((z >> 3) * bright + 7u) * 4370u) >> 16) << 3;
+        out |= (z + (z >> 5)) << sh;
+    }
+    return out;
+}
 
 static inline int64_t rr_m7_floordiv(int64_t a, int64_t b)
 {
@@ -249,16 +303,17 @@ static inline uint16_t rr_m7_direct(unsigned c)
     return (uint16_t)((c & 7u) << 2 | ((c & 0x38u) >> 1) << 5 | ((c & 0xC0u) >> 3) << 10);
 }
 
-/* one screen's colour out of it and the other (ppu.c finish), 0xFFRRGGBB */
+/* one screen's colour out of it and the other (ppu.c finish), 0xFFRRGGBB
+   (a full colour, RR_RGB, by rr_rgb_finish) */
 static inline uint32_t rr_m7_finish(unsigned mc, unsigned ml, unsigned sc, unsigned sl, unsigned flags, unsigned adsub,
                                     unsigned wsel, unsigned fixed, unsigned bright)
 {
     int clip = (flags & RR_M7_CLIP) != 0, prevent = (flags & RR_M7_PREVENT) != 0;
     unsigned bit = ml == 5 ? 5 : ml == 6 ? 8 : ml;
-    unsigned c = clip ? 0 : mc, r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
-    if (bit < 8 && (adsub >> bit & 1) && !prevent) {
-        unsigned o;
-        int halve = (adsub & 0x40) != 0 && !clip;
+    unsigned c = clip ? 0 : mc, r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31, o = 0;
+    int math = bit < 8 && (adsub >> bit & 1) && !prevent, halve = 0;
+    if (math) {
+        halve = (adsub & 0x40) != 0 && !clip;
         if (wsel & 2) {
             if (sl == 5) {
                 o = fixed;
@@ -269,6 +324,10 @@ static inline uint32_t rr_m7_finish(unsigned mc, unsigned ml, unsigned sc, unsig
         } else {
             o = fixed;
         }
+    }
+    if ((c | o) & RR_RGB)
+        return rr_rgb_finish(c, o, math, (adsub & 0x80) != 0, halve, bright);
+    if (math) {
         if (adsub & 0x80) {
             int rr = (int)r - (int)(o & 31), gg = (int)g - (int)((o >> 5) & 31), bb = (int)b - (int)((o >> 10) & 31);
             r = rr < 0 ? 0 : (unsigned)rr;
@@ -354,8 +413,9 @@ static inline uint16_t rr_cv_direct(unsigned c, unsigned pal)
 }
 
 /* A canvas pixel's colour with the canvas's texel pix: its layer's colour
-   by its colour depth (ppu.c draw_bg), at the layer's depth on each screen
-   it may show on, then the console's rules (finish) */
+   by its colour depth (ppu.c draw_bg), or a full colour (pix at least
+   RR_RGB), at the layer's depth on each screen it may show on, then the
+   console's rules (finish) */
 static inline uint32_t rr_cv_compose(const RrMode7 *m, const RrM7Px *p, const RrM7Seg *g, unsigned pix)
 {
     unsigned flags = p->w2 & 0xFFFFu, w3 = p->w3;
@@ -366,6 +426,15 @@ static inline uint32_t rr_cv_compose(const RrMode7 *m, const RrM7Px *p, const Rr
     unsigned bpp = (unsigned)g->s[7] & 0xFF, mode = ((unsigned)g->s[7] >> 8) & 7;
     unsigned pal = (w3 >> 22) & 7, z = (w3 >> 25) & 15, n = (w3 >> 29) & 3;
     const uint16_t *cg = m->pal + (size_t)g->s[6] * 256u;
+    if (pix >= RR_RGB) {
+        /* a full colour (nshvc_ext_canvas_screen32) */
+        unsigned col = RR_RGB | (pix & 0xFFFFFFu);
+        if ((flags & RR_M7_BG1_MAIN) && z > mz)
+            mc = col, mz = z, ml = n;
+        if ((flags & RR_M7_BG1_SUB) && z > sz)
+            sc = col, sz = z, sl = n;
+        return rr_m7_finish(mc, ml, sc, sl, flags, adsub, wsel, fixed, bright);
+    }
     pix &= (1u << bpp) - 1u;
     if (pix) {
         unsigned col;
@@ -405,7 +474,14 @@ static inline uint32_t rr_cv_q(const RrMode7 *m, const RrM7Px *p, const RrM7Seg 
     if (w3 >> 31) {
         /* a screen canvas: by the screen's pixel */
         size_t col = (size_t)(i / m->cpp), ex = col * k + sx, ey = (size_t)r * k + sy;
-        return rr_cv_compose(m, p, g, ex < (size_t)m->cv_w && ey < (size_t)m->cv_h ? m->cv[ey * (size_t)m->cv_w + ex] : 0u);
+        uint32_t t = 0;
+        if (ex < (size_t)m->cv_w && ey < (size_t)m->cv_h) {
+            if (m->cv_rgb)
+                memcpy(&t, m->cv + 4 * (ey * (size_t)m->cv_w + ex), 4);
+            else
+                t = m->cv[ey * (size_t)m->cv_w + ex];
+        }
+        return rr_cv_compose(m, p, g, t);
     }
     at = (size_t)(w3 & 0x3FFF) * 64u * k * k + ((size_t)(w3 >> 17 & 7) * k + sy) * 8u * k + (size_t)(w3 >> 14 & 7) * k + sx;
     return rr_cv_compose(m, p, g, at < m->cv_len ? m->cv[at] : 0u);

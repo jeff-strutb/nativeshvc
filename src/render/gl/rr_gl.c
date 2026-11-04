@@ -520,13 +520,14 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
         s_plane_gen = m->plane_gen;
         s_planes = m->vrams;
     }
-    /* the canvas's texels (a byte where there is none), on unit 9 */
+    /* the canvas's texels (a byte where there is none; a full-colour
+       canvas's 32 bits each), on unit 9 */
     glBindBuffer(GL_TEXTURE_BUFFER, s_m7buf[7]);
     glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(m->cv && m->cv_len ? m->cv_len : 1),
                  m->cv && m->cv_len ? (const void *)m->cv : &none, GL_STREAM_DRAW);
     glActiveTexture(GL_TEXTURE0 + 9);
     glBindTexture(GL_TEXTURE_BUFFER, s_m7tex[7]);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, s_m7buf[7]);
+    glTexBuffer(GL_TEXTURE_BUFFER, m->cv && m->cv_len && m->cv_rgb ? GL_R32UI : GL_R8UI, s_m7buf[7]);
     /* the supersamples' offsets: 4 from 0, 8 from 4, 16 from 12 */
     memcpy(du, s->du4, sizeof s->du4);
     memcpy(du + 4, s->du8, sizeof s->du8);

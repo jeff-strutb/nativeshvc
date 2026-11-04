@@ -17,7 +17,7 @@ out vec4 o;
 #define COL_(i) texelFetch(colsb, (i)).r
 #define ROW_(i) texelFetch(rowsb, (i)).r
 #define PLANE_(x, y, l) texelFetch(planet, ivec3((x), (y), (l)), 0).r
-#define CV_(i) texelFetch(cvb, (i)).r
+#define CV_(i) texelFetch(cvb, (i)).r      // a byte, or a full-colour canvas's 32 bits (R32UI)
 #define U_du(k) U_du_[k]
 #define U_dv(k) U_dv_[k]
 #define FRAG_X int(gl_FragCoord.x)
