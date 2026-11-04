@@ -249,7 +249,7 @@ void mix_voice_states(int32_t *o)
 /* four more values of the voice's sample: one byte pair of its block,
    rebuilt with the block's shift and prediction filter (fullsnes, BRR);
    the header and the pair's first byte as step 3 read them */
-static void decode(Voice *vc)
+static inline __attribute__((always_inline)) void decode(Voice *vc)
 {
     int shift = vc->header >> 4, filter = (vc->header >> 2) & 3, i;
     unsigned bits = (unsigned)vc->data << 8 | mem[(uint16_t)(vc->block + vc->byte + 1)];
@@ -275,7 +275,7 @@ static void decode(Voice *vc)
 /* fullsnes, Gaussian interpolation: the newest four values at the pitch
    counter's fraction; the first three sums wrap at 16 bits, the last
    saturates; 15 bits out */
-static int interpolate(const Voice *vc)
+static inline __attribute__((always_inline)) int interpolate(const Voice *vc)
 {
     int i = (vc->pos >> 4) & 0xFF;
     int at = (vc->pos >> 12) + vc->hist_next;        /* 0-15 */
@@ -293,7 +293,7 @@ static int interpolate(const Voice *vc)
    on from the level computed even on a frame its rate does not step (as
    measured): attack ends past 7FFh, decay at the sustain level's top byte
    (in gain mode the gain's top bits, fullsnes's noted quirk). */
-static void envelope(Voice *vc)
+static inline __attribute__((always_inline)) void envelope(Voice *vc)
 {
     int level = vc->level, rate, top;
     if (vc->stage == RELEASE) {
@@ -344,7 +344,7 @@ static void envelope(Voice *vc)
 /* 1: the voice's directory entry taken; the voice before it, which took
    its own a step 1 ago, has its entry's address worked out (from the
    directory page as taken at clock 28) */
-static void step_entry(int v)
+static inline __attribute__((always_inline)) void step_entry(int v)
 {
     Voice *before = &voice[(v + 7) & 7];
     /* added: an entry past 63 carries into the page */
@@ -354,7 +354,7 @@ static void step_entry(int v)
 
 /* 2: the entry read (its start while a key-on is under way, else its
    loop), ADSR's first byte and the pitch's low byte taken */
-static void step_directory(int v)
+static inline __attribute__((always_inline)) void step_directory(int v)
 {
     Voice *vc = &voice[v];
     vc->next_block = (uint16_t)rd16((uint16_t)(vc->dir_addr + (vc->kon_delay ? 0 : 2)));
@@ -366,16 +366,16 @@ static void step_directory(int v)
 
 /* 3, in three parts (voice 0's on clocks of their own): the pitch's high
    bits; the block's header and the byte pair's first byte; the sample */
-static void step_pitch_high(int v) { voice[v].step_pitch += voice[v].pitch & 0x3F00; }
+static inline __attribute__((always_inline)) void step_pitch_high(int v) { voice[v].step_pitch += voice[v].pitch & 0x3F00; }
 
-static void step_fetch(int v)
+static inline __attribute__((always_inline)) void step_fetch(int v)
 {
     Voice *vc = &voice[v];
     vc->data = mem[(uint16_t)(vc->block + vc->byte)];
     vc->header = mem[vc->block];
 }
 
-static void step_sample(int v)
+static inline __attribute__((always_inline)) void step_sample(int v)
 {
     Voice *vc = &voice[v];
     int s;
@@ -423,9 +423,13 @@ static void step_sample(int v)
 
 /* fullsnes, output mixer: the sample times the volume, SAR 6, the sums
    saturating at 16 bits; the echo's sum as EON was taken at clock 28 */
-static void output(const Voice *vc, int v, int ch)
+static inline __attribute__((always_inline)) void output(const Voice *vc, int v, int ch)
 {
-    int amp = (vc->out * (ch ? vc->vol_r : vc->vol_l)) >> 6;
+    int amp;
+    /* (no output: the sums unchanged, each already within 16 bits) */
+    if (!vc->out)
+        return;
+    amp = (vc->out * (ch ? vc->vol_r : vc->vol_l)) >> 6;
     main_sum[ch] = clamp16(main_sum[ch] + amp);
     if (eon_now >> v & 1)
         echo_sum[ch] = clamp16(echo_sum[ch] + amp);
@@ -433,7 +437,7 @@ static void output(const Voice *vc, int v, int ch)
 
 /* 4: the byte pair decoded when the pitch counter has passed four values,
    the block moved on at its end; the pitch added; the left output */
-static void step_decode(int v)
+static inline __attribute__((always_inline)) void step_decode(int v)
 {
     Voice *vc = &voice[v];
     vc->looped = 0;
@@ -457,7 +461,7 @@ static void step_decode(int v)
 
 /* 5: the right output; ENDX's next value (the voice's bit set on a loop,
    cleared as a key-on starts) */
-static void step_right(int v)
+static inline __attribute__((always_inline)) void step_right(int v)
 {
     Voice *vc = &voice[v];
     output(vc, v, 1);
@@ -465,14 +469,14 @@ static void step_right(int v)
 }
 
 /* 6-9: OUTX's and ENVX's next values, then ENDX, OUTX and ENVX set */
-static void step_outx(int v) { outx_next = (uint8_t)(voice[v].out >> 7); }
-static void step_endx(int v)
+static inline __attribute__((always_inline)) void step_outx(int v) { outx_next = (uint8_t)(voice[v].out >> 7); }
+static inline __attribute__((always_inline)) void step_endx(int v)
 {
     endx = endx_next;
     envx_next = voice[v].level_out;
 }
-static void step_set_outx(int v) { voice[v].outx = outx_next; }
-static void step_set_envx(int v) { voice[v].envx = envx_next; }
+static inline __attribute__((always_inline)) void step_set_outx(int v) { voice[v].outx = outx_next; }
+static inline __attribute__((always_inline)) void step_set_envx(int v) { voice[v].envx = envx_next; }
 
 /* Each clock's steps, voice by voice: fullsnes's timing chart, a voice's
    steps 2 to 9 on consecutive clocks, three voices in hand at once, voice
@@ -657,34 +661,30 @@ static inline __attribute__((always_inline)) void clock_at(int c)
         echo_clock(c);
 }
 
-/* one clock (mix_clock, mix_run) */
-static inline __attribute__((always_inline)) void clock_once(void)
+/* Clocks from phase on, to the frame's end or end (at most 32): the
+   frame's clocks in line, each with its clock known (no clock looked up),
+   entered at the first's (a run from any clock as fast as a whole frame) */
+static inline __attribute__((always_inline)) void clocks_from(int c, int end)
 {
-    int c = phase;
-    clock_at(c);
-    phase = (c + 1) & 31;
-}
-
-/* a whole frame, clocks 0-31 in turn, each clock's work in line with its
-   clock known (no clock looked up) */
-static inline __attribute__((always_inline)) void frame_once(void)
-{
-#define CLOCKS4(c) clock_at(c); clock_at(c + 1); clock_at(c + 2); clock_at(c + 3);
-    CLOCKS4(0) CLOCKS4(4) CLOCKS4(8) CLOCKS4(12) CLOCKS4(16) CLOCKS4(20) CLOCKS4(24) CLOCKS4(28)
-#undef CLOCKS4
+#define CLOCK(k) case k: if (k >= end) break; clock_at(k); /* fall through */
+    switch (c) {
+    CLOCK(0) CLOCK(1) CLOCK(2) CLOCK(3) CLOCK(4) CLOCK(5) CLOCK(6) CLOCK(7)
+    CLOCK(8) CLOCK(9) CLOCK(10) CLOCK(11) CLOCK(12) CLOCK(13) CLOCK(14) CLOCK(15)
+    CLOCK(16) CLOCK(17) CLOCK(18) CLOCK(19) CLOCK(20) CLOCK(21) CLOCK(22) CLOCK(23)
+    CLOCK(24) CLOCK(25) CLOCK(26) CLOCK(27) CLOCK(28) CLOCK(29) CLOCK(30) CLOCK(31)
+    }
+#undef CLOCK
 }
 
 __attribute__((noinline)) int mix_run(int n, int16_t *out, int max)
 {
     int k = 0;
     while (n > 0) {
-        if (phase == 0 && n >= 32) {
-            frame_once();
-            n -= 32;
-        } else {
-            clock_once();
-            n--;
-        }
+        /* the frame's clocks from phase (a frame made at most once: clock 27) */
+        int c = phase, end = c + n < 32 ? c + n : 32;
+        clocks_from(c, end);
+        n -= end - c;
+        phase = end & 31;
         if (!made)
             continue;
         made = 0;
