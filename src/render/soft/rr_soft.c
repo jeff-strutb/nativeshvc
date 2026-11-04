@@ -117,6 +117,22 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
     rr_ref_overlay(s_px, s_w, s_h, argb, w, h, q);
 }
 
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q)
+{
+    int j, x, y;
+    for (j = 0; j < n; j++) {
+        int u0 = (int)uv[4 * j], v0 = (int)uv[4 * j + 1], sw = (int)uv[4 * j + 2] - u0, sh = (int)uv[4 * j + 3] - v0;
+        uint32_t *part;
+        if (sw <= 0 || sh <= 0 || !(part = (uint32_t *)malloc((size_t)sw * (size_t)sh * 4)))
+            continue;
+        for (y = 0; y < sh; y++)
+            for (x = 0; x < sw; x++)
+                part[y * sw + x] = argb[(size_t)(v0 + y) * (size_t)w + (size_t)(u0 + x)];
+        rr_ref_overlay(s_px, s_w, s_h, part, sw, sh, q + 6 * j);
+        free(part);
+    }
+}
+
 void rr_present(void)
 {
     host_present(s_px, s_w, s_h, (float)s_w / (float)s_h);

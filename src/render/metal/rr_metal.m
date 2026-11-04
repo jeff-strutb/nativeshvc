@@ -801,15 +801,19 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
 
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
 {
+    const float uv[4] = { 0, 0, (float)w, (float)h };
+    rr_overlay_quads(argb, w, h, 1, uv, q);
+}
+
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q)
+{
     @autoreleasepool {
         static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
-        float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
-                          { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
         id<MTLTexture> t;
         size_t o = (s_vused + 15) & ~(size_t)15;
         float *v;
-        int i;
-        if (!s_enc || w <= 0 || h <= 0 || s_on == RR_OVERLAYS || o + 6 * 16 > VB_SIZE)
+        int i, j;
+        if (!s_enc || w <= 0 || h <= 0 || n <= 0 || s_on == RR_OVERLAYS || o + (size_t)n * 6 * 16 > VB_SIZE)
             return;
         t = s_otex[s_pi][s_on];
         if (!t || (int)t.width != w || (int)t.height != h) {
@@ -821,18 +825,24 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
         s_on++;
         [t replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h) mipmapLevel:0
                withBytes:argb bytesPerRow:(NSUInteger)w * 4];
-        s_vused = o + 6 * 16;
+        s_vused = o + (size_t)n * 6 * 16;
         v = (float *)((char *)[s_vb[s_pi] contents] + o);
-        for (i = 0; i < 6; i++) {
-            v[4 * i + 0] = c[ix[i]][0] / s_rw * 2 - 1;
-            v[4 * i + 1] = 1 - c[ix[i]][1] / s_rh * 2;
-            v[4 * i + 2] = c[ix[i]][2];
-            v[4 * i + 3] = c[ix[i]][3];
+        for (j = 0; j < n; j++) {
+            const float *qq = q + 6 * j, *u = uv + 4 * j;
+            float c[4][4] = { { qq[0], qq[1], u[0] / w, u[1] / h }, { qq[2], qq[3], u[2] / w, u[1] / h },
+                              { qq[4], qq[5], u[0] / w, u[3] / h },
+                              { qq[2] + qq[4] - qq[0], qq[3] + qq[5] - qq[1], u[2] / w, u[3] / h } };
+            for (i = 0; i < 6; i++, v += 4) {
+                v[0] = c[ix[i]][0] / s_rw * 2 - 1;
+                v[1] = 1 - c[ix[i]][1] / s_rh * 2;
+                v[2] = c[ix[i]][2];
+                v[3] = c[ix[i]][3];
+            }
         }
         [s_enc setRenderPipelineState:s_over];
         [s_enc setVertexBuffer:s_vb[s_pi] offset:o atIndex:0];
         [s_enc setFragmentTexture:t atIndex:0];
-        [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+        [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)n * 6];
     }
 }
 

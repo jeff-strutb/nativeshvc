@@ -850,12 +850,18 @@ typedef struct {
 
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
 {
-    int W, H, x, y, i;
+    const float uv[4] = { 0, 0, (float)w, (float)h };
+    rr_overlay_quads(argb, w, h, 1, uv, q);
+}
+
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q)
+{
+    int W, H, x, y, i, j;
     uint32_t *t;
     OV *v;
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     float c[4][4];
-    if (!s_screen || w <= 0 || h <= 0)
+    if (!s_screen || w <= 0 || h <= 0 || nq <= 0)
         return;
     if (w > 511 || h > 511)
         nshvc_fatal("an overlay of %dx%d (511 the PSP's most)", w, h);
@@ -885,20 +891,23 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
     }
     sceKernelDcacheWritebackRange(t, (unsigned)((size_t)W * (size_t)(h + 1) * 4));
     list_open();
-    c[0][0] = q[0], c[0][1] = q[1], c[0][2] = 0, c[0][3] = 0;
-    c[1][0] = q[2], c[1][1] = q[3], c[1][2] = (float)w, c[1][3] = 0;
-    c[2][0] = q[4], c[2][1] = q[5], c[2][2] = 0, c[2][3] = (float)h;
-    c[3][0] = q[2] + q[4] - q[0], c[3][1] = q[3] + q[5] - q[1], c[3][2] = (float)w, c[3][3] = (float)h;
-    v = (OV *)sceGuGetMemory(6 * sizeof(OV));
-    /* (the GE takes a pixel at 7/16 of it, its centre less one of its
-       sixteenths; the reference at its centre: the parallelogram moved a
-       sixteenth up and left) */
-    for (i = 0; i < 6; i++) {
-        v[i].x = c[ix[i]][0] - 1.0f / 16.0f;
-        v[i].y = c[ix[i]][1] - 1.0f / 16.0f;
-        v[i].z = 0;
-        v[i].u = c[ix[i]][2];
-        v[i].v = c[ix[i]][3];
+    v = (OV *)sceGuGetMemory(nq * 6 * (int)sizeof(OV));
+    for (j = 0; j < nq; j++) {
+        const float *qq = q + 6 * j, *u = uv + 4 * j;
+        c[0][0] = qq[0], c[0][1] = qq[1], c[0][2] = u[0], c[0][3] = u[1];
+        c[1][0] = qq[2], c[1][1] = qq[3], c[1][2] = u[2], c[1][3] = u[1];
+        c[2][0] = qq[4], c[2][1] = qq[5], c[2][2] = u[0], c[2][3] = u[3];
+        c[3][0] = qq[2] + qq[4] - qq[0], c[3][1] = qq[3] + qq[5] - qq[1], c[3][2] = u[2], c[3][3] = u[3];
+        /* (the GE takes a pixel at 7/16 of it, its centre less one of its
+           sixteenths; the reference at its centre: the parallelogram moved a
+           sixteenth up and left) */
+        for (i = 0; i < 6; i++) {
+            v[6 * j + i].x = c[ix[i]][0] - 1.0f / 16.0f;
+            v[6 * j + i].y = c[ix[i]][1] - 1.0f / 16.0f;
+            v[6 * j + i].z = 0;
+            v[6 * j + i].u = c[ix[i]][2];
+            v[6 * j + i].v = c[ix[i]][3];
+        }
     }
     sceGuScissor(0, 0, TW, TH);
     sceGuEnable(GU_TEXTURE_2D);
@@ -910,7 +919,7 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     sceGuEnable(GU_BLEND);
     sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
-    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 6, 0, v);
+    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nq * 6, 0, v);
     sceGuDisable(GU_BLEND);
     sceGuTexFilter(GU_NEAREST, GU_NEAREST);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);

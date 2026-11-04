@@ -763,35 +763,65 @@ static const struct {
     { 'u', { 0, 5, 5, 5, 7 } }, { 'w', { 0, 5, 5, 7, 7 } }, { 'x', { 0, 5, 2, 2, 5 } }, { '/', { 1, 1, 2, 4, 4 } },
 };
 
+/* The meter drawn by the renderer: its font an image made once from the
+   table (each glyph's 3 x 5 pixels in a cell of 5 x 7, clear round it,
+   the panel's dark colour the last cell's), then each frame a quad for the
+   panel and one for each character, 3 target pixels a font pixel, at the
+   top left (rr_overlay_quads) */
+#define FPS_GLYPHS ((int)(sizeof fps_font / sizeof fps_font[0]))
 static void fps_draw(void)
 {
-    static uint32_t px[7 * (2 + 4 * 96)];
-    size_t n = strlen(fps_text), i, w = 2 + 4 * n;
-    int x, y;
-    float q[6];
-    if (!n)
+    static uint32_t font[7 * 5 * (FPS_GLYPHS + 1)];
+    static float uv[4 * 97], q[6 * 97];
+    static int made;
+    int fw = 5 * (FPS_GLYPHS + 1), n = 0, x, y, g;
+    size_t len = strlen(fps_text), i, w = 2 + 4 * len;
+    if (!len)
         return;
-    for (i = 0; i < 7 * w; i++)
-        px[i] = 0xB0000000u;                       /* a dark panel behind the text */
-    for (i = 0; i < n; i++) {
-        size_t g;
-        for (g = 0; g < sizeof fps_font / sizeof fps_font[0] && fps_font[g].c != fps_text[i]; g++)
-            ;
-        if (g == sizeof fps_font / sizeof fps_font[0])
-            continue;
-        for (y = 0; y < 5; y++)
-            for (x = 0; x < 3; x++)
-                if (fps_font[g].row[y] >> (2 - x) & 1)
-                    px[(size_t)(y + 1) * w + 1 + 4 * i + (size_t)x] = 0xFFFFFF40u;
+    if (!made) {
+        for (g = 0; g < FPS_GLYPHS; g++)
+            for (y = 0; y < 5; y++)
+                for (x = 0; x < 3; x++)
+                    if (fps_font[g].row[y] >> (2 - x) & 1)
+                        font[(y + 1) * fw + 5 * g + 1 + x] = 0xFFFFFF40u;
+        for (y = 0; y < 7; y++)
+            for (x = 0; x < 5; x++)
+                font[y * fw + 5 * FPS_GLYPHS + x] = 0xB0000000u;   /* a dark panel behind the text */
+        made = 1;
     }
-    /* 3 target pixels a font pixel, at the top left */
+    /* the panel: the dark cell's middle texels over the text's box */
+    uv[0] = 5.0f * FPS_GLYPHS + 2;
+    uv[1] = 3;
+    uv[2] = 5.0f * FPS_GLYPHS + 3;
+    uv[3] = 4;
     q[0] = 8;
     q[1] = 8;
     q[2] = 8 + 3.0f * (float)w;
     q[3] = 8;
     q[4] = 8;
     q[5] = 8 + 3.0f * 7;
-    rr_overlay(px, (int)w, 7, q);
+    n = 1;
+    for (i = 0; i < len && n < 97; i++) {
+        float x0 = 8 + 3.0f * (float)(1 + 4 * i), y0 = 8 + 3.0f;
+        for (g = 0; g < FPS_GLYPHS && fps_font[g].c != fps_text[i]; g++)
+            ;
+        if (g == FPS_GLYPHS || fps_text[i] == ' ')
+            continue;
+        /* the glyph's cell, its clear border's half texel with it (the
+           filter's edge) */
+        uv[4 * n + 0] = 5.0f * g + 0.5f;
+        uv[4 * n + 1] = 0.5f;
+        uv[4 * n + 2] = 5.0f * g + 4.5f;
+        uv[4 * n + 3] = 6.5f;
+        q[6 * n + 0] = x0 - 1.5f;
+        q[6 * n + 1] = y0 - 1.5f;
+        q[6 * n + 2] = x0 + 3.0f * 3 + 1.5f;
+        q[6 * n + 3] = y0 - 1.5f;
+        q[6 * n + 4] = x0 - 1.5f;
+        q[6 * n + 5] = y0 + 3.0f * 5 + 1.5f;
+        n++;
+    }
+    rr_overlay_quads(font, fw, 7, n, uv, q);
 }
 
 /* a presented frame's times, ns: the meter's second and the log's line */

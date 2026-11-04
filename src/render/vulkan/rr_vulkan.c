@@ -1306,16 +1306,20 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 /* ---- the window ------------------------------------------------------------------------- */
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
 {
+    const float uv[4] = { 0, 0, (float)w, (float)h };
+    rr_overlay_quads(argb, w, h, 1, uv, q);
+}
+
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q)
+{
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
-    float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
-                      { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
     size_t n = (size_t)w * (size_t)h * 4;
-    int k = s_on, fresh = 0, i;
+    int k = s_on, fresh = 0, i, j;
     long po, qo;
     VkBufferImageCopy cp;
     VkDeviceSize vo;
     float *v;
-    if (!s_recording || w <= 0 || h <= 0 || k == RR_OVERLAYS)
+    if (!s_recording || w <= 0 || h <= 0 || nq <= 0 || k == RR_OVERLAYS)
         return;
     if (!s_oimg[k] || s_ow[k] != w || s_oh[k] != h) {
         VkDescriptorImageInfo di;
@@ -1339,7 +1343,7 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
         s_oh[k] = h;
         fresh = 1;
     }
-    if ((po = ring_take(n)) < 0 || (qo = ring_take(6 * 16)) < 0)
+    if ((po = ring_take(n)) < 0 || (qo = ring_take((size_t)nq * 6 * 16)) < 0)
         return;
     s_on++;
     memcpy(s_ring_map + po, argb, n);
@@ -1358,18 +1362,24 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     v = (float *)(s_ring_map + qo);
-    for (i = 0; i < 6; i++) {
-        v[4 * i + 0] = c[ix[i]][0] / s_rw * 2 - 1;
-        v[4 * i + 1] = 1 - c[ix[i]][1] / s_rh * 2;
-        v[4 * i + 2] = c[ix[i]][2];
-        v[4 * i + 3] = c[ix[i]][3];
+    for (j = 0; j < nq; j++) {
+        const float *qq = q + 6 * j, *u = uv + 4 * j;
+        float c[4][4] = { { qq[0], qq[1], u[0] / w, u[1] / h }, { qq[2], qq[3], u[2] / w, u[1] / h },
+                          { qq[4], qq[5], u[0] / w, u[3] / h },
+                          { qq[2] + qq[4] - qq[0], qq[3] + qq[5] - qq[1], u[2] / w, u[3] / h } };
+        for (i = 0; i < 6; i++, v += 4) {
+            v[0] = c[ix[i]][0] / s_rw * 2 - 1;
+            v[1] = 1 - c[ix[i]][1] / s_rh * 2;
+            v[2] = c[ix[i]][2];
+            v[3] = c[ix[i]][3];
+        }
     }
     pass_begin();
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_over);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &s_oset[k], 0, NULL);
     vo = (VkDeviceSize)qo;
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
-    vkCmdDraw(s_cmd, 6, 1, 0, 0);
+    vkCmdDraw(s_cmd, (uint32_t)nq * 6, 1, 0, 0);
     vkCmdEndRenderPass(s_cmd);
 }
 

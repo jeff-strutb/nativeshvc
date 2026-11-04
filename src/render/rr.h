@@ -54,6 +54,11 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
    frame. */
 #define RR_OVERLAYS 18                  /* the game's 16, the meter, the pause's backdrop */
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]);
+/* n parts of one such image, each its texels uv (u0, v0, u1, v1: a
+   rectangle of them) onto its parallelogram q (6 floats each, as above):
+   one image of the RR_OVERLAYS (the frame-rate meter's text, its font's
+   glyphs) */
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q);
 
 /* A frame with Mode 7 or a layer's canvas presented over the target's
    rectangle d (rr_mode7.h):
