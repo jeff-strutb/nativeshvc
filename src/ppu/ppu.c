@@ -2754,6 +2754,17 @@ static int pres_is_cv(const PpuFrame *f, const PpuScreen *st)
     return !ppu_line_hires(st) && !((st->mosaic & (1u << n)) && (st->mosaic >> 4));
 }
 
+int ppu_frame_presents(const PpuFrame *f)
+{
+    int line, k, what = 0;
+    for (line = 1; line <= f->height; line++) {
+        what |= pres_is_m7(&f->line[line]) | pres_is_cv(f, &f->line[line]) << 1;
+        for (k = 0; k < f->segs[line]; k++)
+            what |= pres_is_m7(&f->seg_line[line][k]) | pres_is_cv(f, &f->seg_line[line][k]) << 1;
+    }
+    return what;
+}
+
 int ppu_frame_mode7(const PpuFrame *f)
 {
     int line, k;

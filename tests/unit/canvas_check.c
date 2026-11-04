@@ -13,7 +13,9 @@
  * 320 x 240 screen with the console's picture off its centre, alone and
  * under windows and maths; and at no whole scale, k 0, contract 2.15: its
  * texels over the whole screen, and of the size it is presented at, each
- * window pixel there its own texel). For each scene's frame, at one to one, scales up, of
+ * window pixel there its own texel, on that screen and on one 336 x 224
+ * with the picture at its centre, alone and under other layers, windows,
+ * maths and brightness). For each scene's frame, at one to one, scales up, of
  * another shape, down and a large window:
  *
  *   ref      the canvas layer alone on the main screen: each output pixel
@@ -46,7 +48,7 @@
 #include "rr_size.h"
 #include "rr_mode7.h"
 
-#define NSCENES 14
+#define NSCENES 16
 static int fails;
 static long compared;
 static int front;                      /* through the front end: the canvas at the window's scale */
@@ -59,7 +61,7 @@ static int front;                      /* through the front end: the canvas at t
    page; 2: the layer on page 1 to line 112 and page 2 below, one canvas
    in VRAM's whole space across both) */
 static const struct {
-    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages, screen, fit;
+    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages, screen, fit, wide;
 } scene[NSCENES] = {
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1 },     /* 0: BG1 8 bpp, flips, tiles past the canvas */
     { 1, 0, 4, 1, 300, 501, 2, 1, 0, 1 },   /* 1: BG1 4 bpp, 16 x 16, palettes */
@@ -75,6 +77,8 @@ static const struct {
     { 1, 0, 4, 0, 0, 0, 3, 0, 1, 1, 0, 1 }, /* 11: the same under windows and maths: flat */
     { 1, 0, 4, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1 }, /* 12: a screen canvas over the whole screen, k 0, FIT_W x FIT_H */
     { 1, 0, 4, 0, 0, 0, 0, 1, 0, 1, 0, 1, 2 }, /* 13: the same, ONE_W x ONE_H: presented a texel a window pixel */
+    { 1, 0, 4, 0, 0, 0, 0, 1, 0, 1, 0, 1, 2, 1 }, /* 14: the same on a 336 x 224 screen, the picture at its centre */
+    { 1, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 1, 2, 1 }, /* 15: and under BG2 and BG3, windows, maths, brightness */
 };
 /* a k 0 canvas's texels: at no whole scale of the screen's 320 x 240
    (1.216 x 1.154), and the size presented over ONE_W x ONE_H (as a
@@ -86,10 +90,11 @@ static const struct {
 /* a screen canvas's screen, where the console's picture sits on it, the
    texels' width short of the screen's (none past them), its palette and
    priority */
-#define SC_W 320
-#define SC_H 240
-#define SC_LEFT 20
-#define SC_TOP 6
+static int cur_sc;                     /* the scene set up or checked */
+#define SC_W (scene[cur_sc].wide ? 336 : 320)
+#define SC_H (scene[cur_sc].wide ? 224 : 240)
+#define SC_LEFT (scene[cur_sc].wide ? 40 : 20)
+#define SC_TOP (scene[cur_sc].wide ? 0 : 6)
 #define SC_SHORT 40
 #define SC_PAL 5
 #define SC_PRIO 1
@@ -183,6 +188,7 @@ static void make_canvas(int sc, int k)
 
 static void setup(int sc)
 {
+    cur_sc = sc;
     int i, n = scene[sc].layer, page;
     nshvc_ext_screen(scene[sc].screen ? SC_W : 256, scene[sc].screen ? SC_H : 224);
     nshvc_ext_screen_origin(scene[sc].screen ? SC_LEFT : -1, scene[sc].screen ? SC_TOP : -1);
@@ -284,7 +290,7 @@ static void game(void)
         else
             make_canvas(sc, front ? nshvc_ext_canvas_scale() : scene[sc].k);
         wr8(0x7E0100, 0);
-        w(0x00, sc == 3 || sc == 4 ? 0x0C : 0x0F);
+        w(0x00, sc == 3 || sc == 4 || sc == 15 ? 0x0C : 0x0F);
         nshvc_wait_vblank();           /* a frame the canvas began with */
         wr8(0x7E0100, (uint8_t)(sc + 1));
         nshvc_wait_vblank();           /* the scene's whole frame */
@@ -450,6 +456,7 @@ static void ref_check(const PpuFrame *f, int sc, const uint32_t *got, int ow, in
 
 static void check_scene(int sc)
 {
+    cur_sc = sc;
     const PpuFrame *f = ppu_frame();
     int pw, ph, si, j;
     const uint32_t *pic = ppu_picture(&pw, &ph);
@@ -480,7 +487,7 @@ static void check_scene(int sc)
                f->cv_fy);
         fails += !ok;
     }
-    if (scene[sc].fit == 2) {
+    if (scene[sc].fit == 2 && scene[sc].alone) {
         /* presented over ONE_W x ONE_H: every window pixel its own texel,
            those across two console pixels too (both take the same) */
         uint32_t *o = malloc((size_t)ONE_W * ONE_H * 4);
