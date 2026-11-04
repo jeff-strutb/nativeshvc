@@ -47,6 +47,7 @@ add_library(nshvc STATIC
   src/dsp/mixer.c
   src/dsp/mixer_regs.c
   src/dsp/resample.c
+  src/front/backdrop.c
   src/front/console.c
   src/front/input.c
   src/front/script.c)

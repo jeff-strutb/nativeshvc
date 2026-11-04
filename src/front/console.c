@@ -30,6 +30,7 @@
 #include "resample.h"
 #include "script.h"
 #include "input.h"
+#include "backdrop.h"
 
 /* ---- the public calls ---- */
 const uint32_t *nshvc_picture(int *width, int *height) { return ppu_picture(width, height); }
@@ -156,6 +157,54 @@ void nshvc_overlay_place(int id, float cx, float cy, float scale, float angle_ra
     o->angle = angle_rad;
     o->alpha = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
     o->visible = visible != 0;
+}
+
+void nshvc_overlay_update(int id, const uint32_t *argb)
+{
+    Overlay *o;
+    if (id < 0 || id >= noverlays)
+        return;
+    o = &overlays[id];
+    memcpy(o->argb, argb, (size_t)o->w * (size_t)o->h * 4);
+    o->shown_alpha = -1;                /* made again at its alpha when next drawn */
+}
+
+/* ---- the game's pause (nshvc_ext_pause) ----
+   While paused the machine does not run (the loop in nshvc_main), the
+   sound is silence (audio_cb), and each display frame shows the last
+   frame presented before the pause, blurred and tinted (the backdrop,
+   backdrop.c), under the game's overlays. The backdrop is made once, from
+   that frame read back (rr_read) before anything else is drawn, and the
+   renderer's bilinear overlay scales it back over the target. */
+static volatile int paused;
+static float pause_blur;
+static uint32_t pause_tint;
+static uint32_t *backdrop;
+static int backdrop_w, backdrop_h, backdrop_due;
+
+void nshvc_ext_pause(int on, float blur, uint32_t tint)
+{
+    if (on && !paused)
+        backdrop_due = 1;
+    pause_blur = blur < 0 ? 0 : blur;
+    pause_tint = tint;
+    paused = on != 0;
+}
+
+int nshvc_ext_paused(void) { return paused; }
+
+/* the backdrop from the last presented frame, tw x th target pixels for
+   scale target pixels a point */
+static void make_backdrop(int tw, int th, float scale)
+{
+    uint32_t *f = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
+    int cell;
+    backdrop_due = 0;
+    free(backdrop);
+    backdrop = NULL;
+    if (f && rr_read(f))
+        backdrop = backdrop_make(f, tw, th, pause_blur * scale, pause_tint, &backdrop_w, &backdrop_h, &cell);
+    free(f);
 }
 
 /* the overlays over the target (tw x th pixels for pw x ph points) */
@@ -308,6 +357,10 @@ static void audio_cb(float *lr, int frames, void *user)
     int got, made, q;
     double target = NSHVC_DSP_RATE * 0.05, d;
     (void)user;
+    if (paused) {                       /* the machine makes no sound while paused */
+        memset(lr, 0, (size_t)frames * 2 * sizeof *lr);
+        return;
+    }
     while (resample_queued(s_rs) < 12000 && (got = snes_audio_take(in, 2048)) > 0)
         resample_push(s_rs, in, got);
     q = resample_queued(s_rs) + snes_audio_queued();
@@ -525,7 +578,7 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
 /* ---- the picture on the window ---- */
 /* where the last frame was drawn on the renderer's target (pixels), and
    that target's width */
-static int shown_at[4], shown_tw;
+static int shown_at[4], shown_tw, shown_th;
 
 int console_picture_at(float x, float y, int *dot, int *line)
 {
@@ -635,6 +688,16 @@ static void show(void)
     RrMode7 m;
     RrM7Samples smp;
     double aspect;
+    if (paused && backdrop_due && shown_tw) {
+        /* read back before rr_target, which may size the target afresh */
+        float pw, ph;
+        nshvc_window_size(&pw, &ph);
+        make_backdrop(shown_tw, shown_th, pw > 0 ? (float)shown_tw / pw : 1);
+    }
+    if (!paused && backdrop) {
+        free(backdrop);
+        backdrop = NULL;
+    }
     rr_target(&tw, &th);
     {
         const PpuFrame *f = ppu_frame();
@@ -652,9 +715,15 @@ static void show(void)
     d[3] = d[1] + h;
     memcpy(shown_at, d, sizeof shown_at);
     shown_tw = tw;
+    shown_th = th;
     canvas_scale(w, h);
     rr_begin(0xFF000000u);
-    if (show_mode7(w, h, d))
+    if (paused && backdrop) {
+        float q[6] = { 0, 0, (float)tw, 0, 0, (float)th };
+        rr_overlay(backdrop, backdrop_w, backdrop_h, q);
+    } else if (paused)
+        ;                                /* no backdrop could be made: black */
+    else if (show_mode7(w, h, d))
         ;
     else if (mode7_prepare(w, h, &m, &smp))
         rr_mode7(&m, d, &smp);
@@ -795,6 +864,15 @@ static void frame(void)
 {
     uint16_t b0 = 0, b1 = 0;
     frame_no++;
+    if (headless && paused) {
+        /* the machine is still: no checks, script steps or sound; the
+           game's hook goes on */
+        if (hooks.frame)
+            hooks.frame();
+        if (max_frames >= 0 && frame_no >= max_frames)
+            exit(0);
+        return;
+    }
     if (headless) {
         static int rc = -1;
         int more;
@@ -838,7 +916,8 @@ static void frame(void)
                 if (!(hooks.key && hooks.key(e.vk, e.down)))
                     input_key(e.vk, e.down);
             } else if (e.type == HOST_EV_MOUSE) {
-                input_mouse(e.x, e.y, e.dx, e.dy, e.buttons);
+                if (!(hooks.pointer && hooks.pointer(e.x, e.y, e.buttons)))
+                    input_mouse(e.x, e.y, e.dx, e.dy, e.buttons);
             } else if (e.type == HOST_EV_TOUCH) {
                 input_touch(e.id, e.phase, e.x, e.y);
                 if (hooks.touch) {
@@ -960,7 +1039,8 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         host_audio_open(OUT_RATE, audio_cb, NULL);
     }
     for (;;) {
-        nshvc_run_frame();
+        if (!paused)
+            nshvc_run_frame();
         frame();
     }
 }

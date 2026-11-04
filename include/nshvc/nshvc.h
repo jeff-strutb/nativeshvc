@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 12
+#define NSHVC_VERSION_MINOR 13
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -525,6 +525,11 @@ typedef struct {
     void (*frame)(void);
     /* the device driving `player` changed (nshvc_player_source) */
     void (*input)(int player, const nshvc_input_source *src);
+    /* the mouse moved or a button changed: where, in the window's points,
+       and the buttons held (bit 0 left, 1 right, 2 middle); 1 if the game
+       took it (the console's mouse and light guns then do not see it).
+       Not on a touch screen (the touch hook). (Since 2.13.) */
+    int (*pointer)(float x, float y, int buttons);
 } nshvc_hooks;
 void nshvc_set_hooks(const nshvc_hooks *hooks);
 /* the host's folder for the player's saves and settings */
@@ -560,6 +565,33 @@ void nshvc_game_buttons(int player, uint16_t buttons);
 #define NSHVC_OVERLAYS 16
 int nshvc_overlay_image(const uint32_t *argb, int w, int h);
 void nshvc_overlay_place(int id, float cx, float cy, float scale, float angle_rad, float alpha, int visible);
+/* An overlay's image drawn again: argb as large as the image it was made
+   with, from the next frame shown. (Since 2.13.) */
+void nshvc_overlay_update(int id, const uint32_t *argb);
+
+/* The game's pause: on, the machine stops between two frames (no time
+   passes for it, no frame is made, nshvc_frames holds) and its sound goes
+   silent; the window goes on showing the last frame presented, blurred by
+   `blur` points (0: sharp) and tint (0xAARRGGBB, its alpha how much) laid
+   over it, under the game's overlays, which with input and the hooks go
+   on at each display frame. Off, the machine goes on from where it
+   stopped as though it had not. Callable from the hooks. nshvc_ext_paused:
+   1 while on. (Since 2.13.) */
+void nshvc_ext_pause(int on, float blur, uint32_t tint);
+int nshvc_ext_paused(void);
+
+/* Player 0's keyboard (since 2.13): the key (a Win32 virtual key code)
+   that makes one of the joypad's controls (NSHVC_B...), 0 none;
+   nshvc_ext_key_bind gives the control that key alone (vk 0: none), the
+   key no longer making any other control, so a game can lay out the keys
+   as its player chooses. The console's defaults (Z, X, A, S, Q, W, the
+   arrows, Return, Shift and Tab) until then, at each power on: a game
+   keeps its player's choice itself (nshvc_save_dir). nshvc_ext_key_name:
+   a key's name ("Z", "Space", "Left Shift"; "" one with none).
+   nshvc_player_label names the bound keys. */
+int nshvc_ext_key_for(unsigned control);
+void nshvc_ext_key_bind(unsigned control, int vk);
+const char *nshvc_ext_key_name(int vk);
 
 /* ---- the picture on the window ------------------------------------------------ */
 /* The game draws in the console's own pixels (its screen at most what

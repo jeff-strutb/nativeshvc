@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.12); this page describes the interface
+[the game contract](contract.md) (2.13); this page describes the interface
 around it.
 
 ## What it is
@@ -103,8 +103,9 @@ and its buttons), the memories (`nshvc_wram`,
 
 `nshvc_set_hooks` with a key callback (return 1 to keep a key from the
 console's controls), a touch callback (id, phase, window points), a
-per-frame callback and an input callback (a player's native device
-changed); `nshvc_player_source` (the device driving a player now: keyboard,
+per-frame callback, an input callback (a player's native device
+changed) and a pointer callback (the mouse in window points; return 1 to
+keep it from the console's mouse and guns); `nshvc_player_source` (the device driving a player now: keyboard,
 game controller with its family and name, mouse, touch screen, script) and
 `nshvc_player_label` (what a control is called on it: "Z", "Cross", "A",
 "Left button"); `nshvc_save_dir`, `nshvc_safe_area`, `nshvc_window_size`;
@@ -114,8 +115,13 @@ Return reach the key hook as virtual keys, a press then a release) and
 `nshvc_keyboard_attached`;
 `nshvc_game_buttons` (buttons the game holds for a player, joined with the
 controllers');
-`nshvc_overlay_image` and `nshvc_overlay_place` (the game's pictures over the
-console's, turned, scaled and faded, on every renderer).
+`nshvc_overlay_image`, `nshvc_overlay_place` and `nshvc_overlay_update` (the
+game's pictures over the console's, turned, scaled and faded, redrawn, on
+every renderer); `nshvc_ext_pause` (the machine stopped between frames, its
+sound silent, the last frame shown blurred and tinted under the game's
+pictures, which with input and the hooks go on) and `nshvc_ext_paused`;
+`nshvc_ext_key_for`, `nshvc_ext_key_bind` and `nshvc_ext_key_name` (player
+0's keyboard keys as the game lays them out).
 
 ## The extensions
 

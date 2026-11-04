@@ -28,6 +28,9 @@
  *   L, R         Q, W              shoulders
  *   START        Return            menu
  *   SELECT       Right Shift, Tab  view
+ *
+ * The keys are the defaults until the game binds others
+ * (nshvc_ext_key_bind).
  */
 #include <stdio.h>
 #include <string.h>
@@ -71,19 +74,88 @@ static void use(int player, int kind, const host_pad *pad)
 static uint16_t keys;              /* player 0's joypad bits */
 static int key_turbo, key_pause, key_start;
 
-static const struct { int vk; uint16_t m; const char *name; } k_map[] = {
-    { 0x26, NSHVC_UP, "Up" }, { 0x28, NSHVC_DOWN, "Down" }, { 0x25, NSHVC_LEFT, "Left" },
-    { 0x27, NSHVC_RIGHT, "Right" }, { 'Z', NSHVC_B, "Z" }, { 'X', NSHVC_A, "X" }, { 'A', NSHVC_Y, "A" },
-    { 'S', NSHVC_X, "S" }, { 'Q', NSHVC_L, "Q" }, { 'W', NSHVC_R, "W" }, { 0x0D, NSHVC_START, "Return" },
-    { 0x10, NSHVC_SELECT, "Right Shift" }, { 0x09, NSHVC_SELECT, "Tab" },
+/* the keys and the joypad's controls they make: the defaults, then as the
+   game binds them (nshvc_ext_key_bind); vk 0 a slot no key holds */
+#define KEYS 16
+static struct { int vk; uint16_t m; } k_map[KEYS] = {
+    { 0x26, NSHVC_UP }, { 0x28, NSHVC_DOWN }, { 0x25, NSHVC_LEFT }, { 0x27, NSHVC_RIGHT }, { 'Z', NSHVC_B },
+    { 'X', NSHVC_A }, { 'A', NSHVC_Y }, { 'S', NSHVC_X }, { 'Q', NSHVC_L }, { 'W', NSHVC_R },
+    { 0x0D, NSHVC_START }, { 0x10, NSHVC_SELECT }, { 0x09, NSHVC_SELECT },
 };
+
+static int is_control(unsigned c)
+{
+    return c && !(c & (c - 1)) && (c & 0xFFF0);
+}
+
+int nshvc_ext_key_for(unsigned control)
+{
+    int i;
+    for (i = 0; i < KEYS; i++)
+        if (k_map[i].vk && k_map[i].m == control)
+            return k_map[i].vk;
+    return 0;
+}
+
+void nshvc_ext_key_bind(unsigned control, int vk)
+{
+    int i, free_slot = -1;
+    if (!is_control(control) || vk < 0 || vk > 0xFE)
+        return;
+    for (i = 0; i < KEYS; i++)
+        if (k_map[i].vk && (k_map[i].m == control || k_map[i].vk == vk)) {
+            keys &= (uint16_t)~k_map[i].m;      /* nothing left held by a key moved */
+            k_map[i].vk = 0;
+        }
+    for (i = 0; i < KEYS && free_slot < 0; i++)
+        if (!k_map[i].vk)
+            free_slot = i;
+    if (vk && free_slot >= 0) {
+        k_map[free_slot].vk = vk;
+        k_map[free_slot].m = (uint16_t)control;
+    }
+}
+
+/* a key's name, by its Win32 virtual key code */
+const char *nshvc_ext_key_name(int vk)
+{
+    static char one[2];
+    static const char *const f[12] = { "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12" };
+    static const char *const pad[10] = { "Num 0", "Num 1", "Num 2", "Num 3", "Num 4",
+                                         "Num 5", "Num 6", "Num 7", "Num 8", "Num 9" };
+    static const struct { int vk; const char *name; } named[] = {
+        { 0x08, "Backspace" }, { 0x09, "Tab" }, { 0x0D, "Return" }, { 0x10, "Shift" }, { 0x11, "Control" },
+        { 0x12, "Option" }, { 0x14, "Caps Lock" }, { 0x1B, "Escape" }, { 0x20, "Space" }, { 0x21, "Page Up" },
+        { 0x22, "Page Down" }, { 0x23, "End" }, { 0x24, "Home" }, { 0x25, "Left" }, { 0x26, "Up" },
+        { 0x27, "Right" }, { 0x28, "Down" }, { 0x2D, "Insert" }, { 0x2E, "Delete" }, { 0x5B, "Command" },
+        { 0x6A, "Num *" }, { 0x6B, "Num +" }, { 0x6D, "Num -" }, { 0x6E, "Num ." }, { 0x6F, "Num /" },
+        { 0xA0, "Left Shift" }, { 0xA1, "Right Shift" }, { 0xA2, "Left Control" }, { 0xA3, "Right Control" },
+        { 0xA4, "Left Option" }, { 0xA5, "Right Option" }, { 0xBA, ";" }, { 0xBB, "=" }, { 0xBC, "," },
+        { 0xBD, "-" }, { 0xBE, "." }, { 0xBF, "/" }, { 0xC0, "`" }, { 0xDB, "[" }, { 0xDC, "\\" }, { 0xDD, "]" },
+        { 0xDE, "'" },
+    };
+    size_t i;
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) {
+        one[0] = (char)vk;
+        one[1] = 0;
+        return one;
+    }
+    if (vk >= 0x70 && vk <= 0x7B)
+        return f[vk - 0x70];
+    if (vk >= 0x60 && vk <= 0x69)
+        return pad[vk - 0x60];
+    for (i = 0; i < sizeof named / sizeof named[0]; i++)
+        if (named[i].vk == vk)
+            return named[i].name;
+    return "";
+}
 
 void input_key(int vk, int down)
 {
     size_t i;
     uint16_t m = 0;
-    for (i = 0; i < sizeof k_map / sizeof k_map[0]; i++)
-        if (k_map[i].vk == vk)
+    for (i = 0; i < KEYS; i++)
+        if (k_map[i].vk && k_map[i].vk == vk)
             m |= k_map[i].m;
     if (vk == 'T')
         key_turbo = down;
@@ -386,8 +458,8 @@ const char *nshvc_player_label(int player, unsigned control)
         return pad_default_label(s->style, bit);
     }
     if (player == 0)
-        for (i = 0; i < sizeof k_map / sizeof k_map[0]; i++)
-            if (k_map[i].m == control)
-                return k_map[i].name;
+        for (i = 0; i < KEYS; i++)
+            if (k_map[i].vk && k_map[i].m == control)
+                return nshvc_ext_key_name(k_map[i].vk);
     return "";
 }

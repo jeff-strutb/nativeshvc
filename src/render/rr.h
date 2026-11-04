@@ -52,7 +52,7 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
    bottom left (q[4], q[5]) corners in target pixels. For the game's
    controls on a touch screen (nshvc_overlay_place). At most RR_OVERLAYS a
    frame. */
-#define RR_OVERLAYS 16
+#define RR_OVERLAYS 18                  /* the game's 16, the meter, the pause's backdrop */
 void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]);
 
 /* A frame with Mode 7 or a layer's canvas presented over the target's

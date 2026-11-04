@@ -70,6 +70,49 @@ static void abi_reset(void)
     input_key('Z', 0);
     input_key(0x26, 0);
 
+    /* the keys laid out by the game (nshvc_ext_key_bind) */
+    check(nshvc_ext_key_for(NSHVC_B) == 'Z' && nshvc_ext_key_for(NSHVC_START) == 0x0D,
+          "by default B is Z and START is Return");
+    nshvc_ext_key_bind(NSHVC_B, 0x20);
+    input_key(0x20, 1);
+    input_key('Z', 1);
+    input_frame_pads(pads, on, none);
+    check(port_bits(0, 16, 0) == NSHVC_B, "B bound to Space: Space reads B, Z reads nothing");
+    check(!strcmp(nshvc_player_label(0, NSHVC_B), "Space"), "player 0's B is named Space");
+    input_key(0x20, 0);
+    input_key('Z', 0);
+    input_key('X', 1);
+    nshvc_ext_key_bind(NSHVC_Y, 'X');
+    input_frame_pads(pads, on, none);
+    check(port_bits(0, 16, 0) == 0, "a held key rebound mid-press holds nothing");
+    input_key('X', 0);
+    input_key('X', 1);
+    input_frame_pads(pads, on, none);
+    check(port_bits(0, 16, 0) == NSHVC_Y && nshvc_ext_key_for(NSHVC_A) == 0 && nshvc_ext_key_for(NSHVC_Y) == 'X',
+          "Y bound to X, A's key: X reads Y, A has no key, A's old key Y's alone");
+    input_key('X', 0);
+    nshvc_ext_key_bind(NSHVC_A, 'A');
+    check(nshvc_ext_key_for(NSHVC_A) == 'A' && nshvc_ext_key_for(NSHVC_Y) == 'X', "A bound to A (Y's old key)");
+    nshvc_ext_key_bind(NSHVC_SELECT, 0xA1);
+    check(nshvc_ext_key_for(NSHVC_SELECT) == 0xA1 && !strcmp(nshvc_player_label(0, NSHVC_SELECT), "Right Shift"),
+          "SELECT bound to Right Shift alone (Shift and Tab let go)");
+    input_key(0x09, 1);
+    input_frame_pads(pads, on, none);
+    check(port_bits(0, 16, 0) == 0, "Tab no longer reads SELECT");
+    input_key(0x09, 0);
+    nshvc_ext_key_bind(NSHVC_B | NSHVC_A, 'K');
+    check(nshvc_ext_key_for(NSHVC_B) == 0x20, "two controls at once are not a control: nothing bound");
+    check(!strcmp(nshvc_ext_key_name(0x70), "F1") && !strcmp(nshvc_ext_key_name('7'), "7") &&
+              !strcmp(nshvc_ext_key_name(0x65), "Num 5") && !strcmp(nshvc_ext_key_name(0xDE), "'") &&
+              !strcmp(nshvc_ext_key_name(0xFF), ""),
+          "keys' names: F1, 7, Num 5, ', none for 0xFF");
+    /* back to the defaults for the checks after */
+    nshvc_ext_key_bind(NSHVC_B, 'Z');
+    nshvc_ext_key_bind(NSHVC_A, 'X');
+    nshvc_ext_key_bind(NSHVC_Y, 'A');
+    nshvc_ext_key_bind(NSHVC_SELECT, 0x10);
+    input_frame_pads(pads, on, none);
+
     /* a PlayStation controller as player 1, with no names of its own */
     on[1] = 1;
     pads[1].style = HOST_PAD_PLAYSTATION;

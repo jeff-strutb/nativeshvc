@@ -1,8 +1,8 @@
-# The game contract, version 2.12
+# The game contract, version 2.13
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.12: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.13: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,15 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.13:** `nshvc_ext_pause(on, blur, tint)`: the game's pause; the machine stops between
+  two frames and its sound goes silent, the window shows the last frame presented blurred by
+  `blur` points and tinted, under the game's overlays, which with input and the hooks go on;
+  off, the machine goes on as though it had not stopped. `nshvc_ext_paused()`.
+  `nshvc_hooks.pointer(x, y, buttons)`: the mouse in the window's points, for the game's
+  own controls; 1 takes it from the console's mouse and guns.
+  `nshvc_ext_key_for(control)`, `nshvc_ext_key_bind(control, vk)`, `nshvc_ext_key_name(vk)`:
+  player 0's keyboard keys, laid out by the game.
+  `nshvc_overlay_update(id, argb)`: an overlay's image drawn again.
 - **2.12:** `nshvc_ext_window_map(on, scale_q16, offset)`: on a larger screen, each line's
   window edges (WH0-WH3, HDMA's included) mapped onto the screen, console column c to
   c * scale_q16 / 65536, rounded down, + offset: a window from L to R covers L's column up
