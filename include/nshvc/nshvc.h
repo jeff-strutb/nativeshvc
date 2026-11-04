@@ -336,7 +336,9 @@ void nshvc_set_register_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 
 /* The screen the game asks for, from the next frame: width 256 to 8192
-   and height 224 to 8192, both even (since 2.7; to 1024 x 480 before);
+   and height 224 to 8192, both even (since 2.7; to 1024 x 480 before),
+   or the platform's own limit, fatal past it (the PSP: 512 x 240, and a
+   hires or interlaced frame 256 across);
    256 x 224 (or 239 with SETINI's overscan) is the console's own. Memory
    and the time to draw a frame grow with the screen asked for. The console's picture sits at its centre
    (its column 0 at (width - 256) / 2, its line 1 at (height - 224) / 2,

@@ -69,6 +69,9 @@ struct RrM7Samples;
    (rr_compose, rr_image). what: the frame's (ppu.c ppu_frame_presents),
    1 a Mode 7 line, 2 a canvas. */
 int rr_mode7_window(int what);
+/* the largest screen the platform draws on its GPU (nshvc_ext_screen):
+   width and height; the front end's default the contract's (8192) */
+void rr_screen_max(int *w, int *h);
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s);
 /* a frame presenting Mode 7 or a canvas: its picture and records drawn by
    the backend's compositor from its description (ppu.c ppu_compose_m7),

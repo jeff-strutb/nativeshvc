@@ -501,6 +501,23 @@ static void rect(int x0, int y0, int x1, int y1, uint32_t c)
     sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
 }
 
+/* the buffer's colour, stencil and depth (flags: sceGuClear's) over x0-x1,
+   y0-y1 cleared: the GE's clear mode over that rectangle (sceGuClear's own
+   covers the display's 480 x 272, not a buffer 512 across) */
+static void clear_rect(int x0, int y0, int x1, int y1, uint32_t color, unsigned stencil, unsigned depth, int flags)
+{
+    CV *v = (CV *)sceGuGetMemory(2 * sizeof(CV));
+    v[0].c = v[1].c = (color & 0xFFFFFFu) | (uint32_t)(stencil & 0xFFu) << 24;
+    v[0].x = (short)x0;
+    v[0].y = (short)y0;
+    v[1].x = (short)x1;
+    v[1].y = (short)y1;
+    v[0].z = v[1].z = (short)depth;
+    sceGuSendCommandi(211, ((flags & 7) << 8) | 1);
+    sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
+    sceGuSendCommandi(211, 0);
+}
+
 /* a rectangle at depth z, of no colour (its stencil alone, where the
    depth test passes) */
 static void zrect(int x0, int y0, int x1, int y1, uint32_t z)
@@ -690,9 +707,13 @@ static void sfunc(int ref)
 static int layer_spans(uint32_t si, int n, int r0, int r1, int x0, int x1, int out[][2])
 {
     if ((cp_b(si, U_(CP_S_TSW), 3u) >> n) & 1u) {
-        /* kept to the console's picture (nshvc_ext_layer_clip; cp_clipped:
-           its columns, the rows drawn here its lines) */
+        /* kept to the console's picture (nshvc_ext_layer_clip; cp_clipped):
+           its columns, and none on a band outside its lines (bands break
+           at their edges) */
         int sl = (int)FD_(CP_SL);
+        I32 dr = I_(FD_(FD_(CP_ROWS) + 4u * (U32)r0 + 2u));
+        if (dr < 0 || dr >= I_(FD_(CP_LINES)))
+            return 0;
         x0 = x0 > sl ? x0 : sl;
         x1 = x1 < sl + 256 ? x1 : sl + 256;
         if (x1 <= x0)
@@ -788,7 +809,7 @@ static __attribute__((noinline)) void bg_flush(const BgTex *g)
 
 /* mosaic's colours: a run of rows' blocks' colour bytes, by layer and
    priority, a picture row a texture row (made on its first mosaic) */
-static uint8_t (*s_mos)[2][PIC_H][256];
+static uint8_t (*s_mos)[2][PIC_H][512];   /* (a row of blocks: at most 512, a screen 512 across in blocks of 1) */
 
 /* draw_bg's mosaic (out of line: its loop's registers its own) */
 static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int r1, int x0, int x1, const BgTex *g, U32 xs,
@@ -814,7 +835,7 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
     int bytes = !(kind == 2 && direct);
     b0 = cp_floor_to(x0 - sl, m);
     if (bytes) {
-        if (!s_mos && !(s_mos = (uint8_t(*)[2][PIC_H][256])memalign(64, 4 * sizeof *s_mos)))
+        if (!s_mos && !(s_mos = (uint8_t(*)[2][PIC_H][512])memalign(64, 4 * sizeof *s_mos)))
             nshvc_fatal("no memory for mosaic");
         sceGuEnable(GU_TEXTURE_2D);
         sceGuTexMode(GU_PSM_T8, 0, 0, 0);
@@ -952,8 +973,8 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
             TV *v;
             room();
             v = (TV *)sceGuGetMemory(2 * sizeof(TV));
-            sceKernelDcacheWritebackRange(s_mos[n][q][ra], 256);
-            sceGuTexImage(0, 256, 1, 256, s_mos[n][q][ra]);
+            sceKernelDcacheWritebackRange(s_mos[n][q][ra], 512);
+            sceGuTexImage(0, 512, 1, 512, s_mos[n][q][ra]);
             sceGuTexFlush();
             v[0].u = 0;
             v[0].v = 0;
@@ -1111,7 +1132,8 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
 
 /* ---- Mode 7 (cp_m7): each console pixel's byte of the plane, the CPU's,
    drawn as a texture of them ---- */
-static uint8_t __attribute__((aligned(64))) s_m7[2][256 * 256];   /* by layer: a picture row a texture row */
+#define M7_W 512                             /* (a row: the widest screen's, 512) */
+static uint8_t __attribute__((aligned(64))) s_m7[2][M7_W * 256];   /* by layer: a picture row a texture row */
 
 /* layer n's (BG1, or EXTBG's BG2) bytes over rows r0-r1 of the band, its
    columns x0-x1: the pixel's texel by the line's matrix as the console
@@ -1130,7 +1152,7 @@ static void m7_fill(uint32_t si, int n, int r0, int r1, I32 dr0, int x0, int x1)
     U32 wrap = m7sel & 0xC0u;
     int r, x;
     for (r = r0; r < r1; r++) {
-        uint8_t *o = s_m7[n] + (size_t)r * 256;
+        uint8_t *o = s_m7[n] + (size_t)r * M7_W;
         I32 y = msize > 1 ? I_(FD_(FD_(CP_ROWS) + 4u * (U32)r + 3u)) : dr0 + (r - r0) + 1;
         I32 ox, oy, tx, ty, sx, step;
         if (m7sel & 2u)
@@ -1203,7 +1225,7 @@ static void draw_m7(uint32_t si, int n, int r0, int r1, int x0, int x1)
     Clut *c = s_index ? &s_iclut : clut(cp_sw(si, U_(CP_S_PAL)), n ? -1 : direct);
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_T8, 0, 0, 0);
-    sceGuTexImage(0, 256, 256, 256, s_m7[n]);
+    sceGuTexImage(0, M7_W, 256, M7_W, s_m7[n]);
     sceGuTexFlush();
     sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
     for (p = 0; p < (n ? 2 : 1); p++) {
@@ -1409,14 +1431,11 @@ static int drawable(void)
 {
     U32 r, ph = FD_(CP_PH), keys[ATLASES];
     int nkeys = 0;
-    if ((FD_(CP_PW) != FD_(CP_SW) && FD_(CP_PW) != 2u * FD_(CP_SW)) || FD_(CP_SW) > (s_cv >= 0 ? 512u : (U32)PIC_W) || ph > PIC_H ||
+    if ((FD_(CP_PW) != FD_(CP_SW) && FD_(CP_PW) != 2u * FD_(CP_SW)) || FD_(CP_PW) > 512u || ph > PIC_H ||
         (FD_(CP_CVON) && s_cv < 0))
         return 0;
     for (r = 0; r < ph; r++) {
         U32 ri = FD_(CP_ROWS) + 4u * r, p0 = FD_(ri), np = FD_(ri + 1u), k;
-        I32 dr = I_(FD_(ri + 2u));
-        if (dr < 0 || dr >= I_(FD_(CP_LINES)))
-            return 0;
         for (k = 0; k < np; k++) {
             U32 si = FD_(FD_(CP_PARTS) + 4u * (p0 + k) + 1u), n, mode, tmts;
             cp_load(si);
@@ -1474,12 +1493,11 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
     sceGuPixelMask(0);
     /* (an index band's: index 0, the backdrop's; the sub screen's its fixed
        colour after, index_band) */
-    sceGuClearColor(s_index ? 0xFF000000u : times4(which == 1 ? fixc : cp_pal(si, 0u)));
     /* the backdrop's bits: its maths where it is a pixel's own, F_BACK where
        the other screen's (and on a hires line the main screen is that too) */
-    sceGuClearStencil(which == 1 ? F_BACK : which == 2 || hires ? F_BACK | back_math : back_math);
-    sceGuClearDepth(0);
-    sceGuClear(GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+    clear_rect(x0, r0 - s_y0, x1, r1 - s_y0, s_index ? 0xFF000000u : times4(which == 1 ? fixc : cp_pal(si, 0u)),
+               which == 1 ? F_BACK : which == 2 || hires ? F_BACK | back_math : back_math, 0,
+               GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
     sceGuEnable(GU_DEPTH_TEST);
     sceGuDepthFunc(GU_GREATER);
     sceGuDepthMask(GU_FALSE);
@@ -1500,10 +1518,10 @@ static void draw_screen(uint32_t si, int which, int r0, int r1, I32 dr0, int x0,
             if (!which) {
                 U32 mos = cp_b(si, U_(CP_S_INIDISP), 3u);
                 if (n && !(((mos ^ (mos >> 1)) & 1u) && (mos >> 4)) && ((both & 1u) != 0u))
-                    memcpy(s_m7[1] + (size_t)r0 * 256, s_m7[0] + (size_t)r0 * 256, (size_t)(r1 - r0) * 256);
+                    memcpy(s_m7[1] + (size_t)r0 * M7_W, s_m7[0] + (size_t)r0 * M7_W, (size_t)(r1 - r0) * M7_W);
                 else
                     m7_fill(si, (int)n, r0, r1, dr0, x0, x1);
-                sceKernelDcacheWritebackRange(s_m7[n] + (size_t)r0 * 256, (unsigned)(r1 - r0) * 256u);
+                sceKernelDcacheWritebackRange(s_m7[n] + (size_t)r0 * M7_W, (unsigned)(r1 - r0) * M7_W);
             }
             if (!((on >> n) & 1u))
                 continue;
@@ -3136,6 +3154,10 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
     sw = (int)FD_(CP_SW);
     scale = w / sw;                          /* (2: a frame with a hires line) */
     list_begin();
+    /* the GE's drawing region the picture's buffers (512 across), not the
+       display's 480 (sceGuDispBuffer's): REGION1, REGION2 */
+    sceGuSendCommandi(21, 0);
+    sceGuSendCommandi(22, (511 << 10) | 511);
     sceGuDepthBuffer((void *)V_Z, s_pw);
     sceGuOffset(2048 - 240, 2048 - 136);
     sceGuViewport(2048, 2048, 480, 272);
@@ -3167,6 +3189,10 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
                     U32 sj = FD_(FD_(CP_PARTS) + 4u * FD_(rj) + 1u);
                     const uint32_t *b = &FD_(FD_(CP_STATES) + sj * U_(CP_ST));
                     if (FD_(rj + 1u) != 1u || I_(FD_(rj + 2u)) != dr0 + (r1 - r))
+                        break;
+                    /* (the console's lines and the rows past them apart:
+                       a layer kept to its picture draws on the one alone) */
+                    if (I_(FD_(rj + 2u)) == 0 || I_(FD_(rj + 2u)) == I_(FD_(CP_LINES)))
                         break;
                     if (sj != si && memcmp(a, b, CP_ST * sizeof(uint32_t))) {
                         /* the fixed colour's bytes, the palette (not in
@@ -3203,9 +3229,7 @@ static int draw_picture(uint32_t base, unsigned off, int stride, int *pw, int *p
         sceGuDisable(GU_DEPTH_TEST);
         sceGuDisable(GU_BLEND);
         sceGuPixelMask(0);
-        sceGuClearColor(0);
-        sceGuClearStencil(0);
-        sceGuClear(GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
+        clear_rect(0, 0, sw, s_band, 0, 0, 0, GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
         sceGuEnable(GU_STENCIL_TEST);
         sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
         sceGuEnable(GU_COLOR_TEST);
@@ -3302,11 +3326,22 @@ int rr_psp_picture(const uint32_t *desc, size_t words, int *pw, int *ph)
     (void)words;
     rr_cp_fd = desc;
     cp_fdb = 0;
-    if (!drawable())
+    /* (a screen wider than 256: its stripes 512 across, CV_BAND rows) */
+    s_pw = FD_(CP_SW) > (U32)PIC_W ? 512 : PIC_W;
+    s_band = FD_(CP_SW) > (U32)PIC_W ? CV_BAND : BAND;
+    if (!drawable()) {
+        s_pw = PIC_W;
+        s_band = BAND;
         return 0;
+    }
     s_kept_par = -1;
     rr_psp_picture_stride = 512;
-    return draw_picture(0, 0, 512, pw, ph);
+    {
+        int ok = draw_picture(0, 0, 512, pw, ph);
+        s_pw = PIC_W;
+        s_band = BAND;
+        return ok;
+    }
 }
 
 int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned fb, const RrPspAcross *a,
@@ -3339,9 +3374,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         cp_load(si);                         /* (cp_b's state: the row's own) */
         mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
         mos = cp_b(si, U_(CP_S_INIDISP), 3u);
-        /* (wider than 256: no layer under mosaic, its rows 256 bytes) */
-        if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) || (((mos >> n) & 1u) && (mos >> 4)) ||
-            (sw > (U32)PIC_W && (mos & 0x0Fu) && (mos >> 4)))
+        if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) || (((mos >> n) & 1u) && (mos >> 4)))
             return 0;
         }
     }

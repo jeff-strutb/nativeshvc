@@ -763,6 +763,14 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
    line) at the screen's resolution (rr_mode7) */
 int rr_mode7_window(int what) { return !(what & 1); }
 
+/* the PSP's screen: its picture's buffer (rr_psp_pic.c), 512 x 240 (a hires
+   or interlaced frame 256 across) */
+void rr_screen_max(int *w, int *h)
+{
+    *w = 512;
+    *h = 240;
+}
+
 int rr_psp_across(int pw, int ph, const int d[4], RrPspAcross *a)
 {
     if (!(d[2] > d[0] && d[3] > d[1]) || !geometry(pw, ph, d))

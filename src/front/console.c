@@ -45,7 +45,15 @@ const uint16_t *nshvc_vram(void) { return ppu_vram(); }
 const uint16_t *nshvc_cgram(void) { return ppu_cgram(); }
 const uint8_t *nshvc_oam(void) { return ppu_oam(); }
 uint8_t nshvc_peek(uint32_t addr) { return snes_peek(addr); }
-void nshvc_ext_screen(int width, int height) { snes_ppu_catch_up(); ppu_ext_screen(width, height); }
+void nshvc_ext_screen(int width, int height)
+{
+    int mw, mh;
+    rr_screen_max(&mw, &mh);
+    if (width > mw || height > mh)
+        nshvc_fatal("nshvc_ext_screen(%d, %d): this platform's screen is at most %d x %d", width, height, mw, mh);
+    snes_ppu_catch_up();
+    ppu_ext_screen(width, height);
+}
 void nshvc_ext_screen_origin(int x, int y) { snes_ppu_catch_up(); ppu_ext_screen_origin(x, y); }
 void nshvc_ext_sprite_x(int sprite, int on) { snes_ppu_catch_up(); ppu_ext_sprite_x(sprite, on); }
 void nshvc_ext_sprite_y(int sprite, int on) { snes_ppu_catch_up(); ppu_ext_sprite_y(sprite, on); }
@@ -522,6 +530,12 @@ static int m7_cols_cap, m7_rows_cap;
    is drawn as its picture scaled (no Mode 7 or canvas in it, or an
    interlaced weave) */
 /* (rr.h: a backend that presents Mode 7 as any frame says so) */
+__attribute__((weak)) void rr_screen_max(int *w, int *h)
+{
+    *w = PPU_EXT_WIDTH;
+    *h = PPU_EXT_HEIGHT;
+}
+
 __attribute__((weak)) int rr_mode7_window(int what)
 {
     (void)what;
