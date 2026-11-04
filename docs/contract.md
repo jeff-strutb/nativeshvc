@@ -1,8 +1,8 @@
-# The game contract, version 2.18
+# The game contract, version 2.19
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.18: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.19: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,12 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.19:** `nshvc_set_register_write_hook`: each S-CPU write to the console's own registers
+  (the B bus and the CPU's, $2100-$21FF and $4000-$43FF of banks $00-$3F and $80-$BF), for an
+  app that needs only those; unlike a write hook, it leaves the S-CPU's other accesses inline.
+  The presentation's sharp bilinear takes its weights in whole 256ths (each channel a +
+  floor(((b - a) W + 128) / 256)) on every host, so a GPU with no shaders (the PSP's GE) makes
+  it exactly; before, in floats.
 - **2.18:** a cartridge's chip may give the S-CPU its memory directly (`cart.h`
   `direct_read`, `direct_write`, `nshvc_cart_direct_changed`): the 8 KB ranges where the
   S-CPU's accesses are plain memory while the chip says so, made inline like work RAM's.

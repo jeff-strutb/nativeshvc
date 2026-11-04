@@ -44,6 +44,7 @@ static void bus_enter(void);
 static void bus_leave(void);
 void (*snes_write_hook)(uint32_t addr, uint8_t value);
 void (*snes_read_hook)(uint32_t addr, uint8_t value);
+void (*snes_register_write_hook)(uint32_t addr, uint8_t value);
 
 static uint8_t wram[0x20000];
 static uint32_t wram_port;
@@ -1858,6 +1859,11 @@ static void access_wr(uint32_t addr, uint8_t value, int game)
     snes_mdr = value;
     if (snes_write_hook)
         snes_write_hook(addr, value);
+    /* (the console's registers: never inline, so this hook keeps the rest
+       inline) */
+    if (snes_register_write_hook && !(addr & 0x400000) && (uint16_t)addr >= 0x2100 &&
+        ((uint16_t)addr < 0x2200 || ((uint16_t)addr >= 0x4000 && (uint16_t)addr < 0x4400)))
+        snes_register_write_hook(addr, value);
     if (kind == NSHVC_KIND_WRAM)
         *wram_at(addr) = value;
     else {

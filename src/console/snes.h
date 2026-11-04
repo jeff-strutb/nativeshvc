@@ -82,6 +82,7 @@ extern void (*snes_frame_hook)(void);
 extern void (*snes_write_hook)(uint32_t addr, uint8_t value);
 /* Each S-CPU read, as it is made, with its value. */
 extern void (*snes_read_hook)(uint32_t addr, uint8_t value);
+extern void (*snes_register_write_hook)(uint32_t addr, uint8_t value);
 /* Each byte a DMA or HDMA moves: A-bus address a, B-bus register $2100 + b. */
 extern void (*snes_dma_hook)(uint32_t a, uint8_t b, uint8_t v);
 

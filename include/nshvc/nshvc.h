@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 18
+#define NSHVC_VERSION_MINOR 19
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -327,6 +327,11 @@ uint8_t nshvc_peek(uint32_t addr);
 void nshvc_set_frame_hook(void (*fn)(void));
 void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value));
+/* each S-CPU write to the console's own registers (the B bus, $2100-$21FF,
+   and the CPU's, $4000-$43FF, of banks $00-$3F and $80-$BF), before it
+   lands: where a check needs only those, the S-CPU's other accesses stay
+   inline (a write hook makes every access a call) (since 2.19) */
+void nshvc_set_register_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 

@@ -81,6 +81,15 @@ static int joy_busy(void *ctx) { (void)ctx; return (rd8(0x004212) & 0x01) != 0; 
 static int not_vblank(void *ctx) { (void)ctx; return !(rd8(0x004212) & 0x80); }
 static int flag_set(void *ctx) { return *(volatile int *)ctx != 0; }
 
+static int reg_seen;
+static uint32_t reg_last;
+static void reg_hook(uint32_t addr, uint8_t value)
+{
+    (void)value;
+    reg_seen++;
+    reg_last = addr;
+}
+
 /* ---- the handlers ---- */
 static int nmis, irqs, nmi_wait;
 static uint64_t nmi_at, irq_at, nmi_waited_to, nmi_irq_seen;
@@ -385,6 +394,28 @@ static void abi_reset(void)
     wr8(0x004206, 0x00);
     check(rd16(0x004214) == 0xFFFF && rd16(0x004216) == 0xBEEF, "a divide by 0: $FFFF, the dividend",
           rd16(0x004214) << 16 | rd16(0x004216), 0xFFFF << 16 | 0xBEEF);
+
+    /* the register write hook (2.19): the console's registers' writes,
+       nothing else's, and their time as without it */
+    {
+        uint64_t a0, a1;
+        reg_seen = 0;
+        nshvc_set_register_write_hook(reg_hook);
+        a0 = snes_now();
+        wr8(0x7E2000, 1);
+        wr16(0x7E2002, 0x1234);
+        wr8(0x702000, 2);
+        wr8(0x002100, 0x0F);
+        wr8(0x804202, 3);
+        wr8(0x004300, 0x01);
+        rd8(0x002137);
+        a1 = snes_now();
+        nshvc_set_register_write_hook(NULL);
+        check(reg_seen == 3 && reg_last == 0x004300, "the register write hook: $2100, $80:4202 and $4300, nothing else",
+              reg_seen, 3);
+        check(a1 - a0 == 8 + 16 + 8 + 6 + 6 + 6 + 6 + 40 * refreshes(a0, (uint32_t)(a0 - line_start()), a1),
+              "and the accesses' time as without it", (long long)(a1 - a0), 56);
+    }
 
     printf("%d check(s) failed\n", fails);
     exit(fails ? 1 : 0);

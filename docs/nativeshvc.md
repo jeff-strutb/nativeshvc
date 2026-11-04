@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.18); this page describes the interface
+[the game contract](contract.md) (2.19); this page describes the interface
 around it.
 
 ## What it is

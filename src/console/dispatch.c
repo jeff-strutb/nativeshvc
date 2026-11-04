@@ -254,6 +254,13 @@ void nshvc_set_write_hook(void (*fn)(uint32_t addr, uint8_t value))
     snes_bus_leave();
 }
 
+void nshvc_set_register_write_hook(void (*fn)(uint32_t addr, uint8_t value))
+{
+    snes_bus_enter();
+    snes_register_write_hook = fn;
+    snes_bus_leave();
+}
+
 void nshvc_set_read_hook(void (*fn)(uint32_t addr, uint8_t value))
 {
     snes_bus_enter();
