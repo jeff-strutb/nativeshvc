@@ -78,6 +78,7 @@ static int s_pw = PIC_W, s_band = BAND;
 #define F_HALF 0x08
 #define F_BACK 0x80                          /* the sub screen's: its backdrop */
 #define F_W 0x10                             /* a canvas frame's: the canvas, opaque, would be on top here */
+#define F_DIR 0x20                           /* a full-colour canvas's: its texel a colour, on top of the main screen */
 
 #define CLEAR 0x00FFFFFFu                    /* a tile's colour 0 */
 
@@ -1642,6 +1643,34 @@ static struct {
     int key[8];
 } s_cw;
 static uint8_t __attribute__((aligned(64))) s_cvt[272 * 480];
+/* A full-colour canvas (nshvc_ext_canvas_screen32): its texels as indices
+   in s_cvt (a colour's index 1, opaque), and its colours in s_cvd (the GE's
+   0xAABBGGRR, alpha 0xFF; 0 where the texel is an index or clear); s_d8,
+   each channel of a colour out of the finish with no colour maths at
+   brightness b (compose_body.h cp_rgb_finish): its 8 bits at 15, else its
+   eighths v - v / 32 to the brightness's, z + z / 32 */
+static int s_cv32;
+static uint32_t __attribute__((aligned(64))) s_cvd[272 * 480];
+static uint32_t __attribute__((aligned(64))) s_d8[16][3][256];
+static int s_d8_made;
+
+static void make_d8(void)
+{
+    int b, k, n;
+    for (b = 0; b < 16; b++)
+        for (n = 0; n < 256; n++) {
+            unsigned z = (unsigned)n;
+            if (b != 15) {
+                z = (unsigned)n - ((unsigned)n >> 5);
+                z = ((((z >> 3) * (unsigned)b + 7u) * 4370u) >> 16) << 3;
+                z = z + (z >> 5);
+            }
+            for (k = 0; k < 3; k++)
+                s_d8[b][k][n] = z << (8 * k);
+        }
+    sceKernelDcacheWritebackRange(s_d8, sizeof s_d8);
+    s_d8_made = 1;
+}
 
 static void wtarget(unsigned off)
 {
@@ -1934,14 +1963,33 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
         }
         sprite1(s_cw.X0 - s_cw.d[0], Y - s_cw.d[1], 0, k0, s_cw.n, k1 - k0);
     }
-    sceGuPixelMask(0);
     sceGuDisable(GU_COLOR_TEST);
+    if (s_cv32) {
+        /* the main screen's F_DIR: cleared, then set where the texel is a
+           colour and the canvas is on top (F_W) */
+        wtarget(V_WM);
+        scissor(0, k0, s_cw.n, k1);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+        rect(0, k0, s_cw.n, k1, 0);
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+        sceGuTexImage(0, 512, 512, s_cw.ts, s_cvd);
+        sceGuTexFlush();
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+        sceGuEnable(GU_ALPHA_TEST);
+        sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+        sceGuStencilFunc(GU_EQUAL, F_W | F_DIR, F_W);
+        sprite1(s_cw.X0 - s_cw.d[0], Y - s_cw.d[1], 0, k0, s_cw.n, k1 - k0);
+        sceGuDisable(GU_ALPHA_TEST);
+    }
+    sceGuPixelMask(0);
     sceGuDisable(GU_STENCIL_TEST);
 }
 
 /* finish_band's colour maths and output on the window's screens' rows
    k0-k1 (the colour window's bits theirs already), into out */
-static void cv_finish(uint32_t si, int k0, int k1, unsigned out)
+static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
 {
     U32 cgwsel, cgadsub, inidisp, bright, fixc;
     int n = s_cw.n, k;
@@ -2020,6 +2068,51 @@ static void cv_finish(uint32_t si, int k0, int k1, unsigned out)
         sprite1(0, k0, 0, k0, n, k1 - k0);
     }
     sceGuDisable(GU_BLEND);
+    if (s_cv32) {
+        /* A full colour on top of the main screen, its pixel not clipped:
+           no colour maths reaches it (rr_psp_canvas takes no frame where
+           any could), so its colour is its texel's own through s_d8. The
+           main screen's F_DIR (not F_CLIP) into out's stencil, out's
+           colour there cleared, then each channel's lookup added. */
+        sceGuEnable(GU_STENCIL_TEST);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+        rect(0, k0, n, k1, 0);
+        sceGuEnable(GU_ALPHA_TEST);
+        sceGuAlphaFunc(GU_EQUAL, F_DIR, F_DIR | F_CLIP);
+        sceGuStencilFunc(GU_ALWAYS, F_DIR, 0xFF);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+        wtex(V_WM, 16);
+        sprite1(0, k0, 0, k0, n, k1 - k0);
+        sceGuDisable(GU_ALPHA_TEST);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+        sceGuStencilFunc(GU_EQUAL, F_DIR, F_DIR);
+        sceGuPixelMask(0xFF000000u);
+        rect(0, k0, n, k1, 0);
+        sceGuPixelMask(0);
+        sceGuEnable(GU_BLEND);
+        sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexMode(GU_PSM_T32, 0, 0, 0);
+        sceGuTexImage(0, 512, 512, s_cw.ts, s_cvd);
+        sceGuTexFlush();
+        for (k = 0; k < 3; k++) {
+            sceGuClutMode(GU_PSM_8888, (unsigned)(8 * k), 0xFF, 0);
+            sceGuClutLoad(32, s_d8[bright][k]);
+            sprite1(s_cw.X0 - s_cw.d[0], Y - s_cw.d[1], 0, k0, n, k1 - k0);
+        }
+        sceGuDisable(GU_BLEND);
+        /* (out's F_DIR cleared again) */
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+        sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
+        sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
+        rect(0, k0, n, k1, 0);
+        sceGuPixelMask(0);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+        sceGuDisable(GU_STENCIL_TEST);
+    }
 }
 
 /* the colour window's bits on the main screen's rows r0-r1 (finish_band's
@@ -2264,7 +2357,7 @@ static unsigned int *cv_arena_list(unsigned int **at, uint32_t si, int what)
     if (what < 0)
         cv_insert(si, s_cw.d[1], 0, CV_ROWS);
     else
-        cv_finish(si, 0, CV_ROWS, what ? V_G1 : V_G0);
+        cv_finish(si, s_cw.d[1], 0, CV_ROWS, what ? V_G1 : V_G0);
     bytes = (sceGuCheckList() + 16 + 63) & ~63;
     sceGuFinish();
     s_prebuild = 0;
@@ -2279,6 +2372,10 @@ static void cv_classes(void)
     s_ncls = 0;
     for (r = 0; r < s_cw.ph; r++)
         s_cvcls[r] = -1;
+    /* (a full-colour canvas: its passes as they come, their textures at
+       their rows) */
+    if (s_cv32)
+        return;
     for (r = 0; r < s_cw.ph; r++) {
         if (s_cw.run[r] != r)
             continue;
@@ -2331,7 +2428,7 @@ static void cv_group(const CvGroup *g)
                     sceGuCallList(s_cvfin[c][i]);
                 } else {
                     cv_insert(si, g->Ya + k, k, k1);
-                    cv_finish(si, k, k1, i ? V_G1 : V_G0);
+                    cv_finish(si, g->Ya + k, k, k1, i ? V_G1 : V_G0);
                 }
                 k = k1;
             }
@@ -2551,7 +2648,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     sw = FD_(CP_SW);
     /* a screen canvas of indices, the target's picture's size (a texel a
        target pixel), the picture magnified, one part a row, no hires */
-    if (!FD_(CP_CVON) || !(sc & 1u) || (sc & 0x20u) || FD_(CP_CVFX) != (U32)w || FD_(CP_CVFY) != (U32)h ||
+    if (!FD_(CP_CVON) || !(sc & 1u) || FD_(CP_CVFX) != (U32)w || FD_(CP_CVFY) != (U32)h ||
         FD_(CP_CVW) != (U32)w || FD_(CP_CVH) != (U32)h || FD_(CP_PW) != sw || d[0] < 0 || d[1] < 0 || d[2] > 480 ||
         d[3] > 272 || (U32)w < sw || (U32)h < ph || a->n != w || a->X0 != d[0])
         return 0;
@@ -2561,11 +2658,18 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         if (FD_(ri + 1u) != 1u)
             return 0;
         si = FD_(FD_(CP_PARTS) + 4u * FD_(ri) + 1u);
+        cp_load(si);                         /* (cp_b's state: the row's own) */
         mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
         mos = cp_b(si, U_(CP_S_INIDISP), 3u);
         /* (wider than 256: no layer under mosaic, its rows 256 bytes) */
         if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) || (((mos >> n) & 1u) && (mos >> 4)) ||
             (sw > (U32)PIC_W && (mos & 0x0Fu) && (mos >> 4)))
+            return 0;
+        /* a full colour: none where colour maths could reach one (the
+           canvas's own, or the sub screen's with the canvas on it) */
+        if ((sc & 0x20u) && (cp_b(si, U_(CP_S_TSW), 2u) & 0x3Fu) &&
+            (((cp_b(si, U_(CP_S_TSW), 2u) >> n) & 1u) ||
+             (((cp_b(si, U_(CP_S_TM), 2u) >> n) & 1u) && (cp_b(si, U_(CP_S_TSW), 1u) & 2u))))
             return 0;
     }
     s_cv = (int)n;
@@ -2616,14 +2720,34 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         }
         s_cw.run[r] = (uint16_t)(same ? s_cw.run[r - 1] : r);
     }
-    /* the canvas's texels, rows 16-texel aligned */
-    {
+    /* the canvas's texels, rows 16-texel aligned; a full-colour canvas's
+       as indices and colours */
+    s_cw.ts = (w + 15) & ~15;
+    s_cv32 = (sc & 0x20u) != 0u;
+    if (s_cv32) {
+        const uint32_t *t = desc + FD_(CP_CV);
+        int X;
+        for (Y = 0; Y < h; Y++)
+            for (X = 0; X < w; X++) {
+                uint32_t v = t[(size_t)Y * (size_t)w + (size_t)X];
+                size_t at = (size_t)Y * (size_t)s_cw.ts + (size_t)X;
+                if (v >= 0x1000000u) {
+                    s_cvt[at] = 1;
+                    s_cvd[at] = 0xFF000000u | (v & 0xFFu) << 16 | (v & 0xFF00u) | (v >> 16 & 0xFFu);
+                } else {
+                    s_cvt[at] = (uint8_t)v;
+                    s_cvd[at] = 0;
+                }
+            }
+        sceKernelDcacheWritebackRange(s_cvd, (unsigned)(s_cw.ts * h * 4));
+        if (!s_d8_made)
+            make_d8();
+    } else {
         const uint8_t *t = (const uint8_t *)(desc + FD_(CP_CV));
-        s_cw.ts = (w + 15) & ~15;
         for (Y = 0; Y < h; Y++)
             memcpy(s_cvt + (size_t)Y * (size_t)s_cw.ts, t + (size_t)Y * (size_t)w, (size_t)w);
-        sceKernelDcacheWritebackRange(s_cvt, (unsigned)(s_cw.ts * h));
     }
+    sceKernelDcacheWritebackRange(s_cvt, (unsigned)(s_cw.ts * h));
     /* the lists kept, made again for a new geometry */
     key[0] = (int)FD_(CP_PW);
     key[1] = (int)ph;
@@ -2644,6 +2768,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     cv_classes();
     draw_picture(0, 0, 512, &pw, &phh);
     s_cv = -1;
+    s_cv32 = 0;
     s_pw = PIC_W;
     s_band = BAND;
     s_kept_par = -1;                         /* (the picture's VRAM the window's buffers) */

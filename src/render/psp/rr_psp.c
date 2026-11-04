@@ -328,6 +328,13 @@ static int geometry(int pw, int ph, const int d[4])
     if (!s_g->tx0 || !s_g->tx1 || !s_g->tab || !s_g->clut || !s_g->cols || !s_g->first || !s_g->count || !s_g->ex || !s_g->nex)
         nshvc_fatal("no memory for a picture %d wide", n);
     dx = (float)pw / (float)(d[2] - d[0]);
+    {
+    /* the weights met so far and their tables: a column at a weight met
+       already takes its table (the columns repeat a few weights) */
+    float *seen_t = (float *)malloc((size_t)n * sizeof(float));
+    int *seen_tab = (int *)malloc((size_t)n * sizeof(int)), nseen = 0, j;
+    if (!seen_t || !seen_tab)
+        nshvc_fatal("no memory for a picture %d wide", n);
     for (x = 0; x < n; x++) {
         int tx, hp[256], hm[256];
         float t = rr_sharp(((float)(s_g->X0 + x - d[0]) + 0.5f) * dx, dx, &tx);
@@ -336,18 +343,29 @@ static int geometry(int pw, int ph, const int d[4])
         s_g->tab[x] = -1;
         if (!(t > 0) || s_g->tx0[x] == s_g->tx1[x])
             continue;
+        for (j = 0; j < nseen && memcmp(&seen_t[j], &t, sizeof t); j++)
+            ;
+        if (j < nseen) {
+            s_g->tab[x] = seen_tab[j];
+            s_g->count[seen_tab[j]]++;
+            continue;
+        }
         {
-            /* each difference's value the one most of its pairs give; the
-               others exceptions */
+            /* each difference's value the one most of its pairs give, over
+               every pair of channel values (a full-colour canvas has any):
+               rr_mix is a + g(b - a) by its definition (whole 256ths), so
+               none is an exception, which the count here holds it to */
             static short votes[2][256][256];      /* all 0 between columns: each cleared after */
             int ne = 0, *ex = &s_g->ex[s_g->ntab][0][0];
-            for (a = 0; a < 32; a++)
-                for (b = 0; b < 32; b++) {
-                    int ea = a << 3 | a >> 2, eb = b << 3 | b >> 2;
+            for (a = 0; a < 256; a++)
+                for (b = 0; b < 256; b++) {
+                    int ea = a, eb = b;
                     int v = (int)(rr_mix(0xFF000000u | (uint32_t)ea, 0xFF000000u | (uint32_t)eb, t) & 0xFFu);
                     int sg = eb >= ea ? 0 : 1, dd = sg ? ea - eb : eb - ea, hv = sg ? ea - v : v - ea;
                     if (hv < 0) {
                         memset(votes, 0, sizeof votes);
+                        free(seen_t);
+                        free(seen_tab);
                         return 0;
                     }
                     votes[sg][dd][hv]++;
@@ -364,15 +382,17 @@ static int geometry(int pw, int ph, const int d[4])
                         }
                 }
             }
-            for (a = 0; a < 32; a++)
-                for (b = 0; b < 32; b++) {
-                    int ea = a << 3 | a >> 2, eb = b << 3 | b >> 2;
+            for (a = 0; a < 256; a++)
+                for (b = 0; b < 256; b++) {
+                    int ea = a, eb = b;
                     int v = (int)(rr_mix(0xFF000000u | (uint32_t)ea, 0xFF000000u | (uint32_t)eb, t) & 0xFFu);
                     int got = eb >= ea ? ea + hp[eb - ea] : ea - hm[ea - eb];
                     if (got == v)
                         continue;
                     if (ne == 48 || (v - got != 1 && v - got != -1)) {
                         memset(votes, 0, sizeof votes);
+                        free(seen_t);
+                        free(seen_tab);
                         return 0;
                     }
                     ex[3 * ne] = ea;
@@ -380,9 +400,9 @@ static int geometry(int pw, int ph, const int d[4])
                     ex[3 * ne + 2] = v - got;
                     ne++;
                 }
-            for (a = 0; a < 32; a++)
-                for (b = 0; b < 32; b++) {
-                    int ea = a << 3 | a >> 2, eb = b << 3 | b >> 2;
+            for (a = 0; a < 256; a++)
+                for (b = 0; b < 256; b++) {
+                    int ea = a, eb = b;
                     int v = (int)(rr_mix(0xFF000000u | (uint32_t)ea, 0xFF000000u | (uint32_t)eb, t) & 0xFFu);
                     int sg = eb >= ea ? 0 : 1;
                     votes[sg][sg ? ea - eb : eb - ea][sg ? ea - v : v - ea] = 0;
@@ -413,6 +433,11 @@ static int geometry(int pw, int ph, const int d[4])
             s_g->ntab++;
         s_g->tab[x] = i;
         s_g->count[i]++;
+        seen_t[nseen] = t;
+        seen_tab[nseen++] = i;
+    }
+    free(seen_t);
+    free(seen_tab);
     }
     /* each table's columns together */
     for (i = 1; i < s_g->ntab; i++)

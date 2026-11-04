@@ -127,6 +127,10 @@ if(NSHVC_HOST STREQUAL "psp")
   add_executable(ge_vram_check psp/ge_vram_check.c)
   target_link_libraries(ge_vram_check PRIVATE nshvc pspgu pspge pspdisplay)
   set_target_properties(ge_vram_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+  # a full-colour canvas over the whole screen, presented on the GE
+  add_executable(canvas32_psp psp/canvas32_psp.c)
+  target_link_libraries(canvas32_psp PRIVATE nshvc)
+  set_target_properties(canvas32_psp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()
 
 # on the PSP, each program's imports of the system's calls put in the form

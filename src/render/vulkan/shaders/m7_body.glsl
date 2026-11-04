@@ -68,7 +68,8 @@ uint m7_ptexel(int layer, int v, uint sel, int px, int py) {
 }
 uint m7_mix(uint a, uint b, float t) {
     uint o = 0xFF000000u;
-    for (int s = 0; s < 24; s += 8) { float ca = float((a >> s) & 0xFFu), cb = float((b >> s) & 0xFFu); o |= uint(int(ca + (cb - ca) * t + 0.5)) << s; }
+    float w = floor(t * 256.0 + 0.5);
+    for (int s = 0; s < 24; s += 8) { float ca = float((a >> s) & 0xFFu), cb = float((b >> s) & 0xFFu); o |= uint(int(ca + floor(((cb - ca) * w + 128.0) / 256.0))) << s; }
     return o;
 }
 // an exact floor division without the GPU's integer divide: a float

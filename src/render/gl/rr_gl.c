@@ -62,8 +62,9 @@ static const char *k_sharp =
     "  ivec2 hi = textureSize(t, 0) - 1, a = clamp(ivec2(i), ivec2(0), hi), b = clamp(ivec2(i) + 1, ivec2(0), hi);\n"
     "  vec3 c00 = round(texelFetch(t, ivec2(a.x, a.y), 0).rgb * 255.0), c01 = round(texelFetch(t, ivec2(b.x, a.y), 0).rgb * 255.0);\n"
     "  vec3 c10 = round(texelFetch(t, ivec2(a.x, b.y), 0).rgb * 255.0), c11 = round(texelFetch(t, ivec2(b.x, b.y), 0).rgb * 255.0);\n"
-    "  vec3 top = floor(c00 + (c01 - c00) * f.x + 0.5), bot = floor(c10 + (c11 - c10) * f.x + 0.5);\n"
-    "  o = vec4(floor(top + (bot - top) * f.y + 0.5) / 255.0, 1.0);\n"
+    "  vec2 w = floor(f * 256.0 + 0.5);\n"
+    "  vec3 top = c00 + floor(((c01 - c00) * w.x + 128.0) / 256.0), bot = c10 + floor(((c11 - c10) * w.x + 128.0) / 256.0);\n"
+    "  o = vec4((top + floor(((bot - top) * w.y + 128.0) / 256.0)) / 255.0, 1.0);\n"
     "}\n";
 
 /* an overlay: bilinear, its alpha kept for the blend */
