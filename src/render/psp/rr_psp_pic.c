@@ -930,118 +930,66 @@ static __attribute__((noinline)) void bg_flush(const BgTex *g)
             }
 }
 
-/* mosaic's colours: a run of rows' blocks' colour bytes, by layer and
-   priority, a picture row a texture row (made on its first mosaic) */
-static uint8_t (*s_mos)[2][PIC_H][512];   /* (a row of blocks: at most 512, a screen 512 across in blocks of 1) */
-
-/* draw_bg's mosaic (out of line: its loop's registers its own) */
-static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int r1, int x0, int x1, const BgTex *g, U32 xs,
-                                            U32 ys, U32 bpp, U32 nba, U32 hofs, U32 vofs)
+/* draw_bg's mosaic (cp_bg; out of line: its loop's registers its own): a
+   block of m columns, of the rows whose block starts on the same line
+   (the mosaic's row), is the layer's pixel at the block's first column on
+   that line, its texel found as cp_bg finds it (offset-per-tile's scroll
+   that column's; a hires layer's (5, 6) the hires column twice the
+   console's, its tiles 16 texels across, the same for the screen's even
+   and odd pixels); each block a sprite of that one texel of the tile's
+   image, magnified over the block on the GE, by the texture image and
+   palette it is in (g: the layer's tiles, their own images, not a hires
+   layer's split ones) */
+static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int r1, int x0, int x1, const BgTex *g,
+                                            U32 bpp, U32 nba, int hires)
 {
-    U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u), mode = bgmode & 7u;
-    int sl = (int)FD_(CP_SL), kind = g->kind, direct = g->direct, pl;
-    /* mosaic (cp_bg): a block of m columns, of the rows whose block
-       starts on the same line, the layer's pixel at its first column
-       and that line (offset-per-tile's scroll that column's): a sprite
-       of the one texel, magnified (every pixel's position on it under
-       the next texel's) */
-    I32 m = (I32)(cp_b(si, U_(CP_S_INIDISP), 3u) >> 4) + 1, b0;
-    int ra, rb, z[2] = { (int)cp_zbg(bgmode, (U32)n, 0u), (int)cp_zbg(bgmode, (U32)n, 1u) };
-    int csh = bpp == 2u ? 3 : bpp == 4u ? 4 : 5;     /* (a tile's bytes, 8 bpp, a power of 2) */
-    U32 last_tx = ~0u, last_ty = ~0u, last_e = 0;
-    U32 big3 = (bgmode >> 6) & 1u, sx3 = big3 ? 4u : 3u, sy3 = big3 ? 4u : 3u;
+    U32 bgmode = cp_b(si, U_(CP_S_INIDISP), 2u), mode = bgmode & 7u, big = (bgmode >> (4u + (U32)n)) & 1u;
+    U32 xs = hires || big ? 4u : 3u, ys = big ? 4u : 3u;
+    U32 hofs0 = (((n >> 1) == 0 ? cp_st[CP_S_HOFS] : cp_st[CP_S_HOFS + 1]) >> (16u * ((U32)n & 1u))) & 0xFFFFu;
+    U32 vofs0 = (((n >> 1) == 0 ? cp_st[CP_S_VOFS] : cp_st[CP_S_VOFS + 1]) >> (16u * ((U32)n & 1u))) & 0xFFFFu;
+    U32 big3 = (bgmode >> 6) & 1u, sx3 = big3 && !hires ? 4u : 3u, sy3 = big3 ? 4u : 3u;
     U32 h3 = cp_h(si, U_(CP_S_HOFS) + 1u, 0u), v3 = cp_h(si, U_(CP_S_VOFS) + 1u, 0u);
-    /* a block's colour a byte (its palette's place and its colour, 0
-       clear: a tile's colour 0 is), drawn a run of rows at a time, each
-       priority a sprite of a byte a block, magnified; direct colour (its
-       palette bits the tile's) a sprite a block */
-    int bytes = !(kind == 2 && direct), i0;
-    b0 = cp_floor_to(x0 - sl, m);
-    /* (each block its own byte of the row, counted from the block at the
-       screen's column 0: the GE reads the row when the list runs, after
-       every span of the band has written its blocks) */
-    i0 = (b0 - cp_floor_to(-sl, m)) / m;
-    if (bytes) {
-        if (!s_mos && !(s_mos = (uint8_t(*)[2][PIC_H][512])memalign(64, 4 * sizeof *s_mos)))
-            nshvc_fatal("no memory for mosaic");
-        sceGuEnable(GU_TEXTURE_2D);
-        sceGuTexMode(GU_PSM_T8, 0, 0, 0);
-        sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
-        sceGuClutLoad(32, g->c->c[2]);
-    }
+    int opt = (mode == 2u || mode == 4u || mode == 6u) && n < 2, sl = (int)FD_(CP_SL), kind = g->kind, direct = g->direct;
+    I32 m = (I32)(cp_b(si, U_(CP_S_INIDISP), 3u) >> 4) + 1, b0 = cp_floor_to(x0 - sl, m), bx;
+    int csh = bpp == 2u ? 3 : bpp == 4u ? 4 : 5;     /* (a tile's bytes, 8 bpp, a power of 2) */
+    int ra, rb, z[2] = { (int)cp_zbg(bgmode, (U32)n, 0u), (int)cp_zbg(bgmode, (U32)n, 1u) };
+    U32 last_tx = ~0u, last_ty = ~0u, last_e = 0;
+    memset(s_cells, 0, sizeof s_cells);
     for (ra = r0; ra < r1; ra = rb) {
         U32 my = FD_(FD_(CP_ROWS) + 4u * (U32)ra + 3u);
-        I32 bx;
-        int nb = 0, q, done = 0;
         for (rb = ra + 1; rb < r1 && FD_(FD_(CP_ROWS) + 4u * (U32)rb + 3u) == my; rb++)
             ;
-        if (bytes && !((mode == 2u || mode == 4u) && n < 2)) {
-            /* one scroll for the run: a tile's entry, flips, palette,
-               priority and its characters' rows of pixels taken as a block
-               first meets it, each block then its pixel alone */
-            U32 yy = (my + vofs) & 0x3FFu, mx = (1u << xs) - 1u, tcur = ~0u, base = 0, pr = 0, hf = 0;
-            const uint8_t *row[2] = { NULL, NULL };
-            uint8_t *o[2] = { s_mos[n][0][ra] + i0, s_mos[n][1][ra] + i0 };
-            int nbk = (x1 - sl - b0 + m - 1) / m;
-            memset(o[0], 0, (size_t)nbk);
-            memset(o[1], 0, (size_t)nbk);
-            for (bx = b0; nb < nbk; bx += m, nb++) {
-                U32 xx = (U_(bx) + hofs) & 0x3FFu, px, c;
-                if ((xx >> xs) != tcur) {
-                    U32 e, py, ch, k;
-                    tcur = xx >> xs;
-                    e = bg_entry(si, (U32)n, tcur, yy >> ys);
-                    hf = (e >> 14) & 1u;
-                    py = yy & ((1u << ys) - 1u);
-                    if ((e >> 15) & 1u)
-                        py = (1u << ys) - 1u - py;
-                    ch = (e & 0x3FFu) + (py >= 8u ? 16u : 0u);
-                    pr = (e >> 13) & 1u;
-                    base = kind == 0 ? (mode == 0u ? (U32)n * 32u : 0u) + ((e >> 10) & 7u) * 4u
-                         : kind == 1 ? ((e >> 10) & 7u) * 16u : 0u;
-                    for (k = 0; k < 2; k++) {
-                        U32 ca = (nba + ((ch + k) & 0x3FFu) * (bpp * 4u)) & 0x7FFFu;
-                        int t = (int)(ca >> csh);
-                        const uint8_t *img = tile_image(g->a, kind, t);
-                        row[k] = kind == 2 ? img + (tile_v(t) + (int)(py & 7u)) * 128 + tile_u(t)
-                                           : img + (tile_v(t) + (int)(py & 7u)) * 64 + tile_u(t) / 2;
-                    }
-                }
-                px = xx & mx;
-                if (hf)
-                    px = mx - px;
-                c = kind == 2 ? row[px >> 3][px & 7u] : (U32)(row[px >> 3][(px & 7u) >> 1] >> ((px & 1u) * 4)) & 15u;
-                if (c)
-                    o[pr][nb] = (uint8_t)(base + c);
-            }
-            done = 1;
-        }
-        for (bx = b0; !done && bx + sl < x1; bx += m, nb++) {
-            U32 hc = hofs, vc = vofs, xx, yy, e, ch, hf, vf, pal, prio, ca, px, py;
-            int t, slot, b;
+        for (bx = b0; bx + sl < x1; bx += m) {
+            U32 hofs = hofs0, vofs = vofs0, opt_h = 0, xx, yy, e, ch, hf, vf, pal, prio, ca, px, py;
+            I32 sx = hires ? 2 * bx : bx;
+            int t, slot, b, pl;
             TV *v;
-            if ((mode == 2u || mode == 4u) && n < 2) {
-                I32 col = (bx + I_(hofs & 7u)) >> 3;
+            if (opt) {
+                I32 col = hires ? (sx + I_((hofs << 1) & 7u)) >> 4 : (sx + I_(hofs & 7u)) >> 3;
                 if (col > 0) {
                     U32 tx3 = (U_(col - 1) * 8u + (h3 & ~7u)) >> sx3, hv = cp_map_entry(si, 2u, tx3, v3 >> sy3), vv;
                     if (mode == 4u) {
                         if (hv & 0x8000u) {
                             if (hv & (0x2000u << n))
-                                vc = hv & 0x3FFu;
+                                vofs = hv & 0x3FFu;
                         } else if (hv & (0x2000u << n)) {
-                            hc = (hofs & 7u) | (hv & 0x3F8u);
+                            hofs = (hofs & 7u) | (hv & 0x3F8u);
+                            opt_h = 1;
                         }
                     } else {
                         vv = cp_map_entry(si, 2u, tx3, (v3 + 8u) >> sy3);
-                        if (hv & (0x2000u << n))
-                            hc = (hofs & 7u) | (hv & 0x3F8u);
+                        if (hv & (0x2000u << n)) {
+                            hofs = (hofs & 7u) | (hv & 0x3F8u);
+                            opt_h = 1;
+                        }
                         if (vv & (0x2000u << n))
-                            vc = vv & 0x3FFu;
+                            vofs = vv & 0x3FFu;
                     }
                 }
             }
-            xx = (U_(bx) + hc) & 0x3FFu;
-            yy = (my + vc) & 0x3FFu;
+            xx = hires ? (U_(sx) + (opt_h ? ((hofs << 1) & 7u) + (hofs & ~7u) : hofs << 1)) & 0x7FFu
+                       : (U_(sx) + hofs) & 0x3FFu;
+            yy = (my + vofs) & 0x3FFu;
             if ((xx >> xs) != last_tx || (yy >> ys) != last_ty) {
                 last_tx = xx >> xs;
                 last_ty = yy >> ys;
@@ -1065,16 +1013,6 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
             prio = (e >> 13) & 1u;
             ca = (nba + (ch & 0x3FFu) * (bpp * 4u)) & 0x7FFFu;
             t = (int)(ca >> csh);
-            if (bytes) {
-                /* the tile's pixel from its decoded image (draw_bg's atlas) */
-                const uint8_t *img = tile_image(g->a, kind, t);
-                int u = tile_u(t) + (int)(px & 7u), w = tile_v(t) + (int)(py & 7u);
-                U32 c = kind == 2 ? img[w * 128 + u] : (U32)(img[w * 64 + u / 2] >> ((u & 1) * 4)) & 15u;
-                U32 ci = !c ? 0u : kind == 0 ? (mode == 0u ? (U32)n * 32u : 0u) + pal * 4u + c : kind == 1 ? pal * 16u + c : c;
-                s_mos[n][prio][ra][i0 + nb] = (uint8_t)ci;
-                s_mos[n][prio ^ 1u][ra][i0 + nb] = 0;
-                continue;
-            }
             b = kind == 0 ? (int)((mode == 0u ? (U32)n * 8u : 0u) + pal) : (int)pal;
             slot = kind == 0 ? (t >> 10) * 4 + (b >> 3) : (t >> 10);
             pl = kind == 2 && !direct ? 0 : b & 7;
@@ -1096,26 +1034,8 @@ static __attribute__((noinline)) void bg_mosaic(uint32_t si, int n, int r0, int 
             v[1].y = (short)(rb - s_y0);
             v[1].z = v[0].z;
         }
-        for (q = 0; bytes && nb && q < 2; q++) {
-            TV *v;
-            room();
-            v = (TV *)sceGuGetMemory(2 * sizeof(TV));
-            sceKernelDcacheWritebackRange(s_mos[n][q][ra], 512);
-            sceGuTexImage(0, 512, 1, 512, s_mos[n][q][ra]);
-            sceGuTexFlush();
-            v[0].u = (short)i0;
-            v[0].v = 0;
-            v[0].x = (short)(b0 + sl);
-            v[0].y = (short)(ra - s_y0);
-            v[0].z = (short)z[q];
-            v[1].u = (short)(i0 + nb);
-            v[1].v = 1;
-            v[1].x = (short)(b0 + sl + nb * m);
-            v[1].y = (short)(rb - s_y0);
-            v[1].z = v[0].z;
-            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, 0, v);
-        }
     }
+    bg_flush(g);
 }
 
 /* (phase: a hires layer's (modes 5, 6) texels the screen takes, 0 the even
@@ -1182,8 +1102,15 @@ static __attribute__((noinline)) void draw_bg(uint32_t si, int n, int r0, int r1
         if (!s_cvrec)    \
             bg_flush(&g); \
     } while (0)
-    if (phase < 0 && ((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4)) {
-        bg_mosaic(si, n, r0, r1, x0, x1, &g, xs, ys, bpp, nba, hofs, vofs);
+    if (((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4)) {
+        /* (a hires layer's blocks from its tiles' own images) */
+        BgTex gm = g;
+        if (phase >= 0) {
+            gm.a = atlas(words, cp_sw(si, U_(CP_S_VBASE)) + (page << 15), kind);
+            gm.tk = kind;
+        }
+        bg_mosaic(si, n, r0, r1, x0, x1, &gm, bpp, nba, phase >= 0);
+        return;
     } else if ((mode == 2u || mode == 4u) && n < 2) {
         /* offset-per-tile (cp_bg): each tile column past the first its own
            scroll from BG3's map, its fine horizontal scroll the layer's
@@ -1568,7 +1495,8 @@ static int drawable(void)
     U32 r, ph = FD_(CP_PH), keys[ATLASES];
     int nkeys = 0;
     if ((FD_(CP_PW) != FD_(CP_SW) && FD_(CP_PW) != 2u * FD_(CP_SW)) || FD_(CP_PW) > 512u || ph > PIC_H)
-        return 0;
+        nshvc_fatal("a picture of %u x %u (the screen %u across): past the PSP's 512 x 240 (a hires line twice the "
+                    "screen's width)", FD_(CP_PW), ph, FD_(CP_SW));
     for (r = 0; r < ph; r++) {
         U32 ri = FD_(CP_ROWS) + 4u * r, p0 = FD_(ri), np = FD_(ri + 1u), k;
         for (k = 0; k < np; k++) {
@@ -1584,8 +1512,8 @@ static int drawable(void)
             if (FD_(CP_CVON) && s_cv < 0) {
                 U32 cn = FD_(CP_CVLAYER), mos = cp_b(si, U_(CP_S_INIDISP), 3u);
                 if (mode != 7u && cp_bpp(mode, cn) && ((tmts >> cn) & 1u) && mode != 5u && mode != 6u &&
-                    !(cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) && !(((mos >> cn) & 1u) && (mos >> 4)))
-                    return 0;
+                    !(((mos >> cn) & 1u) && (mos >> 4)))
+                    nshvc_fatal("a frame showing the canvas drawn as any picture (rr_mode7_window: the canvas path's)");
             }
             /* (the windows' columns, map and edges: cp_win's, spans' own)
                hires with the screen interlaced: 512 x 448, past the PSP's
@@ -1598,15 +1526,11 @@ static int drawable(void)
                 /* (Mode 7's plane read from the VRAM's words: m7_fill) */
                 if (!((tmts >> n) & 1u) || (n < 4u && (mode == 7u || !cp_bpp(mode, n))))
                     continue;
-                /* any layer but hires (5, 6) under mosaic */
-                if (n < 4u && !(cp_st[U_(CP_S_LAYER) + n] & 1u) && (mode == 5u || mode == 6u) &&
-                    ((cp_b(si, U_(CP_S_INIDISP), 3u) >> n) & 1u) && (cp_b(si, U_(CP_S_INIDISP), 3u) >> 4))
-                    return 0;
                 for (j = 0; j < nkeys && keys[j] != key; j++)
                     ;
                 if (j == nkeys) {
                     if (nkeys == ATLASES)
-                        return 0;
+                        nshvc_fatal("a frame reading more than %d copies or pages of VRAM (the PSP's atlases)", ATLASES);
                     keys[nkeys++] = key;
                 }
             }
@@ -4118,9 +4042,12 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     ch = chars ? ph * kk : FD_(CP_CVH);
     /* a canvas (of characters, or over the screen at any k or none), the
        picture magnified, no hires */
-    if (!FD_(CP_CVON) || (m->cpp != 1 && m->cpp != 2) || FD_(CP_PW) != sw * (U32)m->cpp || d[0] < 0 ||
-        d[1] < 0 || d[2] > 480 || d[3] > 272 || (U32)w < sw || (U32)h < ph || a->n != w || a->X0 != d[0])
-        return 0;
+    if (!FD_(CP_CVON) || (m->cpp != 1 && m->cpp != 2) || FD_(CP_PW) != sw * (U32)m->cpp)
+        nshvc_fatal("a canvas frame of %u x %u (%u across, %d columns a pixel), its canvas %s", FD_(CP_PW), ph, sw, m->cpp,
+                    FD_(CP_CVON) ? "on" : "off");
+    /* (the whole of the target the PSP's screen: its across stage's) */
+    if (d[0] < 0 || d[1] < 0 || d[2] > 480 || d[3] > 272 || a->n != w || a->X0 != d[0])
+        nshvc_fatal("a canvas frame over (%d, %d)-(%d, %d): not the PSP's screen", d[0], d[1], d[2], d[3]);
     /* its texels a texture's, 512 x 512 at most (rr_canvas_max; at a
        whole k, the screen times k too, the texel past the canvas's the
        clear one) */

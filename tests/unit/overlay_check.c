@@ -141,7 +141,8 @@ int main(void)
         }
     }
     rr_begin(0xFF000000u);
-    rr_image(pic, PW, PH, dd);
+    if (!ge)
+        rr_image(pic, PW, PH, dd);   /* (the PSP draws no picture made on the CPU: black under them) */
     for (i = 0; i < 5; i++)
         rr_overlay(im[i], OW, OH, q[i]);
     rr_present();
@@ -151,7 +152,8 @@ int main(void)
         return 2;
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
-    rr_ref_image(want, tw, th, pic, PW, PH, dd);
+    if (!ge)
+        rr_ref_image(want, tw, th, pic, PW, PH, dd);
     for (i = 0; i < 5; i++)
         rr_ref_overlay(want, tw, th, im[i], OW, OH, q[i]);
     bad = compare(got, want, tw, th, q, im, 5, ge, &worst, &ties);
@@ -180,14 +182,16 @@ int main(void)
                 q2[p][k] = q[p ? 3 : 1][k];
         }
         rr_begin(0xFF000000u);
-        rr_image(pic, PW, PH, dd);
+        if (!ge)
+            rr_image(pic, PW, PH, dd);
         rr_overlay_quads(atlas, AW, AH, 2, &uv[0][0], &q2[0][0]);
         rr_present();
         if (!rr_read(got))
             return 2;
         for (i = 0; i < tw * th; i++)
             want[i] = 0xFF000000u;
-        rr_ref_image(want, tw, th, pic, PW, PH, dd);
+        if (!ge)
+            rr_ref_image(want, tw, th, pic, PW, PH, dd);
         for (p = 0; p < 2; p++)
             rr_ref_overlay(want, tw, th, im2[p], OW, OH, q2[p]);
         k = compare(got, want, tw, th, q2, im2, 2, ge, &worst, &ties);

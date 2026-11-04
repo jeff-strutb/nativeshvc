@@ -34,6 +34,8 @@
  *              frame's picture 512 across
  *   chars      hires's with a canvas of characters instead (BG1's first
  *              512 characters at k 2, nshvc_ext_canvas_chars)
+ *   hiresmos   hires's with BG1 and BG2 under mosaic (size 3) from line
+ *              40 down (their tiles, Mode 5's hires ones too)
  *   odd        plain's with a canvas of 479 x 271 texels over the screen
  *              (its rows no multiple of 16 bytes: copied for the GE)
  *   small      plain's with a canvas of 200 x 150 texels at k 1 (the texels
@@ -86,8 +88,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_HIRES, S_CHARS, S_ODD, S_SMALL, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "hires", "chars", "odd", "small", "clipped", "tall", "noncanvas", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_HIRES, S_CHARS, S_HIRESMOS, S_ODD, S_SMALL, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "hires", "chars", "hiresmos", "odd", "small", "clipped", "tall", "noncanvas", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -230,6 +232,7 @@ static void setup(int sc)
     case S_MODE7:
     case S_HIRES:
     case S_CHARS:
+    case S_HIRESMOS:
     case S_ODD:
     case S_SMALL:
         w(0x2C, 0x03);
@@ -352,8 +355,13 @@ static void frame(int sc)
             w(0x2C, (L / 20) & 1 ? 0x01 : 0x03);
         }
     }
-    if (sc == S_HIRES || sc == S_CHARS) {
-        int t[2] = { 60, 300 };
+    if (sc == S_HIRES || sc == S_CHARS || sc == S_HIRESMOS) {
+        int t[2] = { 40, 300 };
+        if (sc == S_HIRESMOS) {
+            nshvc_wait_until(at_beam, t);
+            w(0x06, 0x23);                 /* BG1, BG2 under mosaic, size 3 */
+        }
+        t[0] = 60;
         nshvc_wait_until(at_beam, t);
         w(0x05, 0x05);
         t[0] = 100;
@@ -372,8 +380,10 @@ static void frame(int sc)
             w(0x06, 0x31);
     }
     nshvc_wait_vblank();
-    if (sc == S_HIRES || sc == S_CHARS)
+    if (sc == S_HIRES || sc == S_CHARS || sc == S_HIRESMOS)
         w(0x33, 0x00);
+    if (sc == S_HIRESMOS)
+        w(0x06, 0x00);
     if (sc == S_MOSAIC)
         w(0x06, 0x00);
     if (sc == S_MODE7)

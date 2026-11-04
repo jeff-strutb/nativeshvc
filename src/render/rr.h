@@ -72,7 +72,7 @@ struct RrM7Samples;
    the PSP's a frame with a canvas and no Mode 7 line); 0 when it presents
    it as any frame, the picture at the console's resolution scaled
    (rr_compose, rr_image). what: the frame's (ppu.c ppu_frame_presents),
-   1 a Mode 7 line, 2 a canvas. */
+   1 a Mode 7 line, 2 a canvas, 4 a canvas on a pseudo-hires line. */
 int rr_mode7_window(int what);
 /* 1 when the backend presents a Mode 7 line at the console's resolution,
    scaled as any picture, in a frame presented at the target's (a canvas

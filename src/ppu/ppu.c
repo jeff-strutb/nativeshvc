@@ -2866,28 +2866,36 @@ static int pres_is_cv(const PpuFrame *f, const PpuScreen *st)
     return !ppu_line_hires(st) && !((st->mosaic & (1u << n)) && (st->mosaic >> 4));
 }
 
+/* a canvas on a pseudo-hires line: its layer the canvas at the console's
+   resolution (draw_bg: each pixel the texel under its centre), the line
+   presented as the picture is */
+static int pres_is_cv_low(const PpuFrame *f, const PpuScreen *st)
+{
+    unsigned mode = st->bgmode & 7;
+    int n = f->cv_layer;
+    if (!f->cv_on || (st->inidisp & 0x80) || mode == 7 || mode == 5 || mode == 6 || !(st->setini & 0x08) ||
+        !mode_bpp[mode][n] || !(((st->tm | st->ts) >> n) & 1))
+        return 0;
+    return !((st->mosaic & (1u << n)) && (st->mosaic >> 4));
+}
+
 int ppu_frame_presents(const PpuFrame *f)
 {
     int line, k, what = 0;
     for (line = 1; line <= f->height; line++) {
-        what |= pres_is_m7(&f->line[f->st[line]]) | pres_is_cv(f, &f->line[f->st[line]]) << 1;
-        for (k = 0; k < f->segs[line]; k++)
-            what |= pres_is_m7(&f->seg_line[line][k]) | pres_is_cv(f, &f->seg_line[line][k]) << 1;
+        const PpuScreen *st = &f->line[f->st[line]];
+        what |= pres_is_m7(st) | pres_is_cv(f, st) << 1 | pres_is_cv_low(f, st) << 2;
+        for (k = 0; k < f->segs[line]; k++) {
+            st = &f->seg_line[line][k];
+            what |= pres_is_m7(st) | pres_is_cv(f, st) << 1 | pres_is_cv_low(f, st) << 2;
+        }
     }
     return what;
 }
 
 int ppu_frame_mode7(const PpuFrame *f)
 {
-    int line, k;
-    for (line = 1; line <= f->height; line++) {
-        if (pres_is_m7(&f->line[f->st[line]]) || pres_is_cv(f, &f->line[f->st[line]]))
-            return 1;
-        for (k = 0; k < f->segs[line]; k++)
-            if (pres_is_m7(&f->seg_line[line][k]) || pres_is_cv(f, &f->seg_line[line][k]))
-                return 1;
-    }
-    return 0;
+    return ppu_frame_presents(f) != 0;
 }
 
 /* whether background n may show on a screen at column x (its enable bit

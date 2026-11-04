@@ -164,7 +164,8 @@ void ppu_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, int ow, 
    ppu_present is pic scaled, nothing more) */
 int ppu_frame_mode7(const PpuFrame *f);
 /* what the frame presents at the window's resolution: 1 a Mode 7 line, 2 a
-   line showing a canvas (both or-ed) */
+   line showing a canvas, 4 a pseudo-hires line showing the canvas at the
+   console's resolution (or-ed) */
 int ppu_frame_presents(const PpuFrame *f);
 
 /* ---- the console's side ---- */

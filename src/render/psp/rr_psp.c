@@ -133,101 +133,18 @@ void rr_begin(uint32_t argb)
 }
 
 /* ---- a picture, sharp bilinear ---- */
-static uint32_t *s_mid;                      /* the stage across: a row of the visible columns per picture row */
-static size_t s_mid_rows;
-static int *s_tx;                            /* each visible column's picture column, */
-static float *s_fx;                          /* and the weight of the next */
-static int s_cols_cap;
-
-static void mid_rows(int h)
-{
-    if ((size_t)h <= s_mid_rows)
-        return;
-    free(s_mid);
-    s_mid = (uint32_t *)memalign(64, (size_t)h * STRIDE * 4);
-    if (!s_mid)
-        nshvc_fatal("no memory for a picture of %d rows", h);
-    s_mid_rows = (size_t)h;
-}
-
 typedef struct {
     float u, v, x, y, z;
 } Vtx;
 
-/* output row y: the stage across's row r of n columns at x0 */
-static void row_sprite(int r, int x0, int n, int y)
-{
-    Vtx *v = (Vtx *)sceGuGetMemory(2 * sizeof(Vtx));
-    sceGuTexImage(0, STRIDE, 1, STRIDE, s_mid + (size_t)r * STRIDE);
-    sceGuTexFlush();
-    v[0].u = 0;
-    v[0].v = 0;
-    v[0].x = (float)x0;
-    v[0].y = (float)y;
-    v[0].z = 0;
-    v[1].u = (float)n;
-    v[1].v = 1;
-    v[1].x = (float)(x0 + n);
-    v[1].y = (float)(y + 1);
-    v[1].z = 0;
-    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
-}
-
+/* an app's image: the console draws none (its pictures are the GE's, drawn
+   from their descriptions), and the PSP scales one only as the GE draws
+   the picture */
 void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 {
-    int X0, X1, Y0, Y1, n, x, y, r;
-    float dx, dy;
-    if (!s_screen || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
-        return;
-    X0 = d[0] < 0 ? 0 : d[0];
-    X1 = d[2] > TW ? TW : d[2];
-    Y0 = d[1] < 0 ? 0 : d[1];
-    Y1 = d[3] > TH ? TH : d[3];
-    if (X1 <= X0 || Y1 <= Y0)
-        return;
-    n = X1 - X0;
-    dx = (float)w / (float)(d[2] - d[0]);
-    dy = (float)h / (float)(d[3] - d[1]);
-    if (n > s_cols_cap) {
-        free(s_tx);
-        free(s_fx);
-        s_tx = (int *)malloc((size_t)n * sizeof *s_tx);
-        s_fx = (float *)malloc((size_t)n * sizeof *s_fx);
-        if (!s_tx || !s_fx)
-            nshvc_fatal("no memory for a picture %d wide", n);
-        s_cols_cap = n;
-    }
-    for (x = 0; x < n; x++)
-        s_fx[x] = rr_sharp(((float)(X0 + x - d[0]) + 0.5f) * dx, dx, &s_tx[x]);
-    /* across: every picture row the output rows read (rr_texel's clamp) */
-    mid_rows(h);
-    for (r = 0; r < h; r++) {
-        uint32_t *o = s_mid + (size_t)r * STRIDE;
-        for (x = 0; x < n; x++) {
-            uint32_t a = rr_texel(argb, w, h, s_tx[x], r);
-            o[x] = abgr(s_fx[x] > 0 ? rr_mix(a, rr_texel(argb, w, h, s_tx[x] + 1, r), s_fx[x]) : a);
-        }
-    }
-    sceKernelDcacheWritebackRange(s_mid, (unsigned)((size_t)h * STRIDE * 4));
-    /* down: on the GE */
-    list_open();
-    for (y = Y0; y < Y1; y++) {
-        int ty, A, B;
-        float fy = rr_sharp(((float)(y - d[1]) + 0.5f) * dy, dy, &ty);
-        int r0 = ty < 0 ? 0 : ty >= h ? h - 1 : ty, r1 = ty + 1 < 0 ? 0 : ty + 1 >= h ? h - 1 : ty + 1;
-        sceGuEnable(GU_TEXTURE_2D);
-        sceGuDisable(GU_BLEND);
-        row_sprite(r0, X0, n, y);
-        if (fy > 0 && r1 != r0) {
-            A = (int)floorf(256.0f * fy + 0.5f);
-            A = A > 255 ? 255 : A;
-            B = 256 - A > 255 ? 255 : 256 - A;
-            sceGuEnable(GU_BLEND);
-            sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, (unsigned)A * 0x010101u, (unsigned)B * 0x010101u);
-            row_sprite(r1, X0, n, y);
-        }
-    }
-    sceGuDisable(GU_BLEND);
+    (void)argb;
+    (void)d;
+    nshvc_fatal("rr_image(%dx%d): the PSP draws no picture made on the CPU", w, h);
 }
 
 /* ---- a picture on the GE, scaled there ---- */
@@ -727,23 +644,12 @@ int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
    presents one */
 static int present_picture(int pw, int ph, const int d[4])
 {
-    static uint32_t *pic;
-    const uint16_t *v;
-    int x, y;
-    if (d[2] > d[0] && d[3] > d[1] && geometry(pw, ph, d)) {
-        list_open();
-        s_cur_off = (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr());
-        s_cur_w = STRIDE;
-        scale_ge(pw, ph, d);
-        return 1;
-    }
-    if (!pic && !(pic = (uint32_t *)malloc((size_t)512 * 240 * 4)))     /* (the widest picture's) */
-        nshvc_fatal("no memory for the picture");
-    v = rr_psp_picture_pixels();
-    for (y = 0; y < ph; y++)
-        for (x = 0; x < pw; x++)
-            pic[y * pw + x] = rr_psp_picture_argb(v[(size_t)y * rr_psp_picture_stride + (size_t)x]);
-    rr_image(pic, pw, ph, d);
+    if (!(d[2] > d[0] && d[3] > d[1]) || !geometry(pw, ph, d))
+        nshvc_fatal("a picture of %dx%d over (%d, %d)-(%d, %d): not on the PSP's screen", pw, ph, d[0], d[1], d[2], d[3]);
+    list_open();
+    s_cur_off = (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr());
+    s_cur_w = STRIDE;
+    scale_ge(pw, ph, d);
     return 1;
 }
 
@@ -763,7 +669,7 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
    line) at the screen's resolution (rr_mode7) */
 /* a canvas frame at the target's resolution, its Mode 7 lines at the
    console's (rr_mode7_plain); a frame of Mode 7 alone as any frame */
-int rr_mode7_window(int what) { return (what & 2) || !(what & 1); }
+int rr_mode7_window(int what) { return (what & 6) || !(what & 1); }
 int rr_mode7_plain(void) { return 1; }
 
 /* the PSP's screen: its picture's buffer (rr_psp_pic.c), 512 x 240 (a hires
@@ -813,26 +719,14 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
     return rr_psp_canvas(desc, words, d, (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr()), &a, m, s);
 }
 
-/* ---- on the CPU, over the frame the GE drew ---- */
-static uint32_t *s_cpu;                      /* the frame, 0xAARRGGBB, for the reference's drawing */
-
+/* a frame's records presented at the target's resolution: the PSP's are
+   its compositor's (rr_compose_mode7) */
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)
 {
-    uint32_t *fb;
-    int x, y;
-    if (!s_screen)
-        return;
-    if (!s_cpu && !(s_cpu = (uint32_t *)malloc((size_t)TW * TH * 4)))
-        nshvc_fatal("no memory for the frame");
-    list_done();
-    fb = uncached(s_fb);
-    for (y = 0; y < TH; y++)
-        for (x = 0; x < TW; x++)
-            s_cpu[y * TW + x] = abgr(fb[(size_t)y * STRIDE + (size_t)x]);
-    rr_ref_mode7(s_cpu, TW, TH, m, d, s);
-    for (y = 0; y < TH; y++)
-        for (x = 0; x < TW; x++)
-            fb[(size_t)y * STRIDE + (size_t)x] = abgr(s_cpu[y * TW + x]);
+    (void)m;
+    (void)d;
+    (void)s;
+    nshvc_fatal("rr_mode7: the PSP presents a frame's records from its compositor alone");
 }
 
 /* An overlay on the GE (rr_ref_overlay's): the image in a texture of

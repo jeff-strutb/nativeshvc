@@ -483,24 +483,23 @@ static void canvas_scale(int w, int h)
 
 static long cpu_frames;                      /* frames drawn from the CPU's picture or records (rr_image, rr_mode7) */
 
-/* The last frame's picture over target rectangle d: drawn by the
-   renderer's compositor from the frame's description where it has one
-   (render/compose_body.h; NSHVC_COMPOSE=0: never), else the PPU's picture
-   drawn here. An interlaced frame's weave is the PPU's. */
+/* The last frame's picture over target rectangle d, drawn by the
+   renderer's compositor from the frame's description (render/compose_body.h),
+   an interlaced frame's woven from its own and the one before's; a frame
+   never made (no VRAM taken: before the first) none, the target's black.
+   The picture is the GPU's: a renderer that cannot draw it is fatal. */
 static void show_picture(const int d[4])
 {
-    static int on = -1;
     const PpuFrame *f = ppu_frame();
-    const uint32_t *px;
-    int pw, ph;
-    if (on < 0)
-        on = !getenv("NSHVC_COMPOSE") || strcmp(getenv("NSHVC_COMPOSE"), "0");
-    if (on && f->versions > 0 && !f->interlace) {
+    if (f->versions == 0)
+        return;
+    if (!f->interlace) {
         size_t nw;
         const uint32_t *desc = ppu_compose(f, &nw);
-        if (rr_compose(desc, nw, ppu_frame_width(f), f->screen_height, d))
-            return;
-    } else if (on && f->versions > 0) {
+        if (!rr_compose(desc, nw, ppu_frame_width(f), f->screen_height, d))
+            nshvc_fatal("the renderer (%s) cannot draw the frame's picture", rr_name());
+        return;
+    } else {
         /* an interlaced frame: woven from its description and, for the
            rows that are the frame before's, that one's */
         static uint32_t *both, *kept;
@@ -559,9 +558,7 @@ static void show_picture(const int d[4])
             }
         }
     }
-    px = ppu_picture(&pw, &ph);
-    cpu_frames++;
-    rr_image(px, pw, ph, d);
+    nshvc_fatal("the renderer (%s) cannot draw the interlaced frame's woven picture", rr_name());
 }
 
 /* ---- a frame with Mode 7 or a canvas presented (render/rr_mode7.h) ---- */
@@ -620,17 +617,17 @@ static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
 
 /* The last frame, presenting Mode 7 or a canvas, drawn at ow x oh over d
    by the renderer's compositor (its picture and records the GPU's); 0
-   when it is not drawn so (no compositor, NSHVC_COMPOSE=0, an interlaced
-   weave, or no Mode 7 or canvas presented) */
+   when it is not drawn so (an interlaced weave, or no Mode 7 or canvas
+   presented: drawn as its picture); a renderer that cannot draw it is
+   fatal */
 static int show_mode7(int ow, int oh, const int d[4])
 {
     static RrMode7 m;
     static RrM7Samples smp;
     const PpuFrame *f = ppu_frame();
-    const char *e = getenv("NSHVC_COMPOSE");
     size_t nw;
     const uint32_t *desc;
-    if ((e && !strcmp(e, "0")) || ow <= 0 || oh <= 0 || f->versions == 0 || f->interlace || !ppu_frame_mode7(f))
+    if (ow <= 0 || oh <= 0 || f->versions == 0 || f->interlace || !ppu_frame_mode7(f))
         return 0;
     desc = ppu_compose_m7(f, &nw, &m);
     if (ow > m7_cols_cap) {
@@ -646,7 +643,9 @@ static int show_mode7(int ow, int oh, const int d[4])
     if (!m7_cols || !m7_rows)
         nshvc_fatal("no memory for the picture at %dx%d", ow, oh);
     rr_m7_tables(&m, ow, oh, &smp, m7_cols, m7_rows);
-    return rr_compose_mode7(desc, nw, &m, d, &smp);
+    if (!rr_compose_mode7(desc, nw, &m, d, &smp))
+        nshvc_fatal("the renderer (%s) cannot draw the frame's Mode 7 or canvas at the window's resolution", rr_name());
+    return 1;
 }
 
 /* a shot's picture (script.h): NSHVC_SCALE=S or SXxSY (headless), window
@@ -853,8 +852,6 @@ static void fps_frame(uint64_t shown, uint64_t ran, uint64_t presented, uint64_t
 static void show(void)
 {
     int tw, th, w, h, d[4];
-    RrMode7 m;
-    RrM7Samples smp;
     if (paused && backdrop_due && shown_tw) {
         /* read back before rr_target, which may size the target afresh */
         float pw, ph;
@@ -884,10 +881,6 @@ static void show(void)
         ;                                /* no backdrop could be made: black */
     else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(w, h, d))
         ;
-    else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && mode7_prepare(w, h, &m, &smp)) {
-        cpu_frames++;
-        rr_mode7(&m, d, &smp);
-    }
     else
         show_picture(d);
     draw_overlays(tw, th);
@@ -951,10 +944,8 @@ static void rr_check(void)
         gpu = show_mode7(tw, th, d);
         if (!mode7_prepare(tw, th, &m, &smp))
             nshvc_fatal("rrcheck: no record for the frame");
-        if (!gpu) {
-            cpu_frames++;
-            rr_mode7(&m, d, &smp);
-        }
+        if (!gpu)
+            nshvc_fatal("rrcheck: the frame's Mode 7 or canvas not drawn by the renderer");
         rr_ref_mode7(want, tw, th, &m, d, &smp);
         rr_m7_frames++;
     } else {
