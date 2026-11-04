@@ -25,6 +25,8 @@
  *   midline    plain's, and each frame, at lines 40-200 (each 20th) part way
  *              across, BG2's scroll and the main screen's layers (BG2 on,
  *              off) written: rows of parts
+ *   clipped    wide's with BG2 and the sprites kept to the console's picture
+ *              (nshvc_ext_layer_clip)
  *   wide       prevented's on a 338 x 224 screen (the console's picture at
  *              its centre), BG2 on VRAM page 1 with its own map outside the
  *              picture (128 x 64), sprites on, some on X pages 1 and -1
@@ -68,8 +70,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_CLIPPED, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "clipped", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -173,7 +175,9 @@ static void setup(int sc)
     int i;
     hdma(0);
     nshvc_ext_window_columns(1, -1, 0);
-    nshvc_ext_screen(sc == S_WIDE ? 338 : SC_W, SC_H);
+    nshvc_ext_screen(sc == S_WIDE || sc == S_CLIPPED ? 338 : SC_W, SC_H);
+    nshvc_ext_layer_clip(1, sc == S_CLIPPED);
+    nshvc_ext_layer_clip(4, sc == S_CLIPPED);
     nshvc_ext_layer_outside(1, NULL, 0);
     nshvc_ext_layer_page(1, 0);
     w(0x15, 0x80);
@@ -199,7 +203,7 @@ static void setup(int sc)
     w(0x0B, 0x40);
     for (i = 0x23; i <= 0x31; i++)
         w((unsigned)i, 0);
-    sprites(sc == S_WIDE);
+    sprites(sc == S_WIDE || sc == S_CLIPPED);
     w(0x32, 0xE0);
     w(0x33, 0);
     switch (sc) {
@@ -251,14 +255,15 @@ static void setup(int sc)
     case S_PREVENTED:
     case S_WINDOWS:
     case S_WIDE:
-        w(0x2C, sc == S_WIDE ? 0x13 : 0x03);
+    case S_CLIPPED:
+        w(0x2C, sc == S_WIDE || sc == S_CLIPPED ? 0x13 : 0x03);
         w(0x2E, 0x03);                 /* BG1, BG2 windowed on the main screen */
         w(0x23, 0x28);                 /* BG1 window 2, BG2 window 1 */
         w(0x30, 0x32);                 /* maths prevented everywhere, the sub screen's */
         w(0x31, 0x03);
         nshvc_ext_window_columns(1, 60, 190);
         hdma_prevented(sc != S_WINDOWS);
-        if (sc == S_WIDE) {
+        if (sc == S_WIDE || sc == S_CLIPPED) {
             for (i = 0; i < 128 * 64; i++)
                 outside[i] = (uint16_t)(rnd() & 0xE3FF);
             nshvc_ext_layer_outside(1, outside, 5);

@@ -689,6 +689,15 @@ static void sfunc(int ref)
    whole band, the mask made (hide_mask) */
 static int layer_spans(uint32_t si, int n, int r0, int r1, int x0, int x1, int out[][2])
 {
+    if ((cp_b(si, U_(CP_S_TSW), 3u) >> n) & 1u) {
+        /* kept to the console's picture (nshvc_ext_layer_clip; cp_clipped:
+           its columns, the rows drawn here its lines) */
+        int sl = (int)FD_(CP_SL);
+        x0 = x0 > sl ? x0 : sl;
+        x1 = x1 < sl + 256 ? x1 : sl + 256;
+        if (x1 <= x0)
+            return 0;
+    }
     if (!s_wv)
         return spans(si, n, x0, x1, shows, out);
     hide_mask(n, r0, r1, x0, x1);
@@ -1417,7 +1426,7 @@ static int drawable(void)
             tmts = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
             /* (hires with the screen interlaced: its rows twice as many) */
             /* (the windows' columns, map and edges: cp_win's, spans' own) */
-            if (((mode == 5u || mode == 6u) && (cp_b(si, U_(CP_S_NBA), 3u) & 0x01u)) || cp_b(si, U_(CP_S_TSW), 3u))
+            if ((mode == 5u || mode == 6u) && (cp_b(si, U_(CP_S_NBA), 3u) & 0x01u))
                 return 0;
             for (n = 0; n < 5u; n++) {
                 U32 key = cp_sw(si, U_(CP_S_VBASE)) + ((n < 4u ? cp_b(si, U_(CP_S_PAGE), n) : cp_b(si, U_(CP_S_PAGE4), 0u)) << 15);
