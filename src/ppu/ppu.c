@@ -1095,7 +1095,7 @@ void ppu_vblank_start(void)
                 uint32_t got = rr_cp_pixel((uint32_t)x, (uint32_t)y), want = check_pic[(size_t)y * (size_t)w + (size_t)x];
                 if (got != want && !bad && ppu_compose_bad < 3)
                     fprintf(stderr, "composecheck: frame %lu at (%d, %d): got %08x want %08x\n", frames_done, x, y,
-                            got, want);
+                            (unsigned)got, (unsigned)want);
                 bad += got != want;
             }
         if (ppu_frame_mode7(finished)) {
@@ -1130,7 +1130,8 @@ void ppu_vblank_start(void)
                     }
                     if (!same && !rbad && ppu_compose_bad < 3)
                         fprintf(stderr, "composecheck: frame %lu record (%d, %d): got %08x %08x %08x %08x want %08x %08x %08x %08x\n",
-                                frames_done, x, y, cp_r0, cp_r1, cp_r2, cp_r3, q->w0, q->w1, q->w2, q->w3);
+                                frames_done, x, y, (unsigned)cp_r0, (unsigned)cp_r1, (unsigned)cp_r2, (unsigned)cp_r3,
+                                (unsigned)q->w0, (unsigned)q->w1, (unsigned)q->w2, (unsigned)q->w3);
                     rbad += !same;
                 }
             /* the rows marked: every row ppu_mode7 marks, at least */
@@ -1166,7 +1167,7 @@ void ppu_vblank_start(void)
                         uint32_t want = pic[(size_t)y * (size_t)ww + (size_t)x];
                         if (got != want && !bad && ppu_compose_bad < 3)
                             fprintf(stderr, "composecheck: frame %lu woven (%d, %d): got %08x want %08x\n", frames_done,
-                                    x, y, got, want);
+                                    x, y, (unsigned)got, (unsigned)want);
                         bad += got != want;
                     }
                 cp_fdb = 0;
@@ -2160,6 +2161,11 @@ typedef struct {
 static CpObj cp_objs[128];
 static const uint8_t *cp_obj_oam;
 static unsigned cp_obj_key = ~0u;
+/* each row's Y page 0 sprites by the row's low byte (cp_row's test for
+   them is that byte's), in priority order, and the sprites with a page */
+static uint8_t cp_on_row[256][128];
+static uint8_t cp_on_row_n[256], cp_paged[128];
+static unsigned cp_paged_n;
 
 static void cp_decode(void)
 {
@@ -2188,6 +2194,20 @@ static void cp_decode(void)
             int tx = o->x + (int)c * 8;
             if (o->at256 || (tx > -8 && tx < PPU_WIDTH))
                 o->on++;
+        }
+    }
+    memset(cp_on_row_n, 0, sizeof cp_on_row_n);
+    cp_paged_n = 0;
+    for (i = 0; i < 128; i++) {
+        const CpObj *o = &cp_objs[i];
+        int d;
+        if (o->page) {
+            cp_paged[cp_paged_n++] = (uint8_t)i;
+            continue;
+        }
+        for (d = 0; d < o->h && d < 256; d++) {
+            unsigned q = (unsigned)(o->y + d) & 0xFF;
+            cp_on_row[q][cp_on_row_n[q]++] = (uint8_t)i;
         }
     }
 }
@@ -2225,10 +2245,24 @@ static uint32_t cp_sprites(uint32_t *n)
     cp_decode();
     /* the sprites on the row; the console's: the first 32 in range of its
        columns, then their tiles from the last, up to 34 */
-    for (i = 0; i < 128; i++) {
-        keep[i] = -1;
-        if (cp_row(&cp_objs[i], row, &rows[i]))
+    {
+        /* (cp_row's hits, in order: the row's page 0 sprites merged with
+           those with a page that cover it) */
+        unsigned a = 0, b = 0, na = 0, q = (unsigned)row & 0xFF;
+        if (row < 256 && (row >= 0 || ext_wrap))
+            na = cp_on_row_n[q];
+        while (a < na || b < cp_paged_n) {
+            if (b == cp_paged_n || (a < na && cp_on_row[q][a] < cp_paged[b])) {
+                i = cp_on_row[q][a++];
+                rows[i] = (unsigned)(row - cp_objs[i].y) & 0xFF;
+            } else {
+                i = cp_paged[b++];
+                if (!cp_row(&cp_objs[i], row, &rows[i]))
+                    continue;
+            }
+            keep[i] = -1;
             hit[nhit++] = (int)i;
+        }
     }
     for (k = 0; k < (unsigned)nhit; k++) {
         const CpObj *o = &cp_objs[hit[k]];
@@ -2327,9 +2361,11 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
         for (k = 0; k <= f->segs[line]; k++) {
             const uint16_t *p = k ? f->seg_palette[line][k - 1] : f->palette[line];
             if (!last_pal || memcmp(p, last_pal, 512)) {
+                /* two colours a word, the first the low half: in memory,
+                   the colours in order on a little-endian host (the
+                   canvas's below), so one copy */
                 cp_w = grow(cp_w, &cp_cap, n + 128, sizeof *cp_w);
-                for (i = 0; i < 128; i++)
-                    cp_w[n + i] = p[2 * i] | (uint32_t)p[2 * i + 1] << 16;
+                memcpy(cp_w + n, p, 512);
                 last_at = (uint32_t)n;
                 last_pal = p;
                 n += 128;
@@ -2339,9 +2375,10 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     /* the VRAM's copies */
     vr = n;
     cp_w = grow(cp_w, &cp_cap, n + (size_t)f->versions * vwords / 2 + 1, sizeof *cp_w);
-    for (v = 0; v < (size_t)f->versions; v++)
-        for (i = 0; i < vwords; i += 2)
-            cp_w[n++] = f->vram[v][i] | (uint32_t)f->vram[v][i + 1] << 16;
+    for (v = 0; v < (size_t)f->versions; v++) {
+        memcpy(cp_w + n, f->vram[v], vwords * 2);   /* (two words a word, as the palettes) */
+        n += vwords / 2;
+    }
     /* the canvas's texels */
     cv = n;
     if (f->cv_on) {

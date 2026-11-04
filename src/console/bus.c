@@ -27,9 +27,6 @@
 #include "snes_internal.h"
 #include "nshvc/cart.h"
 #include "coro.h"
-#ifndef _WIN32
-#include <dlfcn.h>
-#endif
 
 uint8_t rd8(uint32_t addr);
 void wr8(uint32_t addr, uint8_t value);
@@ -322,7 +319,7 @@ static void line_begin(void)
             apu_debug(a, sizeof a);
             fprintf(stderr, "frame %u: %s; irqs %u nmis %u nmitimen %02X vtime %u htime %u; last read %06X, "
                     "chip %s, APU in %02X %02X %02X %02X out %02X %02X %02X %02X\n",
-                    frames, a, dbg_irqs, dbg_nmis, nmitimen, vtime, htime, (unsigned)dbg_last_read,
+                    (unsigned)frames, a, dbg_irqs, dbg_nmis, nmitimen, vtime, htime, (unsigned)dbg_last_read,
                     chip && chip->busy ? (chip->busy() ? "running" : "idle") : "none",
                     apu_debug_port(0), apu_debug_port(1), apu_debug_port(2), apu_debug_port(3),
                     apu_port_read(0), apu_port_read(1), apu_port_read(2), apu_port_read(3));
@@ -1387,7 +1384,17 @@ uint8_t snes_cpu_read_within(uint32_t addr) { return access_rd(addr, 0); }
    where an interrupt comes due, and where the cartridge's chip raises its
    IRQ (the chip run ahead through the step, cart.h): the loop sees each
    at its clock. At each step's end the interrupt due is taken, its
-   handler run, before the wait looks again. 1 when one was. */
+   handler run, before the wait looks again. 1 when one was. A wait that
+   makes no reads of its own (WAI, a loop for ever, the vertical blank's
+   wait, whose count only an event changes) steps from one of those
+   points to the next (WAIT_FAR): its steps of a few cycles would come to
+   the same points, with nothing between them that could see where they
+   fell. */
+/* the step of a wait: a poll loop's turn is a few of the S-CPU's cycles;
+   a wait with no reads, to the next point that can end it */
+#define WAIT_STEP 64
+#define WAIT_FAR 0xFFFFFFFFu
+
 static void bound(uint32_t *n, uint64_t at)
 {
     if (at > snes_clock && at - snes_clock < *n)
@@ -1406,9 +1413,13 @@ static int wait_step(uint32_t most)
     /* the IRQ, masked or not: WAI goes on at it */
     if (timeup_flag)
         bound(&n, timeup_at);
-    /* HVBJOY's horizontal blank, 4 clocks before HBLANK_AT by the counters */
-    bound(&n, line_start + HBLANK_AT - 4);
-    bound(&n, joy_next);
+    /* HVBJOY's horizontal blank, 4 clocks before HBLANK_AT by the counters,
+       and the joypads' read: changes only reads see (none in a wait with
+       none) */
+    if (most != WAIT_FAR) {
+        bound(&n, line_start + HBLANK_AT - 4);
+        bound(&n, joy_next);
+    }
     /* the chip's IRQ, masked or not: a chip's flag changes with it */
     if (cart_irq)
         bound(&n, cart_irq_at);
@@ -1442,10 +1453,8 @@ static void wait_allowed(const char *what)
         snes_fatal("%s with interrupts held: the console's time does not pass in code run held", what);
 }
 
-/* the step of a wait: a poll loop's turn is a few of the S-CPU's cycles */
-#define WAIT_STEP 64
 
-uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx)
+static uint64_t wait_until(int (*ready)(void *ctx), void *ctx, uint32_t most)
 {
     uint64_t from = snes_clock;
     wait_allowed("nshvc_wait_until");
@@ -1459,18 +1468,20 @@ uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx)
            turn looks again at once, at what its handler did */
         if (interrupts_taken != taken)
             continue;
-        wait_step(WAIT_STEP);
+        wait_step(most);
     }
     spin_reads = 0;
     return snes_clock - from;
 }
+
+uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx) { return wait_until(ready, ctx, WAIT_STEP); }
 
 static int vblank_begun(void *ctx) { return vblanks != *(uint32_t *)ctx; }
 
 void nshvc_wait_vblank(void)
 {
     uint32_t v = vblanks;
-    nshvc_wait_until(vblank_begun, &v);
+    wait_until(vblank_begun, &v, WAIT_FAR);
 }
 
 /* WAI: until an interrupt is due (an NMI, or the IRQ line, masked or not),
@@ -1483,7 +1494,7 @@ void snes_wai(void)
             between();
             return;
         }
-        if (wait_step(WAIT_STEP))
+        if (wait_step(WAIT_FAR))
             return;
     }
 }
@@ -1493,7 +1504,7 @@ void snes_loop_forever(void)
 {
     wait_allowed("a loop for ever");
     for (;;)
-        wait_step(WAIT_STEP);
+        wait_step(WAIT_FAR);
 }
 
 static int timeup_seen(void) { return timeup_flag && timeup_at <= snes_clock; }

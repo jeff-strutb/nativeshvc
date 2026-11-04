@@ -3,6 +3,7 @@
  */
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "coro.h"
 #include "snes.h"
@@ -57,7 +58,15 @@ void coro_switch(Coro *from, Coro *to)
     s_current = from;
 }
 
+int coro_stack_ok(const Coro *c)
+{
+    (void)c;
+    return 1;
+}
+
 #else
+
+#define CANARY 0xA5
 
 struct Coro {
     void *sp;                  /* the saved stack pointer, while switched away */
@@ -91,6 +100,7 @@ Coro *coro_new(void (*fn)(void *), void *arg, size_t stack)
     c->stack = malloc(stack);
     if (!c->stack)
         snes_fatal("no coroutine stack");
+    memset(c->stack, CANARY, 64);              /* its lowest bytes: coro_stack_ok */
     top = ((uintptr_t)c->stack + stack) & ~(uintptr_t)15;
     sp = (void **)top;
 #if defined(__aarch64__)
@@ -115,6 +125,17 @@ Coro *coro_new(void (*fn)(void *), void *arg, size_t stack)
     *--sp = 0;                 /* r13 */
     *--sp = 0;                 /* r14 */
     *--sp = 0;                 /* r15 */
+#elif defined(__mips__)
+    /* coro_swap pops 24 words: s0-s7, s8, ra, $f20-$f31 and two unused;
+       s0 = the coroutine, ra = coro_start */
+    sp -= 24;
+    {
+        int i;
+        for (i = 0; i < 24; i++)
+            sp[i] = 0;
+    }
+    sp[0] = c;                 /* s0 */
+    sp[9] = (void *)coro_start; /* ra */
 #else
 #error "coroutines: no switch for this processor"
 #endif
@@ -123,6 +144,16 @@ Coro *coro_new(void (*fn)(void *), void *arg, size_t stack)
 }
 
 Coro *coro_current(void) { return s_current ? s_current : &s_self; }
+
+int coro_stack_ok(const Coro *c)
+{
+    const unsigned char *p = (const unsigned char *)c->stack;
+    int i;
+    for (i = 0; p && i < 64; i++)
+        if (p[i] != CANARY)
+            return 0;
+    return 1;
+}
 
 void coro_switch(Coro *from, Coro *to)
 {

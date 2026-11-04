@@ -459,6 +459,9 @@ static int m7_cols_cap, m7_rows_cap;
 /* the last frame's record and where it samples drawn at ow x oh; 0 when it
    is drawn as its picture scaled (no Mode 7 or canvas in it, or an
    interlaced weave) */
+/* (rr.h: a backend that presents Mode 7 as any frame says so) */
+__attribute__((weak)) int rr_mode7_window(void) { return 1; }
+
 static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
 {
     const PpuFrame *f = ppu_frame();
@@ -727,9 +730,9 @@ static void show(void)
         rr_overlay(backdrop, backdrop_w, backdrop_h, q);
     } else if (paused)
         ;                                /* no backdrop could be made: black */
-    else if (show_mode7(w, h, d))
+    else if (rr_mode7_window() && show_mode7(w, h, d))
         ;
-    else if (mode7_prepare(w, h, &m, &smp))
+    else if (rr_mode7_window() && mode7_prepare(w, h, &m, &smp))
         rr_mode7(&m, d, &smp);
     else
         show_picture(d);
@@ -743,7 +746,8 @@ static void show(void)
    renderer one to one and scaled to the target with sharp bilinear, read
    back, against the PPU's picture drawn the same way on the CPU (rr_size.h
    rr_ref_image); a frame with Mode 7 or a canvas presented by its record (rr_mode7)
-   against rr_ref_mode7; at exit, the frames and pixels
+   against rr_ref_mode7 (as any frame where the renderer presents it so:
+   rr_mode7_window); at exit, the frames and pixels
    that differ by more than 1 in a channel (a GPU's filtering rounds) */
 static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames;
 
@@ -785,7 +789,7 @@ static void rr_check(void)
     rr_begin(0xFF000000u);
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
-    if (ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
+    if (rr_mode7_window() && ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
         int gpu;
         recorded = 1;
         /* the compositor's records where the renderer has one (drawn
@@ -817,7 +821,7 @@ static void rr_check(void)
                pixels with the record of the picture pixel under each */
             if (rr_first < 0 && bad < 8 && getenv("NSHVC_RRCHECK_WHY")) {
                 int X = i % tw, Y = i / tw;
-                fprintf(stderr, "rrcheck: frame %ld at (%d, %d): got %08x want %08x", frame_no, X, Y, got[i], want[i]);
+                fprintf(stderr, "rrcheck: frame %ld at (%d, %d): got %08x want %08x", frame_no, X, Y, (unsigned)got[i], (unsigned)want[i]);
                 if (recorded) {
                     int tx = smp.cols[3 * X], ty = smp.rows[4 * Y], u = smp.cols[3 * X + 2], v = smp.rows[4 * Y + 3];
                     float fx, fy;
@@ -830,11 +834,12 @@ static void rr_check(void)
                             int ii = tx + dx < 0 ? 0 : tx + dx >= m.pw ? m.pw - 1 : tx + dx;
                             int rr = ty + dy < 0 ? 0 : ty + dy >= m.ph ? m.ph - 1 : ty + dy;
                             const RrM7Px *q = &m.px[(size_t)rr * (size_t)m.pw + (size_t)ii];
-                            fprintf(stderr, "\n  (%d, %d): %08x %08x %08x %08x", ii, rr, q->w0, q->w1, q->w2, q->w3);
+                            fprintf(stderr, "\n  (%d, %d): %08x %08x %08x %08x", ii, rr, (unsigned)q->w0, (unsigned)q->w1, (unsigned)q->w2,
+                                    (unsigned)q->w3);
                             if (!(q->w2 & (RR_M7_NOT | RR_M7_BLACK))) {
                                 const RrM7Seg *g = &m.seg[q->w2 >> 16];
-                                fprintf(stderr, " seg %u: %d %d %d %d %08x %08x %d %08x", q->w2 >> 16, g->s[0], g->s[1], g->s[2],
-                                        g->s[3], (unsigned)g->s[4], (unsigned)g->s[5], g->s[6], (unsigned)g->s[7]);
+                                fprintf(stderr, " seg %u: %d %d %d %d %08x %08x %d %08x", (unsigned)(q->w2 >> 16), (int)g->s[0], (int)g->s[1],
+                                        (int)g->s[2], (int)g->s[3], (unsigned)g->s[4], (unsigned)g->s[5], (int)g->s[6], (unsigned)g->s[7]);
                             }
                         }
                 }
