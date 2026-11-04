@@ -112,6 +112,7 @@ static const PpuFrame *d_frame;
 static struct {
     int on, layer, k;
     int screen, w, h, prio, pal;      /* a screen canvas (nshvc_ext_canvas_screen) */
+    int fx, fy;                       /* over the whole screen (k 0): w, h (else 0) */
     int rgb;                          /* its texels 32 bits each (nshvc_ext_canvas_screen32) */
     unsigned addr, count;
     uint8_t *data;
@@ -808,6 +809,7 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     cv_now.on = 1;
     cv_now.screen = 0;
     cv_now.rgb = 0;
+    cv_now.fx = cv_now.fy = 0;
     cv_now.layer = layer;
     cv_now.addr = word_addr;
     cv_now.count = (unsigned)count;
@@ -830,10 +832,11 @@ static void canvas_screen(const char *name, int layer, const void *texels, size_
         cv_now.gen++;
         return;
     }
-    if (layer < 0 || layer > 3 || w < 1 || h < 1 || k < 1 || k > 64 || priority < 0 || priority > 1 || palette < 0 ||
-        palette > 7)
+    if (layer < 0 || layer > 3 || w < 1 || h < 1 || k < 0 || k > 64 || (k == 0 && (w > 65535 || h > 65535)) ||
+        priority < 0 || priority > 1 || palette < 0 || palette > 7)
         snes_fatal("%s(%d, texels, %d, %d, k %d, priority %d, palette %d): layers 0-3 (BG1-4), "
-                   "a size of at least 1 x 1, k 1 to 64, priority 0 or 1, palette 0-7",
+                   "a size of at least 1 x 1, k 1 to 64 (or 0: the texels over the whole screen, "
+                   "up to 65,535 x 65,535), priority 0 or 1, palette 0-7",
                    name, layer, w, h, k, priority, palette);
     len = (size_t)w * (size_t)h * size;
     if (len > cv_now.cap) {
@@ -850,7 +853,9 @@ static void canvas_screen(const char *name, int layer, const void *texels, size_
     cv_now.layer = layer;
     cv_now.addr = 0;
     cv_now.count = 0;
-    cv_now.k = k;
+    cv_now.k = k ? k : 1;
+    cv_now.fx = k ? 0 : w;
+    cv_now.fy = k ? 0 : h;
     cv_now.w = w;
     cv_now.h = h;
     cv_now.prio = priority;
@@ -894,6 +899,8 @@ static void cv_take(void)
     making->cv_screen = cv_now.screen;
     making->cv_w = cv_now.w;
     making->cv_h = cv_now.h;
+    making->cv_fx = cv_now.fx;
+    making->cv_fy = cv_now.fy;
     making->cv_prio = cv_now.prio;
     making->cv_pal = cv_now.pal;
     making->cv_rgb = cv_now.rgb;
@@ -1347,6 +1354,11 @@ static void draw_bg(int n, unsigned line, unsigned mode)
         for (x = 0; x < count; x++) {
             long tx = (long)x * k + k / 2, ty = (long)R * k + k / 2;
             uint32_t t = 0;
+            if (f->cv_fx && R >= 0) {
+                /* (over the whole screen: the texel under the pixel's centre) */
+                tx = (long)rr_cv_fit(x, 512u, (uint32_t)f->cv_fx, (uint32_t)f->width);
+                ty = (long)rr_cv_fit((uint32_t)R, 512u, (uint32_t)f->cv_fy, (uint32_t)f->screen_height);
+            }
             if (R >= 0 && tx < f->cv_w && ty < f->cv_h) {
                 size_t at = (size_t)ty * (size_t)f->cv_w + (size_t)tx;
                 if (f->cv_rgb)
@@ -2503,6 +2515,8 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
                             1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 | (uint32_t)f->cv_rgb << 5 : 0u;
     cp_w[CP_CVW] = (uint32_t)f->cv_w;
     cp_w[CP_CVH] = (uint32_t)f->cv_h;
+    cp_w[CP_CVFX] = f->cv_on && f->cv_screen ? (uint32_t)f->cv_fx : 0u;
+    cp_w[CP_CVFY] = f->cv_on && f->cv_screen ? (uint32_t)f->cv_fy : 0u;
     cp_w[CP_TOP] = (uint32_t)f->top;
     cp_w[CP_VCOPY] = (uint32_t)vwords;
     for (v = 0; v < PPU_VERSIONS; v++) {
@@ -3054,6 +3068,8 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
     m->cv_w = f->cv_on && f->cv_screen ? f->cv_w : 0;
     m->cv_h = f->cv_on && f->cv_screen ? f->cv_h : 0;
     m->cv_rgb = f->cv_on && f->cv_screen && f->cv_rgb;
+    m->cv_fx = f->cv_on && f->cv_screen ? f->cv_fx : 0;
+    m->cv_fy = f->cv_on && f->cv_screen ? f->cv_fy : 0;
     mosaic_y = keep_my;
     range_over = ro;
     time_over = to;
@@ -3118,6 +3134,8 @@ static void mode7_segs(const PpuFrame *f, RrMode7 *m, uint32_t *seg_of)
     m->cv_w = f->cv_on && f->cv_screen ? f->cv_w : 0;
     m->cv_h = f->cv_on && f->cv_screen ? f->cv_h : 0;
     m->cv_rgb = f->cv_on && f->cv_screen && f->cv_rgb;
+    m->cv_fx = f->cv_on && f->cv_screen ? f->cv_fx : 0;
+    m->cv_fy = f->cv_on && f->cv_screen ? f->cv_fy : 0;
     s = &cur;
     d_vram = vram;
     d_cgram = cgram;

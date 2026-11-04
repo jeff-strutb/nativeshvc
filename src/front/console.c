@@ -63,6 +63,41 @@ void nshvc_ext_layer_outside(int layer, const uint16_t *map, int size) { ppu_ext
 void nshvc_ext_vram_copy(int to_page, int from_page) { ppu_ext_vram_copy(to_page, from_page); }
 void nshvc_ext_vram_direct(int page) { ppu_ext_vram_direct(page); }
 int nshvc_ext_canvas_scale(void) { return ppu_canvas_scale(); }
+/* the window's pixels the console's screen was last presented over
+   (nshvc_ext_canvas_presented; 0: not yet) */
+static int presented_w, presented_h;
+
+static void shot_scale(double *x, double *y);
+void nshvc_ext_canvas_presented(int *w, int *h)
+{
+    const PpuFrame *f = ppu_frame();
+    double sx, sy;
+    int pw = presented_w, ph = presented_h;
+    if (!pw) {
+        /* none yet: headless, NSHVC_SCALE's window; else the screen's own */
+        shot_scale(&sx, &sy);
+        pw = sx ? (int)(f->width * sx + 0.5) : f->width;
+        ph = sy ? (int)(f->screen_height * sy + 0.5) : f->screen_height;
+    }
+    if (w)
+        *w = pw < 1 ? 1 : pw;
+    if (h)
+        *h = ph < 1 ? 1 : ph;
+}
+/* the host's VRAM free while the game runs (host_psp.c); none elsewhere */
+__attribute__((weak)) void *host_ge_vram(size_t *bytes)
+{
+    *bytes = 0;
+    return NULL;
+}
+void *nshvc_ext_ge_vram(size_t *bytes)
+{
+    size_t n = 0;
+    void *p = host_ge_vram(&n);
+    if (bytes)
+        *bytes = p ? n : 0;
+    return p;
+}
 void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
 {
     ppu_ext_canvas_chars(layer, word_addr, count, texels, k);
@@ -390,6 +425,8 @@ static void sound_drain(void)
 static void canvas_scale(int w, int h)
 {
     const PpuFrame *f = ppu_frame();
+    presented_w = w;
+    presented_h = h;
     int kx = (w + f->width - 1) / f->width, ky = (h + f->screen_height - 1) / f->screen_height;
     ppu_set_canvas_scale(kx > ky ? kx : ky);
 }

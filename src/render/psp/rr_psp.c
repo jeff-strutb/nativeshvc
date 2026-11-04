@@ -91,6 +91,7 @@ static void list_open(void)
 {
     if (s_listing)
         return;
+    s_screen->ge_back();
     sceGuStart(GU_DIRECT, s_list);
     sceGuDrawBuffer(GU_PSM_8888, (void *)((char *)s_fb - (char *)sceGeEdramGetAddr()), STRIDE);
     sceGuOffset(2048 - TW / 2, 2048 - TH / 2);

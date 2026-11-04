@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 14
+#define NSHVC_VERSION_MINOR 15
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -497,8 +497,20 @@ void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint
    window pixel takes the texel under it, as nshvc_ext_canvas_chars's.
    Modes 0-6, not on a hires line or under the layer's mosaic (there the
    layer is its tiles). One canvas at a time: this one or
-   nshvc_ext_canvas_chars's, the last asked for. NULL: off. (Since 2.8.) */
+   nshvc_ext_canvas_chars's, the last asked for. NULL: off. (Since 2.8.)
+   k 0: the w x h texels (each up to 65,535) over the whole screen, at no
+   whole scale: a point x console pixels across the W-pixel screen (y down
+   its H) takes texel floor(x w / W) (floor(y h / H) down), so a console
+   pixel's centre takes floor((2c + 1) w / 2W), and a canvas the size
+   nshvc_ext_canvas_presented gives is presented a texel a window pixel.
+   (Since 2.15.)
+   nshvc_ext_canvas_presented: the window pixels the console's screen was
+   last presented over, across and down (*w, *h; either may be NULL), the
+   size of a canvas at k 0 drawn a texel a window pixel; before the first
+   frame shown, headless NSHVC_SCALE's window, else the screen's own size.
+   (Since 2.15.) */
 void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
+void nshvc_ext_canvas_presented(int *w, int *h);
 /* A screen canvas of full colour: nshvc_ext_canvas_screen's in every way
    (the layer, size, k, priority, palette, one canvas at a time, the frame
    taking it as it stands when the frame begins, copied here) but that
@@ -514,8 +526,18 @@ void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int
    maths nor brightness takes the pixel; colour maths' adding and
    subtracting keeps them to 1/8 of a console step (249 levels); halving
    and a brightness below 15 come to the console's 5 bits (docs/contract.md
-   2.14). (Since 2.14.) */
+   2.14). (Since 2.14; k 0, the texels over the whole screen, since 2.15.) */
 void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
+/* The GPU's memory the game's own GPU drawing may use (an Enhanced mode's
+   picture drawn by the game with the platform's graphics library, its
+   texels then handed to a canvas): its address on the GPU's bus, *bytes
+   of it (bytes may be NULL), lent from the call until the game's run of
+   the frame returns, its contents not kept; the game's work on it done
+   (its lists finished and synced) by then, and the graphics library's
+   own state left as found. NULL (and 0) on a platform with none to lend.
+   On the PSP: VRAM, 557,056 bytes (8 KB aligned), the screen's buffer
+   neither shown nor waiting to be. (Since 2.15.) */
+void *nshvc_ext_ge_vram(size_t *bytes);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
    BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the

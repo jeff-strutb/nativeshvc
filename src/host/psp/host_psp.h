@@ -14,6 +14,9 @@ typedef struct HostPspScreen {
     void (*show)(void);
     /* the buffer last shown */
     void *(*shown)(void);
+    /* the GE's state as the renderer left it, where the game drew on it
+       itself (host_ge_vram: put back at the renderer's next frame) */
+    void (*ge_back)(void);
 } HostPspScreen;
 
 #endif

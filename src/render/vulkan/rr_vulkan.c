@@ -900,7 +900,7 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     int ow = d[2] - d[0], oh = d[3] - d[1], k;
     size_t np = (size_t)m->pw * (size_t)m->ph;
-    int32_t pcv[22], uv[56];
+    int32_t pcv[24], uv[56];
     long off[9], qo;
     float c[4][4] = { { (float)d[0], (float)d[1], 0, 0 }, { (float)d[2], (float)d[1], 1, 0 },
                       { (float)d[0], (float)d[3], 0, 1 }, { (float)d[2], (float)d[3], 1, 1 } };
@@ -1014,6 +1014,8 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     pcv[19] = m->cv_w;
     pcv[20] = m->cv_h;
     pcv[21] = m->cv_rgb;
+    pcv[22] = m->cv_fx;
+    pcv[23] = m->cv_fy;
     pass_begin();
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_m7);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_m7playout, 0, 1, &s_m7set, 0, NULL);

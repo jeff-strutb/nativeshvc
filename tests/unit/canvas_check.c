@@ -11,7 +11,9 @@
  * a layer on page 1 at the top and page 2 below, one canvas across both
  * pages; a screen canvas, nshvc_ext_canvas_screen, contract 2.8, on a
  * 320 x 240 screen with the console's picture off its centre, alone and
- * under windows and maths). For each scene's frame, at one to one, scales up, of
+ * under windows and maths; and at no whole scale, k 0, contract 2.15: its
+ * texels over the whole screen, and of the size it is presented at, each
+ * window pixel there its own texel). For each scene's frame, at one to one, scales up, of
  * another shape, down and a large window:
  *
  *   ref      the canvas layer alone on the main screen: each output pixel
@@ -44,7 +46,7 @@
 #include "rr_size.h"
 #include "rr_mode7.h"
 
-#define NSCENES 12
+#define NSCENES 14
 static int fails;
 static long compared;
 static int front;                      /* through the front end: the canvas at the window's scale */
@@ -57,7 +59,7 @@ static int front;                      /* through the front end: the canvas at t
    page; 2: the layer on page 1 to line 112 and page 2 below, one canvas
    in VRAM's whole space across both) */
 static const struct {
-    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages, screen;
+    int mode, layer, bpp, big, hofs, vofs, k, alone, flat, shows, pages, screen, fit;
 } scene[NSCENES] = {
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1 },     /* 0: BG1 8 bpp, flips, tiles past the canvas */
     { 1, 0, 4, 1, 300, 501, 2, 1, 0, 1 },   /* 1: BG1 4 bpp, 16 x 16, palettes */
@@ -71,7 +73,16 @@ static const struct {
     { 3, 0, 8, 0, 37, 11, 3, 1, 0, 1, 2 },  /* 9: BG1 on pages 1 and 2, one canvas across them */
     { 1, 0, 4, 0, 0, 0, 3, 1, 0, 1, 0, 1 }, /* 10: a screen canvas, BG1 4 bpp, palette 5, priority 1 */
     { 1, 0, 4, 0, 0, 0, 3, 0, 1, 1, 0, 1 }, /* 11: the same under windows and maths: flat */
+    { 1, 0, 4, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1 }, /* 12: a screen canvas over the whole screen, k 0, FIT_W x FIT_H */
+    { 1, 0, 4, 0, 0, 0, 0, 1, 0, 1, 0, 1, 2 }, /* 13: the same, ONE_W x ONE_H: presented a texel a window pixel */
 };
+/* a k 0 canvas's texels: at no whole scale of the screen's 320 x 240
+   (1.216 x 1.154), and the size presented over ONE_W x ONE_H (as a
+   480 x 272 window shows a 4:3 picture, near enough) */
+#define FIT_W 389
+#define FIT_H 277
+#define ONE_W 466
+#define ONE_H 272
 /* a screen canvas's screen, where the console's picture sits on it, the
    texels' width short of the screen's (none past them), its palette and
    priority */
@@ -117,6 +128,15 @@ static void make_canvas(int sc, int k)
     if (scene[sc].screen) {
         sc_w = (SC_W - SC_SHORT) * k;
         sc_h = SC_H * k;
+        if (scene[sc].fit) {
+            /* k 0: over the whole screen; through the front end, the size
+               it is presented at */
+            sc_w = scene[sc].fit == 1 ? FIT_W : ONE_W;
+            sc_h = scene[sc].fit == 1 ? FIT_H : ONE_H;
+            if (front && scene[sc].fit == 2)
+                nshvc_ext_canvas_presented(&sc_w, &sc_h);
+            k = 0;
+        }
         free(texels);
         texels = malloc((size_t)sc_w * (size_t)sc_h);
         for (y = 0; y < sc_h; y++)
@@ -135,7 +155,7 @@ static void make_canvas(int sc, int k)
         scene_k = k;
         nshvc_ext_canvas_screen(scene[sc].layer, texels, sc_w, sc_h, k, SC_PRIO, SC_PAL);
         if (front)
-            fprintf(stderr, "canvas_check: scene %d's canvas at k %d\n", sc, k);
+            fprintf(stderr, "canvas_check: scene %d's canvas at k %d (%d x %d)\n", sc, k, sc_w, sc_h);
         return;
     }
     free(texels);
@@ -269,8 +289,14 @@ static void game(void)
         wr8(0x7E0100, (uint8_t)(sc + 1));
         nshvc_wait_vblank();           /* the scene's whole frame */
         wr8(0x7E0100, 0);
-        /* at the window's scale, a canvas made again when it changed */
-        while (front && sc != 7 && scene_k != nshvc_ext_canvas_scale()) {
+        /* at the window's scale, a canvas made again when it changed (k 0
+           of the presented size: when that did) */
+        for (;;) {
+            int pw, ph;
+            nshvc_ext_canvas_presented(&pw, &ph);
+            if (!front || sc == 7 || (scene[sc].fit ? scene[sc].fit == 1 || (pw == sc_w && ph == sc_h)
+                                                    : scene_k == nshvc_ext_canvas_scale()))
+                break;
             make_canvas(sc, nshvc_ext_canvas_scale());
             nshvc_wait_vblank();
             nshvc_wait_vblank();
@@ -343,13 +369,23 @@ static uint32_t ref_colour(const PpuFrame *f, int sc, int h, int r, int sx, int 
 
 /* a screen canvas's colour at the screen's pixel (h, r), its texel (sx,
    sy) of the pixel's k x k: by the screen's pixel, none past the texels */
+static uint32_t ref_texel(const PpuFrame *f, int r, long ex, long ey)
+{
+    int line = r - f->top + 1;
+    const uint16_t *cg = f->palette[line < 1 ? 1 : line > f->height ? f->height : line];
+    unsigned t = ex >= 0 && ey >= 0 && ex < sc_w && ey < sc_h ? texels[(size_t)ey * (size_t)sc_w + (size_t)ex] & 15u : 0u;
+    return t ? rgb(cg[SC_PAL * 16 + t]) : rgb(cg[0]);
+}
 static uint32_t ref_screen(const PpuFrame *f, int h, int r, int sx, int sy)
 {
-    int k = f->cv_k, line = r - f->top + 1;
-    const uint16_t *cg = f->palette[line < 1 ? 1 : line > f->height ? f->height : line];
-    long ex = (long)h * k + sx, ey = (long)r * k + sy;
-    unsigned t = ex < sc_w && ey < sc_h ? texels[(size_t)ey * (size_t)sc_w + (size_t)ex] & 15u : 0u;
-    return t ? rgb(cg[SC_PAL * 16 + t]) : rgb(cg[0]);
+    int k = f->cv_k;
+    return ref_texel(f, r, (long)h * k + sx, (long)r * k + sy);
+}
+/* a k 0 canvas's colour at screen pixel (h, r)'s centre: texel
+   floor((2h + 1) w / 2W) across, likewise down */
+static uint32_t ref_fit_centre(const PpuFrame *f, int h, int r)
+{
+    return ref_texel(f, r, (long)((2L * h + 1) * sc_w / (2L * SC_W)), (long)((2L * r + 1) * sc_h / (2L * SC_H)));
 }
 
 static void report(const char *what, int sc, long bad, long n)
@@ -373,14 +409,14 @@ static int near_edge(double t)
    pixels), its centre's texel well inside one of the pixel's k x k */
 static void ref_check(const PpuFrame *f, int sc, const uint32_t *got, int ow, int oh, double scx, double scy)
 {
-    int X, Y, k = f->cv_k, pw = scene[sc].screen ? SC_W : 256, ph = scene[sc].screen ? SC_H : 224;
+    int X, Y, k = scene[sc].fit ? 1 : f->cv_k, pw = scene[sc].screen ? SC_W : 256, ph = scene[sc].screen ? SC_H : 224;
     long bad = 0, n = 0;
     char what[64];
     for (Y = 0; Y < oh; Y++) {
         double y0 = (double)Y * ph / oh, y1 = (double)(Y + 1) * ph / oh, v = (Y + 0.5) * ph / oh;
         int r = (int)floor(v), sy;
         double fy = v - r;
-        if (floor(y0) != ceil(y1) - 1 || near_edge(fy * k))
+        if (floor(y0) != ceil(y1) - 1 || near_edge(fy * k) || (scene[sc].fit && near_edge(v * sc_h / ph)))
             continue;
         sy = (int)floor(fy * k);
         for (X = 0; X < ow; X++) {
@@ -388,11 +424,15 @@ static void ref_check(const PpuFrame *f, int sc, const uint32_t *got, int ow, in
             uint32_t want;
             int h = (int)floor(u), sx;
             double fx = u - h;
-            if (floor(x0) != ceil(x1) - 1 || near_edge(fx * k))
+            if (floor(x0) != ceil(x1) - 1 || near_edge(fx * k) || (scene[sc].fit && near_edge(u * sc_w / pw)))
                 continue;
             sx = (int)floor(fx * k);
             n++;
-            want = scene[sc].screen ? ref_screen(f, h, r, sx, sy) : ref_colour(f, sc, h, r, sx, sy);
+            if (scene[sc].fit)
+                /* k 0: the texel under the centre's place on the screen */
+                want = ref_texel(f, r, (long)floor(u * sc_w / pw), (long)floor(v * sc_h / ph));
+            else
+                want = scene[sc].screen ? ref_screen(f, h, r, sx, sy) : ref_colour(f, sc, h, r, sx, sy);
             if (got[(size_t)Y * (size_t)ow + (size_t)X] != want) {
                 if (!bad)
                     printf("  first at (%d, %d): got %08x want %08x\n", X, Y, got[(size_t)Y * (size_t)ow + (size_t)X], want);
@@ -429,8 +469,37 @@ static void check_scene(int sc)
         for (r = 0; r < ph; r++)
             for (h = 0; h < pw; h++)
                 bad += pic[(size_t)r * (size_t)pw + (size_t)h] !=
-                       (scene[sc].screen ? ref_screen(f, h, r, k / 2, k / 2) : ref_colour(f, sc, h, r, k / 2, k / 2));
+                       (scene[sc].fit ? ref_fit_centre(f, h, r)
+                        : scene[sc].screen ? ref_screen(f, h, r, k / 2, k / 2) : ref_colour(f, sc, h, r, k / 2, k / 2));
         report("centre: the picture's texels", sc, bad, (long)pw * ph);
+    }
+    if (scene[sc].fit) {
+        /* the frame's own record of it: k 0, over the whole screen */
+        int ok = f->cv_on && f->cv_screen && f->cv_fx == sc_w && f->cv_fy == sc_h && f->cv_w == sc_w && f->cv_h == sc_h;
+        printf("%s scene %d k 0: the frame's canvas %d x %d texels over the screen\n", ok ? "ok  " : "FAIL", sc, f->cv_fx,
+               f->cv_fy);
+        fails += !ok;
+    }
+    if (scene[sc].fit == 2) {
+        /* presented over ONE_W x ONE_H: every window pixel its own texel,
+           those across two console pixels too (both take the same) */
+        uint32_t *o = malloc((size_t)ONE_W * ONE_H * 4);
+        long bad = 0;
+        int X, Y;
+        ppu_present(f, pic, o, ONE_W, ONE_H);
+        for (Y = 0; Y < ONE_H; Y++)
+            for (X = 0; X < ONE_W; X++) {
+                /* (the screen row the pixel's centre is in: its line's palette) */
+                int r = (int)(((2L * Y + 1) * SC_H) / (2L * ONE_H));
+                uint32_t want = ref_texel(f, r, X, Y);
+                if (o[(size_t)Y * ONE_W + (size_t)X] != want) {
+                    if (!bad)
+                        printf("  first at (%d, %d): got %08x want %08x\n", X, Y, o[(size_t)Y * ONE_W + (size_t)X], want);
+                    bad++;
+                }
+            }
+        report("a texel a window pixel, every pixel", sc, bad, (long)ONE_W * ONE_H);
+        free(o);
     }
     for (si = 0; si < 5; si++) {
         int ow = (int)(pw * size[si][0] + 0.5), oh = (int)(ph * size[si][1] + 0.5), d[4] = { 0, 0, ow, oh };

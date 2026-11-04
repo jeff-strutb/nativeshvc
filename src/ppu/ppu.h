@@ -92,6 +92,10 @@ typedef struct {
        (nshvc_ext_canvas_screen32: 0 transparent, 0x000000ii an index, a
        top byte not 0 the colour 0xrrggbb), cv_len bytes of them */
     int cv_screen, cv_w, cv_h, cv_prio, cv_pal, cv_rgb;
+    /* a screen canvas over the whole screen (k 0): its texels across and
+       down, cv_w and cv_h (each texel by where a point falls on the
+       screen: rr_cv_fit); 0 for one of k texels a console pixel */
+    int cv_fx, cv_fy;
     unsigned cv_addr, cv_count;
     size_t cv_len;
     const uint8_t *cv;

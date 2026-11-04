@@ -124,6 +124,7 @@ typedef struct RrMode7 {
     size_t cv_len;
     int cv_k;
     int cv_w, cv_h;           /* a screen canvas's texels across and down (0: a canvas of characters) */
+    int cv_fx, cv_fy;         /* a screen canvas over the whole screen (k 0): cv_w, cv_h (else 0) */
     int cv_rgb;               /* its texels 32 bits each (nshvc_ext_canvas_screen32; cv_len bytes) */
 } RrMode7;
 
@@ -452,6 +453,16 @@ static inline uint32_t rr_cv_compose(const RrMode7 *m, const RrM7Px *p, const Rr
     return rr_m7_finish(mc, ml, sc, sl, flags, adsub, wsel, fixed, bright);
 }
 
+/* A screen canvas over the whole screen (k 0), fx texels across n pixels
+   of it (or down): the texel under the point f / 1024 into pixel c (f
+   0-1023; a pixel's centre 512), floor((1024 c + f) fx / 1024 n), in 32
+   bits for c < n <= 16384 and fx < 65536 (c fx = q n + e). */
+static inline uint32_t rr_cv_fit(uint32_t c, uint32_t f, uint32_t fx, uint32_t n)
+{
+    uint32_t a = c * fx, q = a / n, e = a - q * n;
+    return q + (1024u * e + f * fx) / (1024u * n);
+}
+
 /* Canvas pixel (i, r) over the output pixel whose centre is at screen
    column u and picture row v (1/1024ths, rr_m7_tables): the canvas's texel
    under the centre. The centre's place in the console pixel, 0 to 1023
@@ -472,8 +483,13 @@ static inline uint32_t rr_cv_q(const RrMode7 *m, const RrM7Px *p, const RrM7Seg 
     if (w3 >> 21 & 1)
         sy = k - 1 - sy;
     if (w3 >> 31) {
-        /* a screen canvas: by the screen's pixel */
+        /* a screen canvas: by the screen's pixel (over the whole screen:
+           by the point's place on it) */
         size_t col = (size_t)(i / m->cpp), ex = col * k + sx, ey = (size_t)r * k + sy;
+        if (m->cv_fx) {
+            ex = rr_cv_fit((uint32_t)col, (uint32_t)fu, (uint32_t)m->cv_fx, (uint32_t)(m->pw / m->cpp));
+            ey = rr_cv_fit((uint32_t)r, (uint32_t)fv, (uint32_t)m->cv_fy, (uint32_t)m->ph);
+        }
         uint32_t t = 0;
         if (ex < (size_t)m->cv_w && ey < (size_t)m->cv_h) {
             if (m->cv_rgb)

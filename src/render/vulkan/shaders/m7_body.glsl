@@ -133,6 +133,12 @@ uint cv_compose(uvec4 p, int g, int pl, uint pix) {
     }
     return m7_finish(mc, ml, sc, sl, fl, (g4 >> 16) & 0xFFu, g4 >> 24, g5 & 0xFFFFu, (g5 >> 16) & 0xFFu);
 }
+// a screen canvas over the whole screen: fx texels across n pixels, the
+// texel under the point f / 1024 into pixel c (rr_mode7.h rr_cv_fit)
+uint cv_fit(uint c, uint f, uint fx, uint n) {
+    uint a = c * fx, q = a / n, e = a - q * n;
+    return q + (1024u * e + f * fx) / (1024u * n);
+}
 // canvas pixel (i, r) over the output pixel centred at u, v: the canvas's
 // texel under the centre (rr_cv_q)
 uint cv_q(uvec4 p, int i, int r, int u, int v) {
@@ -145,6 +151,10 @@ uint cv_q(uvec4 p, int i, int r, int u, int v) {
     if ((w3 >> 31) != 0u) {
         // a screen canvas: by the screen's pixel
         uint ex = uint(i / U_cpp) * k + sx, ey = uint(r) * k + sy;
+        if (U_cvfx != 0) {
+            ex = cv_fit(uint(i / U_cpp), uint(fu), uint(U_cvfx), uint(U_pw / U_cpp));
+            ey = cv_fit(uint(r), uint(fv), uint(U_cvfy), uint(U_ph));
+        }
         return cv_compose(p, g, pl, ex < uint(U_cvw) && ey < uint(U_cvh) ? CV_(int(ey * uint(U_cvw) + ex)) : 0u);
     }
     uint at = (w3 & 0x3FFFu) * 64u * k * k + (((w3 >> 17) & 7u) * k + sy) * 8u * k + ((w3 >> 14) & 7u) * k + sx;
