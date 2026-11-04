@@ -147,6 +147,8 @@ const uint32_t *ppu_picture(int *width, int *height);
    there is no memory for it. */
 struct RrMode7;
 int ppu_mode7(const PpuFrame *f, const uint32_t *pic, struct RrMode7 *m);
+/* (ppu.c m7_plain) */
+void ppu_set_mode7_plain(int on);
 /* frame f presented at ow x oh pixels into out (0xFFRRGGBB): rr_mode7.h
    rr_ref_mode7 of ppu_mode7's record, as the window shows it. Every
    output pixel is pic scaled with sharp bilinear exactly as rr_ref_image

@@ -2997,6 +2997,12 @@ static unsigned m7_mosaic_texel(int n, int x, unsigned mosaic_row, const uint16_
     return rr_m7_texel(vp, s->m7sel, (ox + s->m7a * sx) >> 8, (oy + s->m7c * sx) >> 8);
 }
 
+/* a Mode 7 line's pixels recorded as the picture's own (RR_M7_NOT): a
+   platform presenting Mode 7 at the console's resolution, scaled as any
+   picture (rr.h rr_mode7_plain), a canvas still at the window's */
+static int m7_plain;
+void ppu_set_mode7_plain(int on) { m7_plain = on != 0; }
+
 int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
 {
     int pw = ppu_frame_width(f), ph = f->screen_height, cpp = pw / f->width, top = f->top, r;
@@ -3098,7 +3104,7 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
                 }
                 continue;
             }
-            if (!pres_is_m7(st)) {
+            if (!pres_is_m7(st) || m7_plain) {
                 for (i = x0 * cpp; i < x1 * cpp; i++)
                     row[i].w0 = row[i].w1 = row[i].w3 = 0, row[i].w2 = RR_M7_NOT;
                 continue;

@@ -536,6 +536,8 @@ __attribute__((weak)) void rr_screen_max(int *w, int *h)
     *h = PPU_EXT_HEIGHT;
 }
 
+__attribute__((weak)) int rr_mode7_plain(void) { return 0; }
+
 __attribute__((weak)) int rr_mode7_window(int what)
 {
     (void)what;
@@ -1073,6 +1075,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     const char *script = NULL, *out_dir = ".";
     int i;
     atexit(ppucheck_report);
+    ppu_set_mode7_plain(rr_mode7_plain());
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--headless"))
             headless = 1;

@@ -27,6 +27,8 @@
  *              off) written: rows of parts
  *   mosaic     plain's, BG1 (the canvas's layer) under mosaic (size 4)
  *              from line 100 down each frame: there its tiles
+ *   mode7      plain's, Mode 7 (the identity) from line 150 down each
+ *              frame: those lines at the console's resolution on the PSP
  *   clipped    wide's with BG2 and the sprites kept to the console's picture
  *              (nshvc_ext_layer_clip)
  *   tall       clipped's on a 338 x 240 screen: rows above and below the
@@ -75,8 +77,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "clipped", "tall", "noncanvas", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "clipped", "tall", "noncanvas", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -216,7 +218,16 @@ static void setup(int sc)
     case S_FADE:
     case S_MIDLINE:
     case S_MOSAIC:
+    case S_MODE7:
         w(0x2C, 0x03);
+        if (sc == S_MODE7) {
+            static const unsigned m7[4][2] = { { 0x1B, 0x0100 }, { 0x1C, 0 }, { 0x1D, 0 }, { 0x1E, 0x0100 } };
+            int j;
+            for (j = 0; j < 4; j++) {
+                w(m7[j][0], m7[j][1] & 0xFF);
+                w(m7[j][0], m7[j][1] >> 8);
+            }
+        }
         break;
     case S_CLIP:
         w(0x2C, 0x03);
@@ -325,14 +336,19 @@ static void frame(int sc)
             w(0x2C, (L / 20) & 1 ? 0x01 : 0x03);
         }
     }
-    if (sc == S_MOSAIC) {
-        int t[2] = { 100, 300 };
+    if (sc == S_MOSAIC || sc == S_MODE7) {
+        int t[2] = { sc == S_MODE7 ? 150 : 100, 300 };
         nshvc_wait_until(at_beam, t);
-        w(0x06, 0x31);
+        if (sc == S_MODE7)
+            w(0x05, 0x07);
+        else
+            w(0x06, 0x31);
     }
     nshvc_wait_vblank();
     if (sc == S_MOSAIC)
         w(0x06, 0x00);
+    if (sc == S_MODE7)
+        w(0x05, 0x01);
     if (sc == S_MIDLINE) {
         w(0x0F, 0);
         w(0x0F, 0);
