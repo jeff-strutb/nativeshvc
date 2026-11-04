@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 13
+#define NSHVC_VERSION_MINOR 14
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -506,7 +506,7 @@ void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int
    maths nor brightness takes the pixel; colour maths' adding and
    subtracting keeps them to 1/8 of a console step (249 levels); halving
    and a brightness below 15 come to the console's 5 bits (docs/contract.md
-   2.13). (Since 2.13.) */
+   2.14). (Since 2.14.) */
 void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3

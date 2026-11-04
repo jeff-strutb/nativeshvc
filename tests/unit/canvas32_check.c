@@ -1,6 +1,6 @@
 /*
  * canvas32_check.c: a full-colour screen canvas (nshvc_ext_canvas_screen32,
- * contract 2.13), on a cartridge of a few lines of C that shows scenes of
+ * contract 2.14), on a cartridge of a few lines of C that shows scenes of
  * it on a 320 x 240 screen with the console's picture off its centre, BG1
  * the canvas (4 bpp, palette 5) over or under BG2's tiles:
  *
