@@ -146,7 +146,41 @@ static void screen_show(void)
 
 static void *screen_shown(void) { return fb_addr(s_last); }
 
-static HostPspScreen s_screen = { screen_target, screen_show, screen_shown };
+/* The buffer neither on screen nor waiting to be, lent to the game while it
+   runs: the renderer draws into one (screen_target) only after the game's
+   run of the frame has returned, the GE then idle with the game's lists,
+   and a vertical blank in between only frees the one shown before. The
+   GE's state as the renderer left it is saved at the first loan (the GE
+   idle: the renderer syncs its lists before it returns) and put back
+   before the renderer's next frame (ge_back), so the game's lists may set
+   any of it. */
+static PspGeContext s_ge_kept;
+static int s_ge_lent;
+
+void *host_ge_vram(size_t *bytes)
+{
+    if (s_shown < 0) {
+        *bytes = 0;
+        return NULL;
+    }
+    if (!s_ge_lent) {
+        sceGeDrawSync(0);
+        s_ge_lent = sceGeSaveContext(&s_ge_kept) >= 0;
+    }
+    *bytes = FB_BYTES;
+    return screen_target();
+}
+
+static void ge_back(void)
+{
+    if (!s_ge_lent)
+        return;
+    sceGeDrawSync(0);
+    sceGeRestoreContext(&s_ge_kept);
+    s_ge_lent = 0;
+}
+
+static HostPspScreen s_screen = { screen_target, screen_show, screen_shown, ge_back };
 
 int host_window_open(int width, int height, const char *title)
 {

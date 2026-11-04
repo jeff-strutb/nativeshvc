@@ -1,8 +1,8 @@
-# The game contract, version 2.14
+# The game contract, version 2.15
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.14: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.15: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -148,6 +148,16 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.15:** a screen canvas at no whole scale: `nshvc_ext_canvas_screen` and
+  `nshvc_ext_canvas_screen32` with k 0 take w x h texels (each up to 65,535) over the
+  whole W x H screen: a point x console pixels across it (y down) takes texel
+  floor(x w / W) (floor(y h / H)), a console pixel's centre floor((2c + 1) w / 2W), in the
+  console's picture, the compositor and every renderer's presentation alike; k 1 to 64 as
+  before. `nshvc_ext_canvas_presented(&w, &h)`: the window pixels the console's screen was
+  last presented over, the size such a canvas is presented at a texel a window pixel.
+  `nshvc_ext_ge_vram(&bytes)`: GPU memory lent to the game's own GPU drawing while its
+  run of the frame lasts (the PSP: VRAM, one screen buffer, 557,056 bytes; NULL
+  elsewhere), its work on it done and the graphics library's state as found by then.
 - **2.14:** `nshvc_ext_canvas_screen32(layer, texels, w, h, k, priority, palette)`:
   `nshvc_ext_canvas_screen` with texels of 32 bits: 0 transparent; `0x000000ii` (ii not 0)
   CGRAM index ii, resolved as that canvas's texel ii (each line's palette, so HDMA's

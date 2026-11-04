@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.14); this page describes the interface
+[the game contract](contract.md) (2.15); this page describes the interface
 around it.
 
 ## What it is
@@ -136,6 +136,9 @@ Each is off by default.
 | `nshvc_ext_layer_outside(layer, map, size)` | a background's map past the console's 256 columns and lines, its entries in BGnSC's layout and sizes, or 128 x 32 and 128 x 64 in rows of 128 (copied, from the next frame); everything else the layer's |
 | `nshvc_ext_canvas_screen(layer, texels, w, h, k, priority, palette)` | a background's picture over the whole screen from the game's texels by the screen's pixels, one priority and palette, at the window's resolution (one canvas at a time) |
 | `nshvc_ext_canvas_screen32(layer, texels, w, h, k, priority, palette)` | the same with 32-bit texels: 0 transparent, `0x000000ii` CGRAM index ii (as the canvas's texel ii), `0xFFrrggbb` a colour of 8 bits a channel through the layer's priority, windows, colour maths and brightness; whole 8 bits where neither maths nor brightness takes it, sums and differences to an eighth of a console step, halving and brightness below 15 at the console's 5 bits (contract 2.14); a CGRAM colour widened gives that colour's pixel exactly |
+| `nshvc_ext_canvas_screen` / `_screen32` with k 0 | the w x h texels over the whole screen at no whole scale: a point x across the W-pixel screen takes texel floor(x w / W) (and down), each console pixel's centre's (contract 2.15) |
+| `nshvc_ext_canvas_presented(&w, &h)` | the window pixels the console's screen was last presented over: a k 0 canvas that size is a texel a window pixel |
+| `nshvc_ext_ge_vram(&bytes)` | GPU memory lent to the game's own GPU drawing for its run of the frame (the PSP: VRAM, one screen buffer, 557,056 bytes; NULL elsewhere) |
 | `nshvc_ext_layer_clip(layer, on)` | a background or the sprites kept to the console's picture on a larger screen: transparent past its 256 columns and lines, a sprite across the edge cut at it |
 | `nshvc_ext_window_edges(on)` | the windows on a larger screen: a window whose left edge is 0 reaches every column left of the console's picture, one whose right edge is 255 every column right of it, so a window spanning the console's line spans the screen (off: past the console's edges a column is outside both windows) |
 | `nshvc_ext_window_map(on, scale_q16, offset)` | the windows placed on a larger screen: each line's edges (WH0-WH3, HDMA's included) mapped by console column c to c * scale_q16 / 65536 (rounded down) + offset, a window from L to R covering L's column up to the one before R + 1's, on every layer, the sprites and the colour window; (65536, (W - 256) / 2) is the console's windows, (W * 256, 0) stretches them over the screen; over `nshvc_ext_window_edges` while on |

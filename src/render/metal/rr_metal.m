@@ -96,7 +96,7 @@ static NSString *const k_src = @
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
 "  return t.sample(s, in.uv); }\n"
 /* a frame with Mode 7 presented (rr_mode7.h, the same arithmetic) */
-"struct M7U { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen, cvw, cvh, cvrgb; };\n"
+"struct M7U { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen, cvw, cvh, cvrgb, cvfx, cvfy; };\n"
 "static uint m7_direct(uint c) { return (c & 7u) << 2 | ((c & 0x38u) >> 1) << 5 | ((c & 0xC0u) >> 3) << 10; }\n"
 /* a full colour's (0x1000000 | 0xRRGGBB) or a 15-bit colour's channel k in
    eighths of a console step, and colour c out of colour maths with o and
@@ -205,6 +205,10 @@ static NSString *const k_src = @
 "    if ((fl & 0x10u) && z > sz) { sc = col; sz = z; sl = n; }\n"
 "  }\n"
 "  return m7_finish(mc, ml, sc, sl, fl, (uint(g[4]) >> 16) & 0xFF, uint(g[4]) >> 24, uint(g[5]) & 0xFFFF, (uint(g[5]) >> 16) & 0xFF); }\n"
+/* a screen canvas over the whole screen (rr_mode7.h rr_cv_fit) */
+"static uint cv_fit(uint c, uint f, uint fx, uint n) {\n"
+"  uint a = c * fx, q = a / n, e = a - q * n;\n"
+"  return q + (1024u * e + f * fx) / (1024u * n); }\n"
 /* canvas pixel (i, r) over the output pixel centred at u, v: the canvas's
    texel under the centre (rr_cv_q) */
 "static uint cv_q(constant M7U &U, uint4 p, const device int *g, const device ushort *pl, const device uchar *cv, int i, int r, int u, int v) {\n"
@@ -215,6 +219,7 @@ static NSString *const k_src = @
 "  if ((w3 >> 21) & 1) sy = k - 1 - sy;\n"
 "  if ((w3 >> 31) != 0u) {\n"
 "    uint ex = uint(i / U.cpp) * k + sx, ey = uint(r) * k + sy;\n"
+"    if (U.cvfx != 0) { ex = cv_fit(uint(i / U.cpp), uint(fu), uint(U.cvfx), uint(U.pw / U.cpp)); ey = cv_fit(uint(r), uint(fv), uint(U.cvfy), uint(U.ph)); }\n"
 "    uint at = ey * uint(U.cvw) + ex;\n"
 "    return cv_compose(p, g, pl, ex < uint(U.cvw) && ey < uint(U.cvh) ? (U.cvrgb ? ((const device uint *)cv)[at] : uint(cv[at])) : 0u); }\n"
 "  uint at = (w3 & 0x3FFF) * 64u * k * k + (((w3 >> 17) & 7) * k + sy) * 8u * k + ((w3 >> 14) & 7) * k + sx;\n"
@@ -713,7 +718,7 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
                     id<MTLBuffer> pic, id<MTLBuffer> cv, size_t cv_off)
 {
     @autoreleasepool {
-        struct { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen, cvw, cvh, cvrgb; } u;
+        struct { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen, cvw, cvh, cvrgb, cvfx, cvfy; } u;
         int ow = d[2] - d[0], oh = d[3] - d[1];
         size_t np = (size_t)m->pw * (size_t)m->ph;
         id<MTLBuffer> b[8];
@@ -733,6 +738,8 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
         u.cvlen = (int)m->cv_len;
         u.cvw = m->cv_w;
         u.cvh = m->cv_h;
+        u.cvfx = m->cv_fx;
+        u.cvfy = m->cv_fy;
         u.cvrgb = m->cv_rgb;
         /* the supersamples' offsets: 4 from 0, 8 from 4, 16 from 12 */
         memcpy(u.du, s->du4, sizeof s->du4);

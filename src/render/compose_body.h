@@ -73,7 +73,10 @@
 #define CP_VCOPY 26      /* a VRAM copy's 16-bit words */
 #define CP_VGEN 27       /* each copy's count of VRAM writes before it (ppu.h vram_gen), low
                             word then high: copies with the same count, the same words */
-#define CP_HEADER 35
+#define CP_CVFX 35       /* a screen canvas over the whole screen (k 0): its texels across and
+                            down (0: k a console pixel) */
+#define CP_CVFY 36
+#define CP_HEADER 37
 
 #define CP_ST 28         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */
@@ -192,6 +195,14 @@ CP_FN U32 cp_direct(U32 c, U32 pal)
 #define CP_LP(color, ci, prio) ((color) | (ci) << 15 | (prio) << 23 | 0x1000000u)
 #define CP_LP_RGB 0x2000000u
 
+/* a screen canvas over the whole screen: fx texels across n pixels, the
+   texel under the point f / 1024 into pixel c (rr_mode7.h rr_cv_fit) */
+CP_FN U32 cp_cv_fit(U32 c, U32 f, U32 fx, U32 n)
+{
+    U32 a = c * fx, q = a / n, e = a - q * n;
+    return q + (1024u * e + f * fx) / (1024u * n);
+}
+
 /* the canvas's texel for char address ca of layer n (ppu.c cv_char and
    cv_centre), or 256 when the canvas does not cover it */
 CP_FN U32 cp_cv(U32 si, U32 n, U32 ca, U32 bpp, U32 px, U32 py, U32 flip)
@@ -271,6 +282,11 @@ CP_FN U32 cp_bg(U32 si, U32 n, U32 x, I32 dr, U32 my)
         U32 k = FD_(CP_CVK), sc = FD_(CP_CVSCREEN), prio = (sc >> 1) & 1u, spal = (sc >> 2) & 7u;
         I32 R = dr + I_(FD_(CP_TOP));
         U32 ex = x * k + (k >> 1), ey = U_(R) * k + (k >> 1), v = 0u;
+        if (FD_(CP_CVFX) != 0u && R >= 0) {
+            /* (over the whole screen: the texel under the pixel's centre) */
+            ex = cp_cv_fit(x, 512u, FD_(CP_CVFX), FD_(CP_SW));
+            ey = cp_cv_fit(U_(R), 512u, FD_(CP_CVFY), FD_(CP_PH));
+        }
         if (R >= 0 && ex < FD_(CP_CVW) && ey < FD_(CP_CVH)) {
             U32 at = ey * FD_(CP_CVW) + ex;
             if ((sc & 0x20u) != 0u)

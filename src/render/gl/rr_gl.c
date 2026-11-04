@@ -548,6 +548,8 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     glUniform1i(glGetUniformLocation(s_m7, "U_cvlen"), (int)m->cv_len);
     glUniform1i(glGetUniformLocation(s_m7, "U_cvw"), m->cv_w);
     glUniform1i(glGetUniformLocation(s_m7, "U_cvh"), m->cv_h);
+    glUniform1i(glGetUniformLocation(s_m7, "U_cvfx"), m->cv_fx);
+    glUniform1i(glGetUniformLocation(s_m7, "U_cvfy"), m->cv_fy);
     glUniform1iv(glGetUniformLocation(s_m7, "U_du_"), 28, du);
     glUniform1iv(glGetUniformLocation(s_m7, "U_dv_"), 28, dv);
     for (i = 0; i < 6; i++) {
