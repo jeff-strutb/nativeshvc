@@ -665,6 +665,10 @@ Measured in PPSSPP (its clock, 333 MHz), most of the test cartridges run each fr
 - The battery save in the host's save folder, written when it changes.
 - A headless mode with no window and no pacing that runs a script of inputs from power on
   and writes screenshots and memory dumps, for tests and for comparison with the original.
+  With `NSHVC_PRESENT=1` it also opens the renderer from the start and presents every
+  frame as a window does (no reference check, no pacing; a game's GPU memory lent from the
+  first frame, `nshvc_ext_ge_vram`), and `NSHVC_FPS_LOG=FILE` writes each frame's run and
+  present times: a scripted run timed as it plays.
 
 ## Licence
 
