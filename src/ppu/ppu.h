@@ -53,8 +53,13 @@ typedef struct {
    its own state and palette. */
 #define PPU_SEGS 8
 typedef struct {
-    PpuScreen line[PPU_MAX_HEIGHT + 1];         /* lines 1 to height */
+    /* the frame's screen states and palettes, each kept once: line l's
+       are line[st[l]] and palette[pl[l]] (lines 1 to height; a stretch
+       of lines with nothing changed between them shares one of each) */
+    PpuScreen line[PPU_MAX_HEIGHT + 1];
     uint16_t palette[PPU_MAX_HEIGHT + 1][256];
+    uint8_t st[PPU_MAX_HEIGHT + 1], pl[PPU_MAX_HEIGHT + 1];
+    int states, palettes;
     uint8_t pal_same[PPU_MAX_HEIGHT + 1];       /* the line's palette the line before's (its last,
                                                    and its only: neither line in segments) */
     uint8_t version[PPU_MAX_HEIGHT + 1];        /* the copy each line shows */
@@ -172,6 +177,7 @@ int ppu_open1(uint8_t reg);
 void ppu_latch_counters(uint16_t h, uint16_t v);
 void ppu_frame_start(void);              /* line 0 */
 void ppu_render_line(unsigned line);     /* lines 1 to the frame's height */
+void ppu_render_lines(unsigned first, unsigned end);   /* first to end - 1, nothing changed between them */
 void ppu_vblank_start(void);             /* the frame is done */
 int ppu_forced_blank(void);
 int ppu_overscan(void);                  /* SETINI bit 2 as it stands */

@@ -59,6 +59,7 @@ extern uint8_t dma_hdmaen;
 
 
 /* ---- apu.c ---- */
+int snes_costs_on(void);                     /* nshvc_set_cpu_costs: the C's accesses take time */
 void apu_reset(void);
 uint8_t apu_port_read(uint8_t port);         /* the S-CPU reads $2140-$2143 */
 void apu_port_write(uint8_t port, uint8_t v);

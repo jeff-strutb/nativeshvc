@@ -284,9 +284,9 @@ static RefLine ref_line(const PpuFrame *f, int r)
     int top = f->top, line = r - top + 1, L, y, x0, y0, cx, cy;
     RefLine l;
     L = line < 1 ? 1 : line > f->height ? f->height : line;
-    l.st = &f->line[L];
+    l.st = &f->line[f->st[L]];
     l.m7 = (l.st->bgmode & 7) == 7 && !(l.st->inidisp & 0x80);
-    l.pal = f->palette[L];
+    l.pal = f->palette[f->pl[L]];
     l.vr = f->vram[f->version[L]];
     l.a = l.st->m7a, l.b = l.st->m7b, l.c = l.st->m7c, l.d = l.st->m7d, l.sel = l.st->m7sel;
     cx = s13(l.st->m7x), cy = s13(l.st->m7y);

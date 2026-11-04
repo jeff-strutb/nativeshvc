@@ -327,8 +327,8 @@ static uint32_t rgb(unsigned c)
    the pixel's k x k where the canvas covers the tile, else the tile's pixel */
 static uint32_t ref_colour(const PpuFrame *f, int sc, int h, int r, int sx, int sy)
 {
-    const PpuScreen *st = &f->line[r + 1];
-    const uint16_t *cg = f->palette[r + 1];
+    const PpuScreen *st = &f->line[f->st[r + 1]];
+    const uint16_t *cg = f->palette[f->pl[r + 1]];
     int n = scene[sc].layer, bpp = scene[sc].bpp, ts = scene[sc].big ? 16 : 8, k = f->cv_k;
     /* the layer's page on this line */
     const uint16_t *v = f->vram[f->version[r + 1]] + ((unsigned)st->page[n] << 15);
@@ -378,7 +378,7 @@ static uint32_t ref_colour(const PpuFrame *f, int sc, int h, int r, int sx, int 
 static uint32_t ref_texel(const PpuFrame *f, int r, long ex, long ey)
 {
     int line = r - f->top + 1;
-    const uint16_t *cg = f->palette[line < 1 ? 1 : line > f->height ? f->height : line];
+    const uint16_t *cg = f->palette[f->pl[line < 1 ? 1 : line > f->height ? f->height : line]];
     unsigned t = ex >= 0 && ey >= 0 && ex < sc_w && ey < sc_h ? texels[(size_t)ey * (size_t)sc_w + (size_t)ex] & 15u : 0u;
     return t ? rgb(cg[SC_PAL * 16 + t]) : rgb(cg[0]);
 }
@@ -576,8 +576,8 @@ static void check_scene(int sc)
                        across pages, characters of both pages' ranges */
                     long on1 = 0, on2 = 0;
                     for (y = 1; y <= 224; y++) {
-                        on1 += f->line[y].page[scene[sc].layer] == 1;
-                        on2 += f->line[y].page[scene[sc].layer] == 2;
+                        on1 += f->line[f->st[y]].page[scene[sc].layer] == 1;
+                        on2 += f->line[f->st[y]].page[scene[sc].layer] == 2;
                     }
                     if (scene[sc].pages == 1)
                         ok = ok && on1 == 224;

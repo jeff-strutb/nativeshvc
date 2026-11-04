@@ -468,15 +468,20 @@ static void events_moved(void)
 }
 
 /* The lines whose horizontal blank has passed, recorded for the picture
-   (ppu_render_line: their state as the blank came), before anything that
+   (ppu_render_lines: their state as the blank came), before anything that
    could change what the PPU shows or reads back, and as the vertical
    blank starts: the record each line made as it was drawn. */
 static void ppu_catch_up(void)
 {
-    while (rendered < vblank_line && line_at(rendered) + HBLANK_AT <= snes_clock) {
-        ppu_render_line(rendered);
-        rendered++;
-    }
+    unsigned l, end;
+    if (rendered >= vblank_line || line_at(rendered) + HBLANK_AT > snes_clock)
+        return;
+    l = line_of(snes_clock);
+    end = line_at(l) + HBLANK_AT <= snes_clock ? l + 1 : l;
+    if (end > vblank_line)
+        end = vblank_line;
+    ppu_render_lines(rendered, end);
+    rendered = end;
 }
 
 void snes_ppu_catch_up_now(void) { ppu_catch_up(); }
@@ -1336,6 +1341,8 @@ uint8_t snes_peek(uint32_t addr)
 static uint32_t allowance[2][NSHVC_KINDS];
 static uint32_t allowance_carry;          /* tenths not yet spent */
 static int allowance_on;                  /* nshvc_set_cpu_costs: 0, accesses take no time */
+
+int snes_costs_on(void) { return allowance_on; }
 
 void nshvc_set_cpu_costs(int on)
 {

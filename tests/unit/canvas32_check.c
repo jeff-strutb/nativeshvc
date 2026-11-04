@@ -495,10 +495,10 @@ static int row_line(const PpuFrame *f, int r)
    scenes on row r, and a transparent one's (the backdrop, CGRAM 0) */
 static uint32_t exact_want(int sc, const PpuFrame *f, int r, uint32_t t)
 {
-    const PpuScreen *st = &f->line[row_line(f, r)];
+    const PpuScreen *st = &f->line[f->st[row_line(f, r)]];
     unsigned fix[3] = { st->fixed_r, st->fixed_g, st->fixed_b }, k, out = 0xFF000000u;
     if (!t) {
-        unsigned c = f->palette[row_line(f, r)][0];
+        unsigned c = f->palette[f->pl[row_line(f, r)]][0];
         if (sc == S_EXACTBRIGHT) {
             unsigned ch[3] = { c & 31, (c >> 5) & 31, (c >> 10) & 31 };
             for (k = 0; k < 3; k++)
@@ -574,7 +574,7 @@ static void check_exact(int sc, const Shot *s)
         long changes = 0;
         int l;
         for (l = 2; l <= f->height; l++)
-            changes += f->line[l].fixed_r != f->line[l - 1].fixed_r || f->line[l].fixed_b != f->line[l - 1].fixed_b;
+            changes += f->line[f->st[l]].fixed_r != f->line[f->st[l - 1]].fixed_r || f->line[f->st[l]].fixed_b != f->line[f->st[l - 1]].fixed_b;
         holds(sc, "the fixed colour changing by line (HDMA)", changes > 150);
     }
 }
@@ -594,7 +594,7 @@ static void check_holds(int sc, const Shot *s)
         int l, e;
         for (l = 1; l <= f->height; l++)
             for (e = 0; e < 256; e++)
-                off += e != HDMA_ENTRY && f->palette[l][e] != cg[e];
+                off += e != HDMA_ENTRY && f->palette[f->pl[l]][e] != cg[e];
         snprintf(what, sizeof what, "the frame's CGRAM the cartridge's (%ld entries of its lines not)", off);
         holds(sc, what, off == 0);
     }
@@ -623,8 +623,8 @@ static void check_holds(int sc, const Shot *s)
         long cgl = 0, fxl = 0;
         int l;
         for (l = 2; l <= f->height; l++) {
-            cgl += f->palette[l][HDMA_ENTRY] != f->palette[l - 1][HDMA_ENTRY];
-            fxl += f->line[l].fixed_r != f->line[l - 1].fixed_r;
+            cgl += f->palette[f->pl[l]][HDMA_ENTRY] != f->palette[f->pl[l - 1]][HDMA_ENTRY];
+            fxl += f->line[f->st[l]].fixed_r != f->line[f->st[l - 1]].fixed_r;
         }
         snprintf(what, sizeof what, "HDMA: CGRAM entry %d changing on %ld lines, the fixed colour on %ld", HDMA_ENTRY, cgl, fxl);
         holds(sc, what, cgl > 200 && fxl > 150);

@@ -1997,6 +1997,30 @@ static void take_version(void)
 static unsigned pal_line;
 static const PpuFrame *pal_frame;
 static uint64_t pal_gen;
+/* the frame's last palette CGRAM as it stood (pal_last_gen: CGRAM's
+   writes then), not a line's changed one */
+static int pal_last_cgram;
+static uint64_t pal_last_gen;
+
+/* line `line`'s state and palette, kept unless the last kept is the same */
+static void keep_state(unsigned line, const PpuScreen *st)
+{
+    if (!making->states || memcmp(st, &making->line[making->states - 1], sizeof *st)) {
+        making->line[making->states] = *st;
+        making->states++;
+    }
+    making->st[line] = (uint8_t)(making->states - 1);
+}
+static void keep_palette(unsigned line, const uint16_t *pal, int is_cgram)
+{
+    if (!(is_cgram && pal_last_cgram && pal_last_gen == cgram_gen && making->palettes)) {
+        memcpy(making->palette[making->palettes], pal, 512);
+        making->palettes++;
+        pal_last_cgram = is_cgram;
+        pal_last_gen = cgram_gen;
+    }
+    making->pl[line] = (uint8_t)(making->palettes - 1);
+}
 
 static void record_line(unsigned line)
 {
@@ -2011,6 +2035,8 @@ static void record_line(unsigned line)
             }
         making->versions = 0;
         making->hires = 0;
+        making->states = making->palettes = 0;
+        pal_last_cgram = 0;
         dirty = 1;
     }
     if (dirty && (making->versions == 0 || !(cur.inidisp & 0x80)))
@@ -2031,8 +2057,8 @@ static void record_line(unsigned line)
         }
         for (i = 0; i < live_n && live_ev[order[i]].x == 0; i++)
             apply_event(&st, pal, &live_ev[order[i]]);
-        making->line[line] = st;
-        memcpy(making->palette[line], pal, sizeof pal);
+        keep_state(line, &st);
+        keep_palette(line, pal, 0);
         while (i < live_n) {
             int x = live_ev[order[i]].x;
             for (; i < live_n && live_ev[order[i]].x == x; i++)
@@ -2055,8 +2081,8 @@ static void record_line(unsigned line)
         making->pal_same[line] = 0;
         pal_line = 0;
     } else {
-        making->line[line] = cur;
-        memcpy(making->palette[line], cgram, sizeof cgram);
+        keep_state(line, &cur);
+        keep_palette(line, cgram, 1);
         /* (the line before this frame's, its palette CGRAM as this one's) */
         making->pal_same[line] = pal_line && pal_line == line - 1 && pal_frame == making && pal_gen == cgram_gen;
         pal_line = line;
@@ -2064,7 +2090,7 @@ static void record_line(unsigned line)
         pal_gen = cgram_gen;
     }
     live_n = 0;
-    if (!(making->line[line].inidisp & 0x80) && ppu_line_hires(&making->line[line]))
+    if (!(making->line[making->st[line]].inidisp & 0x80) && ppu_line_hires(&making->line[making->st[line]]))
         making->hires = 1;
 }
 
@@ -2077,8 +2103,8 @@ static void draw_recorded(const PpuFrame *f, unsigned line, uint32_t *out, int w
     static uint32_t part[2 * PPU_EXT_WIDTH];
     unsigned k, n = f->segs[line], scale = width == 2 * sw ? 2 : 1;
     draw_row = (int)line - 1;
-    s = &f->line[line];
-    d_cgram = f->palette[line];
+    s = &f->line[f->st[line]];
+    d_cgram = f->palette[f->pl[line]];
     if (!n) {
         draw_line(line, out, width);
         return;
@@ -2094,6 +2120,37 @@ static void draw_recorded(const PpuFrame *f, unsigned line, uint32_t *out, int w
         d_cgram = f->seg_palette[line][k];
         draw_line(line, part, width);
         memcpy(out + x0, part + x0, (x1 - x0) * sizeof *out);
+    }
+}
+
+void ppu_render_line(unsigned line);
+
+/* Lines first to end - 1, their horizontal blanks passed with nothing
+   changed in the PPU between them (bus.c records them before each
+   change): each after the first as the line before (its state, palette
+   and copy of the tiles), but a line drawn in segments, which the next
+   follows with the state after them. */
+void ppu_render_lines(unsigned first, unsigned end)
+{
+    unsigned line, msize;
+    if (end > PPU_MAX_HEIGHT + 1)
+        end = PPU_MAX_HEIGHT + 1;
+    for (line = first; line < end; line++) {
+        if (line == first || line == 1 || draw_lines || making->segs[line - 1] || (live_vline == line && live_n)) {
+            ppu_render_line(line);
+            continue;
+        }
+        making->st[line] = making->st[line - 1];
+        making->pl[line] = making->pl[line - 1];
+        making->version[line] = making->version[line - 1];
+        making->segs[line] = 0;
+        /* (the line before's palette CGRAM as this one's, nothing written) */
+        making->pal_same[line] = 1;
+        pal_line = line;
+        making->mosaic_row[line] = (uint8_t)mosaic_y;
+        msize = (making->line[making->st[line]].mosaic >> 4) + 1u;
+        if (msize == 1 || line % msize == 0)
+            mosaic_y = line + 1;
     }
 }
 
@@ -2119,7 +2176,7 @@ void ppu_render_line(unsigned line)
     }
     /* the vertical mosaic: the line the next lines repeat moves on every
        `size` lines */
-    msize = (making->line[line].mosaic >> 4) + 1u;
+    msize = (making->line[making->st[line]].mosaic >> 4) + 1u;
     if (msize == 1 || line % msize == 0)
         mosaic_y = line + 1;
 }
@@ -2149,8 +2206,8 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
            line's state (its first segment), the row its own */
         {
             int edge = line < 1 ? 1 : f->height;
-            s = &f->line[edge];
-            d_cgram = f->palette[edge];
+            s = &f->line[f->st[edge]];
+            d_cgram = f->palette[f->pl[edge]];
             d_vram = f->vram[f->version[edge]];
             d_oam = f->oam[f->version[edge]];
             draw_row = line - 1;
@@ -2174,7 +2231,7 @@ void ppu_draw_frame(const PpuFrame *f, uint32_t *out)
 
 void ppu_pack_line(const PpuFrame *f, unsigned line, uint32_t *w)
 {
-    const PpuScreen *l = &f->line[line];
+    const PpuScreen *l = &f->line[f->st[line]];
     w[0] = l->inidisp | l->obsel << 8 | l->bgmode << 16 | (uint32_t)l->mosaic << 24;
     w[1] = l->bgsc[0] | l->bgsc[1] << 8 | l->bgsc[2] << 16 | (uint32_t)l->bgsc[3] << 24;
     w[2] = l->bgnba[0] | l->bgnba[1] << 8 | l->m7sel << 16 | (uint32_t)l->setini << 24;
@@ -2421,7 +2478,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     pals = n;
     for (line = 1; line <= (unsigned)f->height; line++)
         for (k = 0; k <= f->segs[line]; k++) {
-            const uint16_t *p = k ? f->seg_palette[line][k - 1] : f->palette[line];
+            const uint16_t *p = k ? f->seg_palette[line][k - 1] : f->palette[f->pl[line]];
             /* (a line's the line before's, its last: pal_same) */
             if (!last_pal || (!(k == 0 && line > 1 && f->pal_same[line]) && memcmp(p, last_pal, 512))) {
                 /* two colours a word, the first the low half: in memory,
@@ -2472,7 +2529,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     for (line = 1; line <= (unsigned)f->height; line++)
         for (k = 0; k <= f->segs[line]; k++) {
             cp_w = grow(cp_w, &cp_cap, n + CP_ST, sizeof *cp_w);
-            cp_state(cp_w + n, k ? &f->seg_line[line][k - 1] : &f->line[line], st_of[line][k],
+            cp_state(cp_w + n, k ? &f->seg_line[line][k - 1] : &f->line[f->st[line]], st_of[line][k],
                      (uint32_t)(f->version[line] * vwords), f);
             st_of[line][k] = (uint32_t)nst++;
             n += CP_ST;
@@ -2498,7 +2555,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
         d_oam = f->oam[f->version[edge]];
         for (k = 0; k < parts; k++) {
             uint32_t ns, at;
-            s = k ? &f->seg_line[edge][k - 1] : &f->line[edge];
+            s = k ? &f->seg_line[edge][k - 1] : &f->line[f->st[edge]];
             at = cp_sprites(&ns);
             cp_part(k ? f->seg_x[edge][k - 1] : 0, st_of[edge][k], at, ns);
         }
@@ -2783,7 +2840,7 @@ int ppu_frame_presents(const PpuFrame *f)
 {
     int line, k, what = 0;
     for (line = 1; line <= f->height; line++) {
-        what |= pres_is_m7(&f->line[line]) | pres_is_cv(f, &f->line[line]) << 1;
+        what |= pres_is_m7(&f->line[f->st[line]]) | pres_is_cv(f, &f->line[f->st[line]]) << 1;
         for (k = 0; k < f->segs[line]; k++)
             what |= pres_is_m7(&f->seg_line[line][k]) | pres_is_cv(f, &f->seg_line[line][k]) << 1;
     }
@@ -2794,7 +2851,7 @@ int ppu_frame_mode7(const PpuFrame *f)
 {
     int line, k;
     for (line = 1; line <= f->height; line++) {
-        if (pres_is_m7(&f->line[line]) || pres_is_cv(f, &f->line[line]))
+        if (pres_is_m7(&f->line[f->st[line]]) || pres_is_cv(f, &f->line[f->st[line]]))
             return 1;
         for (k = 0; k < f->segs[line]; k++)
             if (pres_is_m7(&f->seg_line[line][k]) || pres_is_cv(f, &f->seg_line[line][k]))
@@ -2984,8 +3041,8 @@ int ppu_mode7(const PpuFrame *f, const uint32_t *pic, RrMode7 *m)
         n = edge == line ? f->segs[line] : 0;
         m7_row[r] = 0;
         for (k = 0; k <= n; k++) {
-            const PpuScreen *st = k ? &f->seg_line[line][k - 1] : &f->line[edge];
-            const uint16_t *pal = k ? f->seg_palette[line][k - 1] : f->palette[edge];
+            const PpuScreen *st = k ? &f->seg_line[line][k - 1] : &f->line[f->st[edge]];
+            const uint16_t *pal = k ? f->seg_palette[line][k - 1] : f->palette[f->pl[edge]];
             int x0 = k ? f->seg_x[line][k - 1] + sl : 0, x1 = k < n ? f->seg_x[line][k] + sl : sw, g, hires;
             if (x0 < 0) x0 = 0;
             if (x1 > sw) x1 = sw;
@@ -3149,8 +3206,8 @@ static void mode7_segs(const PpuFrame *f, RrMode7 *m, uint32_t *seg_of)
         n = edge == line ? f->segs[line] : 0;
         m7_row[r] = 0;
         for (k = 0; k <= n; k++) {
-            const PpuScreen *st = k ? &f->seg_line[line][k - 1] : &f->line[edge];
-            const uint16_t *pal = k ? f->seg_palette[line][k - 1] : f->palette[edge];
+            const PpuScreen *st = k ? &f->seg_line[line][k - 1] : &f->line[f->st[edge]];
+            const uint16_t *pal = k ? f->seg_palette[line][k - 1] : f->palette[f->pl[edge]];
             uint32_t g = 0;
             if (pres_is_cv(f, st)) {
                 g = (uint32_t)cv_state(m, st, pal, f->cv_layer);
