@@ -1227,8 +1227,8 @@ static int drawable(void)
             mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
             tmts = cp_b(si, U_(CP_S_TM), 1u) | cp_b(si, U_(CP_S_TM), 2u);
             /* (hires with the screen interlaced: its rows twice as many) */
-            if (((mode == 5u || mode == 6u) && (cp_b(si, U_(CP_S_NBA), 3u) & 0x01u)) || cp_b(si, U_(CP_S_FIXED), 3u) ||
-                cp_b(si, U_(CP_S_TSW), 3u))
+            /* (the windows' columns, map and edges: cp_win's, spans' own) */
+            if (((mode == 5u || mode == 6u) && (cp_b(si, U_(CP_S_NBA), 3u) & 0x01u)) || cp_b(si, U_(CP_S_TSW), 3u))
                 return 0;
             for (n = 0; n < 5u; n++) {
                 U32 key = cp_sw(si, U_(CP_S_VBASE)) + ((n < 4u ? cp_b(si, U_(CP_S_PAGE), n) : cp_b(si, U_(CP_S_PAGE4), 0u)) << 15);
@@ -2727,8 +2727,9 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
             (sw > (U32)PIC_W && (mos & 0x0Fu) && (mos >> 4)))
             return 0;
         /* a full colour: none where colour maths could reach one (the
-           canvas's own, or the sub screen's with the canvas on it) */
-        if ((sc & 0x20u) && (cp_b(si, U_(CP_S_TSW), 2u) & 0x3Fu) &&
+           canvas's own, or the sub screen's with the canvas on it; none
+           with maths prevented everywhere, CGWSEL's region 3) */
+        if ((sc & 0x20u) && (cp_b(si, U_(CP_S_TSW), 2u) & 0x3Fu) && ((cp_b(si, U_(CP_S_TSW), 1u) >> 4) & 3u) != 3u &&
             (((cp_b(si, U_(CP_S_TSW), 2u) >> n) & 1u) ||
              (((cp_b(si, U_(CP_S_TM), 2u) >> n) & 1u) && (cp_b(si, U_(CP_S_TSW), 1u) & 2u))))
             return 0;

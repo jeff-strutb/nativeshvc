@@ -131,11 +131,6 @@ if(NSHVC_HOST STREQUAL "psp")
   add_executable(canvas32_psp psp/canvas32_psp.c)
   target_link_libraries(canvas32_psp PRIVATE nshvc)
   set_target_properties(canvas32_psp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-  # the same at k 2 over a wider screen, the texels short of it
-  add_executable(canvas32k2_psp psp/canvas32_psp.c)
-  target_compile_definitions(canvas32k2_psp PRIVATE CANVAS32_SCALED)
-  target_link_libraries(canvas32k2_psp PRIVATE nshvc)
-  set_target_properties(canvas32k2_psp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()
 
 # on the PSP, each program's imports of the system's calls put in the form

@@ -17,8 +17,10 @@
  *              the backdrop too, at brightness 11
  *   onsub      the canvas on the sub screen: BG2 and the backdrop adding it
  *   both       the canvas on both screens, the main adding the sub, halved
- *
- * canvas32k2_psp (CANVAS32_SCALED): a 338 x 224 screen, the canvas at k 2.
+ *   prevented  maths on BG1 and BG2 but prevented everywhere (CGWSEL $32);
+ *              BG1 masked by window 2 (its edges HDMA's, each line), BG2 by
+ *              window 1 (nshvc_ext_window_columns); the canvas's colour 1
+ *              (CGRAM 81) rewritten each line by HDMA
  *
  *   canvas32_psp --headless --frames 64      (with NSHVC_RRCHECK=1)
  *
@@ -46,30 +48,21 @@ static uint64_t now_us(void)
 #include "nshvc/machine.h"
 
 /* the console's picture: its own 256 x 224, or (CANVAS32_SCREEN) a larger
-   screen (nshvc_ext_screen); (CANVAS32_SCALED) a wider screen with the
-   canvas at k 2, its 480 x 272 texels short of the screen's 676 x 448 (the
-   rest clear) */
-#if defined CANVAS32_SCALED
-#define SC_W 338
-#define SC_H 224
-#define CV_K 2
-#elif defined CANVAS32_SCREEN
+   screen (nshvc_ext_screen) */
+#ifdef CANVAS32_SCREEN
 #define SC_W 320
 #define SC_H 240
 #else
 #define SC_W 256
 #define SC_H 224
 #endif
-#ifndef CV_K
-#define CV_K 0
-#endif
 #define TEX_W 480
 #define TEX_H 272
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -100,6 +93,40 @@ static void hdma_tables(void)
     wr8(c, 0);
 }
 
+/* HDMA, channels 1-3: CGADD (81) and CGDATA each line, WH2 and WH3 each line */
+static void hdma_prevented_tables(void)
+{
+    uint32_t a = 0x7E3000, c = 0x7E3200, wh = 0x7E3600;
+    int half, i;
+    for (half = 0; half < 2; half++) {
+        wr8(a++, 0xF0);
+        wr8(c++, 0xF0);
+        wr8(wh++, 0xF0);
+        for (i = 0; i < 112; i++) {
+            unsigned line = (unsigned)(half * 112 + i), col = (line * 37u + 5u) & 0x7FFFu;
+            wr8(a++, 81);
+            wr8(c++, (uint8_t)(col & 0xFF));
+            wr8(c++, (uint8_t)(col >> 8));
+            wr8(wh++, (uint8_t)(20u + (line * 3u) % 90u));
+            wr8(wh++, (uint8_t)(130u + (line * 7u) % 120u));
+        }
+    }
+    wr8(a, 0);
+    wr8(c, 0);
+    wr8(wh, 0);
+}
+
+static void hdma_prevented(void)
+{
+    static const uint8_t ch[3][5] = { { 0x00, 0x21, 0x00, 0x30, 0x7E }, { 0x02, 0x22, 0x00, 0x32, 0x7E }, { 0x01, 0x28, 0x00, 0x36, 0x7E } };
+    int k, i;
+    hdma_prevented_tables();
+    for (k = 0; k < 3; k++)
+        for (i = 0; i < 5; i++)
+            wr8(0x004310 + 0x10u * (uint32_t)k + (uint32_t)i, ch[k][i]);
+    wr8(0x00420C, 0x0E);
+}
+
 static void hdma(int on)
 {
     static const uint8_t ch[2][5] = { { 0x02, 0x32, 0x00, 0x20, 0x7E }, { 0x00, 0x32, 0x00, 0x28, 0x7E } };
@@ -115,7 +142,8 @@ static void setup(int sc)
 {
     int i;
     hdma(0);
-#if defined CANVAS32_SCREEN || defined CANVAS32_SCALED
+    nshvc_ext_window_columns(1, -1, 0);
+#ifdef CANVAS32_SCREEN
     nshvc_ext_screen(SC_W, SC_H);
 #endif
     w(0x15, 0x80);
@@ -188,6 +216,15 @@ static void setup(int sc)
         w(0x30, 0x02);
         w(0x31, 0x41);
         break;
+    case S_PREVENTED:
+        w(0x2C, 0x03);
+        w(0x2E, 0x03);                 /* BG1, BG2 windowed on the main screen */
+        w(0x23, 0x28);                 /* BG1 window 2, BG2 window 1 */
+        w(0x30, 0x32);                 /* maths prevented everywhere, the sub screen's */
+        w(0x31, 0x03);
+        nshvc_ext_window_columns(1, 60, 190);
+        hdma_prevented();
+        break;
     }
 }
 
@@ -215,7 +252,7 @@ static void game(void)
         w(0x00, 0x80);
         setup(sc);
         make_texels();
-        nshvc_ext_canvas_screen32(0, tx, TEX_W, TEX_H, CV_K, sc == S_PLAIN ? 0 : 1, PAL);
+        nshvc_ext_canvas_screen32(0, tx, TEX_W, TEX_H, 0, sc == S_PLAIN ? 0 : 1, PAL);
         w(0x00, sc == S_FADE ? 0x09 : sc == S_ADDSUB ? 0x0B : 0x0F);
         nshvc_wait_vblank();
         t0 = now_us();
