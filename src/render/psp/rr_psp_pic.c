@@ -1891,6 +1891,7 @@ static struct {
 #define V_CA V_XP                            /* (free while the four are made: cv_across's after) */
 #define V_CB V_XM
 static int s_cv32;
+static int s_cx0, s_cx1;                     /* the target's columns the canvas's passes are kept to (a row's part's) */
 static uint32_t *s_cvs;
 static TV __attribute__((aligned(16))) s_cvcol[2][480 * 2];
 static TV __attribute__((aligned(16))) s_cvrow[2][272 * 2];
@@ -2206,7 +2207,7 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
     for (sc = 0; sc < 2; sc++) {
         wtarget(sc ? V_WS : V_WM);
         if (!s_prebuild)
-            scissor(0, k0, s_cw.n, k1);
+            scissor(s_cx0, k0, s_cx1, k1);
         /* (tested F_W, written through the pixel mask: the one bit) */
         if (sc) {
             /* (the sub screen's full colours F_DIR: the finish's in eighths) */
@@ -2222,7 +2223,7 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
        colour and the canvas is on top (F_W) */
     wtarget(V_WM);
     if (!s_prebuild)
-        scissor(0, k0, s_cw.n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_DIR & 0xFF) << 24);
     sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
     rect(0, k0, s_cw.n, k1, 0);
@@ -2239,6 +2240,7 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
    from target row Ya (picture rows rj, one finish's: mode and maths the same) where it would
    be on top (F_W), through each row's palette (a colour 0's CLEAR
    dropped): a CLUT and a sprite each run of rows of one palette */
+#define NO_PART 0xFFFFFFFFu                 /* (cv_index_rows: the rows' own states) */
 static const uint32_t *s_rowclut[PIC_H];    /* each picture row's canvas palette, made in frame s_rowclut_f[r] */
 static unsigned s_rowclut_f[PIC_H];
 
@@ -2252,9 +2254,9 @@ static const uint32_t *row_clut(int r)
     return s_rowclut[r];
 }
 
-static void cv_index_rows(int Ya, const int16_t *rj, int k0, int k1)
+static void cv_index_rows(int Ya, const int16_t *rj, int k0, int k1, uint32_t sp)
 {
-    uint32_t si = row_state(rj[Ya + k0 - s_cw.Y0]);
+    uint32_t si = sp != NO_PART ? sp : row_state(rj[Ya + k0 - s_cw.Y0]);
     U32 mode, cgadsub;
     int sc, k, ka;
     cp_load(si);
@@ -2283,12 +2285,20 @@ static void cv_index_rows(int Ya, const int16_t *rj, int k0, int k1)
             sceGuPixelMask((uint32_t)(~F_MATH & 0xFF) << 24);
         }
         for (k = k0; k < k1; k = ka) {
-            const uint32_t *tab = row_clut(rj[Ya + k - s_cw.Y0]);
-            for (ka = k + 1; ka < k1 && row_clut(rj[Ya + ka - s_cw.Y0]) == tab; ka++)
-                ;
+            const uint32_t *tab;
+            if (sp != NO_PART) {
+                /* (a part's: its own palette, the rows one picture row's) */
+                cp_load(sp);
+                tab = cv_clut(sp);
+                ka = k1;
+            } else {
+                tab = row_clut(rj[Ya + k - s_cw.Y0]);
+                for (ka = k + 1; ka < k1 && row_clut(rj[Ya + ka - s_cw.Y0]) == tab; ka++)
+                    ;
+            }
             room();
             sceGuClutLoad(32, tab);
-            scissor(0, k, s_cw.n, ka);
+            scissor(s_cx0, k, s_cx1, ka);
             sprite1(0, k, 0, k, s_cw.n, ka - k);
         }
     }
@@ -2376,7 +2386,7 @@ static void e8_map(unsigned to, unsigned from, const uint32_t (*tab)[256], int k
 {
     wtarget(to);
     if (!s_prebuild)
-        scissor(0, k0, s_cw.n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     sceGuDisable(GU_STENCIL_TEST);
     sceGuDisable(GU_BLEND);
     sceGuPixelMask(0);
@@ -2395,7 +2405,7 @@ static void e8_screen(unsigned scr, int k0, int k1)
     e8_map(V_CM, scr, s_e8[E8_D2], k0, k1);
     wtarget(scr);
     if (!s_prebuild)
-        scissor(0, k0, s_cw.n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     sceGuPixelMask(0xFF000000u);
     wtex(V_CM, 16);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
@@ -2433,7 +2443,7 @@ static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U3
     /* clipped: black */
     wtarget(V_WM);
     if (!s_prebuild)
-        scissor(0, k0, n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     sceGuEnable(GU_STENCIL_TEST);
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
     sceGuPixelMask(0xFF000000u);
@@ -2473,7 +2483,7 @@ static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U3
         e8_map(V_CS, V_WM, s_e8[E8_HALF], k0, k1);
         wtarget(V_WM);
         if (!s_prebuild)
-            scissor(0, k0, n, k1);
+            scissor(s_cx0, k0, s_cx1, k1);
         sceGuEnable(GU_STENCIL_TEST);
         sceGuStencilFunc(GU_EQUAL, F_HALF, F_HALF);
         sceGuPixelMask(0xFF000000u);
@@ -2517,7 +2527,7 @@ static void cv_finish8(int k0, int k1, unsigned out, U32 cgwsel, U32 cgadsub, U3
     room();
     wtarget(out);
     if (!s_prebuild)
-        scissor(0, k0, n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     sceGuPixelMask(0x00FFFFFFu | (uint32_t)(~F_HALF & 0xFF) << 24);
     sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
     rect(0, k0, n, k1, 0);
@@ -2626,7 +2636,7 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
     room();
     wtarget(V_WM);
     if (!s_prebuild)
-        scissor(0, k0, n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_BLEND);
     sceGuEnable(GU_STENCIL_TEST);
@@ -2675,7 +2685,7 @@ static void cv_finish(uint32_t si, int Y, int k0, int k1, unsigned out)
     /* the colours: each channel through its lookup */
     wtarget(out);
     if (!s_prebuild)
-        scissor(0, k0, n, k1);
+        scissor(s_cx0, k0, s_cx1, k1);
     rect(0, k0, n, k1, 0);
     if (inidisp & 0x80u)
         return;                              /* forced blank: black */
@@ -2949,6 +2959,8 @@ static void cv_classes(void)
     for (r = 0; r < s_cw.ph; r++) {
         if (s_cw.run[r] != r)
             continue;
+        if (FD_(FD_(CP_ROWS) + 4u * (U32)r + 1u) != 1u)
+            continue;                        /* (a row of parts: its passes made as drawn) */
         if (s_ncls == CV_STATES || (char *)(at + 3 * 8192 / 4) > (char *)(s_cva + sizeof s_cva / 4)) {
             /* (too many: none made, each drawn as it comes) */
             for (c = 0; c < s_cw.ph; c++)
@@ -3031,12 +3043,44 @@ static void cv_group(const CvGroup *g)
                 int k1 = k + 1, run = s_cw.run[rj[g->Ya + k - s_cw.Y0]];
                 while (k1 < nr && s_cw.run[rj[g->Ya + k1 - s_cw.Y0]] == run)
                     k1++;
-                int c = s_cvcls[run];
-                cv_index_rows(g->Ya, rj, k, k1);
+                int c = s_cvcls[run], r = rj[g->Ya + k - s_cw.Y0];
+                U32 ri = FD_(CP_ROWS) + 4u * (U32)r, p0 = FD_(ri), np = FD_(ri + 1u), pk;
+                if (np > 1u) {
+                    /* a row of parts (a state changed in the line): each
+                       part's state over the target's columns whose picture
+                       column (i's) is the part's */
+                    const int *tx = i ? s_cw.a->tx1 : s_cw.a->tx0;
+                    for (pk = 0; pk < np; pk++) {
+                        U32 part = p0 + pk, sp = FD_(FD_(CP_PARTS) + 4u * part + 1u);
+                        int c0 = pk ? (int)(FD_(FD_(CP_PARTS) + 4u * part) + FD_(CP_SL)) : 0;
+                        int c1 = pk + 1u < np ? (int)(FD_(FD_(CP_PARTS) + 4u * (part + 1u)) + FD_(CP_SL)) : (int)FD_(CP_SW);
+                        int xa = 0, xb;
+                        if (pk == 0u)
+                            c0 = -0x10000;
+                        if (pk + 1u == np)
+                            c1 = 0x10000;
+                        while (xa < s_cw.n && tx[xa] < c0)
+                            xa++;
+                        for (xb = xa; xb < s_cw.n && tx[xb] < c1; xb++)
+                            ;
+                        if (xb <= xa)
+                            continue;
+                        s_cx0 = xa;
+                        s_cx1 = xb;
+                        cv_index_rows(g->Ya, rj, k, k1, sp);
+                        cv_insert(sp, g->Ya + k, k, k1);
+                        cv_finish(sp, g->Ya + k, k, k1, i ? V_G1 : V_G0);
+                    }
+                    s_cx0 = 0;
+                    s_cx1 = s_cw.n;
+                    k = k1;
+                    continue;
+                }
+                cv_index_rows(g->Ya, rj, k, k1, NO_PART);
                 if (c >= 0) {
                     /* (its lists: the rows scissored) */
                     room();
-                    scissor(0, k, s_cw.n, k1);
+                    scissor(s_cx0, k, s_cx1, k1);
                     sceGuCallList(s_cvins[c]);
                     sceGuCallList(s_cvfin[c][i]);
                 } else {
@@ -3280,10 +3324,9 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         return 0;
     n = FD_(CP_CVLAYER);
     for (r = 0; r < ph; r++) {
-        U32 ri = FD_(CP_ROWS) + 4u * r, si, mode, mos;
-        if (FD_(ri + 1u) != 1u)
-            return 0;
-        si = FD_(FD_(CP_PARTS) + 4u * FD_(ri) + 1u);
+        U32 ri = FD_(CP_ROWS) + 4u * r, si, mode, mos, pk;
+        for (pk = 0; pk < FD_(ri + 1u); pk++) {
+        si = FD_(FD_(CP_PARTS) + 4u * (FD_(ri) + pk) + 1u);
         cp_load(si);                         /* (cp_b's state: the row's own) */
         mode = cp_b(si, U_(CP_S_INIDISP), 2u) & 7u;
         mos = cp_b(si, U_(CP_S_INIDISP), 3u);
@@ -3291,6 +3334,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
         if (mode == 7u || mode == 5u || mode == 6u || (cp_b(si, U_(CP_S_NBA), 3u) & 0x08u) || (((mos >> n) & 1u) && (mos >> 4)) ||
             (sw > (U32)PIC_W && (mos & 0x0Fu) && (mos >> 4)))
             return 0;
+        }
     }
     s_cv = (int)n;
     s_pw = sw > (U32)PIC_W ? 512 : PIC_W;
@@ -3305,6 +3349,8 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     s_cw.a = a;
     memcpy(s_cw.d, d, sizeof s_cw.d);
     s_cw.n = w;
+    s_cx0 = 0;
+    s_cx1 = w;
     s_cw.X0 = d[0];
     s_cw.Y0 = d[1];
     s_cw.Y1 = d[3];
@@ -3335,6 +3381,8 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
             const uint32_t *b = &FD_(FD_(CP_STATES) + row_state((int)r - 1) * U_(CP_ST));
             same = a == b || (a[CP_S_INIDISP] == b[CP_S_INIDISP] && a[CP_S_TSW] == b[CP_S_TSW] &&
                               ((a[CP_S_FIXED] ^ b[CP_S_FIXED]) & 0x00FFFFFFu) == 0u);
+            /* (a row of parts its own) */
+            same = same && FD_(FD_(CP_ROWS) + 4u * r + 1u) == 1u && FD_(FD_(CP_ROWS) + 4u * (r - 1u) + 1u) == 1u;
         }
         s_cw.run[r] = (uint16_t)(same ? s_cw.run[r - 1] : r);
     }

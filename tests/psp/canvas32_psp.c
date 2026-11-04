@@ -22,6 +22,9 @@
  *              window 1 (nshvc_ext_window_columns); the canvas's colour 1
  *              (CGRAM 81) rewritten each line by HDMA
  *   windows    prevented's but CGRAM as it is (no HDMA to it)
+ *   midline    plain's, and each frame, at lines 40-200 (each 20th) part way
+ *              across, BG2's scroll and the main screen's layers (BG2 on,
+ *              off) written: rows of parts
  *   wide       prevented's on a 338 x 224 screen (the console's picture at
  *              its centre), BG2 on VRAM page 1 with its own map outside the
  *              picture (128 x 64), sprites on, some on X pages 1 and -1
@@ -65,8 +68,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -202,6 +205,7 @@ static void setup(int sc)
     switch (sc) {
     case S_PLAIN:
     case S_FADE:
+    case S_MIDLINE:
         w(0x2C, 0x03);
         break;
     case S_CLIP:
@@ -279,10 +283,48 @@ static void make_texels(void)
     }
 }
 
+/* the beam at or past line t[0], dot t[1], in the picture (before the
+   vertical blank: a frame's waits begin at the one before) (the counters
+   latched, $2137) */
+static int at_beam(void *ctx)
+{
+    const int *t = (const int *)ctx;
+    unsigned h, v;
+    rd8(0x2137);
+    rd8(0x213F);
+    h = rd8(0x213C);
+    h |= (rd8(0x213C) & 1u) << 8;
+    v = rd8(0x213D);
+    v |= (rd8(0x213D) & 1u) << 8;
+    return v < SC_H + 1u && ((int)v > t[0] || ((int)v == t[0] && (int)h >= t[1]));
+}
+
+/* a frame: midline's writes in it, then the wait for the next vblank */
+static void frame(int sc)
+{
+    if (sc == S_MIDLINE) {
+        int L;
+        for (L = 40; L <= 200; L += 20) {
+            int t[2] = { L, 60 + (L * 7) % 200 };
+            nshvc_wait_until(at_beam, t);
+            w(0x0F, (unsigned)(L * 3) & 0xFF);
+            w(0x0F, 0);
+            w(0x2C, (L / 20) & 1 ? 0x01 : 0x03);
+        }
+    }
+    nshvc_wait_vblank();
+    if (sc == S_MIDLINE) {
+        w(0x0F, 0);
+        w(0x0F, 0);
+        w(0x2C, 0x03);
+    }
+}
+
 static void game(void)
 {
     int sc, f;
     wr8(0x004200, 0x00);
+    wr8(0x004201, 0xFF);                   /* (the counters latched by a read of $2137) */
     nshvc_ext_vram(128);
     hdma_tables();
     for (sc = 0; sc < NSCENES; sc++) {
@@ -298,7 +340,7 @@ static void game(void)
         hi = 0;
         for (f = 0; f < FRAMES; f++) {
             uint64_t t1 = now_us(), dt;
-            nshvc_wait_vblank();
+            frame(sc);
             dt = now_us() - t1;
             lo = dt < lo ? dt : lo;
             hi = dt > hi ? dt : hi;
