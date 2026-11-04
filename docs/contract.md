@@ -155,9 +155,10 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   console's picture, the compositor and every renderer's presentation alike; k 1 to 64 as
   before. `nshvc_ext_canvas_presented(&w, &h)`: the window pixels the console's screen was
   last presented over, the size such a canvas is presented at a texel a window pixel.
-  `nshvc_ext_ge_vram(&bytes)`: GPU memory lent to the game's own GPU drawing while its
-  run of the frame lasts (the PSP: VRAM, one screen buffer, 557,056 bytes; NULL
-  elsewhere), its work on it done and the graphics library's state as found by then.
+  `nshvc_ext_ge_vram(&bytes)`: GPU memory lent to the game's own GPU drawing until the
+  frame is next presented, through its run of the frame and the frame hook (the PSP:
+  VRAM, one screen buffer, 557,056 bytes; NULL elsewhere), its work on it done by then;
+  the GPU's state put back after, the graphics library's kept buffers left as found.
 - **2.14:** `nshvc_ext_canvas_screen32(layer, texels, w, h, k, priority, palette)`:
   `nshvc_ext_canvas_screen` with texels of 32 bits: 0 transparent; `0x000000ii` (ii not 0)
   CGRAM index ii, resolved as that canvas's texel ii (each line's palette, so HDMA's

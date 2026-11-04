@@ -519,7 +519,11 @@ static int m7_cols_cap, m7_rows_cap;
    is drawn as its picture scaled (no Mode 7 or canvas in it, or an
    interlaced weave) */
 /* (rr.h: a backend that presents Mode 7 as any frame says so) */
-__attribute__((weak)) int rr_mode7_window(void) { return 1; }
+__attribute__((weak)) int rr_mode7_window(int what)
+{
+    (void)what;
+    return 1;
+}
 
 static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
 {
@@ -789,9 +793,9 @@ static void show(void)
         rr_overlay(backdrop, backdrop_w, backdrop_h, q);
     } else if (paused)
         ;                                /* no backdrop could be made: black */
-    else if (rr_mode7_window() && show_mode7(w, h, d))
+    else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(w, h, d))
         ;
-    else if (rr_mode7_window() && mode7_prepare(w, h, &m, &smp))
+    else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && mode7_prepare(w, h, &m, &smp))
         rr_mode7(&m, d, &smp);
     else
         show_picture(d);
@@ -848,7 +852,7 @@ static void rr_check(void)
     rr_begin(0xFF000000u);
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
-    if (rr_mode7_window() && ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
+    if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
         int gpu;
         recorded = 1;
         /* the compositor's records where the renderer has one (drawn

@@ -531,10 +531,15 @@ void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, 
 /* The GPU's memory the game's own GPU drawing may use (an Enhanced mode's
    picture drawn by the game with the platform's graphics library, its
    texels then handed to a canvas): its address on the GPU's bus, *bytes
-   of it (bytes may be NULL), lent from the call until the game's run of
-   the frame returns, its contents not kept; the game's work on it done
-   (its lists finished and synced) by then, and the graphics library's
-   own state left as found. NULL (and 0) on a platform with none to lend.
+   of it (bytes may be NULL), lent from the call until the frame is next
+   presented (through the game's run of the frame and the frame hook,
+   nshvc_hooks.frame, after it), its contents not kept; the game's work on
+   it done (its lists finished and synced) by then. The GPU's own state is
+   put back after; the graphics library's kept state (on the PSP: its
+   draw, depth and display buffers, so no sceGuDrawBuffer, sceGuDepthBuffer,
+   sceGuDispBuffer, sceGuDisplay, sceGuSwapBuffers, sceGuInit or sceGuTerm;
+   sceGuDrawBufferList instead) left as found. NULL (and 0) on a platform
+   with none to lend, or headless with no renderer open.
    On the PSP: VRAM, 557,056 bytes (8 KB aligned), the screen's buffer
    neither shown nor waiting to be. (Since 2.15.) */
 void *nshvc_ext_ge_vram(size_t *bytes);

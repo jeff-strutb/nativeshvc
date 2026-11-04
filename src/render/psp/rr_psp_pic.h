@@ -30,6 +30,27 @@ static inline uint32_t rr_psp_picture_argb(uint16_t p)
     uint32_t r = p & 31u, g = (p >> 5) & 31u, b = (p >> 10) & 31u;
     return 0xFF000000u | (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2);
 }
+/* A geometry's stage across (rr_psp.c): the n visible columns from X0,
+   each one's two picture columns (tx0, tx1: the same where it takes one),
+   and its table's columns (cols[first[i] ..] count[i] of them for table
+   i), each table's lookups (H+, H-) and exceptions (a, b, the move) */
+typedef struct {
+    int n, X0, ntab;
+    const int *tx0, *tx1, *cols, *first, *count, *nex;
+    const uint32_t (*clut)[2][256];
+    const int (*ex)[48][3];
+} RrPspAcross;
+/* the geometry for a picture pw x ph over d, made as the picture's
+   scaling makes it: 0 where it has none */
+int rr_psp_across(int pw, int ph, const int d[4], RrPspAcross *a);
+/* a frame's screen canvas presented a texel a target pixel (rr.h
+   rr_compose_mode7), over d (the canvas's size), into the frame's buffer
+   at fb (its offset in VRAM, 512 pixels a row): the console's rules at
+   each of the picture pixels under each target pixel with the canvas's
+   texel there, blended as the picture is; 0 when the frame has what is
+   not drawn so (the caller draws it) */
+int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned fb, const RrPspAcross *a);
+
 /* VRAM past the screen's buffers: the picture (512 x 240, 16 bits), then
    what the picture's drawing uses only while drawing it (offsets from
    VRAM's start) */

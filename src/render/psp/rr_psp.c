@@ -797,19 +797,42 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
     return present_picture(ww, wh, d);
 }
 
-/* Mode 7 and a canvas presented as any frame: the picture at the
-   console's resolution (rr_psp_pic.c draws Mode 7's lines), scaled */
-int rr_mode7_window(void) { return 0; }
+/* Mode 7 presented as any frame: the picture at the console's resolution
+   (rr_psp_pic.c draws Mode 7's lines), scaled; a canvas (with no Mode 7
+   line) at the screen's resolution (rr_mode7) */
+int rr_mode7_window(int what) { return !(what & 1); }
 
+int rr_psp_across(int pw, int ph, const int d[4], RrPspAcross *a)
+{
+    if (!(d[2] > d[0] && d[3] > d[1]) || !geometry(pw, ph, d))
+        return 0;
+    a->n = s_g->n;
+    a->X0 = s_g->X0;
+    a->ntab = s_g->ntab;
+    a->tx0 = s_g->tx0;
+    a->tx1 = s_g->tx1;
+    a->cols = s_g->cols;
+    a->first = s_g->first;
+    a->count = s_g->count;
+    a->nex = s_g->nex;
+    a->clut = (const uint32_t(*)[2][256])s_g->clut;
+    a->ex = (const int(*)[48][3])s_g->ex;
+    return 1;
+}
+
+/* a canvas frame: on the GE where it is drawn there (rr_psp_canvas), else
+   the reference's drawing (rr_mode7) */
 int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
                      const struct RrM7Samples *s)
 {
-    (void)desc;
-    (void)words;
-    (void)m;
-    (void)d;
+    RrPspAcross a;
     (void)s;
-    return 0;
+    if (!s_screen)
+        return 0;
+    list_done();
+    if (!rr_psp_across(m->pw, m->ph, d, &a))
+        return 0;
+    return rr_psp_canvas(desc, words, d, (unsigned)((char *)s_fb - (char *)sceGeEdramGetAddr()), &a);
 }
 
 /* ---- on the CPU, over the frame the GE drew ---- */
