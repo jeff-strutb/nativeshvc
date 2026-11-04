@@ -5,7 +5,7 @@
  * reference's drawing with NSHVC_RRCHECK=1 (src/front/console.c, within 1
  * a channel), and the frame's time, a scene at a time. The console's
  * picture 256 x 224 (320 x 240 with CANVAS32_SCREEN), BG1 the canvas (4 bpp, palette 5) over BG2's tiles;
- * its texels: 0 (clear), an index, or a colour 0xFFrrggbb at random:
+ * its texels: 0 (clear), an index, or a colour 0xttrrggbb (tt 1-255) at random:
  *
  *   plain      no colour maths
  *   fade       brightness 9
@@ -34,6 +34,10 @@
  *              frame's picture 512 across
  *   chars      hires's with a canvas of characters instead (BG1's first
  *              512 characters at k 2, nshvc_ext_canvas_chars)
+ *   odd        plain's with a canvas of 479 x 271 texels over the screen
+ *              (its rows no multiple of 16 bytes: copied for the GE)
+ *   small      plain's with a canvas of 200 x 150 texels at k 1 (the texels
+ *              past it read: clear)
  *   clipped    wide's with BG2 and the sprites kept to the console's picture
  *              (nshvc_ext_layer_clip)
  *   tall       clipped's on a 338 x 240 screen: rows above and below the
@@ -82,8 +86,8 @@ static uint64_t now_us(void)
 #define PAL 5
 #define FRAMES 8                       /* frames a scene */
 
-enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_HIRES, S_CHARS, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
-static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "hires", "chars", "clipped", "tall", "noncanvas", "wide" };
+enum { S_PLAIN, S_FADE, S_CLIP, S_FIXED, S_FIXEDSUB, S_ADDSUB, S_ONSUB, S_BOTH, S_PREVENTED, S_WINDOWS, S_MIDLINE, S_MOSAIC, S_MODE7, S_HIRES, S_CHARS, S_ODD, S_SMALL, S_CLIPPED, S_TALL, S_NONCANVAS, S_WIDE, NSCENES };
+static const char *const scene_name[NSCENES] = { "plain", "fade", "clip", "fixed", "fixedsub", "addsub", "onsub", "both", "prevented", "windows", "midline", "mosaic", "mode7", "hires", "chars", "odd", "small", "clipped", "tall", "noncanvas", "wide" };
 
 static unsigned rng = 4711;
 static unsigned rnd(void)
@@ -226,6 +230,8 @@ static void setup(int sc)
     case S_MODE7:
     case S_HIRES:
     case S_CHARS:
+    case S_ODD:
+    case S_SMALL:
         w(0x2C, 0x03);
         if (sc == S_MODE7) {
             static const unsigned m7[4][2] = { { 0x1B, 0x0100 }, { 0x1C, 0 }, { 0x1D, 0 }, { 0x1E, 0x0100 } };
@@ -311,7 +317,8 @@ static void make_texels(void)
         (void)r;
         tx[i] = v;                     /* (indices alone: the canvas path as before) */
 #else
-        tx[i] = !v || r == 0 ? 0u : r == 1 ? v : 0xFF000000u | (rnd() & 0xFFFFFFu);
+        /* (a colour's top byte any but 0: 1-255) */
+        tx[i] = !v || r == 0 ? 0u : r == 1 ? v : (1u + rnd() % 255u) << 24 | (rnd() & 0xFFFFFFu);
 #endif
     }
 }
@@ -398,7 +405,9 @@ static void game(void)
                 chars[i] = (uint8_t)(rnd() & 15);
             nshvc_ext_canvas_chars(0, 0, 512, chars, 2);
         } else {
-            nshvc_ext_canvas_screen32(0, sc == S_NONCANVAS ? NULL : tx, TEX_W, TEX_H, 0, sc == S_PLAIN ? 0 : 1, PAL);
+            int cw = sc == S_ODD ? TEX_W - 1 : sc == S_SMALL ? 200 : TEX_W;
+            int ch = sc == S_ODD ? TEX_H - 1 : sc == S_SMALL ? 150 : TEX_H;
+            nshvc_ext_canvas_screen32(0, sc == S_NONCANVAS ? NULL : tx, cw, ch, sc == S_SMALL ? 1 : 0, sc == S_PLAIN ? 0 : 1, PAL);
         }
         w(0x00, sc == S_FADE ? 0x09 : sc == S_ADDSUB ? 0x0B : 0x0F);
         nshvc_wait_vblank();

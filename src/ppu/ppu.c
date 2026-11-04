@@ -115,12 +115,52 @@ static struct {
     int fx, fy;                       /* over the whole screen (k 0): w, h (else 0) */
     int rgb;                          /* its texels 32 bits each (nshvc_ext_canvas_screen32) */
     unsigned addr, count;
-    uint8_t *data;
-    size_t len, cap;
+    int buf;                          /* its texels' buffer (cv_buf), -1 none */
+    size_t len;
     uint32_t gen;
-} cv_now;
-static uint8_t *cv_kept[3];           /* each frame record's copy of it */
-static size_t cv_kept_cap[3];
+} cv_now = { .buf = -1 };
+/* The canvases' texels: each asked for copied once into a buffer, which
+   the canvas asked for and each frame record that took it hold (refs; the
+   frame records' own, cv_slot), so a frame keeps the texels it began with
+   without a copy of its own; 64-byte aligned (a GPU reads them as they
+   are). At most the canvas asked for and three frames' at once. */
+#define CV_BUFS 5
+static struct {
+    uint8_t *raw, *data;
+    size_t cap;
+    int refs;
+} cv_buf[CV_BUFS];
+static int cv_slot[3] = { -1, -1, -1 };
+
+static void cv_release(int *b)
+{
+    if (*b >= 0)
+        cv_buf[*b].refs--;
+    *b = -1;
+}
+
+/* the canvas asked for: its texels (len bytes) copied into a free buffer */
+static void cv_fill(const void *texels, size_t len)
+{
+    int b, pick = -1;
+    cv_release(&cv_now.buf);
+    for (b = 0; b < CV_BUFS; b++)
+        if (!cv_buf[b].refs && (pick < 0 || (cv_buf[b].cap >= len && cv_buf[pick].cap < len)))
+            pick = b;
+    if (pick < 0)
+        snes_fatal("the canvas's buffers all held (%d)", CV_BUFS);
+    if (cv_buf[pick].cap < len) {
+        free(cv_buf[pick].raw);
+        cv_buf[pick].raw = (uint8_t *)malloc(len + 64);
+        if (!cv_buf[pick].raw)
+            snes_fatal("no memory for the canvas (%zu bytes)", len);
+        cv_buf[pick].data = cv_buf[pick].raw + ((64u - ((uintptr_t)cv_buf[pick].raw & 63u)) & 63u);
+        cv_buf[pick].cap = len;
+    }
+    memcpy(cv_buf[pick].data, texels, len);
+    cv_buf[pick].refs++;
+    cv_now.buf = pick;
+}
 static int cv_scale = 1;              /* the window's texels a console pixel (ppu_set_canvas_scale) */
 
 /* the data ports: where the game's writes of tiles, palette and sprites go */
@@ -249,6 +289,7 @@ void ppu_reset(void)
     h_flip = v_flip = latch_flag = field = 0;
     live_vline = live_n = 0;
     cv_now.on = 0;
+    cv_release(&cv_now.buf);
     cv_now.gen++;
 }
 
@@ -815,6 +856,7 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     size_t len;
     if (!texels || count <= 0) {
         cv_now.on = 0;
+        cv_release(&cv_now.buf);
         cv_now.gen++;
         return;
     }
@@ -823,14 +865,7 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
                    "(the layer's page below $8000, VRAM's pages from it), at most 4,096 characters, k 1 to 64",
                    layer, word_addr, count, k, (unsigned)vram_pages << 15);
     len = (size_t)count * 64u * (size_t)k * (size_t)k;
-    if (len > cv_now.cap) {
-        uint8_t *n = (uint8_t *)realloc(cv_now.data, len);
-        if (!n)
-            snes_fatal("no memory for the canvas (%zu bytes)", len);
-        cv_now.data = n;
-        cv_now.cap = len;
-    }
-    memcpy(cv_now.data, texels, len);
+    cv_fill(texels, len);
     cv_now.on = 1;
     cv_now.screen = 0;
     cv_now.rgb = 0;
@@ -857,6 +892,7 @@ static void canvas_screen(const char *name, int layer, const void *texels, size_
     size_t len;
     if (!texels) {
         cv_now.on = 0;
+        cv_release(&cv_now.buf);
         cv_now.gen++;
         return;
     }
@@ -867,14 +903,7 @@ static void canvas_screen(const char *name, int layer, const void *texels, size_
                    "up to 65,535 x 65,535), priority 0 or 1, palette 0-7",
                    name, layer, w, h, k, priority, palette);
     len = (size_t)w * (size_t)h * size;
-    if (len > cv_now.cap) {
-        uint8_t *n = (uint8_t *)realloc(cv_now.data, len);
-        if (!n)
-            snes_fatal("no memory for the canvas (%zu bytes)", len);
-        cv_now.data = n;
-        cv_now.cap = len;
-    }
-    memcpy(cv_now.data, texels, len);
+    cv_fill(texels, len);
     cv_now.on = 1;
     cv_now.screen = 1;
     cv_now.rgb = size == 4;
@@ -907,17 +936,13 @@ static void cv_take(void)
     int slot = (int)(making - frames);
     if (!cv_now.on) {
         making->cv_on = 0;
+        cv_release(&cv_slot[slot]);
         return;
     }
-    if (!making->cv_on || making->cv_gen != cv_now.gen) {
-        if (cv_now.len > cv_kept_cap[slot]) {
-            uint8_t *n = (uint8_t *)realloc(cv_kept[slot], cv_now.len);
-            if (!n)
-                snes_fatal("no memory for the canvas (%zu bytes)", cv_now.len);
-            cv_kept[slot] = n;
-            cv_kept_cap[slot] = cv_now.len;
-        }
-        memcpy(cv_kept[slot], cv_now.data, cv_now.len);
+    if (cv_slot[slot] != cv_now.buf) {
+        cv_release(&cv_slot[slot]);
+        cv_slot[slot] = cv_now.buf;
+        cv_buf[cv_now.buf].refs++;
     }
     making->cv_on = 1;
     making->cv_layer = cv_now.layer;
@@ -933,7 +958,7 @@ static void cv_take(void)
     making->cv_pal = cv_now.pal;
     making->cv_rgb = cv_now.rgb;
     making->cv_len = cv_now.len;
-    making->cv = cv_kept[slot];
+    making->cv = cv_buf[cv_now.buf].data;
     making->cv_gen = cv_now.gen;
 }
 
