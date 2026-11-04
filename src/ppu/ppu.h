@@ -55,6 +55,8 @@ typedef struct {
 typedef struct {
     PpuScreen line[PPU_MAX_HEIGHT + 1];         /* lines 1 to height */
     uint16_t palette[PPU_MAX_HEIGHT + 1][256];
+    uint8_t pal_same[PPU_MAX_HEIGHT + 1];       /* the line's palette the line before's (its last,
+                                                   and its only: neither line in segments) */
     uint8_t version[PPU_MAX_HEIGHT + 1];        /* the copy each line shows */
     uint8_t mosaic_row[PPU_MAX_HEIGHT + 1];     /* the line a vertical mosaic repeats */
     int height;                                 /* 224, or 239 with overscan */
@@ -69,6 +71,9 @@ typedef struct {
                                                    lines are the field's rows of a picture twice as
                                                    tall, woven with the frame before's */
     int versions;
+    uint64_t vram_gen[PPU_VERSIONS];            /* each copy's VRAM writes before it (and its
+                                                   size's changes): two copies with the same,
+                                                   the same words */
     uint16_t vram[PPU_VERSIONS][PPU_VRAM_PAGES * 0x8000];
     uint8_t oam[PPU_VERSIONS][PPU_OAM_EXT];     /* the table, then the sprites' X and Y pages */
     uint8_t segs[PPU_MAX_HEIGHT + 1];           /* segments past the first (0: none) */

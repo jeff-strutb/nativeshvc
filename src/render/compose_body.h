@@ -70,7 +70,10 @@
 #define CP_CVW 23        /* its texels across and down */
 #define CP_CVH 24
 #define CP_TOP 25        /* the hardware's line 1's row */
-#define CP_HEADER 26
+#define CP_VCOPY 26      /* a VRAM copy's 16-bit words */
+#define CP_VGEN 27       /* each copy's count of VRAM writes before it (ppu.h vram_gen), low
+                            word then high: copies with the same count, the same words */
+#define CP_HEADER 35
 
 #define CP_ST 28         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */

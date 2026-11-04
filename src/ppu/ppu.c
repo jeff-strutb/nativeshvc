@@ -35,6 +35,8 @@
 #include "snes.h"
 
 static uint16_t vram[PPU_VRAM_PAGES * 0x8000];
+static uint64_t vram_gen;             /* VRAM's writes (and size changes) so far: a copy's (take_version) */
+static uint64_t cgram_gen;            /* CGRAM's writes so far: whether a line's palette is the last's */
 static int vram_pages = 1;            /* nshvc_ext_vram */
 static unsigned port_page;            /* the page the data port reads and writes */
 static int direct_page = -1;          /* nshvc_ext_vram_direct: the data port's writes land here at once */
@@ -198,11 +200,13 @@ int ppu_line_hires(const PpuScreen *l)
 void ppu_reset(void)
 {
     memset(vram, 0, sizeof vram);
+    vram_gen++;
     vram_pages = 1;
     port_page = 0;
     direct_page = -1;
     hidden_dirty = 0;
     memset(cgram, 0, sizeof cgram);
+    cgram_gen++;
     memset(oam, 0, sizeof oam);
     if (picture)
         memset(picture, 0, picture_cap * sizeof *picture);
@@ -504,10 +508,12 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
         if (direct_page >= 0) {
             a = (uint32_t)direct_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
             vram[a] = (uint16_t)((vram[a] & 0xFF00) | v);
+            vram_gen++;
             page_changed((unsigned)direct_page);
         } else if (vram_open()) {
             dirty = 1;
             vram[a] = (uint16_t)((vram[a] & 0xFF00) | v);
+            vram_gen++;
         }
         if (!(vmain & 0x80))
             vram_step();
@@ -518,10 +524,12 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
         if (direct_page >= 0) {
             a = (uint32_t)direct_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
             vram[a] = (uint16_t)((vram[a] & 0x00FF) | v << 8);
+            vram_gen++;
             page_changed((unsigned)direct_page);
         } else if (vram_open()) {
             dirty = 1;
             vram[a] = (uint16_t)((vram[a] & 0x00FF) | v << 8);
+            vram_gen++;
         }
         if (vmain & 0x80)
             vram_step();
@@ -541,6 +549,7 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
             cg_flip = 1;
         } else {
             cgram[cgram_target(4)] = (uint16_t)((v & 0x7F) << 8 | cg_latch);
+            cgram_gen++;
             cgaddr++;
             cg_flip = 0;
         }
@@ -666,6 +675,7 @@ void ppu_ext_vram(int kb)
     if (kb < 64 || kb > 64 * PPU_VRAM_PAGES || kb % 64)
         snes_fatal("nshvc_ext_vram(%d): 64 to %d KB, in 64 KB pages", kb, 64 * PPU_VRAM_PAGES);
     vram_pages = kb / 64;
+    vram_gen++;
     dirty = 1;
 }
 
@@ -761,6 +771,7 @@ void ppu_ext_vram_copy(int to_page, int from_page)
     if (to_page == from_page)
         return;
     memcpy(&vram[(unsigned)to_page << 15], &vram[(unsigned)from_page << 15], 0x8000 * sizeof vram[0]);
+    vram_gen++;
     page_changed((unsigned)to_page);
 }
 
@@ -1932,6 +1943,7 @@ static void take_version(void)
 {
     if (making->versions < PPU_VERSIONS) {
         memcpy(making->vram[making->versions], vram, (size_t)vram_pages * 0x8000 * sizeof vram[0]);
+        making->vram_gen[making->versions] = vram_gen;
         memcpy(making->oam[making->versions], oam, sizeof oam);
         memcpy(making->oam[making->versions] + 544, ext_xp, sizeof ext_xp);
         memcpy(making->oam[making->versions] + 672, ext_yp, sizeof ext_yp);
@@ -1942,6 +1954,12 @@ static void take_version(void)
     dirty = 0;
     hidden_dirty = 0;
 }
+
+/* the last line recorded with CGRAM as its palette (record_line): its
+   number (0: none since), frame and CGRAM's writes then */
+static unsigned pal_line;
+static const PpuFrame *pal_frame;
+static uint64_t pal_gen;
 
 static void record_line(unsigned line)
 {
@@ -1997,9 +2015,16 @@ static void record_line(unsigned line)
             k++;
         }
         making->segs[line] = (uint8_t)k;
+        making->pal_same[line] = 0;
+        pal_line = 0;
     } else {
         making->line[line] = cur;
         memcpy(making->palette[line], cgram, sizeof cgram);
+        /* (the line before this frame's, its palette CGRAM as this one's) */
+        making->pal_same[line] = pal_line && pal_line == line - 1 && pal_frame == making && pal_gen == cgram_gen;
+        pal_line = line;
+        pal_frame = making;
+        pal_gen = cgram_gen;
     }
     live_n = 0;
     if (!(making->line[line].inidisp & 0x80) && ppu_line_hires(&making->line[line]))
@@ -2360,7 +2385,8 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     for (line = 1; line <= (unsigned)f->height; line++)
         for (k = 0; k <= f->segs[line]; k++) {
             const uint16_t *p = k ? f->seg_palette[line][k - 1] : f->palette[line];
-            if (!last_pal || memcmp(p, last_pal, 512)) {
+            /* (a line's the line before's, its last: pal_same) */
+            if (!last_pal || (!(k == 0 && line > 1 && f->pal_same[line]) && memcmp(p, last_pal, 512))) {
                 /* two colours a word, the first the low half: in memory,
                    the colours in order on a little-endian host (the
                    canvas's below), so one copy */
@@ -2478,6 +2504,12 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVW] = (uint32_t)f->cv_w;
     cp_w[CP_CVH] = (uint32_t)f->cv_h;
     cp_w[CP_TOP] = (uint32_t)f->top;
+    cp_w[CP_VCOPY] = (uint32_t)vwords;
+    for (v = 0; v < PPU_VERSIONS; v++) {
+        uint64_t g = v < (size_t)f->versions ? f->vram_gen[v] : 0;
+        cp_w[CP_VGEN + 2 * v] = (uint32_t)g;
+        cp_w[CP_VGEN + 2 * v + 1] = (uint32_t)(g >> 32);
+    }
     *words = n + cp_parts_n + cp_spr_n;
     return cp_w;
 }

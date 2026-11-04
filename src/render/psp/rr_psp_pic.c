@@ -131,6 +131,7 @@ typedef struct {
     int used;
     uint32_t key;                            /* the copy's first word and page */
     uint32_t frame;                          /* the frame it was last brought up to date in */
+    uint64_t gen;                            /* its copy's count of VRAM writes (CP_VGEN) then */
     uint16_t shadow[0x8000];                 /* the words its textures were decoded from */
     uint8_t *tex[5];                         /* 2, 4, 8 bits: 4096, 2048, 1024 tiles; then 2 and 4 bits
                                                 split, each row's texels 0, 2, 4, 6, 1, 3, 5, 7 (a hires
@@ -224,10 +225,16 @@ static Atlas *atlas(const uint16_t *words, uint32_t base, int kind)
     }
     if (a->frame != s_frame) {
         /* this frame's words against those decoded: the runs that changed,
-           decoded again in each kind already made */
+           decoded again in each kind already made; none when its copy's
+           count of VRAM writes is the one they were last checked against
+           (the same writes, the same words) */
         const uint16_t *src = words + base;
+        U32 v = base / FD_(CP_VCOPY);
+        uint64_t gen = FD_(CP_VGEN + 2u * v) | (uint64_t)FD_(CP_VGEN + 2u * v + 1u) << 32;
         int any = 0;
-        if (memcmp(src, a->shadow, sizeof a->shadow) != 0)
+        if (a->frame && gen == a->gen)
+            ;
+        else if (memcmp(src, a->shadow, sizeof a->shadow) != 0)
             for (i = 0; i < 4096; i++) {
                 a->dirty[i] = memcmp(src + i * 8, a->shadow + i * 8, 16) != 0;
                 any |= a->dirty[i];
@@ -249,6 +256,7 @@ static Atlas *atlas(const uint16_t *words, uint32_t base, int kind)
             }
         }
         a->frame = s_frame;
+        a->gen = gen;
     }
     if (!a->tex[kind]) {
         size_t bytes = kind_bytes(kind);
@@ -1011,8 +1019,8 @@ static void ob_flush(void)
 /* The rows from r (before s1) whose sprites draw together (draw_obj_rows):
    each a part alone, of the same state and index band (ix: each row's),
    its sprites the same as r's (their X, name, columns, flips, palette,
-   priority, kept) but their rows, each on by 1 or -1 a row, the same each
-   row (step[i]); the end of them */
+   priority, kept) but their rows, each on by 1 or -1 a row (2 or -2 with
+   OBJ interlace), the same each row (step[i]); the end of them */
 static int obj_rows(int r, int s1, const int *ix, signed char *step)
 {
     U32 ri = FD_(CP_ROWS) + 4u * (U32)r, part = FD_(ri), si = FD_(FD_(CP_PARTS) + 4u * part + 1u);
@@ -1035,7 +1043,7 @@ static int obj_rows(int r, int s1, const int *ix, signed char *step)
             if (g == r + 1) {
                 /* the step: the first two rows' */
                 U32 u = ((fj & 0xFFu) - (f & 0xFFu)) & 0xFFu;
-                step[i] = (signed char)(u == 1u ? 1 : u == 0xFFu ? -1 : 0);
+                step[i] = (signed char)(u == 1u ? 1 : u == 0xFFu ? -1 : u == 2u ? 2 : u == 0xFEu ? -2 : 0);
                 if (!step[i])
                     break;
             } else if ((U32)(((int)(f & 0xFFu) + step[i] * (g - r)) & 0xFF) != (fj & 0xFFu)) {
@@ -1048,19 +1056,98 @@ static int obj_rows(int r, int s1, const int *ix, signed char *step)
     return g;
 }
 
+/* One sprite of rows ga-gb (draw_obj_rows) at its entry e, its rows on by
+   d a row; dbl: d 2 or -2 (its rows every other row of its tiles), a
+   constant in each of the two made of this, so the other has none of it.
+   cur: the stencil, palette and image last set. */
+static inline __attribute__((always_inline)) void obj_sprite(Atlas *a, U32 e, int d, const int dbl, int ga, int gb,
+                                                             U32 base, U32 gap, int sl, int cur[3])
+{
+    U32 f = FD_(e + 1u), name = FD_(e + 2u), col;
+    I32 sxp = I_(FD_(e)), keep = I_((f >> 18) & 63u) - 1, first = sxp > -8 ? 0 : (-sxp - 8) / 8 + 1;
+    U32 row0 = f & 0xFFu, cols = (f >> 8) & 15u, hflip = (f >> 12) & 1u, pal = (f >> 13) & 7u, prio = (f >> 16) & 3u;
+    U32 cc;
+    /* (rows stepping 2: the image read every other row, from the first
+       of the rows' parity: the image's 2 | parity << 2) */
+    int ra, L, ix = dbl ? 2 | (int)(row0 & 1u) << 2 : 0;
+    for (ra = ga; ra < gb; ra += L) {
+        U32 row = (row0 + (U32)(d * (ra - ga))) & 0xFFu, y = row & 7u;
+        TV tv[16][2];
+        int img[16], nt = 0, k, j;
+        /* the rows from ra in this row of the sprite's tiles */
+        L = d > 0 ? (8 - (int)y + dbl) >> dbl : ((int)y >> dbl) + 1;
+        if (L > gb - ra)
+            L = gb - ra;
+        for (cc = 0; cc < cols; cc++) {
+            U32 t, ca;
+            int T, tv0;
+            if (FD_(CP_LIMITS) != 0u && !(keep >= 0 && I_(cc) - first < keep))
+                continue;
+            if (sl + sxp + I_(cc) * 8 + 8 <= 0)
+                continue;
+            col = hflip ? cols - 1u - cc : cc;
+            t = (((name & 0xF0u) + ((row >> 3) << 4)) & 0xF0u) | ((name + col) & 0x0Fu);
+            ca = (base + t * 16u + ((name & 0x100u) != 0u ? gap : 0u)) & 0x7FFFu;
+            T = (int)(ca / 16u);
+            img[nt] = T >> 10;
+            tv0 = (tile_v(T) + (int)y) >> dbl;
+            if (d > 0)
+                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tv0, (int)hflip, 0, 0);
+            else                             /* (its rows up the tile: flipped) */
+                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tv0 - L + 1, (int)hflip, 1, 0);
+        }
+        if (!nt)
+            continue;
+        /* the sprite's tiles of each texture image they are in (they
+           overlap nothing of each other: their columns are their own),
+           after those before them */
+        for (k = 0; k < 2; k++) {
+            int ref = (int)(1u | prio << 1 | (pal >= 4u ? 8u : 0u)), im = k | ix;
+            for (j = 0; j < nt; j++) {
+                if (img[j] != k)
+                    continue;
+                if (ref != cur[0] || (int)pal != cur[1] || im != cur[2] || s_ob_n == OB_MAX) {
+                    ob_flush();
+                    room();
+                    if (ref != cur[0])
+                        sceGuStencilFunc(GU_ALWAYS, ref, 0xFF);
+                    if ((int)pal != cur[1])
+                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8u + pal);
+                    if (im != cur[2]) {
+                        if (dbl)
+                            sceGuTexImage(0, 256, 256, 256, tile_image(a, 1, k << 10) + (ix >> 2) * 64);
+                        else
+                            sceGuTexImage(0, 128, 512, 128, tile_image(a, 1, k << 10));
+                        sceGuTexFlush();
+                    }
+                    cur[0] = ref;
+                    cur[1] = (int)pal;
+                    cur[2] = im;
+                }
+                s_ob[s_ob_n][0] = tv[j][0];
+                s_ob[s_ob_n][1] = tv[j][1];
+                s_ob_n++;
+            }
+        }
+    }
+}
+
 /* The sprites of rows ga-gb's part `part` (each row's the same sprites,
-   their rows on by step[i], 1 or -1, a row: obj_rows) into the sprite
-   buffer, in reverse order so the first is on top (each row's order, so
-   each pixel as its row's alone); each sprite in pieces as tall as its rows
-   stay in one row of its tiles; each pixel's stencil 1 | priority << 1 |
-   maths (palettes 4-7) << 3 (cp_obj). (A row alone: gb ga + 1.) */
+   their rows on by step[i], 1 or -1, or 2 or -2, a row: obj_rows) into
+   the sprite buffer, in reverse order so the first is on top (each row's
+   order, so each pixel as its row's alone); each sprite in pieces as tall
+   as its rows stay in one row of its tiles; each pixel's stencil 1 |
+   priority << 1 | maths (palettes 4-7) << 3 (cp_obj). (A row alone: gb
+   ga + 1.) A sprite whose rows step 2 is drawn from its tiles' rows of
+   one parity: their image from its first row of that parity, read at
+   twice its rows' stride, a texel row a picture row. */
 static void draw_obj_rows(uint32_t si, uint32_t part, int ga, int gb, int x0, int x1, const signed char *step)
 {
     const uint16_t *words = (const uint16_t *)(rr_cp_fd + cp_fdb + FD_(CP_VRAM));
     U32 at = FD_(FD_(CP_PARTS) + 4u * part + 2u), n = FD_(FD_(CP_PARTS) + 4u * part + 3u), i;
     U32 obsel = cp_b(si, U_(CP_S_INIDISP), 1u), page = cp_b(si, U_(CP_S_PAGE4), 0u);
     U32 base = (obsel & 7u) << 13, gap = (((obsel >> 3) & 3u) + 1u) << 12;
-    int sl = (int)FD_(CP_SL);
+    int sl = (int)FD_(CP_SL), cur[3] = { -1, -1, -1 };
     Atlas *a;
     Clut *c;
     if (!n)
@@ -1072,74 +1159,15 @@ static void draw_obj_rows(uint32_t si, uint32_t part, int ga, int gb, int x0, in
     sceGuTexMode(GU_PSM_T4, 0, 0, 0);
     sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8);
     sceGuClutLoad(32, c->c[1]);
-    {
-    int cur_ref = -1, cur_pal = -1, cur_img = -1;
     for (i = n; i-- > 0;) {
-        U32 e = FD_(CP_SPR) + (at + i) * U_(CP_SE), f = FD_(e + 1u), name = FD_(e + 2u), col;
-        I32 sxp = I_(FD_(e)), keep = I_((f >> 18) & 63u) - 1, first = sxp > -8 ? 0 : (-sxp - 8) / 8 + 1;
-        U32 row0 = f & 0xFFu, cols = (f >> 8) & 15u, hflip = (f >> 12) & 1u, pal = (f >> 13) & 7u, prio = (f >> 16) & 3u;
-        U32 cc;
-        int d = step ? step[i] : 1, ra, L;
-        for (ra = ga; ra < gb; ra += L) {
-        U32 row = (row0 + (U32)(d * (ra - ga))) & 0xFFu;
-        TV tv[16][2];
-        int img[16], nt = 0, k, j;
-        /* the rows from ra in this row of the sprite's tiles */
-        L = d > 0 ? 8 - (int)(row & 7u) : (int)(row & 7u) + 1;
-        if (L > gb - ra)
-            L = gb - ra;
-        for (cc = 0; cc < cols; cc++) {
-            U32 t, ca;
-            int T;
-            if (FD_(CP_LIMITS) != 0u && !(keep >= 0 && I_(cc) - first < keep))
-                continue;
-            if (sl + sxp + I_(cc) * 8 + 8 <= 0)
-                continue;
-            col = hflip ? cols - 1u - cc : cc;
-            t = (((name & 0xF0u) + ((row >> 3) << 4)) & 0xF0u) | ((name + col) & 0x0Fu);
-            ca = (base + t * 16u + ((name & 0x100u) != 0u ? gap : 0u)) & 0x7FFFu;
-            T = (int)(ca / 16u);
-            img[nt] = T >> 10;
-            if (d > 0)
-                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tile_v(T) + (int)(row & 7u), (int)hflip, 0, 0);
-            else                             /* (its rows up the tile: flipped) */
-                put(tv[nt++], sl + sxp + I_(cc) * 8, ra - s_y0, 8, L, tile_u(T), tile_v(T) + (int)(row & 7u) - L + 1,
-                    (int)hflip, 1, 0);
-        }
-        if (!nt)
-            continue;
-        /* the sprite's tiles of each texture image they are in (they
-           overlap nothing of each other: their columns are their own),
-           after those before them */
-        for (k = 0; k < 2; k++) {
-            int ref = (int)(1u | prio << 1 | (pal >= 4u ? 8u : 0u));
-            for (j = 0; j < nt; j++) {
-                if (img[j] != k)
-                    continue;
-                if (ref != cur_ref || (int)pal != cur_pal || k != cur_img || s_ob_n == OB_MAX) {
-                    ob_flush();
-                    room();
-                    if (ref != cur_ref)
-                        sceGuStencilFunc(GU_ALWAYS, ref, 0xFF);
-                    if ((int)pal != cur_pal)
-                        sceGuClutMode(GU_PSM_8888, 0, 0x0F, 8u + pal);
-                    if (k != cur_img) {
-                        sceGuTexImage(0, 128, 512, 128, tile_image(a, 1, k << 10));
-                        sceGuTexFlush();
-                    }
-                    cur_ref = ref;
-                    cur_pal = (int)pal;
-                    cur_img = k;
-                }
-                s_ob[s_ob_n][0] = tv[j][0];
-                s_ob[s_ob_n][1] = tv[j][1];
-                s_ob_n++;
-            }
-        }
-        }
+        U32 e = FD_(CP_SPR) + (at + i) * U_(CP_SE);
+        int d = step ? step[i] : 1;
+        if (d == 2 || d == -2)
+            obj_sprite(a, e, d, 1, ga, gb, base, gap, sl, cur);
+        else
+            obj_sprite(a, e, d, 0, ga, gb, base, gap, sl, cur);
     }
     ob_flush();
-    }
 }
 
 /* whether the frame is one drawn here: its features, and its VRAM pages
@@ -1670,9 +1698,13 @@ static uint32_t *s_kept;
 static size_t s_kept_n, s_kept_cap;
 static int s_kept_par = -1;
 
-/* n words the same (a word at a time: the C library's compares bytes) */
+/* n words the same (eight words at a time: the C library's compares bytes) */
 static int same_words(const uint32_t *a, const uint32_t *b, size_t n)
 {
+    for (; n >= 8; n -= 8, a += 8, b += 8)
+        if ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2]) | (a[3] ^ b[3]) | (a[4] ^ b[4]) | (a[5] ^ b[5]) |
+            (a[6] ^ b[6]) | (a[7] ^ b[7]))
+            return 0;
     while (n--)
         if (*a++ != *b++)
             return 0;
