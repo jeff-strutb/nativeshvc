@@ -116,6 +116,7 @@ CP_VAR U32 cp_fdb;
    pixels at it (cp_screens) */
 CP_VAR U32 cp_st[CP_ST];
 CP_VAR U32 cp_main, cp_sub;
+CP_VAR U32 cp_obci;      /* cp_obj's sprite pixel's CGRAM entry */
 /* a full-colour canvas's colour at the pixel, 0xRRGGBB (cp_bg): a layer's
    pixel with CP_LP_RGB, or a screen's colour CP_PX_RGB, is it */
 CP_VAR U32 cp_rgb;
@@ -519,6 +520,7 @@ CP_FN U32 cp_obj(U32 si, U32 p, U32 x)
         if (ci == 0u)
             continue;
         ci = 128u + pal * 16u + ci;
+        cp_obci = ci;
         return cp_pal(si, ci) | prio << 16 | (pal >= 4u ? 1u : 0u) << 18 | 0x1000000u;
     }
     return 0u;

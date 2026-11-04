@@ -130,38 +130,12 @@ const PpuFrame *ppu_frame_before(void);
    width of the woven picture (each pixel twice when the frame is half as
    wide) */
 int ppu_woven(int *w, int *h, int from[2]);
-/* a frame drawn from its record (the reference the GPU compositor is held
-   to): ppu_frame_width(f) x f->screen_height pixels, 0xFFRRGGBB: f->width,
-   twice that when a line is hires */
-void ppu_draw_frame(const PpuFrame *f, uint32_t *out);
+/* a frame's picture's width: f->width, twice that when a line is hires */
 static inline int ppu_frame_width(const PpuFrame *f) { return f->hires ? 2 * f->width : f->width; }
-/* the last finished frame, drawn from its record when first asked for; an
-   interlaced one woven with the frame before (twice f->screen_height rows,
-   as wide as the wider of the two) */
-const uint32_t *ppu_picture(int *width, int *height);
-
-/* The presentation of a frame with Mode 7 or a layer's canvas
-   (render/rr_mode7.h): m set to
-   frame f's record for rr_mode7, pic its picture (ppu_draw_frame's, one
-   row a line: not an interlaced weave); valid until the next call. 0 when
-   there is no memory for it. */
 struct RrMode7;
-int ppu_mode7(const PpuFrame *f, const uint32_t *pic, struct RrMode7 *m);
 /* (ppu.c m7_plain) */
 void ppu_set_mode7_plain(int on);
-/* frame f presented at ow x oh pixels into out (0xFFRRGGBB): rr_mode7.h
-   rr_ref_mode7 of ppu_mode7's record, as the window shows it. Every
-   output pixel is pic scaled with sharp bilinear exactly as rr_ref_image
-   scales it, but that a picture pixel on a Mode 7 line is composed again
-   by the console's rules for that pixel with the Mode 7 plane under the
-   output pixel, filtered by the pixel's footprint on the plane (its
-   texels' edges covered where magnified, supersampled where minified; a
-   Mode 7 layer under mosaic keeps its block's texel), and a picture pixel
-   of a layer's canvas composed again with the canvas's texel under the
-   output pixel's centre. */
-void ppu_present(const PpuFrame *f, const uint32_t *pic, uint32_t *out, int ow, int oh);
-/* whether a line of f shows a Mode 7 layer or the frame's canvas (else
-   ppu_present is pic scaled, nothing more) */
+/* whether a line of f shows a Mode 7 layer or the frame's canvas */
 int ppu_frame_mode7(const PpuFrame *f);
 /* what the frame presents at the window's resolution: 1 a Mode 7 line, 2 a
    line showing a canvas, 4 a pseudo-hires line showing the canvas at the
@@ -232,8 +206,14 @@ const uint8_t *ppu_oam(void);
 
 /* PPU checks (NSHVC_PPUCHECK): frames drawn from their records against
    the frames drawn a line at a time */
-extern unsigned long ppu_check_frames, ppu_check_bad, ppu_version_overflow, ppu_segment_overflow;
-extern unsigned long ppu_compose_frames, ppu_compose_bad;
+extern unsigned long ppu_version_overflow, ppu_segment_overflow;
+/* the checks' (tests/ref): each line as it is recorded, each finished frame */
+extern void (*ppu_line_hook)(const PpuFrame *f, unsigned line, const uint16_t *live_vram, const uint8_t *live_table);
+extern void (*ppu_frame_hook)(const PpuFrame *f);
+extern void (*ppu_reset_hook)(void);
+int ppu_ext_limits_on(void);
+int ppu_ext_wrap_on(void);
+int ppu_mode7_plain(void);
 /* a frame described for a compositor (render/compose_body.h): its words */
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words);
 /* the same with each part's segment for the records of a frame presenting

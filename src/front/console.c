@@ -30,6 +30,7 @@
 #include "resample.h"
 #include "script.h"
 #include "input.h"
+#include "front_check.h"
 
 /* ---- the public calls ---- */
 uint32_t nshvc_frames(void) { return (uint32_t)ppu_frames(); }
@@ -471,7 +472,8 @@ static void canvas_scale(int w, int h)
     ppu_set_canvas_scale(canvas_k_max(kx > ky ? kx : ky));
 }
 
-static long cpu_frames;                      /* frames drawn from the CPU's picture or records (rr_image, rr_mode7) */
+/* the checks' (tests/ref, front_check.h): after each headless frame */
+void (*front_frame_hook)(void);
 
 /* The finished frame's description for the compositor: its picture w x h;
    wp an interlaced frame's weave (rr_compose_woven's ww, base0, base1: its
@@ -650,32 +652,6 @@ __attribute__((weak)) int rr_mode7_window(int what)
     return 1;
 }
 
-static int mode7_prepare(int ow, int oh, RrMode7 *m, RrM7Samples *s)
-{
-    const PpuFrame *f = ppu_frame();
-    int pw, ph;
-    const uint32_t *px;
-    if (ow <= 0 || oh <= 0 || !ppu_frame_mode7(f))
-        return 0;
-    px = ppu_picture(&pw, &ph);
-    if (ph != f->screen_height || !ppu_mode7(f, px, m))
-        return 0;
-    if (ow > m7_cols_cap) {
-        free(m7_cols);
-        m7_cols = (int32_t *)malloc((size_t)ow * 3 * 4);
-        m7_cols_cap = m7_cols ? ow : 0;
-    }
-    if (oh > m7_rows_cap) {
-        free(m7_rows);
-        m7_rows = (int32_t *)malloc((size_t)oh * 4 * 4);
-        m7_rows_cap = m7_rows ? oh : 0;
-    }
-    if (!m7_cols || !m7_rows)
-        nshvc_fatal("no memory for the picture at %dx%d", ow, oh);
-    rr_m7_tables(m, ow, oh, s, m7_cols, m7_rows);
-    return 1;
-}
-
 /* The last frame, presenting Mode 7 or a canvas, drawn at ow x oh over d
    by the renderer's compositor (its picture and records the GPU's); 0
    when it is not drawn so (an interlaced weave, or no Mode 7 or canvas
@@ -775,6 +751,13 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
         nshvc_fatal("the renderer (%s) cannot read the frame back", rr_name());
     return buf;
 }
+
+/* (front_check.h: what the renderer's check drives) */
+int front_show_mode7(int ow, int oh, const int d[4]) { return show_mode7(ow, oh, d); }
+void front_show_picture(const int d[4]) { show_picture(d); }
+void front_rr_need(void) { rr_need(); }
+long front_frame_no(void) { return frame_no; }
+void front_canvas_scale(int w, int h) { canvas_scale(w, h); }
 
 /* ---- the picture on the window ---- */
 /* where the last frame was drawn on the renderer's target (pixels), and
@@ -952,141 +935,6 @@ static void show(void)
     rr_present();
 }
 
-/* NSHVC_RRCHECK=1 (headless, any RENDER): each finished frame shown by the
-   renderer one to one and scaled to the target with sharp bilinear, read
-   back, against the PPU's picture drawn the same way on the CPU (rr_size.h
-   rr_ref_image); a frame with Mode 7 or a canvas presented by its record (rr_mode7)
-   against rr_ref_mode7 (as any frame where the renderer presents it so:
-   rr_mode7_window); at exit, the frames and pixels
-   that differ by more than 1 in a channel (a GPU's filtering rounds) */
-static long rr_frames = -1, rr_bad, rr_pixels, rr_first = -1, rr_m7_frames, rr_pic_bad;
-
-static void rr_report(void)
-{
-    fprintf(stderr, "rrcheck: %s, %ld frames (%ld with Mode 7 or a canvas presented), %ld differ (first at frame %ld), %ld pixels; %ld from the CPU; "
-                    "%ld pictures read back differ\n",
-            rr_name(), rr_frames, rr_m7_frames, rr_bad, rr_first, rr_pixels, cpu_frames, rr_pic_bad);
-}
-
-static void rr_check(void)
-{
-    static uint32_t *got, *want;
-    int tw, th, pw, ph, i, d[4];
-    const uint32_t *px = ppu_picture(&pw, &ph);
-    long bad = 0;
-    RrMode7 m;
-    RrM7Samples smp;
-    int recorded = 0;
-    if (rr_frames < 0) {
-        if (!rr_opened && !rr_open()) {
-            fprintf(stderr, "rrcheck: the renderer cannot open\n");
-            exit(2);
-        }
-        rr_opened = 1;
-        atexit(rr_report);
-        rr_frames = 0;
-    }
-    rr_target(&tw, &th);
-    if (!got) {
-        got = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
-        want = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
-    }
-    /* one to one at the top left, the rest of the target the picture
-       scaled up (whole and part pixels) */
-    d[0] = 0;
-    d[1] = 0;
-    d[2] = tw;
-    d[3] = th;
-    canvas_scale(tw, th);
-    rr_begin(0xFF000000u);
-    for (i = 0; i < tw * th; i++)
-        want[i] = 0xFF000000u;
-    if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
-        int gpu;
-        recorded = 1;
-        /* the compositor's records where the renderer has one (drawn
-           first: the reference's are made over the same tables) */
-        gpu = show_mode7(tw, th, d);
-        if (!mode7_prepare(tw, th, &m, &smp))
-            nshvc_fatal("rrcheck: no record for the frame");
-        if (!gpu)
-            nshvc_fatal("rrcheck: the frame's Mode 7 or canvas not drawn by the renderer");
-        rr_ref_mode7(want, tw, th, &m, d, &smp);
-        rr_m7_frames++;
-    } else {
-        show_picture(d);
-        rr_ref_image(want, tw, th, px, pw, ph, d);
-    }
-    rr_present();
-    rr_read(got);
-    for (i = 0; i < tw * th; i++) {
-        int sh, worst = 0;
-        for (sh = 0; sh < 24; sh += 8) {
-            int a = (int)((got[i] >> sh) & 0xFF) - (int)((want[i] >> sh) & 0xFF);
-            if (a < 0)
-                a = -a;
-            if (a > worst)
-                worst = a;
-        }
-        if (worst > 1) {
-            /* NSHVC_RRCHECK_WHY=1: the first frame that differs, its first
-               pixels with the record of the picture pixel under each */
-            if (rr_first < 0 && bad < 8 && getenv("NSHVC_RRCHECK_WHY")) {
-                int X = i % tw, Y = i / tw;
-                fprintf(stderr, "rrcheck: frame %ld at (%d, %d): got %08x want %08x", frame_no, X, Y, (unsigned)got[i], (unsigned)want[i]);
-                if (recorded) {
-                    int tx = smp.cols[3 * X], ty = smp.rows[4 * Y], u = smp.cols[3 * X + 2], v = smp.rows[4 * Y + 3];
-                    float fx, fy;
-                    memcpy(&fx, &smp.cols[3 * X + 1], 4);
-                    memcpy(&fy, &smp.rows[4 * Y + 1], 4);
-                    fprintf(stderr, "; picture (%d, %d) fx %.3f fy %.3f u %d v %d; k %d, %zu texels", tx, ty, fx, fy, u, v,
-                            m.cv_k, m.cv_len);
-                    for (int dy = 0; dy < 2; dy++)
-                        for (int dx = 0; dx < 2; dx++) {
-                            int ii = tx + dx < 0 ? 0 : tx + dx >= m.pw ? m.pw - 1 : tx + dx;
-                            int rr = ty + dy < 0 ? 0 : ty + dy >= m.ph ? m.ph - 1 : ty + dy;
-                            const RrM7Px *q = &m.px[(size_t)rr * (size_t)m.pw + (size_t)ii];
-                            fprintf(stderr, "\n  (%d, %d): %08x %08x %08x %08x", ii, rr, (unsigned)q->w0, (unsigned)q->w1, (unsigned)q->w2,
-                                    (unsigned)q->w3);
-                            if (!(q->w2 & (RR_M7_NOT | RR_M7_BLACK))) {
-                                const RrM7Seg *g = &m.seg[q->w2 >> 16];
-                                fprintf(stderr, " seg %u: %d %d %d %d %08x %08x %d %08x", (unsigned)(q->w2 >> 16), (int)g->s[0], (int)g->s[1],
-                                        (int)g->s[2], (int)g->s[3], (unsigned)g->s[4], (unsigned)g->s[5], (int)g->s[6], (unsigned)g->s[7]);
-                            }
-                        }
-                }
-                fprintf(stderr, "\n");
-            }
-            bad++;
-        }
-    }
-    /* the picture read back from the GPU (nshvc_picture), the CPU's exactly
-       (the PSP's: none for a frame with a canvas shown, drawn only at the
-       target's resolution) */
-    if (!(ppu_frame_presents(ppu_frame()) & 6) || strcmp(rr_name(), "psp")) {
-        int gw, gh;
-        const uint32_t *g = nshvc_picture(&gw, &gh);
-        long n = 0;
-        if (gw != pw || gh != ph) {
-            n = 1;
-        } else {
-            for (i = 0; i < pw * ph; i++)
-                n += g[i] != px[i];
-        }
-        if (n && !rr_pic_bad)
-            fprintf(stderr, "rrcheck: frame %ld: the picture read back differs in %ld pixels (%d x %d, %d x %d)\n", frame_no, n,
-                    gw, gh, pw, ph);
-        rr_pic_bad += n != 0;
-    }
-    rr_frames++;
-    if (bad) {
-        rr_bad++;
-        rr_pixels += bad;
-        if (rr_first < 0)
-            rr_first = frame_no;
-    }
-}
-
 /* ---- each frame ---- */
 static uint64_t next_due;
 
@@ -1117,14 +965,11 @@ static void frame(void)
         return;
     }
     if (headless) {
-        static int rc = -1;
         int more;
         if (counts_f)
             counts_frame(frame_no);
-        if (rc < 0)
-            rc = getenv("NSHVC_RRCHECK") != NULL;
-        if (rc)
-            rr_check();
+        if (front_frame_hook)
+            front_frame_hook();
         if (present_headless) {
             /* NSHVC_PRESENT=1: the frame presented as a window presents it
                (no pacing), its run and present timed for NSHVC_FPS_LOG */
@@ -1215,22 +1060,10 @@ static void frame(void)
     }
 }
 
-/* NSHVC_PPUCHECK=1: the frames drawn from their records against the
-   picture drawn a line at a time (ppu.c), at exit */
-static void ppucheck_report(void)
-{
-    if (getenv("NSHVC_PPUCHECK"))
-        fprintf(stderr, "ppucheck: %lu frames, %lu differ; %lu needed more copies than kept\n", ppu_check_frames,
-                ppu_check_bad, ppu_version_overflow);
-    if (getenv("NSHVC_COMPOSECHECK"))
-        fprintf(stderr, "composecheck: %lu frames, %lu differ\n", ppu_compose_frames, ppu_compose_bad);
-}
-
 int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
 {
     const char *script = NULL, *out_dir = ".";
     int i;
-    atexit(ppucheck_report);
     ppu_set_mode7_plain(rr_mode7_plain());
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--headless"))
