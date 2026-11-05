@@ -156,7 +156,9 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
     and queue (`NshvcGpuLoan`: Metal an `id<MTLDevice>` and `id<MTLCommandQueue>`; Vulkan
     the instance, physical device, device, queue and queue family) and returns
     `NSHVC_GPU_METAL` or `NSHVC_GPU_VULKAN`; 0 on a host with none (the PSP's query is
-    `nshvc_ext_ge_vram2`).
+    `nshvc_ext_ge_vram2`). Vulkan's queue family has graphics and compute, `shaderInt64` is
+    enabled where the device has it, and the game shares the console's one thread, so the
+    queue needs no lock, a frame of the console's perhaps in flight on it.
   - `nshvc_ext_canvas_screen_gpu(layer, handle, w, h, format, priority, fence)`: a
     full-colour screen canvas at k 0, palette 0, from a texture in place of
     `nshvc_ext_canvas_screen32`'s texels. `handle` (`NshvcGpuHandle`) an `MTLTexture`, or a
@@ -170,7 +172,9 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
     in the vertical blank or the frame hook for the frame about to begin, and kept through
     that frame's presenting until the next is handed or the frame hook after it ends; none
     handed by then, the canvas is off, so a game hands one each frame (its fence 0 for a
-    picture that stands). An interlaced frame showing it is fatal.
+    picture that stands). A hand in the vertical blank after a hook that handed none counts.
+    While paused no frame is made and it stays, handed or not, for the frame after the
+    pause. An interlaced frame showing it is fatal.
   - `nshvc_ext_canvas_screen_ge(layer, vram_address, stride, w, h, psm, priority)`, the
     PSP's: the same canvas from VRAM in the loan, read straight by the console's GE list, no
     copy to the CPU. `GU_PSM_8888` alone, its words as the GE drew them (`0xttbbggrr`): tt
@@ -178,8 +182,10 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
     game's list synced before the frame hook returns. Kept alike. The loan's address now
     stands until the frame is presented (it could move on a vertical blank), and the console
     draws the frame into another of the screen's buffers, waiting a vertical blank when both
-    others are on screen or waiting. A frame showing it has no `nshvc_picture`, as any
-    canvas's there (2.21).
+    others are on screen or waiting. A picture that stands is the same address handed again,
+    nothing drawn over it. Paused, it is let go, its buffer wanted for the pause's overlay,
+    so a picture is drawn and handed after the pause. A frame showing it has no
+    `nshvc_picture`, as any canvas's there (2.21).
   - `nshvc_ext_overlay_gpu(handle, w, h, fence)`: an overlay from a texture (8 bits a
     channel, unsigned normalized, straight alpha, sampled), or on the PSP from VRAM (`handle`'s
     image its address, its view its stride; `GU_PSM_8888`, its alpha the stencil, the column

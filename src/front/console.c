@@ -762,12 +762,19 @@ int nshvc_ext_overlay_gpu(NshvcGpuHandle handle, int w, int h, NshvcGpuFence fen
 }
 
 /* the game's frame hook, and the handles the GPU holds it let go by not
-   handing again: those a frame has shown */
+   handing again: those a frame has shown. While the machine stands no frame
+   is made: a texture canvas stays for the next, handed or not. VRAM is let go
+   then, its buffer wanted: with the frame on screen and the frame being drawn,
+   the third of the screen's buffers is the pause's overlay's */
 static void frame_hook(void)
 {
+    int stood = paused;
     if (hooks.frame)
         hooks.frame();
-    ppu_canvas_gpu_end();
+    if (paused)
+        ppu_canvas_ge_off();
+    else if (!stood)
+        ppu_canvas_gpu_end();
     if (overlay_gpu_id >= 0 && overlays[overlay_gpu_id].gpu_shown) {
         overlays[overlay_gpu_id].image = 0;
         overlays[overlay_gpu_id].gpu_shown = 0;

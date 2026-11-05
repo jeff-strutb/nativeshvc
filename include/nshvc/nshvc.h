@@ -577,9 +577,13 @@ void *nshvc_ext_ge_vram2(size_t *bytes, void **depth, int *depth_stride);
    nshvc_ext_canvas_screen32. The PSP: 0 (its query is nshvc_ext_ge_vram2).
    Metal: device an id<MTLDevice>, queue an id<MTLCommandQueue> (bridged, not
    retained). Vulkan: device a VkDevice, queue a VkQueue, instance a VkInstance,
-   physical_device a VkPhysicalDevice, queue_family its index. The console's for
-   the life of the process, for use on the game's thread, between the console's
-   frames (its run and the frame hook); not to be destroyed. */
+   physical_device a VkPhysicalDevice, queue_family its index, a family with
+   graphics and compute, shaderInt64 enabled where the device has it
+   (vkGetPhysicalDeviceFeatures on physical_device says). The console's for the
+   life of the process, for use on the game's thread, the console's own thread,
+   so the queue needs no lock; a frame of the console's may be in flight on it
+   when the game's code runs, so the game waits on its own fences (a
+   vkQueueWaitIdle waits for that frame too). Not to be destroyed. */
 enum { NSHVC_GPU_NONE, NSHVC_GPU_METAL, NSHVC_GPU_VULKAN };
 typedef struct NshvcGpuLoan {
     void *device, *queue;
@@ -618,7 +622,9 @@ int nshvc_ext_gpu_device(NshvcGpuLoan *loan);
    the console keeps it through that frame's presenting, until the next is handed
    or the frame hook after that frame ends; handed no other by then, the canvas
    is off, the layer its tiles, so a game hands one each frame (the same handle
-   again, its fence 0, if the picture stands). After that the handle is the
+   again, its fence 0, if the picture stands). A hand in the vertical blank after
+   a hook that handed none counts: the frame has not begun. While paused no frame
+   is made and it stays, handed or not, for the frame after the pause. After that the handle is the
    game's again; its own later work on the lent queue goes after the console's
    reads, with its own barrier. image 0: off. An interlaced frame showing it is
    fatal. nshvc_picture reads it as the frame's presenting does. */
@@ -635,7 +641,11 @@ void nshvc_ext_canvas_screen_gpu(int layer, NshvcGpuHandle handle, int w, int h,
    nshvc_ext_canvas_screen_gpu's, and until then the console draws its frames
    into none of that buffer: the loan taken once, the same address until the
    frame is presented; with both the others of the screen's buffers on screen
-   or waiting, it waits for the next vertical blank. NULL: off. */
+   or waiting, it waits for the next vertical blank. A picture that stands: the
+   same address handed again, nothing drawn over it, stays whole for that frame
+   (the loan's contents are not kept otherwise). Paused, it is let go: the
+   buffer is wanted (the pause's overlay in it), so a picture is drawn and handed
+   after the pause. An overlay shown with it is in the same buffer. NULL: off. */
 void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w, int h, int psm, int priority);
 /* An overlay from a texture of the game's, in place of nshvc_overlay_image's
    CPU texels: its id for nshvc_overlay_place, the same for every call (one such

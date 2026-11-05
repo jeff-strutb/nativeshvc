@@ -202,6 +202,8 @@ void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t i
 /* the frame hook has ended: a canvas the GPU holds that the last finished
    frame took, none handed since, is let go */
 void ppu_canvas_gpu_end(void);
+/* a canvas in VRAM (form 2) let go, whatever frame took it */
+void ppu_canvas_ge_off(void);
 /* the VRAM of a canvas asked for and not yet let go (form 2), or 0 */
 uint64_t ppu_canvas_ge_asked(void);
 /* the texels a console pixel spans along each axis at the window's size

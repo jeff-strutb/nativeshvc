@@ -368,6 +368,7 @@ static int make_device(void)
     VkDeviceQueueCreateInfo qi = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     VkDeviceCreateInfo ci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     VkExtensionProperties ext[256];
+    VkPhysicalDeviceFeatures have, feat;
     const char *want[2];
     if (!VK_OK(vkEnumeratePhysicalDevices(s_inst, &nd, devs)) || nd == 0)
         return 0;
@@ -377,7 +378,10 @@ static int make_device(void)
         uint32_t nq = 16;
         vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &nq, qf);
         for (j = 0; j < nq; j++)
-            if (qf[j].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            /* (the compositor's compute and the frame's graphics on one queue,
+               lent to the game too: nshvc_ext_gpu_device) */
+            if ((qf[j].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
+                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
                 s_phys = devs[i];
                 s_qfam = j;
                 break;
@@ -398,6 +402,11 @@ static int make_device(void)
     ci.pQueueCreateInfos = &qi;
     ci.enabledExtensionCount = nw;
     ci.ppEnabledExtensionNames = want;
+    /* for the game's own shaders on the lent device, where the device has it */
+    vkGetPhysicalDeviceFeatures(s_phys, &have);
+    memset(&feat, 0, sizeof feat);
+    feat.shaderInt64 = have.shaderInt64;
+    ci.pEnabledFeatures = &feat;
     if (!VK_OK(vkCreateDevice(s_phys, &ci, NULL, &s_dev)))
         return 0;
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);

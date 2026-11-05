@@ -935,6 +935,15 @@ void ppu_canvas_gpu_end(void)
     }
 }
 
+void ppu_canvas_ge_off(void)
+{
+    if (cv_now.on && cv_now.gpu == 2) {
+        cv_now.on = 0;
+        cv_now.gpu = 0;
+        cv_now.gen++;
+    }
+}
+
 uint64_t ppu_canvas_ge_asked(void) { return cv_now.on && cv_now.gpu == 2 ? cv_now.image : 0; }
 
 static void cv_take(void)
