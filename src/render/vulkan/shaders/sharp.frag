@@ -1,6 +1,6 @@
 #version 450
 // Sharp bilinear: whole texels at any scale, blended only across the one
-// target pixel a texel edge falls in (render/rr_size.h rr_ref_image): the
+// target pixel a texel edge falls in (tests/ref/rr_ref.h rr_ref_image): the
 // sample point from the target pixel's own place and the texels a target
 // pixel (an interpolated coordinate and fwidth fall to either side of a
 // texel's edge), the four texels blended as rr_mix does, across then down,

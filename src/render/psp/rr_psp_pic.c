@@ -26,9 +26,9 @@
  *             brightness, 5 bits to 8 (ppu.c finish), added into the
  *             picture (0 + x by factors 255: exact)
  *
- * Every step is exact, so the picture is ppu_draw_frame's, pixel for pixel.
- * A frame with what is not drawn here (hires, Mode 7, offset-per-tile,
- * mosaic, a canvas, the screen extensions) is left to the CPU (0).
+ * Every step is exact, so the picture is the reference's (tests/ref/ppu_ref.c),
+ * pixel for pixel. Past the platform's limits (rr.h rr_screen_max,
+ * rr_canvas_max) a frame is fatal; nothing is left to the CPU.
  */
 #include <malloc.h>
 #include <math.h>

@@ -102,7 +102,7 @@ static NSString *const k_src = @
 "  constexpr sampler s(filter::nearest, address::clamp_to_edge);\n"
 "  return float4(t.sample(s, in.uv).rgb, 1); }\n"
 /* sharp bilinear: whole texels at any scale, blended only across the one
-   target pixel a texel edge falls in (rr_size.h rr_ref_image): the sample
+   target pixel a texel edge falls in (tests/ref/rr_ref.h rr_ref_image): the sample
    point from the target pixel's own place and the texels a target pixel
    (an interpolated coordinate and fwidth fall to either side of a texel's
    edge), the four texels blended as rr_mix does, across then down, each

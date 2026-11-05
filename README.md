@@ -174,7 +174,9 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 ```
 
 `NSHVC_HOST` picks the host (`null`, the default, `macos`, `windows`, `ios`, `psp` or
-`none`) and `NSHVC_RENDER` the renderer (`soft`, `metal`, `gl`, `vulkan` or `psp`).
+`none`) and `NSHVC_RENDER` the renderer (`metal`, `gl`, `vulkan` or `psp`; `none`, also called
+`soft`, has no picture, for a headless console: the test programs bring the CPU's
+reference, `tests/ref`).
 `NSHVC_TESTS` and `NSHVC_EXAMPLES` build the tests and the examples. For iOS, add
 `-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
 -DNSHVC_HOST=ios`. For the PSP, with the pspdev toolchain:
@@ -286,8 +288,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.20.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.20: behaviour exact, each
+Version 2.21.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.21: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
@@ -363,9 +365,9 @@ each one, is in [tests/README.md](tests/README.md).
   beat, its work taking no time here: all 3,214 of its key events, on every voice, match
   the reference's in order and sample, each within 14 samples (0.44 ms) of the
   reference's.
-- **Renderers:** software, Metal, OpenGL and Vulkan each present the test cartridges'
+- **Renderers:** Metal, OpenGL and Vulkan each present the test cartridges'
   frames (one to one and scaled, and Mode 7 at the window's resolution, anti-aliased) and
-  draw overlays as the CPU reference does: 1,164 cartridges each at two window sizes (70 of
+  draw overlays as the checks' CPU reference does: 1,164 cartridges each at two window sizes (70 of
   them presenting Mode 7), none differing; and a layer's canvas at eight window sizes, none
   differing. The anti-aliasing is held to its definition written again in
   its check, and to the plane's ground truth (`tests/unit/present_check.c`): its error is
@@ -573,8 +575,8 @@ The PPU ([`src/ppu/ppu.c`](src/ppu/ppu.c)) makes the picture in C, a line at a t
 clock passes each line: every background mode, sprites, windows, colour maths, brightness,
 the read side and open bus, with register writes landing mid-line at their own times.
 
-The renderer backends (Metal, OpenGL, Vulkan, the PSP's GE and software;
-[`rr.h`](src/render/rr.h)) draw it at the window's own resolution, over the whole window,
+The renderer backends (Metal, OpenGL, Vulkan and the PSP's GE: all drawing on the
+platform's GPU; [`rr.h`](src/render/rr.h)) draw it at the window's own resolution, over the whole window,
 each axis at its own scale (no bars: a game that wants a shape sizes its screen to the
 window's). The pixel art is scaled with sharp bilinear
 filtering: whole pixels at any size, blended only across the one window pixel each pixel
@@ -596,10 +598,10 @@ scroll, flips, priority, windows, colour maths), the window pixel in each consol
 taking the texel under it. A screen canvas (`nshvc_ext_canvas_screen`, `_screen32`) is a
 layer's whole picture from the game's texels; at k 0 its texels cover the screen at no
 whole scale, and a canvas the size `nshvc_ext_canvas_presented` gives is presented a texel
-a window pixel. One definition in C ([`rr_mode7.h`](src/render/rr_mode7.h)) is
-the software backend's drawing and what the GPU backends' shaders compute, in integers but
-the blends, so every backend takes the same texels; each backend's output is checked
-against it. The backends also draw a port's overlays.
+a window pixel. One definition ([`rr_mode7.h`](src/render/rr_mode7.h)) is what the GPU
+backends' shaders compute, in integers but the blends, so every backend takes the same
+texels; each backend's output is checked against the same definition drawn on the CPU, which
+lives in [`tests/ref`](tests/ref) and is no part of a game's run. The backends also draw a port's overlays.
 
 ### Sound
 

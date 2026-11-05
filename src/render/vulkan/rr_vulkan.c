@@ -1,6 +1,6 @@
 /*
  * rr_vulkan.c: the renderer backend on Vulkan (Windows, Linux, and macOS
- * through MoltenVK), the Boss Rally port's design: the frame is drawn into
+ * through MoltenVK): the frame is drawn into
  * an offscreen target the size of the window, then blitted onto a
  * swapchain image and presented. Pictures go on with the sharp bilinear
  * shader (shaders/sharp.frag, rr_size.h's weight).

@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 20
+#define NSHVC_VERSION_MINOR 21
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -236,7 +236,10 @@ void nshvc_run_frame(void);
 
 /* the finished frame: width x height pixels, 0xFFRRGGBB, top row first:
    256 by 224 (239 with overscan), or the size nshvc_ext_screen asked for;
-   twice as wide in a frame with a hires line */
+   twice as wide in a frame with a hires line. Drawn by the platform's GPU
+   and read back: a call that costs a GPU's round trip. On the PSP a frame
+   showing a canvas is drawn at the target's resolution alone, so has no
+   picture: fatal. (Since 2.21.) */
 const uint32_t *nshvc_picture(int *width, int *height);
 /* frames finished since power on */
 uint32_t nshvc_frames(void);
@@ -482,7 +485,10 @@ void nshvc_ext_vram_direct(int page);
    naming up to 1,024 characters). (Since 2.5.)
    nshvc_ext_canvas_scale: k for the window as it is now (its pixels a
    console pixel, rounded up), the k to draw at; headless, NSHVC_SCALE's
-   (its shots that window's picture), else 1. The canvas is copied, and
+   (its shots that window's picture), else 1; at most the platform's limit,
+   the screen times k within what its GPU spans (the PSP: 512 x 512 texels,
+   a whole k, so a 320-wide screen gets 1), a canvas past it fatal (since
+   2.21). The canvas is copied, and
    a frame shows the canvas as it stands when the frame begins; a line in a
    hires mode, or the layer under mosaic, shows the layer's own tiles.
    texels NULL (or count 0): no canvas. The console's picture (nshvc_picture)

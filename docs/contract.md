@@ -1,8 +1,8 @@
-# The game contract, version 2.19
+# The game contract, version 2.21
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.19: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.21: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -138,8 +138,10 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   come in an IRQ's handler, as on the console).
 - **A fatal error, never a guess,** when the game reaches something the contract doesn't
   cover: an address with no C (a vector's included), a wait while interrupts are held, or,
-  with interrupts held (where no time passes), a loop that waits for the hardware
-  (20,000,000 reads with no write between). It's reported, then the process exits with status 70.
+  where no time passes (interrupts held, the costs off), a loop that waits for the hardware:
+  no frame for 30 seconds (`NSHVC_WATCHDOG=N` seconds, 0 none; headless, none unless set)
+  ends the run, naming the last access made through the console. It's reported, then the
+  process exits with status 70.
 - **The console's numbers by default.** Every extension (`nshvc_ext_*`,
   `nshvc_hold_interrupts`) is off until the game asks for it, and with no cost profile an
   access costs the bus's time alone.
@@ -148,6 +150,15 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.21:** every picture is the platform's GPU's. `nshvc_picture` is drawn by the GPU and
+  read back, and fatal on the PSP for a frame showing a canvas, which is drawn at the
+  target's resolution alone. A canvas past what the platform's GPU spans is fatal, and
+  `nshvc_ext_canvas_scale` is capped to it (the PSP: 512 x 512 texels, a whole k). The CPU's
+  drawing is the checks' alone (`tests/ref`): the library's `soft` or `none` renderer has no
+  picture, and `NSHVC_COMPOSE` is gone. A loop that waits for the console's time with its
+  accesses taking none is ended by a watchdog, not a count of 20,000,000 reads: with the costs
+  off an inline access is a load or a store and no more. An app bringing its own host
+  (`NSHVC_HOST=none`) supplies `host_every`.
 - **2.20:** each platform draws every picture on its own GPU, within the platform's limits:
   `nshvc_ext_screen` past a platform's screen is a fatal error naming it (the PSP: 512 x 240,
   a hires or interlaced frame 256 across, and an interlaced hires frame (512 x 448) fatal there;

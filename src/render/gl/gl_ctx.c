@@ -1,5 +1,5 @@
 /* gl_ctx.c: the OpenGL renderer's context (gl_api.h), built with the
- * system's own headers (the Boss Rally port's):
+ * system's own headers:
  *
  *   Windows  WGL on the host's window: a pixel format with double buffering,
  *            a legacy context to find wglCreateContextAttribsARB, then a 3.3

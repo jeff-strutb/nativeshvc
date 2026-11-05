@@ -1,7 +1,8 @@
 /*
  * compose_body.h: the console's picture, one pixel at a time, from a
- * frame's description (ppu.c ppu_compose): draw_line's rules (ppu.c)
- * written again so that every pixel stands alone, for a GPU to draw the
+ * frame's description (ppu.c ppu_compose): the console's line rules
+ * (tests/ref/ppu_ref.c draw_line) written so that every pixel stands alone,
+ * for a GPU to draw the
  * picture at any size. One source for C (rr_compose.h, the reference the
  * shaders are held to, itself held to ppu_draw_frame), GLSL (OpenGL and
  * Vulkan) and Metal: its prelude gives
@@ -846,7 +847,7 @@ CP_FN U32 cp_woven(U32 X, U32 Y, U32 ww, U32 base0, U32 base1)
 }
 
 /* ---- a frame presenting Mode 7 or a canvas: each picture pixel's record ---- */
-/* (rr_mode7.h RrM7Px, ppu.c ppu_mode7) into cp_r0 to cp_r3 */
+/* (rr_mode7.h RrM7Px, tests/ref/ppu_ref.c ppu_mode7) into cp_r0 to cp_r3 */
 CP_VAR U32 cp_r0, cp_r1, cp_r2, cp_r3;
 
 #define CP_R_NOT 0x0001u

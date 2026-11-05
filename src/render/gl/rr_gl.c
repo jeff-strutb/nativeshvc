@@ -44,7 +44,7 @@ static const char *k_copy =
     "out vec4 o;\n"
     "void main() { o = vec4(texelFetch(t, ivec2(uv * vec2(textureSize(t, 0))), 0).rgb, 1.0); }\n";
 /* sharp bilinear: whole texels at any scale, blended only across the one
-   target pixel a texel edge falls in (rr_size.h rr_ref_image): the sample
+   target pixel a texel edge falls in (tests/ref/rr_ref.h rr_ref_image): the sample
    point from the target pixel's own place (rows from the top) and the
    texels a target pixel, the four texels blended as rr_mix does, each step
    rounded (vulkan/shaders/sharp.frag) */

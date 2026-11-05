@@ -2,15 +2,13 @@
  * rr_psp.c: the renderer backend on the PSP's GE, drawing into the host's
  * screen buffers (host/psp/host_psp.h).
  *
- * A picture is drawn with sharp bilinear (rr_size.h) in two stages:
+ * A picture the GE drew (rr_compose, rr_psp_pic.c) is drawn with sharp
+ * bilinear (rr_size.h) on the GE, in two stages (scale_ge):
  *
- *   across   on the CPU: for each of the picture's rows, each output
- *            column's blend of its two columns, computed as rr_ref_image
- *            computes it (this stage is the reference's own), into a
- *            buffer in the GE's channel order (0xAABBGGRR)
- *   down     on the GE: each output row that buffer's row, then its next
- *            row blended over it by fixed factors A = round(256 t) and
- *            B = 256 - A (at most 255 each)
+ *   across   each output column's blend of its two columns, by lookups
+ *   down     each output row that stage's row, then its next row blended
+ *            over it by fixed factors A = round(256 t) and B = 256 - A (at
+ *            most 255 each)
  *
  * The GE blends as ((2s + 1)(2A + 1) >> 10) + ((2d + 1)(2B + 1) >> 10)
  * (measured: every value of 256 alphas over three channels). With these
@@ -20,12 +18,10 @@
  * is. The GE's own filtering cannot do it: its bilinear weights are
  * sixteenths, truncated, and two blending stages are within 2.
  *
- * A picture the GE drew itself (rr_compose, rr_psp_pic.c) is scaled on the
- * GE throughout, its stage across the reference's too: see scale_ge.
- *
- * A frame presenting Mode 7 or a canvas, and the overlays, are the
- * reference's drawing on the CPU (rr_ref_mode7, rr_ref_overlay), into the
- * frame once the GE has drawn it.
+ * A frame presenting a canvas is drawn at the target's resolution
+ * (rr_psp_canvas), its Mode 7 lines at the console's scaled as any picture;
+ * overlays are the GE's. A picture made on the CPU is no path here (rr_image,
+ * rr_mode7: fatal).
  */
 #include <malloc.h>
 #include <stdlib.h>

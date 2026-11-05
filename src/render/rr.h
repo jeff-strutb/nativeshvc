@@ -1,13 +1,13 @@
 /*
- * rr.h: the renderer backend interface, neutral between graphics APIs (the
- * same design as the Boss Rally port's).
+ * rr.h: the renderer backend interface, neutral between graphics APIs.
  *
  * A frame is drawn into a target the size of the window's drawable, one
  * target pixel per window pixel: pictures of the game's pixels go onto it
  * where the port places them, scaled with sharp bilinear filtering (whole
  * pixels at any size, blended only across the one target pixel a pixel's
  * edge falls in), then the target is shown. A backend (Metal, OpenGL,
- * Vulkan, the software one, or the null one) only has to do that.
+ * Vulkan, the PSP's GE, or none with no picture) only has to do that; the
+ * CPU's drawing of it, for the checks, is tests/ref/rr_soft.c.
  *
  *   RR_SIZE=WxH   headless: the target's size (a window sets it otherwise)
  */
@@ -63,7 +63,8 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv
 /* A frame with Mode 7 or a layer's canvas presented over the target's
    rectangle d (rr_mode7.h):
    its record m and the samples s rr_m7_tables made at d's size. Exactly
-   rr_ref_mode7's drawing, but that the blends round as the GPU's (within 1
+   the reference's drawing (tests/ref/rr_ref_mode7.h), but that the blends
+   round as the GPU's (within 1
    a channel, as rr_image's). */
 struct RrMode7;
 struct RrM7Samples;

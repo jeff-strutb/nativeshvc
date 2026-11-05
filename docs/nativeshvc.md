@@ -1,7 +1,7 @@
 # nativeshvc: the console, its interface and its extensions
 
 What a game must do and what the console promises it are fixed in
-[the game contract](contract.md) (2.20); this page describes the interface
+[the game contract](contract.md) (2.21); this page describes the interface
 around it.
 
 ## What it is
@@ -55,7 +55,7 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 
 | host (`NSHVC_HOST`) | renderer (`NSHVC_RENDER`) |
 |---|---|
-| `null` (headless) | `soft` |
+| `null` (headless) | `none` (no picture; the test programs bring the reference's, `tests/ref`) |
 | `macos` | `metal` (default), `gl`, `vulkan` |
 | `windows` | `gl` (default), `vulkan` |
 | `ios` (`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64`) | `metal` |
@@ -219,10 +219,11 @@ pixel's centre, blended with the next only across the one window pixel a
 texel edge falls in, by the part of the pixel's footprint past the edge;
 beyond, 4, 8 or 16 samples at the standard positions. Then the console's
 pixels are blended across their edges with sharp bilinear, as the pixel art
-is. The definition is `src/render/rr_mode7.h`, the software backend's
-drawing; the Metal, OpenGL and Vulkan shaders compute the same, in integers
-but the blends (`NSHVC_RRCHECK` holds each to it). `nshvc_picture` stays the
-console's picture. A layer's canvas (`nshvc_ext_canvas_chars`, an
+is. The definition is `src/render/rr_mode7.h`; the Metal, OpenGL and Vulkan
+shaders compute it, in integers but the blends, and the checks' reference
+draws it on the CPU (`tests/ref`; `NSHVC_RRCHECK` holds each to it).
+`nshvc_picture` stays the console's picture, drawn by the GPU and read back
+(on the PSP none for a frame showing a canvas: fatal). A layer's canvas (`nshvc_ext_canvas_chars`, an
 extension) is drawn the same way: each window pixel over one of its
 characters takes the canvas's texel under its centre in its console pixel,
 composed by that pixel's rules, and `nshvc_picture` takes each pixel's

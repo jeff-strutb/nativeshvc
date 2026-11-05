@@ -2,7 +2,7 @@
  * here (types, the enums it names, one function pointer each) and loaded at
  * start-up through the context's own lookup (gl_ctx.c): no system GL header
  * is needed, so Windows' OpenGL 1.1 headers and the Mac's deprecated ones
- * never come into it. The Boss Rally port's, cut to what this one draws. */
+ * never come into it. */
 #ifndef PORT_GL_API_H
 #define PORT_GL_API_H
 
