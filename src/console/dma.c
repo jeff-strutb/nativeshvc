@@ -254,6 +254,16 @@ void dma_run(void)
 
 int hdma_enabled(void) { return dma_hdmaen != 0; }
 
+/* an enabled channel writes the A bus (B to A): memory a wait could read */
+int hdma_writes_a(void)
+{
+    int i;
+    for (i = 0; i < 8; i++)
+        if ((dma_hdmaen & (1u << i)) && (ch[i].dmap & 0x80))
+            return 1;
+    return 0;
+}
+
 int hdma_active(void)
 {
     int i;

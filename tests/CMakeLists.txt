@@ -84,6 +84,12 @@ target_include_directories(overlay_check PRIVATE ${PROJECT_SOURCE_DIR}/src/rende
 target_link_libraries(overlay_check PRIVATE nshvc)
 set_target_properties(overlay_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
+# a frame's cost by what the game does, not what the console's time holds
+add_executable(scaling_check unit/scaling_check.c)
+target_include_directories(scaling_check PRIVATE ${PROJECT_SOURCE_DIR}/src/host)
+target_link_libraries(scaling_check PRIVATE nshvc)
+set_target_properties(scaling_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
 add_executable(states unit/states.c)
 target_link_libraries(states PRIVATE nshvc)
 set_target_properties(states PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

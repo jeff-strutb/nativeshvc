@@ -60,6 +60,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `apu.c` `spc_main` | `for (;;)` | one entry of the driver | the driver's own C |
 | `apu.c` `ipl` | two `do` loops | **the boot ROM's clearing and handshake, step by step with its stated cycles** | the reply a game's upload reads. **Boot ROM left as it is, flagged for a decision** |
 | `bus.c` `run_events` | `for (;;)` | one deadline a pass | NMI, IRQ, HDMA, the field: what the game's handlers and reads see |
+| `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step a line; `run_events` still sets each one up. Line by line through `wait_step`, as before, near a deadline, with a running chip, a wait reading the DMA registers or memory a channel writes, or a hook on the accesses |
 | `bus.c` `irq_find` | `for (;;)`, `l++` | lines until the next IRQ's time, only with the IRQ enabled | the next deadline |
 | `bus.c` `refresh_take` | `while` | a refresh passed, one for each line of settled work | the S-CPU's clock. Costs on only (Original mode's time); with the costs off no work is charged, and a wait sets the next refresh directly |
 | `bus.c` `joy_run` | `while (joy_next <= clock)` | **the automatic read's 33 edges, run when a joypad register is read** | a bit of JOY1-4 each. **The note's closed form is not done**: each edge's device read has effects on that device (its shift, a mouse's or a gun's state), so the bits are read one at a time, once a frame at most, only when observed |
@@ -67,7 +68,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `bus.c` `snes_wai`, `snes_loop_forever` | `for (;;)` | one interrupt taken or deadline reached | the game's handlers |
 | `dispatch.c` `cpu_main` | `for (;;)` | one entry of the game | the game's own C |
 | `dma.c` `dma_run` | channels; bytes | each byte a game's DMA moves | the bytes written; the clock read |
-| `dma.c` `hdma_line` | 8 channels, on an HDMA line only | an HDMA transfer the game turned on | registers changed for that line |
+| `dma.c` `hdma_line` | 8 channels, on an HDMA line only | an HDMA transfer the game turned on | registers changed for that line. Original mode's lines are still deadlines while its timed C runs, as its writes interleave with the tables |
 | `ppu.c` `ppu_stat_catch_up` | `r` from the last evaluated row to the beam | one row's evaluation, only when $213E is read | STAT77's range and time over flags, sticky across rows |
 | `ppu.c` `ppu_render_lines` | lines first to end | one record entry a line: state and palette indices, mosaic row (lines with no change share a state) | the compositor's row table, a STAT77 read. Written line by line because the vertical mosaic's row depends on the line |
 
@@ -77,6 +78,14 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
    on port writes: left as it is, for a decision.
 2. The joypad's automatic read walks its edges when observed: no closed form (above).
 3. A DSP sample walks 32 clock cases: the block mixer was exact but no faster, and was removed.
+
+4. HDMA's lines in a wait take no wait step, but are each still set up by `run_events` at
+   its clock, and with a chip running stay deadlines: not computed at the next observation.
+
+## How it is checked
+
+`tests/unit/scaling_check.c` (tests/README.md): a frame's cost the same whatever the console's
+time holds. The sound CPU's timers are not in it.
 
 ## Stated limits of the verification
 

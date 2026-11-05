@@ -183,6 +183,7 @@ static unsigned nmi_from = 1, nmi_edge = NO_LINE, rose_line = NO_LINE;
 static unsigned begin_from = 1, hdma_from, rendered = 1;
 static int edge_done, setup_done;
 static uint64_t irq_at, next_event;
+static uint64_t next_real;           /* next_event but for HDMA's lines (hdma_bulk) */
 /* the next refresh not yet made */
 static uint64_t refresh_next;
 /* counted up where the console changes what a wait's reads could see
@@ -430,6 +431,7 @@ static uint64_t begin_next(void)
 
 int hdma_active(void);
 int hdma_enabled(void);
+int hdma_writes_a(void);
 
 /* the next line's HDMA point while HDMA runs (lines before the vertical
    blank's) */
@@ -451,10 +453,11 @@ static void events_next(void)
         e = line_at(nmi_edge) - 2;
     if (!setup_done && setup_time() < e)
         e = setup_time();
-    if ((t = hdma_next()) < e)
-        e = t;
     if (hdma_pending && hdma_line_of != NO_LINE && line_at(hdma_line_of + 1) < e)
         e = line_at(hdma_line_of + 1);
+    next_real = e;
+    if ((t = hdma_next()) < e)
+        e = t;
     next_event = e;
 }
 
@@ -2115,6 +2118,40 @@ static void wait_to(uint64_t to)
         run_events();
 }
 
+/* The most clocks from a line's HDMA point to its transfer's end: the step
+   in, 8 channels of 4 bytes and 3 table bytes at 8 clocks each, the transfer's
+   start, aligning and giving back. */
+#define HDMA_SPAN_MAX 600
+
+/* A wait's HDMA lines, no deadline each. In a wait nothing else moves a line's
+   transfer: the same calls at the same clocks as wait_step's three steps to
+   it (to its point, the step of a cycle it is taken up in, the transfer), and
+   none of the wait's looks between them, so long as no interrupt or deadline,
+   and nothing the wait stops for, falls before the transfer ends. Those a line
+   away, a running chip (it runs ahead to the wait's step, a table read of its
+   memory behind it), a wait reading the DMA registers, or memory a channel
+   writes, or a hook on the accesses: wait_step, a line at a time. */
+static void hdma_bulk(uint64_t until)
+{
+    uint64_t limit = until, t, at;
+    if (dma_active || dma_pending || hdma_pending || snes_read_hook || snes_write_hook || snes_dma_hook || chip_watch(0) ||
+        turn.dma || (turn.mem && hdma_writes_a()))
+        return;
+    if ((t = interrupt_due_at()) > snes_clock && t < limit)
+        limit = t;
+    if (timeup_flag && timeup_at > snes_clock && timeup_at < limit)
+        limit = timeup_at;
+    if (cart_irq && cart_irq_at > snes_clock && cart_irq_at < limit)
+        limit = cart_irq_at;
+    /* (next_real anew each line: a transfer can write SETINI's overscan) */
+    while ((at = hdma_next()) != NEVER && at > snes_clock && at + HDMA_SPAN_MAX < limit && at + HDMA_SPAN_MAX < next_real) {
+        wait_to(at);
+        cycle_begins(6);
+        wait_to(snes_clock + 6);
+        cycle_begins(6);
+    }
+}
+
 /* a step of a wait, to `until` at most (NEVER: as far as nothing stops
    it): 1 when an interrupt was taken; *look set when it stopped where an
    interrupt or the cartridge's IRQ line changes (the condition looks
@@ -2126,6 +2163,7 @@ static int wait_step(uint64_t until, int *look)
     /* one due already (one a handler held, its I flag now clear) */
     if (check_interrupts())
         return 1;
+    hdma_bulk(until);
     bound(&n, until);
     if (until <= snes_clock)
         n = 0;
