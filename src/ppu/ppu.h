@@ -200,8 +200,8 @@ void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, in
    over the whole screen; image 0: off */
 void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t image, int w, int h, int priority,
                                uint64_t event, uint64_t value);
-/* a canvas of characters the GPU holds, form 1 or 2, row of them a row; image
-   0: off */
+/* a canvas of characters the GPU holds, form 1 (row of them a row) or 2 (row
+   of them a column); image 0: off */
 void ppu_ext_canvas_chars_gpu(const char *name, int form, int layer, unsigned word_addr, int count, uint64_t image, int row,
                               int k, uint64_t event, uint64_t value);
 /* the frame hook has ended: a canvas the GPU holds that the last finished

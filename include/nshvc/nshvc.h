@@ -658,15 +658,23 @@ void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w
    per_row of them a row. Copied by the console on the GPU, past its fence, once
    for each frame drawn from it.
    _ge, the PSP's: VRAM in the loan as nshvc_ext_canvas_screen_ge's, read straight
-   by the console's GE list, its grid stride / 8k characters a row (the GE
-   draws no 8-bit target: 32-bit words, GU_PSM_8888, the value the low byte, the
-   GE's red, the rest not read). So what fits is the loan's: at most 512 x 272
-   texels, 2,176 characters at k 1, 544 at k 2, past it fatal.
+   by the console's GE list. Its characters by column, per_column of them a
+   column: character i is in column c = i / per_column, row i % per_column. A band
+   holds n = min(stride, 512) / 8k columns, and past it the columns go on in a band
+   below: character i's top left texel is at x = (c % n) 8k, y = ((c / n) per_column +
+   i % per_column) 8k. The GE draws no 8-bit target, so a value is in a texel's low
+   bits: psm GU_PSM_8888, its red, any depth; or GU_PSM_4444, its red, a layer of 4
+   bits or fewer (above them, its green: read by an 8-bit layer). All of it inside
+   the loan's one buffer and 512 texels down, past it fatal. So at a row of 512: 8888
+   holds 512 x 272 texels, 4444 512 x 512 (the buffer's 544 rows). A game's list
+   drawing a part that wraps points its draw buffer at that band (the depth buffer
+   covers 272 rows).
    Handed, kept and let go as nshvc_ext_canvas_screen_gpu's and _ge's are, a VRAM
    canvas let go while paused too. Handle 0, vram_address NULL or count 0: off. */
 void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcGpuHandle handle, int per_row, int k,
                                 NshvcGpuFence fence);
-void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *vram_address, int stride, int k);
+void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *vram_address, int stride, int per_column,
+                               int psm, int k);
 /* An overlay from a texture of the game's, in place of nshvc_overlay_image's
    CPU texels: its id for nshvc_overlay_place, the same for every call (one such
    overlay; -1 when NSHVC_OVERLAYS are made, and it is made at the first call),

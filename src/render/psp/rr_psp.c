@@ -760,13 +760,13 @@ static void over_draw(int W, int H, int tbw, const void *t, int nq, const float 
 int rr_ge_picture(const char *what, const void *vram, int stride, int w, int h, int psm)
 {
     uintptr_t base = (uintptr_t)sceGeEdramGetAddr(), a = (uintptr_t)vram;
-    size_t buf = HOST_PSP_VRAM_USED / 3, off = a - base;
-    if (psm != GU_PSM_8888)
-        nshvc_fatal("%s: psm %d: GU_PSM_8888 alone", what, psm);
-    if (w < 1 || h < 1 || w > 512 || h > 512 || stride < w || (stride & 3) || (a & 15) || a < base ||
-        off + (size_t)stride * (size_t)h * 4 > HOST_PSP_VRAM_USED || off / buf != (off + (size_t)stride * (size_t)h * 4 - 1) / buf)
-        nshvc_fatal("%s: %d x %d at %p, %d pixels a row: 16 bytes aligned, a row's a multiple of 4 pixels, "
-                    "at most 512 x 512, in one of the screen's buffers (nshvc_ext_ge_vram)", what, w, h, vram, stride);
+    size_t buf = HOST_PSP_VRAM_USED / 3, off = a - base, bpp = psm == GU_PSM_8888 ? 4u : 2u, row = (size_t)stride * bpp;
+    if (psm != GU_PSM_8888 && psm != GU_PSM_4444)
+        nshvc_fatal("%s: psm %d: GU_PSM_8888, or a character canvas's GU_PSM_4444", what, psm);
+    if (w < 1 || h < 1 || w > 512 || h > 512 || stride < w || (row & 15) || (a & 15) || a < base ||
+        off + row * (size_t)h > HOST_PSP_VRAM_USED || off / buf != (off + row * (size_t)h - 1) / buf)
+        nshvc_fatal("%s: %d x %d at %p, %d pixels a row: 16 bytes aligned, each row too, at most 512 x 512, "
+                    "in one of the screen's buffers (nshvc_ext_ge_vram)", what, w, h, vram, stride);
     return 1;
 }
 

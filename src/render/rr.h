@@ -68,6 +68,7 @@ int rr_gpu_device(struct NshvcGpuLoan *loan);
    (nshvc_ext_canvas_screen_ge): fatal when it cannot; the front end's default
    0, no GE */
 #define RR_GE_PSM_8888 3                /* the GE's 32-bit pixels (GU_PSM_8888) */
+#define RR_GE_PSM_4444 2                /* its 16-bit (GU_PSM_4444), a character canvas's */
 int rr_ge_picture(const char *what, const void *vram, int stride, int w, int h, int psm);
 /* An overlay from an image the GPU holds (nshvc_ext_overlay_gpu), as
    rr_overlay's: a texture, or the GE's VRAM (image its address, view its

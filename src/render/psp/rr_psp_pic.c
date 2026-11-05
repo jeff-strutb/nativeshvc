@@ -3657,9 +3657,12 @@ static void cv_chars_rows(const CvGroup *g, const TV *rowt)
     static int cnt[CVB_IMGS * 24];
     static uint16_t bk[CV_ROWS][CVT_MAX];    /* each record's bucket */
     int nr = g->Yb - g->Ya, t, b, k = (int)FD_(CP_CVK), k8 = 8 * k;
-    /* (VRAM the game's list drew: its grid its own, one image; 32-bit words,
-       the value the low byte, the GE's red: the lookup's shift 0 takes it) */
-    int tbw = s_cvge ? (int)FD_(CP_CVGPU + 4) : 512, per = tbw / k8, pimg = s_cvge ? (int)FD_(CP_CVCOUNT) : per * per;
+    /* (VRAM the game's list drew, one image: its characters by column,
+       wrapping to a band below past `across` columns (nshvc_ext_canvas_chars_ge);
+       each texel's low byte the GE's red in 8888, its green and red in 4444: the
+       lookup's shift 0 takes it, a layer's depth bits its) */
+    int tbw = s_cvge ? (int)FD_(CP_CVGPU + 4) : 512, per = 512 / k8, pimg = s_cvge ? (int)FD_(CP_CVCOUNT) : per * per;
+    int pc = s_cvge ? (int)FD_(CP_CVROW) : 1, across = (tbw < 512 ? tbw : 512) / k8;
     int nb = s_cvimgs * 24;
     if (s_cvimgs > CVB_IMGS)
         nshvc_fatal("a canvas of %d character images (%d)", s_cvimgs, CVB_IMGS);
@@ -3686,7 +3689,7 @@ static void cv_chars_rows(const CvGroup *g, const TV *rowt)
     sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
     sceGuEnable(GU_TEXTURE_2D);
-    sceGuTexMode(s_cvge ? GU_PSM_T32 : GU_PSM_T8, 0, 0, 0);
+    sceGuTexMode(!s_cvge ? GU_PSM_T8 : FD_(CP_CVGPU + 2) == (U32)GU_PSM_4444 ? GU_PSM_T16 : GU_PSM_T32, 0, 0, 0);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
     sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
     for (b = 0; b < nb; b++) {
@@ -3710,8 +3713,14 @@ static void cv_chars_rows(const CvGroup *g, const TV *rowt)
                 if (bk[t][c] != b)
                     continue;
                 ix = e->ci % pimg;
-                cu = (ix % per) * k8;
-                cvv = (ix / per) * k8 + e->py * k + (e->vf ? k - 1 - sub : sub);
+                if (s_cvge) {
+                    int col = (int)e->ci / pc;
+                    cu = (col % across) * k8;
+                    cvv = ((col / across) * pc + (int)e->ci % pc) * k8 + e->py * k + (e->vf ? k - 1 - sub : sub);
+                } else {
+                    cu = (ix % per) * k8;
+                    cvv = (ix / per) * k8 + e->py * k + (e->vf ? k - 1 - sub : sub);
+                }
                 a0 = (e->xa - e->xc) * k;
                 a1 = (e->xb - e->xc) * k;
                 v[0].u = (short)(e->hf ? cu + k8 - a0 : cu + a0);

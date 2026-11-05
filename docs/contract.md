@@ -187,14 +187,17 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
     so a picture is drawn and handed after the pause. A frame showing it has no
     `nshvc_picture`, as any canvas's there (2.21).
   - `nshvc_ext_canvas_chars_gpu(layer, word_addr, count, handle, per_row, k, fence)` and, the
-    PSP's, `nshvc_ext_canvas_chars_ge(layer, word_addr, count, vram_address, stride, k)`: a
+    PSP's, `nshvc_ext_canvas_chars_ge(layer, word_addr, count, vram_address, stride, per_column, psm, k)`: a
     canvas of characters from the GPU in place of `nshvc_ext_canvas_chars`'s texels, the
     console placing them as ever (the layer's map and scroll, each tile's flips, priority and
     palette). The texture: 8-bit unsigned texels (`R8Uint`), the characters in a grid, `per_row`
-    of them a row, each `8k x 8k`, copied on the GPU, needing `TRANSFER_SRC` on Vulkan. VRAM:
-    the same grid, `stride / 8k` characters a row, in 32-bit words the GE drew, the value the low
-    byte (it draws no 8-bit target), read straight; at most what the loan holds (512 x 272
-    texels: 2,176 characters at k 1, 544 at k 2). Handed, kept and let go as the screen forms.
+    of them a row, each `8k x 8k`, copied on the GPU, needing `TRANSFER_SRC` on Vulkan. VRAM,
+    read straight: by column, `per_column` characters a column, the columns past what a row holds
+    (at most 512 texels) going on in a band below. The GE draws no 8-bit target, so the value is
+    the low bits of a pixel it drew: `GU_PSM_8888`'s red, any depth; `GU_PSM_4444`'s red, a layer
+    of 4 bits or fewer, for more room (at a row of 512, 8888 holds 512 x 272 texels, 4444 512 x
+    512). Past the loan's buffer or 512 texels down is fatal. Handed, kept and let go as the
+    screen forms.
   - `nshvc_ext_overlay_gpu(handle, w, h, fence)`: an overlay from a texture (8 bits a
     channel, unsigned normalized, straight alpha, sampled), or on the PSP from VRAM (`handle`'s
     image its address, its view its stride; `GU_PSM_8888`, its alpha the stencil, the column
