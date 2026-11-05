@@ -2134,6 +2134,9 @@ static void wait_to(uint64_t to)
 static void hdma_bulk(uint64_t until)
 {
     uint64_t limit = until, t, at;
+    /* (no line of HDMA is the next thing to come: none of this) */
+    if (next_event == next_real)
+        return;
     if (dma_active || dma_pending || hdma_pending || snes_read_hook || snes_write_hook || snes_dma_hook || chip_watch(0) ||
         turn.dma || (turn.mem && hdma_writes_a()))
         return;
@@ -2160,6 +2163,10 @@ static int wait_step(uint64_t until, int *look)
 {
     uint32_t n = 0xFFFFFFFFu;
     uint64_t lp = NEVER, t, s0 = snes_clock;
+    /* the deadlines the clock has passed with no access's time to reach them:
+       power on's, when the costs go off before any access */
+    if (snes_clock >= next_event)
+        run_events();
     /* one due already (one a handler held, its I flag now clear) */
     if (check_interrupts())
         return 1;
