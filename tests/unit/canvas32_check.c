@@ -431,7 +431,9 @@ static void shoot(int sc, Shot *s, const char *tag)
         size_t nw;
         uint32_t x, y;
         long bad = 0;
+        ppu_set_compose_canvas(1);           /* (the description's own texels, as the C build reads them) */
         rr_cp_fd = ppu_compose(f, &nw);
+        ppu_set_compose_canvas(rr_compose_canvas());
         for (y = 0; y < (uint32_t)ph; y++)
             for (x = 0; x < (uint32_t)pw; x++)
                 if (rr_cp_pixel(x, y) != pic[y * (uint32_t)pw + x]) {

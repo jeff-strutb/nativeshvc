@@ -676,6 +676,8 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
    console's (rr_mode7_plain); a frame of Mode 7 alone as any frame */
 int rr_mode7_window(int what) { return (what & 6) || !(what & 1); }
 int rr_mode7_plain(void) { return 1; }
+/* (rr_psp_canvas reads a screen canvas's texels from the record) */
+int rr_compose_canvas(void) { return 0; }
 
 /* the PSP's screen: its picture's buffer (rr_psp_pic.c), 512 x 240 (a hires
    or interlaced frame 256 across) */

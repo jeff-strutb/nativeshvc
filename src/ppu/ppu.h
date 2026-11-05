@@ -135,6 +135,8 @@ static inline int ppu_frame_width(const PpuFrame *f) { return f->hires ? 2 * f->
 struct RrMode7;
 /* (ppu.c m7_plain) */
 void ppu_set_mode7_plain(int on);
+/* (rr.h rr_compose_canvas) */
+void ppu_set_compose_canvas(int on);
 /* whether a line of f shows a Mode 7 layer or the frame's canvas */
 int ppu_frame_mode7(const PpuFrame *f);
 /* what the frame presents at the window's resolution: 1 a Mode 7 line, 2 a

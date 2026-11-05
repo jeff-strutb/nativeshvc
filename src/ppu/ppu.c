@@ -1650,7 +1650,7 @@ static uint32_t cp_sprites(uint32_t *n)
         cp_spr[cp_spr_n++] = (uint32_t)o->x;
         cp_spr[cp_spr_n++] = (r & 0xFF) | w >> 3 << 8 | (uint32_t)((o->attr >> 6) & 1) << 12 |
                              (uint32_t)((o->attr >> 1) & 7) << 13 | (uint32_t)((o->attr >> 4) & 3) << 16 |
-                             (uint32_t)(keep[hit[k]] + 1) << 18;
+                             (uint32_t)(keep[hit[k]] + 1) << 18 | (uint32_t)hit[k] << 24;
         cp_spr[cp_spr_n++] = o->name;
         (*n)++;
     }
@@ -1696,6 +1696,10 @@ static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vba
     o[27] = (uint32_t)l->wmap_offset;
 }
 
+/* a screen canvas's texels in the description (rr.h rr_compose_canvas) */
+static int compose_canvas = 1;
+void ppu_set_compose_canvas(int on) { compose_canvas = on != 0; }
+
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
 {
     static uint32_t st_of[PPU_MAX_HEIGHT + 1][PPU_SEGS + 1];
@@ -1709,6 +1713,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     const uint16_t *last_pal = NULL;
     uint32_t last_at = 0;
     size_t vwords = (size_t)vram_pages * 0x8000;
+    uint32_t last_st_pal = 0;
     /* the palettes (one for each run of lines and segments with the same) */
     pals = n;
     for (line = 1; line <= (unsigned)f->height; line++)
@@ -1736,7 +1741,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     }
     /* the canvas's texels */
     cv = n;
-    if (f->cv_on) {
+    if (f->cv_on && (compose_canvas || !f->cv_screen)) {
         /* four texels a word, the first the low byte (a full-colour
            canvas's a word each): in memory, the texels in order on a
            little-endian host (every host nativeshvc builds for), so one
@@ -1763,6 +1768,13 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     states = n;
     for (line = 1; line <= (unsigned)f->height; line++)
         for (k = 0; k <= f->segs[line]; k++) {
+            /* (a stretch of lines with nothing changed between them: one) */
+            if (!k && line > 1 && !f->segs[line - 1] && f->st[line] == f->st[line - 1] &&
+                f->version[line] == f->version[line - 1] && st_of[line][0] == last_st_pal) {
+                st_of[line][0] = st_of[line - 1][0];
+                continue;
+            }
+            last_st_pal = st_of[line][k];
             cp_w = grow(cp_w, &cp_cap, n + CP_ST, sizeof *cp_w);
             cp_state(cp_w + n, k ? &f->seg_line[line][k - 1] : &f->line[f->st[line]], st_of[line][k],
                      (uint32_t)(f->version[line] * vwords), f);

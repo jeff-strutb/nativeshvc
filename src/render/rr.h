@@ -87,6 +87,11 @@ void rr_screen_max(int *w, int *h);
    canvas's texels (at a whole k, its screen times k too); the front end's
    default none (0) */
 void rr_canvas_max(int *w, int *h);
+/* 1 when the backend reads a screen canvas's texels from the frame's
+   description; 0 from the record (RrMode7.cv: rr_compose_mode7), so they are
+   copied into no description (ppu.h ppu_set_compose_canvas); the front end's
+   default 1 */
+int rr_compose_canvas(void);
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s);
 /* a frame presenting Mode 7 or a canvas: its picture and records drawn by
    the backend's compositor from its description (ppu.c ppu_compose_m7),

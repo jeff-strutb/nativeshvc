@@ -205,6 +205,20 @@ static inline void rr_m7_tables(const RrMode7 *m, int ow, int oh, RrM7Samples *s
     }
 }
 
+/* rr_m7_tables's rows' flags alone, for another frame of the same size: all
+   else in the tables a function of the sizes and m's cpp and left */
+static inline void rr_m7_tables_flags(const RrMode7 *m, int oh, int32_t *rows)
+{
+    int Y, ph = m->ph;
+    for (Y = 0; Y < oh; Y++) {
+        int32_t *r = rows + 4 * (size_t)Y;
+        int ty = r[0], a = ty < 0 ? 0 : ty >= ph ? ph - 1 : ty, b = ty + 1 < 0 ? 0 : ty + 1 >= ph ? ph - 1 : ty + 1;
+        float fy;
+        memcpy(&fy, &r[1], 4);
+        r[2] = m->row_m7[a] || (fy > 0 && m->row_m7[b]);
+    }
+}
+
 /* VRAM v's plane (RrMode7.plane): every texel inside the map */
 static inline void rr_m7_plane(uint8_t *plane, const uint16_t *v)
 {

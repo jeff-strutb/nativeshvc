@@ -640,6 +640,8 @@ __attribute__((weak)) void rr_screen_max(int *w, int *h)
 
 __attribute__((weak)) int rr_mode7_plain(void) { return 0; }
 
+__attribute__((weak)) int rr_compose_canvas(void) { return 1; }
+
 __attribute__((weak)) void rr_canvas_max(int *w, int *h)
 {
     *w = 0;
@@ -664,22 +666,35 @@ static int show_mode7(int ow, int oh, const int d[4])
     const PpuFrame *f = ppu_frame();
     size_t nw;
     const uint32_t *desc;
+    static int key[6];
+    int now[6];
     if (ow <= 0 || oh <= 0 || f->versions == 0 || f->interlace || !ppu_frame_mode7(f))
         return 0;
     desc = ppu_compose_m7(f, &nw, &m);
-    if (ow > m7_cols_cap) {
-        free(m7_cols);
-        m7_cols = (int32_t *)malloc((size_t)ow * 3 * 4);
-        m7_cols_cap = m7_cols ? ow : 0;
+    now[0] = ow;
+    now[1] = oh;
+    now[2] = m.pw;
+    now[3] = m.ph;
+    now[4] = m.cpp;
+    now[5] = m.left;
+    if (memcmp(key, now, sizeof key)) {
+        if (ow > m7_cols_cap) {
+            free(m7_cols);
+            m7_cols = (int32_t *)malloc((size_t)ow * 3 * 4);
+            m7_cols_cap = m7_cols ? ow : 0;
+        }
+        if (oh > m7_rows_cap) {
+            free(m7_rows);
+            m7_rows = (int32_t *)malloc((size_t)oh * 4 * 4);
+            m7_rows_cap = m7_rows ? oh : 0;
+        }
+        if (!m7_cols || !m7_rows)
+            nshvc_fatal("no memory for the picture at %dx%d", ow, oh);
+        rr_m7_tables(&m, ow, oh, &smp, m7_cols, m7_rows);
+        memcpy(key, now, sizeof key);
+    } else {
+        rr_m7_tables_flags(&m, oh, m7_rows);
     }
-    if (oh > m7_rows_cap) {
-        free(m7_rows);
-        m7_rows = (int32_t *)malloc((size_t)oh * 4 * 4);
-        m7_rows_cap = m7_rows ? oh : 0;
-    }
-    if (!m7_cols || !m7_rows)
-        nshvc_fatal("no memory for the picture at %dx%d", ow, oh);
-    rr_m7_tables(&m, ow, oh, &smp, m7_cols, m7_rows);
     if (!rr_compose_mode7(desc, nw, &m, d, &smp))
         nshvc_fatal("the renderer (%s) cannot draw the frame's Mode 7 or canvas at the window's resolution", rr_name());
     return 1;
@@ -1065,6 +1080,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     const char *script = NULL, *out_dir = ".";
     int i;
     ppu_set_mode7_plain(rr_mode7_plain());
+    ppu_set_compose_canvas(rr_compose_canvas());
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--headless"))
             headless = 1;

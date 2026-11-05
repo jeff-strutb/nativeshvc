@@ -107,7 +107,8 @@
                             right, a word each */
 #define CP_S_WMAP 26     /* the windows' map (nshvc_ext_window_map): its scale (16.16), its offset */
 
-#define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept; name */
+#define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept, its
+                            place in the priority order (bits 24-30); name */
 
 /* the description drawn from: its first word (cp_woven sets it) */
 CP_VAR U32 cp_fdb;

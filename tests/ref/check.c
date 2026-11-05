@@ -82,6 +82,7 @@ static void frame_check(const PpuFrame *finished)
         size_t nw;
         check_pic = grow(check_pic, &check_cap, (size_t)w * (size_t)h, sizeof *check_pic);
         ppu_draw_frame(finished, check_pic);
+        ppu_set_compose_canvas(1);           /* (the description's own texels, as the C build reads them) */
         rr_cp_fd = ppu_compose(finished, &nw);
         for (y = 0; y < h; y++)
             for (x = 0; x < w; x++) {
