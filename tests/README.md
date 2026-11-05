@@ -12,7 +12,7 @@ environment). Every test program that links the console links them (`nshvc_ref`)
 | check | holds | run |
 |---|---|---|
 | `rom/run.py` | (with STAT77's range and time over flags, the `stat77` cases, worked out when read) the console's hardware, pixel for pixel and read for read, against the reference (bsnes, accuracy settings, display gamma off), to the clock: the reference runs each test cartridge and records every read, write and code fetch its S-CPU makes and every byte its DMA moves, with its clock (`oracle --cpulog`); `rom/replay.c` makes the same accesses on nativeshvc, each starting its bus cycle so that it is made at the reference's clock through the console's public calls (its own chip's IRQ line stopping a wait at each), and every read and every picture must match, and each DMA's length (its end 0 to 6 clocks before the reference's last byte, by how the two starts fall on the unit's 8-clock steps). An access may come up to 36 clocks late after the DMA unit's work, the reference CPU's cycle alignment, which the replay cannot reproduce; later is a failure. Every background mode, tile size, offset-per-tile, Mode 7, sprites and their limits, windows, colour maths, brightness, mosaic, HDMA, the read side, overscan, hires, every cartridge mapping, the IRQ's and NMI's flags and latches at every dot, DMA and HDMA at every phase and HDMA between a DMA's bytes, the multiplier and divider, the counters and frame lengths, interlace, mid-line changes (each layer's tile fetch by mode), the sound unit's ports, the joypads' automatic read at every phase of the CPU's counter and every controller. 1,173 test cartridges: 1,117 match; 42 read the multiplier mid-operation (done when read: the contract), and 14 differ by a latch or a pixel after an access 2 clocks late (a refresh's start, not yet explained), each listed in `rom/KNOWN` | `python3 tests/rom/run.py [--only NAME,...]` (about 3 minutes) |
-| `rom/ext_check.py` | the extensions: a larger screen's centre, and the places `nshvc_ext_screen_origin` puts the picture (a corner, the far corner held at the edges, an odd column and row), exactly the console's picture, its extra columns the scene scrolled (centred and placed at column 256), VRAM pages the same as page 0 | `python3 tests/rom/ext_check.py` (about 4 minutes) |
+| `rom/ext_check.py` | the extensions: a larger screen's centre, and the places `nshvc_ext_screen_origin` puts the picture (a corner, the far corner held at the edges, an odd column and row), exactly the console's picture, its extra columns the scene scrolled (centred and placed at column 256), VRAM pages the same as page 0. It takes its ROMs from `rom/run.py`'s output and skips one it cannot find, printing "0 differ" for it, so run it after `rom/run.py`, before that output is deleted | `python3 tests/rom/ext_check.py` (4 to 10 minutes) |
 | `dsp/fuzz.py` | the DSP on its own: a test cartridge whose SPC700 program writes every DSP register at random on every clock of the frame, plays random sample data, runs the timers and the ports, run on the reference; the mixer given the reference's writes at the reference's clocks: every sample, every voice's state, every DSP register read and every APU RAM read | `python3 tests/dsp/fuzz.py [SEED...]` (seeds 1-4, about 2 minutes) |
 | `dsp/keys.py` | the notes a sound driver plays, its work taking no time: a driver keying voices on and off on timer 0's beat (`dsp/keys_spc.c` its C), on the reference and on nativeshvc; both runs' writes played through the mixer (`dsp/key_events`), every voice's key events the same, in order, each key-on with the same sample, each within 32 samples of the reference's (they come within 14) | `python3 tests/dsp/keys.py` (about 30 seconds) |
 | `dsp/mix_replay` | any run's sound against the reference's: the mixer given the writes the reference's SPC700 made (`oracle --spclog L [--spcreads] --sound S --voices V`), every sample, voice state and DSP read (and APU RAM read, with `--spcreads`) | `build/null/tests/mix_replay L S V` |
@@ -54,19 +54,68 @@ cmake -S . -B build/null -DNSHVC_TESTS=ON -DNSHVC_EXAMPLES=ON && cmake --build b
 
 `rom/run.py` needs the reference core and the assembler:
 
-- `NSHVC_ORACLE_CORE`: a bsnes libretro core. The reference here is
-  bsnes v115, built from its source with two
-  changes to its libretro front end (none to the console it models): the
-  light guns' inputs passed through (`target-libretro/program.cpp`'s
-  `pollInputDevices` returns nothing for them as shipped), and the libretro
-  target's display gamma set to 1.0, so the core's
-  frames carry the PPU's colours as made (its default gamma of 1.5 cannot be
-  undone at the dark end). Build it into `build/oracle-core` (about 5
-  minutes).
+- `NSHVC_ORACLE_CORE`: the reference core, built as below.
 - `NSHVC_ASAR`: asar.
 
 The core's own options are pinned by `oracle/oracle.c`: accuracy PPU and
 DSP, no overclock, no blur, no randomised power-on state, no hacks.
+
+### The reference core
+
+Any platform with a C++ compiler builds it; nothing about it is tied to one.
+
+**The source:** `github.com/bsnes-emu/bsnes`, branch `master`, commit `78474e5d3`.
+Not the tag `v115`, though `master` still calls itself 115: the tag lacks the later
+automatic joypad read, mode 4 and hires offset-per-tile work, and 235 of the 1,173
+test cartridges differ on it. Commits from `7d5aa1e65` to `78474e5d3` differ only in
+`nall` and the CX4 chip, which no test cartridge uses.
+
+**Its libretro front end**, none of it the console it models:
+
+- the light guns' inputs passed through: `target-libretro/program.cpp`'s
+  `pollInputDevices` returns nothing for them as shipped. Each comes as a
+  `RETRO_DEVICE_LIGHTGUN` input, its index the device (0 Super Scope, 1 Justifier, 2
+  Justifiers), its id the input (`gun_input` in `oracle/oracle.c`);
+- the display gamma in `updateVideoPalette`, the same file, set to 1.0, so the core's
+  frames carry the PPU's colours as made (its default of 1.5 cannot be undone at the
+  dark end);
+- the hooks' `sfxbox_*` names added to the exported ones in `target-libretro/link.T`.
+
+**The hooks**, all with C names. `oracle/oracle.c` declares each and its structures'
+layouts; none changes what the console does:
+
+| hook | what it must do |
+|---|---|
+| `sfxbox_set_callbacks` | copies a `struct sfxbox_callbacks` (below); any of them may be null |
+| `insn(pc)` | the S-CPU's address, before each instruction it starts |
+| `read(addr, data)` | each S-CPU bus read, when its value comes off the bus: 4 clocks before its cycle ends, the clock already moved to there |
+| `write(addr, data, kind)` | before the write lands. Kind 0: the S-CPU's, at the end of its cycle. Not 0: each byte a DMA or HDMA writes, with the address it writes, those the bus refuses too (work RAM to work RAM) |
+| `interrupt(resume_pc, s)` | as an NMI or IRQ is taken. Nothing reads it |
+| `timing(kind, clocks, addr)` | an S-CPU cycle's bus clocks: kind 1 a read, 2 a write, 3 an internal cycle (6 clocks, not a refresh's or a DMA's) |
+| `sfxbox_core_clock()` | the S-CPU's own counter of master clocks from power on, 32 bits: refresh and DMA in it. It stands at 186 where the first instruction starts: 22 x 6 and the reset's 54 |
+| `sfxbox_cpu_who` | an `int`, what the last S-CPU read was for: 0 data, 1 an opcode's fetch, 2 an operand's |
+| `sfxbox_cpu_opcode` | a byte, the opcode of the instruction running |
+| `sfxbox_smp_cb` | a `struct smp_callbacks` the program fills. `step(clocks)`: each time the SPC700's time moves, internal cycles too, in half cycles of its 1.024 MHz cycle. `mem(write, addr, data)`: a data access, its cycle's time already counted, a write before it lands, a read of a port between its cycle's two halves; no fetches, no reads whose value is thrown away (dummy reads, a store's read of its target). `insn` is never called; nothing reads it |
+| `sfxbox_dsp_sample` | a pointer the program sets, called with each sample at the DSP's clock 27, muting applied |
+| `sfxbox_dsp_voices` | a pointer the program sets, called with the sample: 40 `int32`s, for each voice its envelope level, stage, pitch counter, BRR block and offset in it |
+| `sfxbox_memory(name, &size)` | `"wram"`: the work RAM, 128 KB; any other name null |
+
+**Build**, about a minute: `make -C bsnes target=libretro binary=library -j8`, then
+`NSHVC_ORACLE_CORE=bsnes/out/bsnes_libretro.so` (`.dylib` on macOS, `.dll` on Windows).
+GCC 13 and later need `#include <stdexcept>` at the top of `nall/arithmetic.hpp`.
+
+**Proof it is the reference:** `rom/run.py` at `d64a524` must print `0 of 1173 differ; 56
+more differ as KNOWN lists; 0 listed in KNOWN now pass`, and `dsp/keys.py` must read 3,214
+key events, the largest shift 14 samples. `timing` and `sfxbox_cpu_opcode` serve only
+`--cpustats` (`tools/nshvc-profile`), which no check here holds to a known result.
+
+### The PSP's programs in PPSSPP
+
+`PPSSPPHeadless ELF -l --graphics=software --timeout=SECONDS`, with the program's arguments in
+`args.txt` beside it (`psp/args.c`). `-l` is needed: without it a program's output reaches
+nothing and the run still exits 0. Keep only its `stdout:` and `stderr:` lines, and read
+the check's own totals. The frames: `canvas32_psp` 230, `canvas_check` 120, `present_check` 60,
+`woven_check` 60, each with `env NSHVC_RRCHECK=1`; `scaling_check` takes none.
 
 ## The test cartridges
 

@@ -60,7 +60,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `apu.c` `spc_main` | `for (;;)` | one entry of the driver | the driver's own C |
 | `apu.c` `ipl` | two `do` loops | **the boot ROM's clearing and handshake, step by step with its stated cycles** | the reply a game's upload reads. **Boot ROM left as it is, flagged for a decision** |
 | `bus.c` `run_events` | `for (;;)` | one deadline a pass | NMI, IRQ, HDMA, the field: what the game's handlers and reads see |
-| `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step a line; `run_events` still sets each one up. Line by line through `wait_step`, as before, near a deadline, with a running chip, a wait reading the DMA registers or memory a channel writes, or a hook on the accesses |
+| `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step and no `run_events` pass a line: each line takes up its transfer directly at the same clocks, and the deadlines are worked out once when the lines are done (a transfer that moves them does so itself). Line by line through `wait_step` near a deadline, with a running chip, a wait reading the DMA registers or memory a channel writes, or a hook on the accesses |
 | `bus.c` `irq_find` | `for (;;)`, `l++` | lines until the next IRQ's time, only with the IRQ enabled | the next deadline |
 | `bus.c` `refresh_take` | `while` | a refresh passed, one for each line of settled work | the S-CPU's clock. Costs on only (Original mode's time); with the costs off no work is charged, and a wait sets the next refresh directly |
 | `bus.c` `joy_run` | `while (joy_next <= clock)` | **the automatic read's 33 edges, run when a joypad register is read** | a bit of JOY1-4 each. **The note's closed form is not done**: each edge's device read has effects on that device (its shift, a mouse's or a gun's state), so the bits are read one at a time, once a frame at most, only when observed |
@@ -79,13 +79,28 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 2. The joypad's automatic read walks its edges when observed: no closed form (above).
 3. A DSP sample walks 32 clock cases: the block mixer was exact but no faster, and was removed.
 
-4. HDMA's lines in a wait take no wait step, but are each still set up by `run_events` at
-   its clock, and with a chip running stay deadlines: not computed at the next observation.
+4. HDMA's lines in a wait take no wait step and no event pass, but each line's transfer is
+   still made at its clock, and with a chip running, or a deadline a line away, the lines stay
+   deadlines: not computed at the next observation.
 
 ## How it is checked
 
 `tests/unit/scaling_check.c` (tests/README.md): a frame's cost the same whatever the console's
 time holds. The sound CPU's timers are not in it.
+
+Measured at `d3c0a26`, the best of 5 batches of 200 frames, a frame's cost:
+
+| scene | desktop (Linux x86-64, headless) | PPSSPP, an instruction-count estimate |
+|---|---|---|
+| idle | 187.4 us | 24,262.0 us |
+| display | 202.4 us, 1.08 of idle | 24,245.0 us, 1.00 of idle |
+| NMI and joypads | 197.1 us, 1.05 | 24,307.3 us, 1.00 |
+| IRQ masked | 198.9 us, 1.06 | 24,260.8 us, 1.00 |
+| IRQ | 190.1 us, 1.01 | 24,276.1 us, 1.00 |
+| an HDMA byte each line | 220.6 us, 0.139 us a line over the display's | 27,671.3 us, 15.322 us a line |
+| a frame alone, among 100 | 203.4 us, 197.1 us | 24,224.5 us, 24,222.7 us |
+
+The HDMA row is the game's own work, printed and not judged.
 
 ## Stated limits of the verification
 
