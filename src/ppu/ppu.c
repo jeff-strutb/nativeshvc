@@ -98,6 +98,8 @@ static struct {
     int buf;                          /* its texels' buffer (cv_buf), -1 none */
     size_t len;
     uint32_t gen;
+    int gpu;                          /* the GPU holds its texels (PpuFrame cv_gpu) */
+    uint64_t image, event, value;
 } cv_now = { .buf = -1 };
 /* The canvases' texels: each asked for copied once into a buffer, which
    the canvas asked for and each frame record that took it hold (refs; the
@@ -822,6 +824,7 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     len = (size_t)count * 64u * (size_t)k * (size_t)k;
     cv_fill(texels, len);
     cv_now.on = 1;
+    cv_now.gpu = 0;
     cv_now.screen = 0;
     cv_now.rgb = 0;
     cv_now.fx = cv_now.fy = 0;
@@ -860,6 +863,7 @@ static void canvas_screen(const char *name, int layer, const void *texels, size_
     len = (size_t)w * (size_t)h * size;
     cv_fill(texels, len);
     cv_now.on = 1;
+    cv_now.gpu = 0;
     cv_now.screen = 1;
     cv_now.rgb = size == 4;
     cv_now.layer = layer;
@@ -886,19 +890,73 @@ void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, in
     canvas_screen("nshvc_ext_canvas_screen32", layer, texels, 4, w, h, k, priority, palette);
 }
 
+/* no texels of its own here: the frame takes the handle as it begins, as any
+   canvas's texels */
+void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t image, int w, int h, int priority,
+                               uint64_t event, uint64_t value)
+{
+    cv_release(&cv_now.buf);
+    cv_now.gen++;
+    cv_now.gpu = 0;
+    if (!image) {
+        cv_now.on = 0;
+        return;
+    }
+    if (layer < 0 || layer > 3 || w < 1 || h < 1 || w > 65535 || h > 65535 || priority < 0 || priority > 1)
+        snes_fatal("%s(%d, %d x %d, priority %d): layers 0-3 (BG1-4), a size of 1 x 1 to 65,535 x 65,535, priority 0 or 1",
+                   name, layer, w, h, priority);
+    cv_now.on = 1;
+    cv_now.gpu = form;
+    cv_now.image = image;
+    cv_now.event = event;
+    cv_now.value = value;
+    cv_now.screen = 1;
+    cv_now.rgb = 1;
+    cv_now.layer = layer;
+    cv_now.addr = 0;
+    cv_now.count = 0;
+    cv_now.k = 1;
+    cv_now.fx = w;
+    cv_now.fy = h;
+    cv_now.w = w;
+    cv_now.h = h;
+    cv_now.prio = priority;
+    cv_now.pal = 0;
+    cv_now.len = 0;
+}
+
+void ppu_canvas_gpu_end(void)
+{
+    const PpuFrame *f = ppu_frame();
+    if (cv_now.on && cv_now.gpu && f->cv_on && f->cv_gen == cv_now.gen) {
+        cv_now.on = 0;
+        cv_now.gpu = 0;
+        cv_now.gen++;
+    }
+}
+
+uint64_t ppu_canvas_ge_asked(void) { return cv_now.on && cv_now.gpu == 2 ? cv_now.image : 0; }
+
 static void cv_take(void)
 {
     int slot = (int)(making - frames);
     if (!cv_now.on) {
         making->cv_on = 0;
+        making->cv_gpu = 0;
         cv_release(&cv_slot[slot]);
         return;
     }
-    if (cv_slot[slot] != cv_now.buf) {
+    if (cv_now.gpu) {
+        cv_release(&cv_slot[slot]);
+    } else if (cv_slot[slot] != cv_now.buf) {
         cv_release(&cv_slot[slot]);
         cv_slot[slot] = cv_now.buf;
         cv_buf[cv_now.buf].refs++;
     }
+    making->cv_gpu = cv_now.gpu;
+    making->cv_image = cv_now.image;
+    making->cv_event = cv_now.event;
+    making->cv_value = cv_now.value;
     making->cv_on = 1;
     making->cv_layer = cv_now.layer;
     making->cv_addr = cv_now.addr;
@@ -913,7 +971,7 @@ static void cv_take(void)
     making->cv_pal = cv_now.pal;
     making->cv_rgb = cv_now.rgb;
     making->cv_len = cv_now.len;
-    making->cv = cv_buf[cv_now.buf].data;
+    making->cv = cv_now.gpu ? NULL : cv_buf[cv_now.buf].data;
     making->cv_gen = cv_now.gen;
 }
 
@@ -1741,7 +1799,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     }
     /* the canvas's texels */
     cv = n;
-    if (f->cv_on && (compose_canvas || !f->cv_screen)) {
+    if (f->cv_on && !f->cv_gpu && (compose_canvas || !f->cv_screen)) {
         /* four texels a word, the first the low byte (a full-colour
            canvas's a word each): in memory, the texels in order on a
            little-endian host (every host nativeshvc builds for), so one
@@ -1841,7 +1899,18 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_M7SEG] = 0;
     cp_w[CP_OUT] = (uint32_t)outs;
     cp_w[CP_CVSCREEN] = f->cv_on && f->cv_screen ?
-                            1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 | (uint32_t)f->cv_rgb << 5 : 0u;
+                            1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 | (uint32_t)f->cv_rgb << 5 |
+                                (f->cv_gpu == 1 ? 0x40u : f->cv_gpu == 2 ? 0x80u : 0u) : 0u;
+    {
+        uint64_t image = f->cv_on && f->cv_gpu ? f->cv_image : 0, ev = f->cv_on && f->cv_gpu ? f->cv_event : 0,
+                 val = f->cv_on && f->cv_gpu ? f->cv_value : 0;
+        cp_w[CP_CVGPU] = (uint32_t)image;
+        cp_w[CP_CVGPU + 1] = (uint32_t)(image >> 32);
+        cp_w[CP_CVGPU + 2] = (uint32_t)ev;
+        cp_w[CP_CVGPU + 3] = (uint32_t)(ev >> 32);
+        cp_w[CP_CVGPU + 4] = (uint32_t)val;
+        cp_w[CP_CVGPU + 5] = (uint32_t)(val >> 32);
+    }
     cp_w[CP_CVW] = (uint32_t)f->cv_w;
     cp_w[CP_CVH] = (uint32_t)f->cv_h;
     cp_w[CP_CVFX] = f->cv_on && f->cv_screen ? (uint32_t)f->cv_fx : 0u;
@@ -1855,6 +1924,9 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
         cp_w[CP_VGEN + 2 * v + 1] = (uint32_t)(g >> 32);
     }
     *words = n + cp_parts_n + cp_spr_n;
+    /* a texture's texels past the description: the backend's copy (rr.h RrCvGpu) */
+    if (f->cv_on && f->cv_gpu == 1)
+        cp_w[CP_CV] = (uint32_t)*words;
     return cp_w;
 }
 
@@ -2159,6 +2231,8 @@ const uint32_t *ppu_compose_m7(const PpuFrame *f, size_t *words, RrMode7 *m)
     s = keep_s;
     cp_w[CP_M7SEG] = (uint32_t)n;
     *words = n + parts;
+    if (f->cv_on && f->cv_gpu == 1)
+        cp_w[CP_CV] = (uint32_t)*words;
     return cp_w;
 }
 

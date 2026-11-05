@@ -105,6 +105,12 @@ typedef struct {
     size_t cv_len;
     const uint8_t *cv;
     uint32_t cv_gen;
+    /* a screen canvas the GPU holds (no cv, cv_len 0, 32-bit texels): 1 a
+       texture (nshvc_ext_canvas_screen_gpu: cv_image, its fence's cv_event
+       and cv_value), 2 VRAM (nshvc_ext_canvas_screen_ge: cv_image its address,
+       cv_value its stride); 0 none */
+    int cv_gpu;
+    uint64_t cv_image, cv_event, cv_value;
     /* BG1-4's maps outside the console's picture (nshvc_ext_layer_outside),
        as they stood when the frame began: bit n on, each one's size
        (BGnSC's low bits, or 4 and 5: 128 x 32 and 128 x 64) and entries */
@@ -189,6 +195,15 @@ int ppu_canvas_k(void);
 void ppu_stat_catch_up(unsigned v, unsigned h, unsigned vdisp);
 void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
 void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
+/* a screen canvas the GPU holds, form 1 or 2 (PpuFrame cv_gpu), its texels
+   over the whole screen; image 0: off */
+void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t image, int w, int h, int priority,
+                               uint64_t event, uint64_t value);
+/* the frame hook has ended: a canvas the GPU holds that the last finished
+   frame took, none handed since, is let go */
+void ppu_canvas_gpu_end(void);
+/* the VRAM of a canvas asked for and not yet let go (form 2), or 0 */
+uint64_t ppu_canvas_ge_asked(void);
 /* the texels a console pixel spans along each axis at the window's size
    now (nshvc_ext_canvas_scale): the front end sets it as it presents */
 void ppu_set_canvas_scale(int k);

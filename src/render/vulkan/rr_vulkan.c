@@ -145,6 +145,34 @@ static VkImage *s_swap_img;
 static uint32_t s_nswap, s_swap_w, s_swap_h;
 static VkSemaphore s_sem_acquire, *s_sem_done;
 
+/* the game's fences (rr.h RrCvGpu, rr_overlay_gpu), for the next submission:
+   what it waits on, and each one's stage */
+#define GPU_WAITS 2
+static VkSemaphore s_gwait[GPU_WAITS];
+static VkPipelineStageFlags s_gwait_st[GPU_WAITS];
+static uint32_t s_ngwait;
+static uint32_t s_cv_waited;                /* the texture canvas (CP_CVGEN) whose fence is waited on */
+static long s_cv_word = -1;                 /* its texels' word in the ring, for m7_draw (-1: m7_draw's own) */
+static VkDescriptorSet s_ogpu;              /* the overlay from a texture of the game's */
+
+static void gwait(uint64_t event, VkPipelineStageFlags st)
+{
+    if (event && s_ngwait < GPU_WAITS) {
+        s_gwait[s_ngwait] = (VkSemaphore)event;
+        s_gwait_st[s_ngwait++] = st;
+    }
+}
+
+/* si (which waits on nothing else) waits on the game's fences; they are then
+   its */
+static void gwait_submit(VkSubmitInfo *si)
+{
+    si->waitSemaphoreCount = s_ngwait;
+    si->pWaitSemaphores = s_gwait;
+    si->pWaitDstStageMask = s_gwait_st;
+    s_ngwait = 0;
+}
+
 #define VK_OK(x) vk_check((x), #x)
 
 static int vk_check(VkResult r, const char *what)
@@ -523,7 +551,7 @@ static int make_layout(void)
     VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkPushConstantRange spc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * 4 };   /* sharp bilinear's (sharp.frag SU) */
-    VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 + RR_OVERLAYS };
+    VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 + RR_OVERLAYS };
     VkDescriptorSetLayout two[2];
     VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     VkDescriptorSetAllocateInfo da = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -538,7 +566,7 @@ static int make_layout(void)
     pi.pPushConstantRanges = &spc;
     if (!VK_OK(vkCreatePipelineLayout(s_dev, &pi, NULL, &s_playout)))
         return 0;
-    dpi.maxSets = 1 + RR_OVERLAYS;
+    dpi.maxSets = 2 + RR_OVERLAYS;
     dpi.poolSizeCount = 1;
     dpi.pPoolSizes = &ps;
     if (!VK_OK(vkCreateDescriptorPool(s_dev, &dpi, NULL, &s_dpool)))
@@ -547,7 +575,7 @@ static int make_layout(void)
     da.descriptorPool = s_dpool;
     da.descriptorSetCount = 1;
     da.pSetLayouts = two;
-    if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_set)))
+    if (!VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_set)) || !VK_OK(vkAllocateDescriptorSets(s_dev, &da, &s_ogpu)))
         return 0;
     {
         int k;
@@ -610,6 +638,7 @@ static int ring_fit(VkDeviceSize n)
         vkEndCommandBuffer(s_cmd);
         si.commandBufferCount = 1;
         si.pCommandBuffers = &s_cmd;
+        gwait_submit(&si);
         vkQueueSubmit(s_queue, 1, &si, s_fence);
         s_submitted = 1;
         wait_frame();
@@ -631,7 +660,7 @@ static int ring_fit(VkDeviceSize n)
     s_ring = VK_NULL_HANDLE;
     s_ring_mem = VK_NULL_HANDLE;
     s_ring_size = size;
-    if (!make_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+    if (!make_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                      &s_ring, &s_ring_mem, &s_ring_map)) {
         fprintf(stderr, "vulkan: no staging buffer of %llu MB\n", (unsigned long long)(size >> 20));
@@ -859,6 +888,67 @@ static long ring_put(const void *p, size_t n)
     return o < 0 ? -1 : o / 4;
 }
 
+int rr_gpu_device(struct NshvcGpuLoan *loan)
+{
+    if (!s_dev)
+        return NSHVC_GPU_NONE;
+    loan->device = (void *)s_dev;
+    loan->queue = (void *)s_queue;
+    loan->instance = (void *)s_inst;
+    loan->physical_device = (void *)s_phys;
+    loan->queue_family = s_qfam;
+    return NSHVC_GPU_VULKAN;
+}
+
+/* a texture canvas's bytes past the description (rr.h RrCvGpu); 0 for none */
+static size_t cv_gpu_bytes(const uint32_t *desc)
+{
+    RrCvGpu g;
+    return rr_cv_gpu(desc, &g) ? (size_t)g.w * g.h * 4 : 0;
+}
+
+/* The description into the ring, its word; a texture canvas's texels after it,
+   copied there on the GPU before the compositor and the presentation read them,
+   the game's fence passed first (once for each handing) and whatever the game
+   wrote before seen (s_cmd recording, outside a pass) */
+static long desc_put(const uint32_t *desc, size_t words)
+{
+    RrCvGpu g;
+    size_t extra = cv_gpu_bytes(desc);
+    long o = ring_take(words * 4 + extra);
+    if (o < 0)
+        return -1;
+    memcpy(s_ring_map + o, desc, words * 4);
+    if (rr_cv_gpu(desc, &g)) {
+        VkImage img = (VkImage)g.image;
+        VkBufferImageCopy cp;
+        VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+        if (s_cv_waited != g.gen) {
+            gwait(g.event, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            s_cv_waited = g.gen;
+        }
+        barrier(s_cmd, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT);
+        memset(&cp, 0, sizeof cp);
+        cp.bufferOffset = (VkDeviceSize)o + words * 4;
+        cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        cp.imageSubresource.layerCount = 1;
+        cp.imageExtent.width = g.w;
+        cp.imageExtent.height = g.h;
+        cp.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_ring, 1, &cp);
+        barrier(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(s_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb, 0, NULL,
+                             0, NULL);
+    }
+    return o / 4;
+}
 
 int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4],
                      const struct RrM7Samples *s)
@@ -873,11 +963,11 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
     /* room for the description, the records and picture, and everything
        the presentation puts in the ring after them (m7_draw's), at once:
        no flush between them */
-    if (!ring_fit(words * 4 + np * 20 + (VkDeviceSize)m->vrams * 0x110000u + (size_t)m->segs * sizeof *m->seg +
+    if (!ring_fit(words * 4 + cv_gpu_bytes(desc) + np * 20 + (VkDeviceSize)m->vrams * 0x110000u + (size_t)m->segs * sizeof *m->seg +
                   (size_t)m->pals * 512 + (size_t)ow * 12 + (size_t)oh * 16 + 56 * 4 + (m->cv ? m->cv_len : 0) +
                   6 * 16 + 16 * 256))
         return 0;
-    if ((off = ring_put(desc, words * 4)) < 0 || (orec = ring_take(np * 16)) < 0 || (opic = ring_take(np * 4)) < 0)
+    if ((off = desc_put(desc, words)) < 0 || (orec = ring_take(np * 16)) < 0 || (opic = ring_take(np * 4)) < 0)
         return 0;
     pc[0] = (uint32_t)off;
     pc[1] = (uint32_t)(orec / 4);
@@ -890,7 +980,9 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
     mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(s_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb, 0,
                          NULL, 0, NULL);
+    s_cv_word = cv_gpu_bytes(desc) ? off + (long)words : -1;
     m7_draw(m, d, s, orec / 4, opic / 4);
+    s_cv_word = -1;
     return 1;
 }
 
@@ -977,7 +1069,9 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     off[5] = ring_put(s->cols, (size_t)ow * 3 * 4);
     off[6] = ring_put(s->rows, (size_t)oh * 4 * 4);
     off[7] = ring_put(uv, sizeof uv);
-    {
+    if (s_cv_word >= 0) {
+        off[8] = s_cv_word;                  /* (a texture canvas's: desc_put's) */
+    } else {
         /* the canvas's texels, padded to whole words with 0 (a word where
            there is none) */
         size_t n = m->cv ? m->cv_len : 0, n4 = (n + 3) & ~(size_t)3;
@@ -1070,7 +1164,7 @@ int rr_open(void)
         return 0;
     if (!s_copy || !s_sharp)
         return 0;
-    if (!make_buffer(RING_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+    if (!make_buffer(RING_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                      &s_ring, &s_ring_mem, &s_ring_map))
         return 0;
@@ -1236,7 +1330,7 @@ static int compose(const uint32_t *desc, size_t words, int w, int h, const uint3
     uint32_t pc[4];
     if (!s_recording || !s_cp || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
         return 0;
-    if (!cp_image(w, h) || !ring_fit(words * 4 + 6 * 16 + 512) || (off = ring_put(desc, words * 4)) < 0)
+    if (!cp_image(w, h) || !ring_fit(words * 4 + cv_gpu_bytes(desc) + 6 * 16 + 512) || (off = desc_put(desc, words)) < 0)
         return 0;
     pc[0] = (uint32_t)off;
     pc[1] = wp[0];
@@ -1387,6 +1481,54 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
     vkCmdEndRenderPass(s_cmd);
 }
 
+/* an overlay from a texture of the game's (rr.h): sampled through its view, in
+   the layout it was handed in */
+void rr_overlay_gpu(uint64_t image, uint64_t view, int w, int h, const float q[6], float alpha, uint64_t event,
+                    uint64_t value)
+{
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
+                      { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
+    VkDescriptorImageInfo di;
+    VkWriteDescriptorSet wr = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    VkDeviceSize vo;
+    long qo;
+    float *v;
+    int i;
+    (void)w;
+    (void)h;
+    (void)value;
+    if (!s_recording || (qo = ring_take(6 * 16)) < 0)
+        return;
+    gwait(event, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    barrier(s_cmd, (VkImage)image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    di.sampler = s_smp;
+    di.imageView = (VkImageView)view;
+    di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    wr.dstSet = s_ogpu;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wr.pImageInfo = &di;
+    vkUpdateDescriptorSets(s_dev, 1, &wr, 0, NULL);
+    v = (float *)(s_ring_map + qo);
+    for (i = 0; i < 6; i++, v += 4) {
+        v[0] = c[ix[i]][0] / s_rw * 2 - 1;
+        v[1] = 1 - c[ix[i]][1] / s_rh * 2;
+        v[2] = c[ix[i]][2];
+        v[3] = c[ix[i]][3];
+    }
+    pass_begin();
+    vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_over);
+    vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &s_ogpu, 0, NULL);
+    vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof alpha, &alpha);
+    vo = (VkDeviceSize)qo;
+    vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
+    vkCmdDraw(s_cmd, 6, 1, 0, 0);
+    vkCmdEndRenderPass(s_cmd);
+}
+
 static void swap_destroy(void)
 {
     uint32_t i;
@@ -1468,6 +1610,8 @@ void rr_present(void)
 {
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSemaphore waits[GPU_WAITS + 1];
+    VkPipelineStageFlags wait_sts[GPU_WAITS + 1];
     VkBufferImageCopy cp;
     uint32_t img = 0;
     int show = 0;
@@ -1523,12 +1667,23 @@ void rr_present(void)
     s_recording = 0;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
+    /* the game's fences, and the acquired image's */
     if (show) {
-        si.waitSemaphoreCount = 1;
-        si.pWaitSemaphores = &s_sem_acquire;
-        si.pWaitDstStageMask = &wait_st;
+        waits[s_ngwait] = s_sem_acquire;
+        wait_sts[s_ngwait] = wait_st;
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &s_sem_done[img];
+    }
+    {
+        uint32_t k;
+        for (k = 0; k < s_ngwait; k++) {
+            waits[k] = s_gwait[k];
+            wait_sts[k] = s_gwait_st[k];
+        }
+        si.waitSemaphoreCount = s_ngwait + (show ? 1u : 0u);
+        si.pWaitSemaphores = waits;
+        si.pWaitDstStageMask = wait_sts;
+        s_ngwait = 0;
     }
     vkQueueSubmit(s_queue, 1, &si, s_fence);
     s_submitted = 1;
@@ -1784,7 +1939,7 @@ int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t 
     vkBeginCommandBuffer(s_cmd, &bi);
     s_recording = 1;
     s_ring_used = 0;
-    if (!cp_image(w, h) || !ring_fit(words * 4 + 512) || (off = ring_put(desc, words * 4)) < 0) {
+    if (!cp_image(w, h) || !ring_fit(words * 4 + cv_gpu_bytes(desc) + 512) || (off = desc_put(desc, words)) < 0) {
         vkEndCommandBuffer(s_cmd);
         s_recording = 0;
         return 0;
@@ -1817,6 +1972,7 @@ int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t 
     s_recording = 0;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
+    gwait_submit(&si);
     vkQueueSubmit(s_queue, 1, &si, s_fence);
     s_submitted = 1;
     wait_frame();

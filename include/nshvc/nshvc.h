@@ -39,7 +39,7 @@ extern "C" {
 
 /* the game contract's version (docs/contract.md) */
 #define NSHVC_VERSION_MAJOR 2
-#define NSHVC_VERSION_MINOR 21
+#define NSHVC_VERSION_MINOR 22
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- the cartridge ------------------------------------------------------------ */
@@ -557,6 +557,101 @@ void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, 
    On the PSP: VRAM, 557,056 bytes (8 KB aligned), the screen's buffer
    neither shown nor waiting to be. (Since 2.15.) */
 void *nshvc_ext_ge_vram(size_t *bytes);
+/* The same loan with a depth buffer: the colour memory as
+   nshvc_ext_ge_vram's (its return and *bytes), *depth 16 bits a pixel of the
+   screen's size, at most 512 x 272 (278,528 bytes), *depth_stride pixels a
+   row, its contents not kept. Any argument may be NULL. Lent as the colour
+   memory is, its address on the GPU's bus, 8 KB aligned; the game's list sets
+   it with the GE's own commands (ZBP, ZBW: sceGuSendCommandi 158, 159, not
+   sceGuDepthBuffer, kept as above). NULL (and 0): a platform with none. While
+   paused (nshvc_ext_pause) *depth alone is NULL: the backdrop is there. (Since
+   2.22.) */
+void *nshvc_ext_ge_vram2(size_t *bytes, void **depth, int *depth_stride);
+
+/* ---- pictures the GPU holds: no texel crosses to the CPU (since 2.22) ------------ */
+
+/* The host's GPU lent to the game, to draw its picture on: its
+   NSHVC_GPU_METAL or NSHVC_GPU_VULKAN, the fields filled (loan may be NULL), or
+   0, none. This is the query: 0, and nshvc_ext_canvas_screen_gpu and a
+   texture's nshvc_ext_overlay_gpu are fatal; a game goes on with
+   nshvc_ext_canvas_screen32. The PSP: 0 (its query is nshvc_ext_ge_vram2).
+   Metal: device an id<MTLDevice>, queue an id<MTLCommandQueue> (bridged, not
+   retained). Vulkan: device a VkDevice, queue a VkQueue, instance a VkInstance,
+   physical_device a VkPhysicalDevice, queue_family its index. The console's for
+   the life of the process, for use on the game's thread, between the console's
+   frames (its run and the frame hook); not to be destroyed. */
+enum { NSHVC_GPU_NONE, NSHVC_GPU_METAL, NSHVC_GPU_VULKAN };
+typedef struct NshvcGpuLoan {
+    void *device, *queue;
+    void *instance, *physical_device;   /* Vulkan's */
+    uint32_t queue_family;              /* Vulkan's */
+} NshvcGpuLoan;
+/* A texture. Metal: image an id<MTLTexture> (not framebufferOnly), view 0.
+   Vulkan: image a VkImage, view its VkImageView, one level and layer, on the
+   lent device, in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL as handed and as left.
+   (A handle's 64 bits: (uint64_t)(uintptr_t)(__bridge void *)texture.) image 0:
+   none. The PSP's overlay: image its VRAM address, view its stride in pixels. */
+typedef struct NshvcGpuHandle {
+    uint64_t image, view;
+} NshvcGpuHandle;
+/* What the console waits on before it reads a texture: the game's GPU work on
+   it. Metal: event an id<MTLSharedEvent>, value the value to wait for. Vulkan:
+   event a binary VkSemaphore the game's submission signals, waited on once,
+   by the first frame that shows the handle; value 0. A handle shown again (or
+   work already known done, or on the lent queue with its own barrier): event 0,
+   none. Not read on the PSP. */
+typedef struct NshvcGpuFence {
+    uint64_t event, value;
+} NshvcGpuFence;
+#define NSHVC_GPU_FORMAT_METAL 53u      /* MTLPixelFormatR32Uint */
+#define NSHVC_GPU_FORMAT_VULKAN 98u     /* VK_FORMAT_R32_UINT */
+int nshvc_ext_gpu_device(NshvcGpuLoan *loan);
+/* A screen canvas from a texture of the game's, in place of
+   nshvc_ext_canvas_screen32's texels and in every other way that call's at k 0,
+   palette 0 (the w x h texels over the whole screen, each console pixel's rules,
+   one canvas at a time, the frame taking it as it stands when the frame begins):
+   its texels 32-bit unsigned, format NSHVC_GPU_FORMAT_* (else fatal): 0
+   transparent, 0x000000ii CGRAM index ii, 0xFFrrggbb a colour. Copied by the
+   console on the GPU into the canvas's buffer, its fence passed, once for each
+   frame drawn from it: Vulkan's image needs VK_IMAGE_USAGE_TRANSFER_SRC_BIT.
+   Handed in the vertical blank or the frame hook, for the frame about to begin:
+   the console keeps it through that frame's presenting, until the next is handed
+   or the frame hook after that frame ends; handed no other by then, the canvas
+   is off, the layer its tiles, so a game hands one each frame (the same handle
+   again, its fence 0, if the picture stands). After that the handle is the
+   game's again; its own later work on the lent queue goes after the console's
+   reads, with its own barrier. image 0: off. An interlaced frame showing it is
+   fatal. nshvc_picture reads it as the frame's presenting does. */
+void nshvc_ext_canvas_screen_gpu(int layer, NshvcGpuHandle handle, int w, int h, uint32_t format, int priority,
+                                 NshvcGpuFence fence);
+/* The PSP's: the same canvas from VRAM, read straight by the console's GE
+   list. vram_address in the loan (nshvc_ext_ge_vram: its address as lent, 16
+   bytes aligned, the picture inside that buffer), stride pixels a row (a multiple
+   of 4, at least w), w at most 512, psm GU_PSM_8888 (else fatal). The
+   texels as the GE drew them, a word 0xttbbggrr: tt (the GE's alpha, its
+   stencil) 0 and bb, gg 0: rr an index (0 transparent); tt not 0: the colour.
+   So a colour is drawn with its stencil not 0, an index or the clear with it 0.
+   The game's list is synced before the frame hook returns. Kept as
+   nshvc_ext_canvas_screen_gpu's, and until then the console draws its frames
+   into none of that buffer: the loan taken once, the same address until the
+   frame is presented; with both the others of the screen's buffers on screen
+   or waiting, it waits for the next vertical blank. NULL: off. */
+void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w, int h, int psm, int priority);
+/* An overlay from a texture of the game's, in place of nshvc_overlay_image's
+   CPU texels: its id for nshvc_overlay_place, the same for every call (one such
+   overlay; -1 when NSHVC_OVERLAYS are made, and it is made at the first call),
+   drawn after the picture in the order made, bilinear, its alpha straight.
+   w x h its size; from the next frame shown (paused too). Metal: 8 bits a
+   channel, unsigned normalized (MTLPixelFormatBGRA8Unorm); Vulkan: the same,
+   sampled through view. handle and fence as nshvc_ext_canvas_screen_gpu's,
+   kept alike: not handed again by the end of the frame hook after a frame showed
+   it, it is drawn no more (its place and id kept). The PSP: image its VRAM
+   address, view its stride, GU_PSM_8888 in the loan as
+   nshvc_ext_canvas_screen_ge's, its alpha the GE's (the stencil the game's list
+   wrote), and the GE's filter reads a column and a row past w x h: the game's
+   too, its last repeated or clear (w and h at most 511). nshvc_overlay_update on
+   it is fatal. image 0: none for now. A host with neither: fatal. */
+int nshvc_ext_overlay_gpu(NshvcGpuHandle handle, int w, int h, NshvcGpuFence fence);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3
    BG1-4's, $21C4 the sprites', $21C5 the data port's. With VRAM at the

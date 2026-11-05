@@ -60,6 +60,44 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alph
    glyphs) */
 void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q, float alpha);
 
+/* The GPU the game may draw with (nshvc.h nshvc_ext_gpu_device), filling
+   *loan: its NSHVC_GPU_*; the front end's default 0, none. */
+struct NshvcGpuLoan;
+int rr_gpu_device(struct NshvcGpuLoan *loan);
+/* VRAM the game drew that the GE may read as a picture or an overlay's image
+   (nshvc_ext_canvas_screen_ge): fatal when it cannot; the front end's default
+   0, no GE */
+#define RR_GE_PSM_8888 3                /* the GE's 32-bit pixels (GU_PSM_8888) */
+int rr_ge_picture(const char *what, const void *vram, int stride, int w, int h, int psm);
+/* An overlay from an image the GPU holds (nshvc_ext_overlay_gpu), as
+   rr_overlay's: a texture, or the GE's VRAM (image its address, view its
+   stride). The image is sampled as it stands; event, value: its fence (0:
+   none), waited on before. */
+void rr_overlay_gpu(uint64_t image, uint64_t view, int w, int h, const float q[6], float alpha, uint64_t event,
+                    uint64_t value);
+/* A screen canvas in a texture (compose_body.h CP_CVGPU): a backend's own
+   description, with a canvas whose texels the GPU holds, holds them w x h x 4
+   bytes past its last word, at word CP_CV (the backend copying them there on
+   the GPU, once its fence is passed, before the compositor runs): so its
+   shaders read them as any full-colour canvas's. gen: compose_body.h CP_CVGEN.
+   0 when the description has none. */
+typedef struct {
+    uint64_t image, event, value;
+    uint32_t w, h, gen;
+} RrCvGpu;
+static inline int rr_cv_gpu(const uint32_t *desc, RrCvGpu *g)
+{
+    if (!(desc[22] & 0x40u))            /* CP_CVSCREEN */
+        return 0;
+    g->image = desc[38] | (uint64_t)desc[39] << 32;
+    g->event = desc[40] | (uint64_t)desc[41] << 32;
+    g->value = desc[42] | (uint64_t)desc[43] << 32;
+    g->w = desc[23];                    /* CP_CVW */
+    g->h = desc[24];                    /* CP_CVH */
+    g->gen = desc[37];
+    return 1;
+}
+
 /* A frame with Mode 7 or a layer's canvas presented over the target's
    rectangle d (rr_mode7.h):
    its record m and the samples s rr_m7_tables made at d's size. Exactly

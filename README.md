@@ -100,6 +100,7 @@ what its Enhanced mode does.
 | a layer's own map past the console's picture | a background reads other map entries outside the console's 256 columns and lines | `nshvc_ext_layer_outside` |
 | a layer's picture from the game's texels over the whole screen | a background drawn from texels by the screen's pixels, at the window's resolution | `nshvc_ext_canvas_screen` |
 | that picture in colours no CGRAM entry holds | the same canvas with 32-bit texels, each an index or a colour of 8 bits a channel, through the console's priority, windows, colour maths and brightness | `nshvc_ext_canvas_screen32` |
+| that picture from the game's own GPU work, no texel crossing to the CPU | the 32-bit canvas at k 0 from a texture (Metal, Vulkan) or VRAM (the PSP), an overlay the same, the host's device or VRAM lent with a depth buffer; each reported by a query | `nshvc_ext_gpu_device`, `nshvc_ext_canvas_screen_gpu`, `nshvc_ext_canvas_screen_ge`, `nshvc_ext_overlay_gpu`, `nshvc_ext_ge_vram2` |
 | that picture a texel a window pixel | either screen canvas at no whole scale (k 0): its texels over the whole screen, sized to the window's pixels the screen is presented over | `nshvc_ext_canvas_screen` / `_screen32` with k 0, `nshvc_ext_canvas_presented` |
 | the game's own GPU drawing (its 3D drawn by the platform's graphics library, then handed to a canvas) | GPU memory lent to the game until the frame is presented, the GPU's state put back after (on the PSP: a screen buffer of VRAM) | `nshvc_ext_ge_vram` |
 | a layer kept to the console's picture | a background or the sprites transparent past the console's 256 columns and lines on a larger screen | `nshvc_ext_layer_clip` |
@@ -288,8 +289,8 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.21.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.21: behaviour exact, each
+Version 2.22.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 2.22: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
 every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is

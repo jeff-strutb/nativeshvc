@@ -2269,7 +2269,12 @@ static struct {
 #define V_CA V_XP                            /* (free while the four are made: cv_across's after) */
 #define V_CB V_XM
 static int s_cv32;
-static int s_cx0, s_cx1;                     /* the target's columns the canvas's passes are kept to (a row's part's) */
+/* a word's byte holding channel k (0 red) as the GE reads it: the game's
+   0xttrrggbb, red the third byte; VRAM the GE drew (s_cvge), 0xttbbggrr, red
+   the first */
+static int s_cvge;
+#define CV_BYTE(k) ((unsigned)(s_cvge ? 8 * (k) : 16 - 8 * (k)))
+static int s_cx0, s_cx1;                    /* the target's columns the canvas's passes are kept to (a row's part's) */
 static uint8_t *s_cvs;
 static const void *s_cvtex;                  /* the texture the canvas's texels are read from */
 static int s_cvtbw;                          /* its rows' texels */
@@ -2636,7 +2641,7 @@ static void cv_insert(uint32_t si, int Y, int k0, int k1)
         cv_tex(GU_PSM_T32);
         sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
         for (c = 0; c < 3; c++) {
-            sceGuClutMode(GU_PSM_8888, (unsigned)(16 - 8 * c), 0xFF, 0);
+            sceGuClutMode(GU_PSM_8888, CV_BYTE(c), 0xFF, 0);
             sceGuClutLoad(32, s_chan[c]);
             sceGuPixelMask(~(0xFFu << (8 * c)));
             sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
@@ -2858,7 +2863,7 @@ static void look3s(const uint32_t (*tab)[256], int k0, int k1, int texels)
 {
     int k;
     for (k = 0; k < 3; k++) {
-        sceGuClutMode(GU_PSM_8888, (unsigned)(texels ? 16 - 8 * k : 8 * k), 0xFF, 0);
+        sceGuClutMode(GU_PSM_8888, texels ? CV_BYTE(k) : (unsigned)(8 * k), 0xFF, 0);
         sceGuClutLoad(32, tab[k]);
         sprite1(0, k0, 0, k0, s_cw.n, k1 - k0);
     }
@@ -3108,7 +3113,7 @@ static void cv_direct(int k0, int k1, U32 bright)
     for (k = 0; k < 3; k++) {
         /* (channel k from its byte of the texel as the game gave it: red
            the word's third) */
-        sceGuClutMode(GU_PSM_8888, (unsigned)(16 - 8 * k), 0xFF, 0);
+        sceGuClutMode(GU_PSM_8888, CV_BYTE(k), 0xFF, 0);
         sceGuClutLoad(32, s_d8[bright][k]);
         sprite1(0, k0, 0, k0, n, k1 - k0);
     }
@@ -4367,6 +4372,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     /* the canvas's texels for the GE (s_cvs): indices in red, full
        colours CV_RGB-marked; the column and row past them clear */
     s_cv32 = (sc & 0x20u) != 0u;
+    s_cvge = (sc & 0x80u) != 0u;
     if (chars) {
         /* its characters for the GE; its records, by picture row, the
            stripes' (cv_record) */
@@ -4399,7 +4405,13 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
             sceKernelDcacheWritebackRange(s_ident8, sizeof s_ident8);
             sceKernelDcacheWritebackRange(s_chan, sizeof s_chan);
         }
-        if (memcmp(key, s_cvkey, sizeof key)) {
+        if (s_cvge) {
+            /* VRAM the game's list drew and synced: the GE reads it as it
+               stands (rr_ge_picture), no copy, nothing for the cache */
+            s_cvtex = (const void *)(uintptr_t)FD_(CP_CVGPU);
+            s_cvtbw = (int)FD_(CP_CVGPU + 4);
+            memset(s_cvkey, 0, sizeof s_cvkey);
+        } else if (memcmp(key, s_cvkey, sizeof key)) {
             if (!clear && !((uintptr_t)t & 15u) && !(rowb & 15u)) {
                 s_cvtex = t;
                 s_cvtbw = (int)cw;
