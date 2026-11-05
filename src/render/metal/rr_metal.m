@@ -634,11 +634,13 @@ int rr_gpu_device(struct NshvcGpuLoan *loan)
 static size_t cv_gpu_bytes(const uint32_t *desc)
 {
     RrCvGpu g;
-    return rr_cv_gpu(desc, &g) ? (size_t)g.w * g.h * 4 : 0;
+    return rr_cv_gpu(desc, &g) ? rr_cv_gpu_bytes(&g) : 0;
 }
 
 /* a texture canvas's texels copied on the GPU to byte `at` of b, the game's
-   event passed first; no encoder open on c */
+   event passed first; no encoder open on c. A canvas of characters: each one
+   from its place in the texture's grid to its place in the row-by-row bytes
+   the shaders read. */
 static void cv_gpu_copy(id<MTLCommandBuffer> c, const uint32_t *desc, id<MTLBuffer> b, size_t at)
 {
     RrCvGpu g;
@@ -650,9 +652,21 @@ static void cv_gpu_copy(id<MTLCommandBuffer> c, const uint32_t *desc, id<MTLBuff
     if (g.event)
         [c encodeWaitForEvent:(__bridge id<MTLEvent>)(void *)(uintptr_t)g.event value:g.value];
     e = [c blitCommandEncoder];
-    [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-            sourceSize:MTLSizeMake(g.w, g.h, 1) toBuffer:b destinationOffset:at
- destinationBytesPerRow:(NSUInteger)g.w * 4 destinationBytesPerImage:(NSUInteger)g.w * g.h * 4];
+    if (g.row) {
+        NSUInteger k8 = 8u * (NSUInteger)g.k, n = k8 * k8;
+        uint32_t ci;
+        if (t.pixelFormat != MTLPixelFormatR8Uint)
+            nshvc_fatal("nshvc_ext_canvas_chars_gpu: the texture's format %d: MTLPixelFormatR8Uint", (int)t.pixelFormat);
+        for (ci = 0; ci < g.count; ci++)
+            [e copyFromTexture:t sourceSlice:0 sourceLevel:0
+                  sourceOrigin:MTLOriginMake((NSUInteger)(ci % g.row) * k8, (NSUInteger)(ci / g.row) * k8, 0)
+                    sourceSize:MTLSizeMake(k8, k8, 1) toBuffer:b destinationOffset:at + (size_t)ci * n
+        destinationBytesPerRow:k8 destinationBytesPerImage:n];
+    } else {
+        [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                sourceSize:MTLSizeMake(g.w, g.h, 1) toBuffer:b destinationOffset:at
+     destinationBytesPerRow:(NSUInteger)g.w * 4 destinationBytesPerImage:(NSUInteger)g.w * g.h * 4];
+    }
     [e endEncoding];
 }
 

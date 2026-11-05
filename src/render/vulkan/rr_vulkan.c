@@ -913,7 +913,7 @@ int rr_gpu_device(struct NshvcGpuLoan *loan)
 static size_t cv_gpu_bytes(const uint32_t *desc)
 {
     RrCvGpu g;
-    return rr_cv_gpu(desc, &g) ? (size_t)g.w * g.h * 4 : 0;
+    return rr_cv_gpu(desc, &g) ? rr_cv_gpu_bytes(&g) : 0;
 }
 
 /* The description into the ring, its word; a texture canvas's texels after it,
@@ -946,7 +946,32 @@ static long desc_put(const uint32_t *desc, size_t words)
         cp.imageExtent.width = g.w;
         cp.imageExtent.height = g.h;
         cp.imageExtent.depth = 1;
-        vkCmdCopyImageToBuffer(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_ring, 1, &cp);
+        if (g.row) {
+            /* each character from its place in the grid to its place in the
+               row-by-row bytes the shaders read */
+            static VkBufferImageCopy *rg;
+            static uint32_t rg_cap;
+            uint32_t k8 = 8u * g.k, ci;
+            if (g.count > rg_cap) {
+                free(rg);
+                rg = (VkBufferImageCopy *)malloc(g.count * sizeof *rg);
+                rg_cap = rg ? g.count : 0;
+                if (!rg)
+                    nshvc_fatal("no memory for the canvas's %u characters", (unsigned)g.count);
+            }
+            for (ci = 0; ci < g.count; ci++) {
+                rg[ci] = cp;
+                rg[ci].bufferOffset = cp.bufferOffset + (VkDeviceSize)ci * k8 * k8;
+                rg[ci].bufferRowLength = k8;
+                rg[ci].bufferImageHeight = k8;
+                rg[ci].imageOffset.x = (int32_t)((ci % g.row) * k8);
+                rg[ci].imageOffset.y = (int32_t)((ci / g.row) * k8);
+                rg[ci].imageExtent.width = rg[ci].imageExtent.height = k8;
+            }
+            vkCmdCopyImageToBuffer(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_ring, g.count, rg);
+        } else {
+            vkCmdCopyImageToBuffer(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_ring, 1, &cp);
+        }
         barrier(s_cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);

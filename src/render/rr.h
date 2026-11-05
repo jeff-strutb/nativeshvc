@@ -75,27 +75,35 @@ int rr_ge_picture(const char *what, const void *vram, int stride, int w, int h, 
    none), waited on before. */
 void rr_overlay_gpu(uint64_t image, uint64_t view, int w, int h, const float q[6], float alpha, uint64_t event,
                     uint64_t value);
-/* A screen canvas in a texture (compose_body.h CP_CVGPU): a backend's own
-   description, with a canvas whose texels the GPU holds, holds them w x h x 4
-   bytes past its last word, at word CP_CV (the backend copying them there on
-   the GPU, once its fence is passed, before the compositor runs): so its
-   shaders read them as any full-colour canvas's. gen: compose_body.h CP_CVGEN.
-   0 when the description has none. */
+/* A canvas in a texture (compose_body.h CP_CVGPU, CP_CVFORM): a backend's own
+   description holds its texels past its last word, at word CP_CV (the backend
+   copying them there on the GPU, once its fence is passed, before the compositor
+   runs), so its shaders read them as any canvas's: a screen canvas's w x h, 4
+   bytes each; a canvas of characters' (row not 0, w and h 0), a byte each, the
+   characters one after the other from the texture's grid, 8k x 8k each, row of
+   them a row. gen: compose_body.h CP_CVGEN. 0 when the description has none. */
 typedef struct {
     uint64_t image, event, value;
-    uint32_t w, h, gen;
+    uint32_t w, h, gen, row, k, count;
 } RrCvGpu;
 static inline int rr_cv_gpu(const uint32_t *desc, RrCvGpu *g)
 {
-    if (!(desc[22] & 0x40u))            /* CP_CVSCREEN */
+    if (desc[44] != 1u)                 /* CP_CVFORM */
         return 0;
     g->image = desc[38] | (uint64_t)desc[39] << 32;
     g->event = desc[40] | (uint64_t)desc[41] << 32;
     g->value = desc[42] | (uint64_t)desc[43] << 32;
     g->w = desc[23];                    /* CP_CVW */
     g->h = desc[24];                    /* CP_CVH */
-    g->gen = desc[37];
+    g->gen = desc[37];                  /* CP_CVGEN */
+    g->row = desc[45];                  /* CP_CVROW */
+    g->k = desc[18];                    /* CP_CVK */
+    g->count = desc[17];                /* CP_CVCOUNT */
     return 1;
+}
+static inline size_t rr_cv_gpu_bytes(const RrCvGpu *g)
+{
+    return g->row ? (size_t)g->count * 64u * g->k * g->k : (size_t)g->w * g->h * 4;
 }
 
 /* A frame with Mode 7 or a layer's canvas presented over the target's

@@ -724,6 +724,39 @@ void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w
                               (uint64_t)(uint32_t)stride);
 }
 
+void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcGpuHandle handle, int per_row, int k,
+                                NshvcGpuFence fence)
+{
+    static const char name[] = "nshvc_ext_canvas_chars_gpu";
+    snes_ppu_catch_up();
+    if (handle.image && count > 0) {
+        if (!gpu_api(NULL))
+            nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0)", name);
+        canvas_fits(name, 0, 0, k);
+    }
+    ppu_ext_canvas_chars_gpu(name, 1, layer, word_addr, count, handle.image, per_row, k, fence.event, fence.value);
+}
+
+void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *vram_address, int stride, int k)
+{
+    static const char name[] = "nshvc_ext_canvas_chars_ge";
+    int per = 0;
+    snes_ppu_catch_up();
+    if (vram_address && count > 0) {
+        if (k < 1 || k > 64 || stride < 8 * k)
+            nshvc_fatal("%s: k %d, a row of %d pixels: k 1 to 64, a row of at least one character", name, k, stride);
+        per = stride / (8 * k);
+        if (!rr_opened && !rr_open())
+            nshvc_fatal("%s: no renderer", name);
+        rr_opened = 1;
+        if (!rr_ge_picture(name, vram_address, stride, per * 8 * k, (count + per - 1) / per * 8 * k, RR_GE_PSM_8888))
+            nshvc_fatal("%s: this host has no GE (nshvc_ext_ge_vram2 NULL)", name);
+        canvas_fits(name, 0, 0, k);
+    }
+    ppu_ext_canvas_chars_gpu(name, 2, layer, word_addr, count, (uint64_t)(uintptr_t)vram_address, per, k, 0,
+                             (uint64_t)(uint32_t)stride);
+}
+
 /* the one overlay whose image the GPU holds */
 static int overlay_gpu_id = -1;
 

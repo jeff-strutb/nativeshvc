@@ -647,6 +647,26 @@ void nshvc_ext_canvas_screen_gpu(int layer, NshvcGpuHandle handle, int w, int h,
    buffer is wanted (the pause's overlay in it), so a picture is drawn and handed
    after the pause. An overlay shown with it is in the same buffer. NULL: off. */
 void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w, int h, int psm, int priority);
+/* A canvas of characters from the game's own GPU work, in place of
+   nshvc_ext_canvas_chars's texels and in every other way that call's (layer,
+   word_addr, count, k: the console places them by the layer's map and scroll,
+   each tile's flips, priority and palette; one canvas at a time). A character is
+   8k x 8k texels, each a pixel value as a tile's.
+   _gpu: a texture of 8-bit unsigned texels (MTLPixelFormatR8Uint, VK_FORMAT_R8_UINT;
+   the handle and fence as nshvc_ext_canvas_screen_gpu's, Vulkan's image with
+   VK_IMAGE_USAGE_TRANSFER_SRC_BIT), the characters in a grid from its top left,
+   per_row of them a row. Copied by the console on the GPU, past its fence, once
+   for each frame drawn from it.
+   _ge, the PSP's: VRAM in the loan as nshvc_ext_canvas_screen_ge's, read straight
+   by the console's GE list, its grid stride / 8k characters a row (the GE
+   draws no 8-bit target: 32-bit words, GU_PSM_8888, the value the low byte, the
+   GE's red, the rest not read). So what fits is the loan's: at most 512 x 272
+   texels, 2,176 characters at k 1, 544 at k 2, past it fatal.
+   Handed, kept and let go as nshvc_ext_canvas_screen_gpu's and _ge's are, a VRAM
+   canvas let go while paused too. Handle 0, vram_address NULL or count 0: off. */
+void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcGpuHandle handle, int per_row, int k,
+                                NshvcGpuFence fence);
+void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *vram_address, int stride, int k);
 /* An overlay from a texture of the game's, in place of nshvc_overlay_image's
    CPU texels: its id for nshvc_overlay_place, the same for every call (one such
    overlay; -1 when NSHVC_OVERLAYS are made, and it is made at the first call),

@@ -79,12 +79,13 @@
 #define CP_CVFY 36
 #define CP_CVGEN 37      /* the canvas's texels' count of changes (ppu.h cv_gen): the same count,
                             the same texels */
-#define CP_CVGPU 38      /* a screen canvas the GPU holds (CP_CVSCREEN's bit 6: a texture, copied by
-                            the backend on the GPU to word CP_CV, past the description's own, rr.h
-                            RrCvGpu; bit 7: VRAM the GE reads, rr_psp_pic.c): the image, its fence's
-                            event and value (the GE's: its address, 0, its stride), each two words,
-                            low first. No shader reads them. */
-#define CP_HEADER 44
+#define CP_CVGPU 38      /* a canvas the GPU holds: the image, its fence's event and value (the GE's:
+                            its address, 0, its stride), each two words, low first */
+#define CP_CVFORM 44     /* 0 none; 1 a texture, copied by the backend on the GPU to word CP_CV, past
+                            the description's own (rr.h RrCvGpu); 2 VRAM the GE reads (rr_psp_pic.c) */
+#define CP_CVROW 45      /* a canvas of characters the GPU holds: its characters a row (a screen
+                            canvas: 0). No shader reads CP_CVGPU, CP_CVFORM or this. */
+#define CP_HEADER 46
 
 #define CP_ST 28         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */

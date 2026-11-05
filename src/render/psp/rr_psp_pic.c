@@ -3617,6 +3617,12 @@ static void cv_atlas(const uint32_t *desc)
         sceKernelDcacheWritebackRange(s_cvpb, sizeof s_cvpb);
         s_cvdl_made = 1;
     }
+    if (s_cvge) {
+        /* VRAM the game's list drew: one image, read as it stands */
+        s_cvimgs = 1;
+        memset(s_cvat_key, 0, sizeof s_cvat_key);
+        return;
+    }
     if (s_cvat && !memcmp(key, s_cvat_key, sizeof key))
         return;
     s_cvimgs = (int)((cnt + pimg - 1u) / pimg);
@@ -3650,7 +3656,10 @@ static void cv_chars_rows(const CvGroup *g, const TV *rowt)
 {
     static int cnt[CVB_IMGS * 24];
     static uint16_t bk[CV_ROWS][CVT_MAX];    /* each record's bucket */
-    int nr = g->Yb - g->Ya, t, b, k = (int)FD_(CP_CVK), k8 = 8 * k, per = 512 / k8, pimg = per * per;
+    int nr = g->Yb - g->Ya, t, b, k = (int)FD_(CP_CVK), k8 = 8 * k;
+    /* (VRAM the game's list drew: its grid its own, one image; 32-bit words,
+       the value the low byte, the GE's red: the lookup's shift 0 takes it) */
+    int tbw = s_cvge ? (int)FD_(CP_CVGPU + 4) : 512, per = tbw / k8, pimg = s_cvge ? (int)FD_(CP_CVCOUNT) : per * per;
     int nb = s_cvimgs * 24;
     if (s_cvimgs > CVB_IMGS)
         nshvc_fatal("a canvas of %d character images (%d)", s_cvimgs, CVB_IMGS);
@@ -3677,7 +3686,7 @@ static void cv_chars_rows(const CvGroup *g, const TV *rowt)
     sceGuStencilFunc(GU_ALWAYS, 0, 0xFF);
     sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
     sceGuEnable(GU_TEXTURE_2D);
-    sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+    sceGuTexMode(s_cvge ? GU_PSM_T32 : GU_PSM_T8, 0, 0, 0);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
     sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
     for (b = 0; b < nb; b++) {
@@ -3686,7 +3695,10 @@ static void cv_chars_rows(const CvGroup *g, const TV *rowt)
         if (!cnt[b])
             continue;
         room();
-        sceGuTexImage(0, 512, 512, 512, s_cvat + (size_t)(b / 24) * 512u * 512u);
+        if (s_cvge)
+            sceGuTexImage(0, 512, 512, tbw, (const void *)(uintptr_t)FD_(CP_CVGPU));
+        else
+            sceGuTexImage(0, 512, 512, 512, s_cvat + (size_t)(b / 24) * 512u * 512u);
         sceGuTexFlush();
         sceGuClutLoad(32, s_cvdl[(b % 24) / 8][b % 8]);
         v = (TV *)sceGuGetMemory(cnt[b] * 2 * (int)sizeof(TV));
@@ -4372,7 +4384,7 @@ int rr_psp_canvas(const uint32_t *desc, size_t words, const int d[4], unsigned f
     /* the canvas's texels for the GE (s_cvs): indices in red, full
        colours CV_RGB-marked; the column and row past them clear */
     s_cv32 = (sc & 0x20u) != 0u;
-    s_cvge = (sc & 0x80u) != 0u;
+    s_cvge = FD_(CP_CVFORM) == 2u;
     if (chars) {
         /* its characters for the GE; its records, by picture row, the
            stripes' (cv_record) */

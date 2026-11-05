@@ -98,7 +98,7 @@ static struct {
     int buf;                          /* its texels' buffer (cv_buf), -1 none */
     size_t len;
     uint32_t gen;
-    int gpu;                          /* the GPU holds its texels (PpuFrame cv_gpu) */
+    int gpu, row;                     /* the GPU holds its texels (PpuFrame cv_gpu, cv_row) */
     uint64_t image, event, value;
 } cv_now = { .buf = -1 };
 /* The canvases' texels: each asked for copied once into a buffer, which
@@ -907,6 +907,7 @@ void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t i
                    name, layer, w, h, priority);
     cv_now.on = 1;
     cv_now.gpu = form;
+    cv_now.row = 0;
     cv_now.image = image;
     cv_now.event = event;
     cv_now.value = value;
@@ -923,6 +924,37 @@ void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t i
     cv_now.prio = priority;
     cv_now.pal = 0;
     cv_now.len = 0;
+}
+
+void ppu_ext_canvas_chars_gpu(const char *name, int form, int layer, unsigned word_addr, int count, uint64_t image, int row,
+                              int k, uint64_t event, uint64_t value)
+{
+    cv_release(&cv_now.buf);
+    cv_now.gen++;
+    cv_now.gpu = 0;
+    if (!image || count <= 0) {
+        cv_now.on = 0;
+        return;
+    }
+    if (layer < 0 || layer > 3 || word_addr >= (unsigned)vram_pages << 15 || k < 1 || k > 64 || count > 4096 || row < 1)
+        snes_fatal("%s(%d, $%05X, %d, k %d, %d a row): layers 0-3 (BG1-4), a word address below $%05X, at most 4,096 "
+                   "characters, k 1 to 64, at least one character a row",
+                   name, layer, word_addr, count, k, row, (unsigned)vram_pages << 15);
+    cv_now.on = 1;
+    cv_now.gpu = form;
+    cv_now.row = row;
+    cv_now.image = image;
+    cv_now.event = event;
+    cv_now.value = value;
+    cv_now.screen = 0;
+    cv_now.rgb = 0;
+    cv_now.fx = cv_now.fy = 0;
+    cv_now.w = cv_now.h = 0;
+    cv_now.layer = layer;
+    cv_now.addr = word_addr;
+    cv_now.count = (unsigned)count;
+    cv_now.k = k;
+    cv_now.len = (size_t)count * 64u * (size_t)k * (size_t)k;
 }
 
 void ppu_canvas_gpu_end(void)
@@ -963,6 +995,7 @@ static void cv_take(void)
         cv_buf[cv_now.buf].refs++;
     }
     making->cv_gpu = cv_now.gpu;
+    making->cv_row = cv_now.row;
     making->cv_image = cv_now.image;
     making->cv_event = cv_now.event;
     making->cv_value = cv_now.value;
@@ -1908,8 +1941,9 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_M7SEG] = 0;
     cp_w[CP_OUT] = (uint32_t)outs;
     cp_w[CP_CVSCREEN] = f->cv_on && f->cv_screen ?
-                            1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 | (uint32_t)f->cv_rgb << 5 |
-                                (f->cv_gpu == 1 ? 0x40u : f->cv_gpu == 2 ? 0x80u : 0u) : 0u;
+                            1u | (uint32_t)f->cv_prio << 1 | (uint32_t)f->cv_pal << 2 | (uint32_t)f->cv_rgb << 5 : 0u;
+    cp_w[CP_CVFORM] = f->cv_on ? (uint32_t)f->cv_gpu : 0u;
+    cp_w[CP_CVROW] = f->cv_on && f->cv_gpu ? (uint32_t)f->cv_row : 0u;
     {
         uint64_t image = f->cv_on && f->cv_gpu ? f->cv_image : 0, ev = f->cv_on && f->cv_gpu ? f->cv_event : 0,
                  val = f->cv_on && f->cv_gpu ? f->cv_value : 0;
