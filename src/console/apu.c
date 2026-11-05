@@ -529,6 +529,21 @@ static void ipl_st(uint16_t addr, uint8_t v, unsigned before_read, unsigned befo
     spc_wr(addr, v);
 }
 
+/* The clear's writes can be seen by nothing: each puts 0 over 0, and the echo
+   cannot write among them. (The DSP reads this RAM on its own clock, and a
+   driver's zero page is not all 0 when it jumps back here: then the writes
+   are made in turn, each between the same two of its clocks.) */
+static int ipl_clear_unseen(void)
+{
+    unsigned p;
+    if (spclog)
+        return 0;
+    for (p = 0x01; p <= 0xEF; p++)
+        if (aram[p] || mix_echo_may_write((uint16_t)p))
+            return 0;
+    return 1;
+}
+
 static void ipl(void)
 {
     uint8_t a, x, y;
@@ -540,13 +555,19 @@ static void ipl(void)
     ipl_cyc(2);
     a = ipl_nz(0x00);
     ipl_cyc(2);
-    do {
-        /* FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5 */
-        ipl_st(x, a, 3, 1);
-        x = ipl_nz((uint8_t)(x - 1));
-        ipl_cyc(2);
-        ipl_cyc(ipl_z ? 2 : 4);
-    } while (!ipl_z);
+    /* FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5: $EF down to $01, 10 cycles
+       a turn and 8 the last */
+    if (ipl_clear_unseen()) {
+        x = ipl_nz(0);
+        ipl_cyc(238 * 10 + 8);
+    } else {
+        do {
+            ipl_st(x, a, 3, 1);
+            x = ipl_nz((uint8_t)(x - 1));
+            ipl_cyc(2);
+            ipl_cyc(ipl_z ? 2 : 4);
+        } while (!ipl_z);
+    }
     /* FFC9 mov $F4,#$AA; FFCC mov $F5,#$BB */
     ipl_st(0xF4, 0xAA, 4, 1);
     ipl_st(0xF5, 0xBB, 4, 1);

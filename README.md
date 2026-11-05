@@ -313,10 +313,10 @@ interface, outside the standard; a game written against 2.x needs no change for 
 options pinned for accuracy and display gamma off. The full list of checks, and how to run
 each one, is in [tests/README.md](tests/README.md).
 
-- **Test cartridges:** the reference runs each of the 1,173 console test cartridges and
+- **Test cartridges:** the reference runs each of the 1,194 console test cartridges and
   records every read and write its S-CPU makes, with the clock it makes it at; nativeshvc
   makes the same accesses at the same clocks, so its hardware is held to the reference's
-  to the clock with the reference's own CPU timing. 1,117 match in every read and every
+  to the clock with the reference's own CPU timing. 1,138 match in every read and every
   picture. 42 read the multiplier or divider while it works, which the contract makes done
   when read (see Time). 14 differ by one read of the latched H counter or one pixel,
   after an access the replay started 2 clocks late because the work RAM's refresh before
