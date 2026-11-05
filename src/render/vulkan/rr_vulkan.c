@@ -1307,13 +1307,13 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 }
 
 /* ---- the window ------------------------------------------------------------------------- */
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha)
 {
     const float uv[4] = { 0, 0, (float)w, (float)h };
-    rr_overlay_quads(argb, w, h, 1, uv, q);
+    rr_overlay_quads(argb, w, h, 1, uv, q, alpha);
 }
 
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q)
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q, float alpha)
 {
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     size_t n = (size_t)w * (size_t)h * 4;
@@ -1380,6 +1380,7 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
     pass_begin();
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_over);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &s_oset[k], 0, NULL);
+    vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof alpha, &alpha);
     vo = (VkDeviceSize)qo;
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
     vkCmdDraw(s_cmd, (uint32_t)nq * 6, 1, 0, 0);
@@ -1739,6 +1740,10 @@ void rr_backdrop_draw(const float q[6])
     pass_begin();
     vkCmdBindPipeline(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_over);
     vkCmdBindDescriptorSets(s_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s_playout, 0, 1, &s_bdset, 0, NULL);
+    {
+        const float one = 1;
+        vkCmdPushConstants(s_cmd, s_playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof one, &one);
+    }
     vo = (VkDeviceSize)qo;
     vkCmdBindVertexBuffers(s_cmd, 0, 1, &s_ring, &vo);
     vkCmdDraw(s_cmd, 6, 1, 0, 0);

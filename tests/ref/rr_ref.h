@@ -54,8 +54,10 @@ static inline void rr_ref_image(uint32_t *dst, int tw, int th, const uint32_t *s
 /* The reference overlay (rr.h rr_overlay), the software backend's drawing
    and what the check holds the GPU backends to: each target pixel whose
    centre falls in the parallelogram samples the image bilinear (texel
-   centres at i + 0.5, edges clamped) and is blended over. */
-static inline void rr_ref_overlay(uint32_t *dst, int tw, int th, const uint32_t *src, int w, int h, const float q[6])
+   centres at i + 0.5, edges clamped), its alpha times the constant alpha,
+   and is blended over. */
+static inline void rr_ref_overlay(uint32_t *dst, int tw, int th, const uint32_t *src, int w, int h, const float q[6],
+                                  float alpha)
 {
     float ax = q[2] - q[0], ay = q[3] - q[1], bx = q[4] - q[0], by = q[5] - q[1];
     float det = ax * by - ay * bx, minx, maxx, miny, maxy;
@@ -104,7 +106,7 @@ static inline void rr_ref_overlay(uint32_t *dst, int tw, int th, const uint32_t 
             }
             for (ch = 0; ch < 4; ch++)
                 out[ch] = (c[0][ch] * (1 - fx) + c[1][ch] * fx) * (1 - fy) + (c[2][ch] * (1 - fx) + c[3][ch] * fx) * fy;
-            a = out[3] / 255.0f;
+            a = out[3] / 255.0f * alpha;
             d0 = dst[(size_t)y * (size_t)tw + (size_t)x];
             {
                 uint32_t o = 0xFF000000u;

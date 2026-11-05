@@ -98,6 +98,7 @@ int main(void)
     enum { PW = 256, PH = 224 };
     static uint32_t pic[PW * PH], img[OW * OH], chk[OW * OH];
     const uint32_t *im[5] = { img, img, img, img, chk };
+    static const float fade[5] = { 1, 0.5f, 1, 0.25f, 0.75f };   /* (the constant alpha) */
     uint32_t *got, *want;
     int tw, th, i, x, y, bad = 0, worst = 0, ties = 0, ge;
     const int d[4] = { 0, 0, 0, 0 };
@@ -144,7 +145,7 @@ int main(void)
     if (!ge)
         rr_image(pic, PW, PH, dd);   /* (the PSP draws no picture made on the CPU: black under them) */
     for (i = 0; i < 5; i++)
-        rr_overlay(im[i], OW, OH, q[i]);
+        rr_overlay(im[i], OW, OH, q[i], fade[i]);
     rr_present();
     got = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
     want = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
@@ -155,7 +156,7 @@ int main(void)
     if (!ge)
         rr_ref_image(want, tw, th, pic, PW, PH, dd);
     for (i = 0; i < 5; i++)
-        rr_ref_overlay(want, tw, th, im[i], OW, OH, q[i]);
+        rr_ref_overlay(want, tw, th, im[i], OW, OH, q[i], fade[i]);
     bad = compare(got, want, tw, th, q, im, 5, ge, &worst, &ties);
     {
         /* parts of one image as quads (rr_overlay_quads): img and the
@@ -184,7 +185,7 @@ int main(void)
         rr_begin(0xFF000000u);
         if (!ge)
             rr_image(pic, PW, PH, dd);
-        rr_overlay_quads(atlas, AW, AH, 2, &uv[0][0], &q2[0][0]);
+        rr_overlay_quads(atlas, AW, AH, 2, &uv[0][0], &q2[0][0], 1);
         rr_present();
         if (!rr_read(got))
             return 2;
@@ -193,7 +194,7 @@ int main(void)
         if (!ge)
             rr_ref_image(want, tw, th, pic, PW, PH, dd);
         for (p = 0; p < 2; p++)
-            rr_ref_overlay(want, tw, th, im2[p], OW, OH, q2[p]);
+            rr_ref_overlay(want, tw, th, im2[p], OW, OH, q2[p], 1);
         k = compare(got, want, tw, th, q2, im2, 2, ge, &worst, &ties);
         printf("overlay_check: parts as quads: %d pixels off\n", k);
         bad += k;

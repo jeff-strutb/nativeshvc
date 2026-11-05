@@ -165,12 +165,12 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
     rr_ref_mode7(s_px, s_w, s_h, m, d, s);
 }
 
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha)
 {
-    rr_ref_overlay(s_px, s_w, s_h, argb, w, h, q);
+    rr_ref_overlay(s_px, s_w, s_h, argb, w, h, q, alpha);
 }
 
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q)
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q, float alpha)
 {
     int j, x, y;
     for (j = 0; j < n; j++) {
@@ -181,7 +181,7 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv
         for (y = 0; y < sh; y++)
             for (x = 0; x < sw; x++)
                 part[y * sw + x] = argb[(size_t)(v0 + y) * (size_t)w + (size_t)(u0 + x)];
-        rr_ref_overlay(s_px, s_w, s_h, part, sw, sh, q + 6 * j);
+        rr_ref_overlay(s_px, s_w, s_h, part, sw, sh, q + 6 * j, alpha);
         free(part);
     }
 }
@@ -213,7 +213,7 @@ int rr_backdrop_make(float radius_px, uint32_t tint)
 void rr_backdrop_draw(const float q[6])
 {
     if (s_bd)
-        rr_ref_overlay(s_px, s_w, s_h, s_bd, s_bdw, s_bdh, q);
+        rr_ref_overlay(s_px, s_w, s_h, s_bd, s_bdw, s_bdh, q, 1);
 }
 
 void rr_present(void)

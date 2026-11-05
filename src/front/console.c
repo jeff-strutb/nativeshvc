@@ -188,9 +188,9 @@ void nshvc_game_buttons(int player, uint16_t buttons)
 }
 
 typedef struct {
-    uint32_t *argb, *shown;      /* the image; it at its alpha */
+    uint32_t *argb;
     int w, h;
-    float cx, cy, scale, angle, alpha, shown_alpha;
+    float cx, cy, scale, angle, alpha;
     int visible;
 } Overlay;
 static Overlay overlays[NSHVC_OVERLAYS];
@@ -203,15 +203,13 @@ int nshvc_overlay_image(const uint32_t *argb, int w, int h)
         return -1;
     o = &overlays[noverlays];
     o->argb = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
-    o->shown = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
-    if (!o->argb || !o->shown)
+    if (!o->argb)
         nshvc_fatal("no memory for an overlay");
     memcpy(o->argb, argb, (size_t)w * (size_t)h * 4);
     o->w = w;
     o->h = h;
     o->scale = 1;
     o->alpha = 1;
-    o->shown_alpha = -1;
     o->visible = 0;
     return noverlays++;
 }
@@ -237,7 +235,6 @@ void nshvc_overlay_update(int id, const uint32_t *argb)
         return;
     o = &overlays[id];
     memcpy(o->argb, argb, (size_t)o->w * (size_t)o->h * 4);
-    o->shown_alpha = -1;                /* made again at its alpha when next drawn */
 }
 
 /* ---- the game's pause (nshvc_ext_pause) ----
@@ -285,14 +282,6 @@ static void draw_overlays(int tw, int th)
         float hw, hh, c, sn, q[6];
         if (!o->visible || o->alpha <= 0)
             continue;
-        if (o->shown_alpha != o->alpha) {
-            size_t k, n = (size_t)o->w * (size_t)o->h;
-            for (k = 0; k < n; k++) {
-                uint32_t a = (uint32_t)((float)(o->argb[k] >> 24) * o->alpha + 0.5f);
-                o->shown[k] = (o->argb[k] & 0xFFFFFFu) | a << 24;
-            }
-            o->shown_alpha = o->alpha;
-        }
         hw = (float)o->w * o->scale / 2;
         hh = (float)o->h * o->scale / 2;
         c = cosf(o->angle);
@@ -305,7 +294,7 @@ static void draw_overlays(int tw, int th)
         q[3] = (o->cy + (hw * sn + -hh * c)) * sy;
         q[4] = (o->cx + (-hw * c - hh * sn)) * sx;
         q[5] = (o->cy + (-hw * sn + hh * c)) * sy;
-        rr_overlay(o->shown, o->w, o->h, q);
+        rr_overlay(o->argb, o->w, o->h, q, o->alpha);
     }
 }
 
@@ -883,7 +872,7 @@ static void fps_draw(void)
         q[6 * n + 5] = y0 + 3.0f * 5 + 1.5f;
         n++;
     }
-    rr_overlay_quads(font, fw, 7, n, uv, q);
+    rr_overlay_quads(font, fw, 7, n, uv, q, 1);
 }
 
 /* a presented frame's times, ns: the meter's second and the log's line */

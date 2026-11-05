@@ -739,26 +739,29 @@ void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples 
 /* An overlay on the GE (rr_ref_overlay's): the image in a texture of
    powers of 2, its last column and row repeated past it (the bilinear
    filter clamped at its edge as rr_texel clamps), its parallelogram two
-   triangles, filtered bilinear and blended by its alpha. Each overlay of a
+   triangles, filtered bilinear and blended by its alpha, the constant alpha
+   the vertices' (the texture modulated by them, white). Each overlay of a
    frame its own texture until the GE has drawn it. */
 #define OVERLAYS 16
 static uint32_t *s_obuf[OVERLAYS];
 static size_t s_ocap[OVERLAYS];
 
 typedef struct {
-    float u, v, x, y, z;
+    float u, v;
+    uint32_t c;
+    float x, y, z;
 } OV;
 
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha)
 {
     const float uv[4] = { 0, 0, (float)w, (float)h };
-    rr_overlay_quads(argb, w, h, 1, uv, q);
+    rr_overlay_quads(argb, w, h, 1, uv, q, alpha);
 }
 
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q)
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q, float alpha)
 {
     int W, H, x, y, i, j;
-    uint32_t *t;
+    uint32_t *t, vc = 0x00FFFFFFu | (uint32_t)(alpha * 255.0f + 0.5f) << 24;
     OV *v;
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     float c[4][4];
@@ -804,6 +807,7 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
            sixteenths; the reference at its centre: the parallelogram moved a
            sixteenth up and left) */
         for (i = 0; i < 6; i++) {
+            v[6 * j + i].c = vc;
             v[6 * j + i].x = c[ix[i]][0] - 1.0f / 16.0f;
             v[6 * j + i].y = c[ix[i]][1] - 1.0f / 16.0f;
             v[6 * j + i].z = 0;
@@ -818,10 +822,10 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
     sceGuTexFlush();
     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
     sceGuTexWrap(GU_CLAMP, GU_CLAMP);
-    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
     sceGuEnable(GU_BLEND);
     sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
-    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nq * 6, 0, v);
+    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, nq * 6, 0, v);
     sceGuDisable(GU_BLEND);
     sceGuTexFilter(GU_NEAREST, GU_NEAREST);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);

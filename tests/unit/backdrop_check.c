@@ -41,7 +41,7 @@ static void frame_of(const uint32_t *px, int w, int h)
 {
     float q[6] = { 0, 0, (float)tw, 0, 0, (float)th };
     rr_begin(0xFF000000u);
-    rr_overlay(px, w, h, q);
+    rr_overlay(px, w, h, q, 1);
     rr_present();
 }
 

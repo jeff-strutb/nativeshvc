@@ -27,10 +27,13 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
     (void)desc; (void)words; (void)ww; (void)wh; (void)base0; (void)base1; (void)d;
     return 0;
 }
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]) { (void)argb; (void)w; (void)h; (void)q; }
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q)
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha)
 {
-    (void)argb; (void)w; (void)h; (void)n; (void)uv; (void)q;
+    (void)argb; (void)w; (void)h; (void)q; (void)alpha;
+}
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q, float alpha)
+{
+    (void)argb; (void)w; (void)h; (void)n; (void)uv; (void)q; (void)alpha;
 }
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s) { (void)m; (void)d; (void)s; }
 int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s)

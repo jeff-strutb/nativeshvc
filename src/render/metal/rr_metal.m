@@ -120,10 +120,12 @@ static NSString *const k_src = @
 "  float2 w = floor(f * 256.0 + 0.5);\n"
 "  float3 top = c00 + floor(((c01 - c00) * w.x + 128.0) / 256.0), bot = c10 + floor(((c11 - c10) * w.x + 128.0) / 256.0);\n"
 "  return float4((top + floor(((bot - top) * w.y + 128.0) / 256.0)) / 255.0, 1); }\n"
-/* an overlay: bilinear, its alpha kept for the blend */
-"fragment float4 ofs(BO in [[stage_in]], texture2d<float> t [[texture(0)]]) {\n"
+/* an overlay: bilinear, its alpha times the constant's kept for the blend */
+"fragment float4 ofs(BO in [[stage_in]], texture2d<float> t [[texture(0)]], constant float &alpha [[buffer(0)]]) {\n"
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
-"  return t.sample(s, in.uv); }\n"
+"  float4 c = t.sample(s, in.uv);\n"
+"  c.a *= alpha;\n"
+"  return c; }\n"
 /* a frame with Mode 7 presented (rr_mode7.h, the same arithmetic) */
 "struct M7U { int pw, ph, d0, d1, step_u, step_v, du[28], dv[28], cpp, left, cvk, cvlen, cvw, cvh, cvrgb, cvfx, cvfy; };\n"
 "static uint m7_direct(uint c) { return (c & 7u) << 2 | ((c & 0x38u) >> 1) << 5 | ((c & 0xC0u) >> 3) << 10; }\n"
@@ -827,13 +829,13 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     }
 }
 
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha)
 {
     const float uv[4] = { 0, 0, (float)w, (float)h };
-    rr_overlay_quads(argb, w, h, 1, uv, q);
+    rr_overlay_quads(argb, w, h, 1, uv, q, alpha);
 }
 
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q)
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q, float alpha)
 {
     @autoreleasepool {
         static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
@@ -870,6 +872,7 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv
         [s_enc setRenderPipelineState:s_over];
         [s_enc setVertexBuffer:s_vb[s_pi] offset:o atIndex:0];
         [s_enc setFragmentTexture:t atIndex:0];
+        [s_enc setFragmentBytes:&alpha length:sizeof alpha atIndex:0];
         [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)n * 6];
     }
 }
@@ -1009,6 +1012,10 @@ void rr_backdrop_draw(const float q[6])
         [s_enc setRenderPipelineState:s_over];
         [s_enc setVertexBuffer:s_vb[s_pi] offset:o atIndex:0];
         [s_enc setFragmentTexture:s_bd atIndex:0];
+        {
+            const float one = 1;
+            [s_enc setFragmentBytes:&one length:sizeof one atIndex:0];
+        }
         [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     }
 }

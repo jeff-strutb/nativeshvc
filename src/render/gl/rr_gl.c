@@ -68,13 +68,14 @@ static const char *k_sharp =
     "  o = vec4((top + floor(((bot - top) * w.y + 128.0) / 256.0)) / 255.0, 1.0);\n"
     "}\n";
 
-/* an overlay: bilinear, its alpha kept for the blend */
+/* an overlay: bilinear, its alpha times the constant's kept for the blend */
 static const char *k_over =
     "#version 330 core\n"
     "uniform sampler2D t;\n"
+    "uniform float alpha;\n"
     "in vec2 uv;\n"
     "out vec4 o;\n"
-    "void main() { o = texture(t, uv); }\n";
+    "void main() { o = texture(t, uv); o.a *= alpha; }\n";
 
 /* a frame with Mode 7 presented (rr_mode7.h, the same arithmetic): the
    shader the Vulkan backend's is made from (vulkan/shaders/m7_body.glsl) */
@@ -491,6 +492,7 @@ void rr_backdrop_draw(const float q[6])
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof v, v, GL_STREAM_DRAW);
     glUseProgram(s_over);
+    glUniform1f(glGetUniformLocation(s_over, "alpha"), 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
@@ -707,13 +709,13 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     glActiveTexture(GL_TEXTURE0);
 }
 
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6])
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha)
 {
     const float uv[4] = { 0, 0, (float)w, (float)h };
-    rr_overlay_quads(argb, w, h, 1, uv, q);
+    rr_overlay_quads(argb, w, h, 1, uv, q, alpha);
 }
 
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q)
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q, float alpha)
 {
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
     float *v, *p;
@@ -742,6 +744,7 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)((size_t)n * 6 * 4 * sizeof *v), v, GL_STREAM_DRAW);
     glUseProgram(s_over);
+    glUniform1f(glGetUniformLocation(s_over, "alpha"), alpha);
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
     glDrawArrays(GL_TRIANGLES, 0, n * 6);

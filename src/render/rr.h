@@ -49,16 +49,16 @@ int rr_compose_woven(const uint32_t *desc, size_t words, int ww, int wh, uint32_
 /* An image with alpha (0xAARRGGBB, the alpha straight) over the frame,
    blended (src alpha, 1 - src alpha), filtered bilinear, onto the
    parallelogram q: its top left (q[0], q[1]), top right (q[2], q[3]) and
-   bottom left (q[4], q[5]) corners in target pixels. For the game's
-   controls on a touch screen (nshvc_overlay_place). At most RR_OVERLAYS a
-   frame. */
+   bottom left (q[4], q[5]) corners in target pixels; the filtered alpha
+   times the constant alpha (0-1) on the GPU. For the game's controls on a
+   touch screen (nshvc_overlay_place). At most RR_OVERLAYS a frame. */
 #define RR_OVERLAYS 18                  /* the game's 16, the meter, the pause's backdrop */
-void rr_overlay(const uint32_t *argb, int w, int h, const float q[6]);
+void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alpha);
 /* n parts of one such image, each its texels uv (u0, v0, u1, v1: a
    rectangle of them) onto its parallelogram q (6 floats each, as above):
    one image of the RR_OVERLAYS (the frame-rate meter's text, its font's
    glyphs) */
-void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q);
+void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv, const float *q, float alpha);
 
 /* A frame with Mode 7 or a layer's canvas presented over the target's
    rectangle d (rr_mode7.h):
