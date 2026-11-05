@@ -11,9 +11,11 @@
  * with nothing else running; in PPSSPP it is an instruction count, not a
  * PSP's time. The sound unit's timers are not here: they need a driver.
  *
- *   scaling_check      exit 0 when every one holds
+ *   scaling_check              exit 0 when every one holds
+ *   scaling_check SCENE N      N frames of the scene alone, for a profiler
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nshvc/nshvc.h"
@@ -115,11 +117,11 @@ static double scene_cost(int s)
     return best;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     nshvc_cart cart;
     double base, alone = 1e18, among;
-    int s, i, fails = 0;
+    int s, i, b, fails = 0;
     memset(&cart, 0, sizeof cart);
     cart.title = "scaling_check";
     cart.map = NSHVC_LOROM;
@@ -128,6 +130,16 @@ int main(void)
     cart.routines = routines;
     cart.routine_count = 3;
     nshvc_power(&cart);
+    if (argc > 2) {
+        /* (for a profiler: one scene, and nothing else) */
+        for (s = 0; s < NSCENES; s++)
+            if (!strcmp(argv[1], scene_name[s])) {
+                scene_asked = s;
+                frames_cost(atoi(argv[2]));
+                return 0;
+            }
+        return 2;
+    }
     base = scene_cost(S_IDLE);
     printf("scaling_check: %-12s %9.1f us a frame\n", scene_name[S_IDLE], base / 1000);
     for (s = S_DISPLAY; s < S_HDMA; s++) {
@@ -141,15 +153,22 @@ int main(void)
         printf("scaling_check: %-12s %9.1f us a frame, %.3f us a line over the display's (the game's work, not judged)\n",
                scene_name[S_HDMA], c / 1000, (c - d) / 1000 / 224);
     }
-    /* a frame alone, against a frame of a hundred */
+    /* a frame alone, against a frame of a hundred: each the best of the
+       batches, 100 frames each, timed one at a time or together */
     scene_asked = S_IDLE;
     frames_cost(10);
-    for (i = 0; i < 100; i++) {
-        double c = (double)frames_cost(1);
-        if (c < alone)
-            alone = c;
+    among = 1e18;
+    for (b = 0; b < BATCHES; b++) {
+        double one = 0, all;
+        for (i = 0; i < 100; i++)
+            one += (double)frames_cost(1);
+        one /= 100;
+        all = (double)frames_cost(100) / 100;
+        if (one < alone)
+            alone = one;
+        if (all < among)
+            among = all;
     }
-    among = (double)frames_cost(100) / 100;
     {
         double hi = alone > among ? alone : among, lo = alone > among ? among : alone;
         int ok = hi <= lo * OVER_MOST;
