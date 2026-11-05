@@ -2100,7 +2100,7 @@ static void turn_note(uint32_t addr, uint8_t v)
 
 /* the clock moved on to `to` in a wait: a stop in a refresh's 40 clocks
    ends at its end (the S-CPU stopped there); one before, passed */
-static void wait_to(uint64_t to)
+static void wait_clock(uint64_t to)
 {
     if (to >= refresh_next) {
         unsigned l = line_of(to);
@@ -2114,6 +2114,11 @@ static void wait_to(uint64_t to)
         }
     }
     snes_clock = to;
+}
+
+static void wait_to(uint64_t to)
+{
+    wait_clock(to);
     if (snes_clock >= next_event)
         run_events();
 }
@@ -2124,20 +2129,22 @@ static void wait_to(uint64_t to)
 #define HDMA_SPAN_MAX 600
 
 /* A wait's HDMA lines, no deadline each. In a wait nothing else moves a line's
-   transfer: the same calls at the same clocks as wait_step's three steps to
-   it (to its point, the step of a cycle it is taken up in, the transfer), and
-   none of the wait's looks between them, so long as no interrupt or deadline,
-   and nothing the wait stops for, falls before the transfer ends. Those a line
+   transfer: its work at the same clocks as wait_step's three steps to it (to
+   its point, the step of a cycle it is taken up in, the transfer aligned and
+   given back as unit_edge's), and none of the wait's looks or event passes
+   between them, so long as no interrupt or deadline, and nothing the wait stops
+   for, falls before the transfer ends. Those a line
    away, a running chip (it runs ahead to the wait's step, a table read of its
    memory behind it), a wait reading the DMA registers, or memory a channel
    writes, or a hook on the accesses: wait_step, a line at a time. */
 static void hdma_bulk(uint64_t until)
 {
     uint64_t limit = until, t, at;
+    int any = 0;
     /* (no line of HDMA is the next thing to come: none of this) */
     if (next_event == next_real)
         return;
-    if (dma_active || dma_pending || hdma_pending || snes_read_hook || snes_write_hook || snes_dma_hook || chip_watch(0) ||
+    if (dma_active || dma_pending || hdma_pending || dma_mdmaen || snes_read_hook || snes_write_hook || snes_dma_hook || chip_watch(0) ||
         turn.dma || (turn.mem && hdma_writes_a()))
         return;
     if ((t = interrupt_due_at()) > snes_clock && t < limit)
@@ -2146,13 +2153,26 @@ static void hdma_bulk(uint64_t until)
         limit = timeup_at;
     if (cart_irq && cart_irq_at > snes_clock && cart_irq_at < limit)
         limit = cart_irq_at;
-    /* (next_real anew each line: a transfer can write SETINI's overscan) */
+    /* (next_real anew each line: a transfer can write SETINI's overscan, whose
+       events_next sets it) */
     while ((at = hdma_next()) != NEVER && at > snes_clock && at + HDMA_SPAN_MAX < limit && at + HDMA_SPAN_MAX < next_real) {
-        wait_to(at);
-        cycle_begins(6);
-        wait_to(snes_clock + 6);
-        cycle_begins(6);
+        /* (nothing due in the transfer: the next line's point is past it) */
+        next_event = next_real;
+        any = 1;
+        wait_clock(at);
+        hdma_line_of = hdma_from;
+        hdma_from++;
+        wait_clock(snes_clock + 6);
+        unit_cc = 6;
+        dma_active = 1;
+        unit_align();
+        hdma_line();
+        look_dma++;
+        unit_back();
+        dma_active = 0;
     }
+    if (any)
+        events_next();
 }
 
 /* a step of a wait, to `until` at most (NEVER: as far as nothing stops
