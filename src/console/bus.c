@@ -1327,6 +1327,22 @@ uint8_t bus_read_a(uint32_t addr)
     return v;
 }
 
+int bus_read_plain(uint32_t addr)
+{
+    uint8_t bank = (uint8_t)(addr >> 16);
+    uint16_t off = (uint16_t)addr;
+    uint32_t at;
+    int what;
+    if (bank == 0x7E || bank == 0x7F || (!(bank & 0x40) && off < 0x2000))
+        return 1;
+    if ((!(bank & 0x40) && off < 0x6000) || chip)
+        return 0;
+    what = cart_decode(bank, off, &at);
+    if (what == CART_RAM)
+        return 1;
+    return what == CART_ROM && (snes_cart.rom || (snes_cart.rom_pages && snes_cart.rom_pages[at >> 8]));
+}
+
 void bus_write_a(uint32_t addr, uint8_t v)
 {
     snes_mdr = v;
@@ -2180,6 +2196,27 @@ static void hdma_bulk(uint64_t until)
     /* (next_real anew each line: a transfer can write SETINI's overscan, whose
        events_next sets it) */
     while ((at = hdma_next()) != NEVER && at > snes_clock && at + HDMA_SPAN_MAX < limit && at + HDMA_SPAN_MAX < next_real) {
+        unsigned q = hdma_quiet();
+        /* lines that move nothing, as many as this stretch holds, all but the
+           last passed at once: the clock at a line's point is the same */
+        if (q > 1) {
+            uint64_t m = limit < next_real ? limit : next_real;
+            unsigned last = snes_vdisp() - 1;
+            if (last >= frame_len)
+                last = frame_len - 1;
+            if (line_at(last) + HDMA_AT + HDMA_SPAN_MAX >= m) {
+                last = line_of(m);
+                if (line_at(last) + HDMA_AT + HDMA_SPAN_MAX >= m)
+                    last--;
+            }
+            if (last - hdma_from < q - 1)
+                q = last - hdma_from + 1;
+            if (q > 1) {
+                hdma_skip(q - 1);
+                hdma_from += q - 1;
+                at = hdma_next();
+            }
+        }
         /* (nothing due in the transfer: the next line's point is past it) */
         next_event = next_real;
         any = 1;

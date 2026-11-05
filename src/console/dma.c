@@ -322,6 +322,36 @@ void hdma_init(void)
     }
 }
 
+/* The lines from this one on that move no byte and reload no table: all a
+   line then leaves is each channel's count and the last table byte read as
+   the data bus's value, which the last of them leaves (hdma_skip). None where
+   a table read could be seen: a register's or a chip's. */
+unsigned hdma_quiet(void)
+{
+    unsigned n = ~0u;
+    int i;
+    for (i = 0; i < 8; i++) {
+        const Channel *c = &ch[i];
+        if (c->done || !(dma_hdmaen & (1u << i)))
+            continue;
+        if (c->transfer || (c->ntrl & 0x80) || c->ntrl < 2 ||
+            !bus_read_plain((uint32_t)c->a1b << 16 | c->a2a))
+            return 0;
+        if ((unsigned)c->ntrl - 1 < n)
+            n = (unsigned)c->ntrl - 1;
+    }
+    return n == ~0u ? 0 : n;
+}
+
+/* n lines of those passed, as far as the channels go */
+void hdma_skip(unsigned n)
+{
+    int i;
+    for (i = 0; i < 8; i++)
+        if (!ch[i].done && (dma_hdmaen & (1u << i)))
+            ch[i].ntrl = (uint8_t)(ch[i].ntrl - n);
+}
+
 void hdma_line(void)
 {
     int i;

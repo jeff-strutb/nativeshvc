@@ -90,6 +90,12 @@ target_include_directories(scaling_check PRIVATE ${PROJECT_SOURCE_DIR}/src/host)
 target_link_libraries(scaling_check PRIVATE nshvc)
 set_target_properties(scaling_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
+# a wait's HDMA lines in bulk against one at a time (unit/hdma_bulk.py)
+add_executable(hdma_bulk_check unit/hdma_bulk_check.c)
+target_include_directories(hdma_bulk_check PRIVATE ${PROJECT_SOURCE_DIR}/src/ppu ${PROJECT_SOURCE_DIR}/src/render)
+target_link_libraries(hdma_bulk_check PRIVATE nshvc)
+set_target_properties(hdma_bulk_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
 add_executable(states unit/states.c)
 target_link_libraries(states PRIVATE nshvc)
 set_target_properties(states PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

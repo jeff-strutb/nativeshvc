@@ -51,6 +51,9 @@ extern uint8_t dma_mdmaen;                   /* the channels whose general DMA i
 void dma_edge(void);                         /* inside a DMA: an edge of the unit (bus.c), where HDMA comes in */
 void hdma_init(void);                        /* the frame's start */
 void hdma_line(void);                        /* each line's horizontal blank */
+unsigned hdma_quiet(void);                   /* the lines from this one that move nothing */
+void hdma_skip(unsigned n);                  /* n of those passed */
+int bus_read_plain(uint32_t addr);           /* a read of it has no effect and only memory's value */
 int hdma_enabled(void);                      /* a channel set in HDMAEN */
 int hdma_active(void);                       /* one whose table has not ended */
 extern unsigned dma_clocks;                  /* the unit's clocks since it took the bus */
