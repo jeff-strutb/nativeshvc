@@ -47,6 +47,8 @@
 #include "ppu.h"
 #include "rr_size.h"
 #include "rr_mode7.h"
+#include "rr_ref.h"
+#include "ppu_ref.h"
 
 #define NSCENES 16
 static int fails;

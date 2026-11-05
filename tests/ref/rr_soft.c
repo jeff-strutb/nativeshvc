@@ -9,8 +9,7 @@
 #include <string.h>
 
 #include "rr.h"
-#include "rr_size.h"
-#include "rr_mode7.h"
+#include "rr_ref_mode7.h"
 #include "rr_compose.h"
 #include "backdrop.h"
 #include "host.h"
@@ -199,7 +198,7 @@ int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t 
 
 void rr_size(int w, int h) { size_to(w, h); }
 
-/* the backdrop by its definition (front/backdrop.c), over the frame */
+/* the backdrop by its definition (backdrop.c), over the frame */
 static uint32_t *s_bd;
 static int s_bdw, s_bdh;
 

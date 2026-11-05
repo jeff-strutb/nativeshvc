@@ -37,6 +37,8 @@
 #include "nshvc/machine.h"
 #include "ppu.h"
 #include "rr_size.h"
+#include "rr_ref.h"
+#include "ppu_ref.h"
 
 #define NSCENES 14
 static int fails;

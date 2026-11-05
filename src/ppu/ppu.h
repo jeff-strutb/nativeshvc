@@ -204,8 +204,7 @@ const uint16_t *ppu_vram(void);
 const uint16_t *ppu_cgram(void);
 const uint8_t *ppu_oam(void);
 
-/* PPU checks (NSHVC_PPUCHECK): frames drawn from their records against
-   the frames drawn a line at a time */
+/* frames that needed more copies than kept, more segments than kept */
 extern unsigned long ppu_version_overflow, ppu_segment_overflow;
 /* the checks' (tests/ref): each line as it is recorded, each finished frame */
 extern void (*ppu_line_hook)(const PpuFrame *f, unsigned line, const uint16_t *live_vram, const uint8_t *live_table);
@@ -217,8 +216,8 @@ int ppu_mode7_plain(void);
 /* a frame described for a compositor (render/compose_body.h): its words */
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words);
 /* the same with each part's segment for the records of a frame presenting
-   Mode 7 or a canvas, and m as ppu_mode7 makes it but for its records and
-   picture (the compositor's) */
+   Mode 7 or a canvas, and m but for its records and picture (the
+   compositor's) */
 struct RrMode7;
 const uint32_t *ppu_compose_m7(const PpuFrame *f, size_t *words, struct RrMode7 *m);
 

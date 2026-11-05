@@ -64,6 +64,7 @@
 #include "rr_size.h"
 #include "rr_mode7.h"
 #include "rr_compose.h"
+#include "ppu_ref.h"
 
 #define SC_W 320
 #define SC_H 240

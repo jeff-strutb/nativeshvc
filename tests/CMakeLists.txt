@@ -8,11 +8,45 @@ if(PSP)
   link_libraries(psp_module)
   add_compile_definitions(main=nshvc_test_main)
 endif()
+# what links no console: the oracle, and the sound chip's own programs
 if(NOT WIN32 AND NOT PSP)   # (it loads the reference core with dlopen)
   add_executable(oracle oracle/oracle.c)
   target_link_libraries(oracle PRIVATE ${CMAKE_DL_LIBS})
   set_target_properties(oracle PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 endif()
+
+# the sound chip held to the reference's (tests/dsp/fuzz.py, and any run's
+# oracle --spclog), a run's notes read off it (tests/dsp/keys.py), and the
+# resampler to the exact signal
+add_executable(mix_replay dsp/mix_replay.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer_regs.c)
+target_include_directories(mix_replay PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
+set_target_properties(mix_replay PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
+add_executable(key_events dsp/key_events.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer_regs.c)
+target_include_directories(key_events PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
+set_target_properties(key_events PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
+add_executable(resample_check dsp/resample_check.c ${PROJECT_SOURCE_DIR}/src/dsp/resample.c)
+target_include_directories(resample_check PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
+target_link_libraries(resample_check PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
+set_target_properties(resample_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+
+# the reference: the frame and the presentation drawn on the CPU, and the
+# checks the environment asks for (ref/check.c), in every program from here
+# on; with no GPU the reference's renderer too
+set(_ref ref/ppu_ref.c ref/check.c)
+if(NSHVC_RENDER STREQUAL "soft")
+  list(APPEND _ref ref/rr_soft.c ref/backdrop.c)
+endif()
+add_library(nshvc_ref OBJECT ${_ref})
+include_directories(ref)
+target_include_directories(nshvc_ref PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ppu
+  ${PROJECT_SOURCE_DIR}/src/render ${PROJECT_SOURCE_DIR}/src/front ${PROJECT_SOURCE_DIR}/src/host)
+if(NOT MSVC)
+  # (the reference's sharp bilinear rounded as the library's: no fused multiply-adds)
+  target_compile_options(nshvc_ref PRIVATE -Wall -fno-strict-aliasing -ffp-contract=off)
+endif()
+link_libraries(nshvc_ref)
 
 add_executable(testcart rom/testcart.c dsp/keys_spc.c)
 target_link_libraries(testcart PRIVATE nshvc)
@@ -61,22 +95,6 @@ add_executable(chip_irq unit/chip_irq.c)
 target_link_libraries(chip_irq PRIVATE nshvc)
 target_include_directories(chip_irq PRIVATE ${PROJECT_SOURCE_DIR}/src/console)
 set_target_properties(chip_irq PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-
-# the sound chip held to the reference's (tests/dsp/fuzz.py, and any run's
-# oracle --spclog), a run's notes read off it (tests/dsp/keys.py), and the
-# resampler to the exact signal
-add_executable(mix_replay dsp/mix_replay.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer_regs.c)
-target_include_directories(mix_replay PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
-set_target_properties(mix_replay PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-
-add_executable(key_events dsp/key_events.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer.c ${PROJECT_SOURCE_DIR}/src/dsp/mixer_regs.c)
-target_include_directories(key_events PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
-set_target_properties(key_events PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
-
-add_executable(resample_check dsp/resample_check.c ${PROJECT_SOURCE_DIR}/src/dsp/resample.c)
-target_include_directories(resample_check PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp)
-target_link_libraries(resample_check PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
-set_target_properties(resample_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
 
 # a light gun aimed with the real pointer in a window (macOS: AppKit's own
 # mouse events posted to the window)

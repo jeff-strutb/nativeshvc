@@ -47,6 +47,7 @@
 #include "nshvc/nshvc.h"
 #include "nshvc/machine.h"
 #include "ppu.h"
+#include "ppu_ref.h"
 
 #define NSCENES 11
 #define NSPR 40

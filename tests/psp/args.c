@@ -13,6 +13,9 @@
 
 #undef main
 int nshvc_test_main(int argc, char **argv);
+/* (tests/ref/check.c: its hooks, read again from the environment set here,
+   after the constructors; a program without the reference has none) */
+void nshvc_check_env(void) __attribute__((weak));
 
 static SceInt64 s_start;
 
@@ -55,6 +58,8 @@ int main(int argc, char **argv)
         fclose(f);
     }
     av[n] = NULL;
+    if (nshvc_check_env)
+        nshvc_check_env();
     s_start = sceKernelGetSystemTimeWide();
     atexit(ran);
     return nshvc_test_main(n, av);

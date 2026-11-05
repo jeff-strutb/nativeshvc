@@ -798,7 +798,7 @@ CP_FN void cp_screens(U32 si, U32 p, U32 x, I32 dr, U32 my)
     }
 }
 
-/* the picture's pixel (X, R): 0xFFRRGGBB (ppu.c ppu_draw_frame) */
+/* the picture's pixel (X, R): 0xFFRRGGBB (tests/ref/ppu_ref.c ppu_draw_frame) */
 CP_FN U32 cp_pixel(U32 X, U32 R)
 {
     U32 ri = FD_(CP_ROWS) + 4u * R, p0 = FD_(ri), np = FD_(ri + 1u), my = FD_(ri + 3u), p = p0, k;

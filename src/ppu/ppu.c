@@ -22,8 +22,6 @@
  *                the colour window's clip and prevent regions
  *   brightness   and forced blank; overscan (239 lines)
  */
-#include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,12 +39,6 @@ static int direct_page = -1;          /* nshvc_ext_vram_direct: the data port's 
 static int hidden_dirty;              /* a page no layer showed changed since the last copy */
 static uint16_t cgram[256];
 static uint8_t oam[544];
-/* The pictures, each as large as the screen asks for (nshvc_ext_screen),
-   kept at the largest it has been: the frame drawn a line at a time
-   (NSHVC_PPUCHECK), the frame shown, and the interlaced picture, each
-   field's lines on its own rows (the hardware's line y on row 2(y - 1) +
-   field) over the rows of the frame before */
-
 /* *p at least n elements of `size` bytes (*cap of them now), its contents kept */
 static void *grow(void *p, size_t *cap, size_t n, size_t size)
 {
@@ -60,7 +52,7 @@ static void *grow(void *p, size_t *cap, size_t n, size_t size)
     return q;
 }
 static int woven_w, woven_h, woven_from[2];
-static unsigned long woven_of, woven_built;     /* the frame woven last; the one woven[] holds */
+static unsigned long woven_of;                  /* the frame woven last */
 /* the extensions (nshvc.h): the screen's width asked for (from the next
    frame), the sprites' extended X bits */
 static int ext_width = PPU_WIDTH, ext_height = 224;
@@ -80,10 +72,7 @@ static int sw = PPU_WIDTH, sl = 0;
 /* the row being drawn, from the hardware's line 1 (0): below 0 and past
    the hardware's last line on a taller screen */
 static int draw_row;
-/* the hardware's lines in the frame being drawn (rows past them are the
-   taller screen's own) */
-static int draw_lines_of = PPU_MAX_HEIGHT;
-static unsigned long frames_done, shown_of;     /* frames finished; the one shown[] holds */
+static unsigned long frames_done;               /* frames finished */
 
 static PpuScreen cur = { .inidisp = 0x80 };   /* the state as the game sets it */
 static const PpuScreen *s = &cur;             /* the state being drawn */
@@ -94,13 +83,9 @@ static PpuFrame frames[3];
 static PpuFrame *making = &frames[0], *finished = &frames[1], *before = &frames[2];
 static int dirty = 1;                           /* the tiles or sprites changed since the last copy */
 unsigned long ppu_version_overflow;             /* frames that needed more copies than PPU_VERSIONS */
-/* what the drawing reads: the live memory, or a record's */
-static const uint16_t *d_vram = vram, *d_cgram = cgram;
+/* what the sprites' evaluation reads: the live table, or a record's */
 static const uint8_t *d_oam = oam;
-static int d_field;                             /* the field of the frame being drawn */
-/* the frame being drawn from its record, whose canvas its layer shows (the
-   console's own drawing, the live CGRAM target's: none) */
-static const PpuFrame *d_frame;
+static int d_field;                             /* the field of the frame being described */
 
 /* the canvas (nshvc_ext_canvas_chars): a layer's characters in a range of
    VRAM drawn from the game's texels, k a console pixel along each axis */
@@ -237,7 +222,7 @@ void ppu_reset(void)
     making = &frames[0];
     finished = &frames[1];
     before = &frames[2];
-    frames_done = shown_of = woven_of = woven_built = 0;
+    frames_done = woven_of = 0;
     woven_w = woven_h = 0;
     woven_from[0] = woven_from[1] = 0;
     dirty = 1;
@@ -997,13 +982,6 @@ void (*ppu_line_hook)(const PpuFrame *f, unsigned line, const uint16_t *live_vra
 void (*ppu_frame_hook)(const PpuFrame *f);
 void (*ppu_reset_hook)(void);
 
-/* A frame drawn onto the woven picture's rows of its field (-1: both). The
-   picture is as wide as the wider of its fields (a 256-wide line's pixels
-   doubled beside a hires field's); a picture of another screen starts over
-   from this frame's on both. */
-static uint32_t *field_pic;
-static size_t field_cap;
-
 /* An interlaced frame's weave, as the frames finish (no pixels): the
    woven picture's size, and which frame each row parity's rows are from
    (woven_from: 0 the finished frame, 1 the one before). A frame of
@@ -1034,7 +1012,7 @@ int ppu_woven(int *w, int *h, int from[2])
         return 0;
     *w = woven_w;
     *h = woven_h;
-    /* (a parity's rows the frame before's however old: weave_pixels's) */
+    /* (a parity's rows the frame before's however old) */
     from[0] = woven_from[0] ? 1 : 0;
     from[1] = woven_from[1] ? 1 : 0;
     return 1;
@@ -1079,25 +1057,11 @@ void ppu_vblank_start(void)
 }
 
 
-
-
-
-
 /* bits per pixel of each background in each mode (0: none) */
 static const uint8_t mode_bpp[8][4] = {
     { 2, 2, 2, 2 }, { 4, 4, 2, 0 }, { 4, 4, 0, 0 }, { 8, 4, 0, 0 },
     { 8, 2, 0, 0 }, { 4, 2, 0, 0 }, { 4, 0, 0, 0 }, { 8, 0, 0, 0 },
 };
-
-
-
-
-
-
-
-/* x rounded down to a multiple of m (mosaic blocks counted from the
-   hardware's column 0, either way) */
-static int floor_to(int x, int m) { return x - (((x % m) + m) % m); }
 
 
 static int sext13(int v) { return (v & 0x1000) ? v | ~0x1FFF : v & 0x1FFF; }
@@ -1121,7 +1085,6 @@ static void m7_origin(int y, int *ox, int *oy)
 /* ---- sprites ---- */
 static const uint8_t obj_w[8][2] = { { 8, 16 }, { 8, 32 }, { 8, 64 }, { 16, 32 }, { 16, 64 }, { 32, 64 }, { 16, 32 }, { 16, 32 } };
 static const uint8_t obj_h[8][2] = { { 8, 16 }, { 8, 32 }, { 8, 64 }, { 16, 32 }, { 16, 64 }, { 32, 64 }, { 32, 64 }, { 32, 32 } };
-
 
 
 /* a sprite's X: the table's 9 bits as signed, and 512 more for each of
@@ -1270,16 +1233,6 @@ void ppu_stat_catch_up(unsigned v, unsigned h, unsigned vdisp)
     d_oam = keep_oam;
     draw_row = keep_row;
 }
-
-
-
-
-
-
-
-
-
-
 
 
 /* A change of a line being drawn onto the state it shows from: the
@@ -1457,7 +1410,6 @@ static void record_line(unsigned line)
     if (!(making->line[making->st[line]].inidisp & 0x80) && ppu_line_hires(&making->line[making->st[line]]))
         making->hires = 1;
 }
-
 
 
 void ppu_render_line(unsigned line);
@@ -1895,7 +1847,6 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
 }
 
 
-
 /* Where a colour written or read now lands. While a line is being drawn
    (the screen not blanked, clocks 84-1091 of lines 1-224) the PPU is
    looking colours up, and CGRAM's port goes to the entry it looked up
@@ -1987,12 +1938,8 @@ static unsigned cgram_target(unsigned ahead)
 }
 
 /* ---- the presentation: the frame at the output's resolution ------------------------- */
-/* (ppu.h ppu_mode7, render/rr_mode7.h) Each picture pixel on a Mode 7 line
-   is given everything of draw_line's rules that does not depend on where
-   the sample falls in it: the sprites' pixel over the backdrop on each
-   screen, which Mode 7 layer may show on each (its enable bits and
-   windows), the colour window's regions; its line's or segment's state
-   once in the segment table. */
+/* (render/rr_mode7.h) Each line's or segment's state once in the segment
+   table; the picture pixels' records are the compositor's (cp_record). */
 /* each picture row's flag, its states and their palettes, for as many
    rows as the screen has */
 static uint8_t *m7_row;
@@ -2056,9 +2003,6 @@ int ppu_frame_mode7(const PpuFrame *f)
 {
     return ppu_frame_presents(f) != 0;
 }
-
-
-
 
 
 /* the line's or segment's state, its palette and VRAM, as an entry of the
@@ -2138,8 +2082,8 @@ int ppu_ext_wrap_on(void) { return ext_wrap; }
 
 
 /* A frame presenting Mode 7 or a canvas for a compositor that makes its
-   records (render/compose_body.h cp_record): m as ppu_mode7 makes it but
-   for the records and the picture (the compositor's), and each of the
+   records (render/compose_body.h cp_record): m but for the records and
+   the picture (the compositor's), and each of the
    description's parts' segments (ppu_compose's order) into seg_of. A row
    with a Mode 7 or canvas part is marked so whether or not a pixel of it
    shows one: its pixels that do not are the picture's either way. */
@@ -2189,8 +2133,6 @@ static void mode7_segs(const PpuFrame *f, RrMode7 *m, uint32_t *seg_of)
     m->cv_fx = f->cv_on && f->cv_screen ? f->cv_fx : 0;
     m->cv_fy = f->cv_on && f->cv_screen ? f->cv_fy : 0;
     s = &cur;
-    d_vram = vram;
-    d_cgram = cgram;
     d_oam = oam;
 }
 

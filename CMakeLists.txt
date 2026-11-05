@@ -7,7 +7,8 @@
 # game links with its C. Options:
 #   NSHVC_HOST    null (headless; the default) | macos | windows | ios | psp | none
 #                 (none: the app supplies host.h's functions itself)
-#   NSHVC_RENDER  soft (the default for null) | metal (macos, ios) |
+#   NSHVC_RENDER  none or soft (the default for null: no picture; the tests
+#                 bring the reference's, tests/ref) | metal (macos, ios) |
 #                 gl (windows) | vulkan | psp (the GE: psp)
 #
 # The PSP builds with pspdev's toolchain file:
@@ -34,7 +35,7 @@ elseif(WIN32)
 else()
   set(_render_default soft)
 endif()
-set(NSHVC_RENDER "${_render_default}" CACHE STRING "the renderer: soft, metal, gl, vulkan, psp")
+set(NSHVC_RENDER "${_render_default}" CACHE STRING "the renderer: none, soft, metal, gl, vulkan, psp")
 option(NSHVC_TESTS "build the tests" OFF)
 option(NSHVC_EXAMPLES "build the examples" OFF)
 
@@ -52,7 +53,6 @@ add_library(nshvc STATIC
   src/dsp/mixer.c
   src/dsp/mixer_regs.c
   src/dsp/resample.c
-  src/front/backdrop.c
   src/front/console.c
   src/front/input.c
   src/front/script.c)
@@ -130,8 +130,8 @@ target_sources(nshvc PRIVATE ${_cp_src})
 target_include_directories(nshvc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen)
 
 # the renderer
-if(NSHVC_RENDER STREQUAL "soft")
-  target_sources(nshvc PRIVATE src/render/soft/rr_soft.c)
+if(NSHVC_RENDER STREQUAL "soft" OR NSHVC_RENDER STREQUAL "none")
+  target_sources(nshvc PRIVATE src/render/none/rr_none.c)
 elseif(NSHVC_RENDER STREQUAL "metal")
   target_sources(nshvc PRIVATE src/render/metal/rr_metal.m)
   set_source_files_properties(src/render/metal/rr_metal.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

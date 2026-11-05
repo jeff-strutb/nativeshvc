@@ -1,7 +1,7 @@
 /*
  * rr_compose.h: compose_body.h in C, the reference each GPU backend's
- * compositor is held to (and itself held to ppu.c's ppu_draw_frame:
- * NSHVC_COMPOSECHECK=1). Set rr_cp_fd to a frame's description
+ * compositor is held to (and itself held to tests/ref/ppu_ref.c's
+ * ppu_draw_frame: NSHVC_COMPOSECHECK=1). Set rr_cp_fd to a frame's description
  * (ppu_compose), then rr_cp_pixel(x, y) is the picture's pixel.
  */
 #ifndef RR_COMPOSE_H

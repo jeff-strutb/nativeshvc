@@ -19,7 +19,7 @@
 #include <stdlib.h>
 
 #include "rr.h"
-#include "rr_size.h"
+#include "rr_ref.h"
 
 /* got against want, overlays q (n of them, their images im, OW x OH):
    the pixels off by more than the bound (2, or the GE's), the largest, and
