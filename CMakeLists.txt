@@ -93,6 +93,8 @@ elseif(PSP)
   target_sources(nshvc PRIVATE src/host/psp/sys_psp.c)
 elseif(NOT NSHVC_HOST STREQUAL "none")
   target_sources(nshvc PRIVATE src/host/posix/host_posix.c)
+  find_package(Threads REQUIRED)
+  target_link_libraries(nshvc PUBLIC Threads::Threads)
 endif()
 
 # the host

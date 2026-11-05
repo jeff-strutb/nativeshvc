@@ -17,11 +17,13 @@
  *                      wait and a DMA still take theirs; with (1), the
  *                      bus's time and the weights again
  *   waits --offpoll    a loop polling a status bit with the costs off,
- *                      where no time passes: must stop the run (exit 70)
+ *                      where no time passes: the front end's watchdog
+ *                      (NSHVC_WATCHDOG=2 here) stops the run, naming $4212
+ *                      (exit 70, in about 3 seconds)
  *   waits --held       a wait with interrupts held: must stop the run
  *                      (exit 70)
  *   waits --heldpoll   a loop polling a status bit with interrupts held,
- *                      where no time passes: must stop the run (exit 70)
+ *                      where no time passes: as --offpoll
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -451,6 +453,16 @@ int main(int argc, char **argv)
     cart.rom_size = sizeof rom;
     cart.routines = routines;
     cart.routine_count = 3;
+    if (!strcmp(mode, "--offpoll") || !strcmp(mode, "--heldpoll")) {
+        /* (through the front end: its watchdog) */
+        static char *av[] = { (char *)"waits", (char *)"--headless", NULL };
+#ifdef _WIN32
+        _putenv_s("NSHVC_WATCHDOG", "2");
+#else
+        setenv("NSHVC_WATCHDOG", "2", 1);
+#endif
+        return nshvc_main(&cart, 2, av);
+    }
     nshvc_power(&cart);
     for (;;)
         nshvc_run_frame();

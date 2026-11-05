@@ -56,7 +56,7 @@ void spc_wr(uint16_t addr, uint8_t v);
    DSP, the timers and the S-CPU running meanwhile. Returns the SPC700
    cycles waited. (A loop of reads with no wait sees the clock move too, a
    cycle an access, with the costs on; with them off it never ends, and
-   20,000,000 reads with no write stop the run.) */
+   the front end's watchdog ends a run with no frame.) */
 uint32_t spc_wait_until(int (*ready)(void *ctx), void *ctx);
 
 static inline uint16_t spc_dp(uint8_t d) { return (uint16_t)(spc.p ? 0x0100 | d : d); }

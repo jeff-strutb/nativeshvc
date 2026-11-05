@@ -154,6 +154,42 @@ void nshvc_fatal(const char *fmt, ...)
     exit(70);
 }
 
+/* ---- the watchdog ----
+   A loop in the game's C that waits for the console's time, with its accesses
+   taking none (the costs off, interrupts held), never ends: no frame comes.
+   NSHVC_WATCHDOG=N: no frame for N seconds ends the run, naming the last
+   access made through the console (a loop reading memory alone: the last
+   before it). A game's default 30 s; headless, none (0 too: none). */
+static volatile uint32_t loop_passes;        /* the front end's loop, paused too */
+static long watch_secs;
+
+static void watchdog(void)
+{
+    static uint64_t last = ~(uint64_t)0;
+    static long idle;
+    uint64_t now = (uint64_t)ppu_frames() + loop_passes;
+    uint32_t a;
+    if (now != last) {
+        last = now;
+        idle = 0;
+        return;
+    }
+    if (++idle < watch_secs)
+        return;
+    a = snes_last_access();
+    nshvc_fatal("no frame in %ld seconds: a loop that waits for the console's time, which its accesses do not take "
+                "(wait with nshvc_wait_until or spc_wait_until); the last access through the console: a %s of $%06X",
+                watch_secs, (a >> 24) ? "write" : "read", (unsigned)(a & 0xFFFFFFu));
+}
+
+static void watchdog_start(int is_headless)
+{
+    const char *e = getenv("NSHVC_WATCHDOG");
+    watch_secs = e ? atol(e) : is_headless ? 0 : 30;
+    if (watch_secs > 0)
+        host_every(1000, watchdog);
+}
+
 /* ---- the game's hooks ---- */
 static nshvc_hooks hooks;
 void nshvc_set_hooks(const nshvc_hooks *h)
@@ -1095,6 +1131,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
     }
     host_set_app_name(cart->save_name ? cart->save_name : cart->title, cart->title ? cart->title : "nativeshvc");
     host_init(argc, argv);
+    watchdog_start(headless);
     script_args(argc, argv);
     if (script)
         script_load(script, out_dir);
@@ -1146,6 +1183,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         host_audio_open(OUT_RATE, audio_cb, NULL);
     }
     for (;;) {
+        loop_passes++;
         if (!paused)
             nshvc_run_frame();
         frame();

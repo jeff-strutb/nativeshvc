@@ -59,6 +59,7 @@ extern uint64_t snes_clock;            /* master clocks since power on */
    NSHVC_BUS_INLINE): snes_clock is settled only where the console looks */
 uint64_t snes_now(void);
 uint32_t snes_frame(void);             /* frames begun since power on */
+uint32_t snes_last_access(void);       /* the last access made through the console: its address | 1 << 24 a write */
 unsigned snes_vcounter(void);
 unsigned snes_hcounter(void);          /* dots, 0-339 */
 uint32_t snes_line_clock(void);        /* master clocks since the line began */

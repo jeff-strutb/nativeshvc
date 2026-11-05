@@ -47,8 +47,9 @@ void nshvc_bus_wr16(uint32_t addr, uint16_t value);
 /* By 8 KB of the 24-bit space (addr >> 13): where reads and writes may be
    made directly (NULL: the call), and what each costs, in tenths of a
    master clock; `left`, the tenths that may be spent before the console
-   must look (an access that would leave none is the call); `wrote_left`,
-   `left` at the last direct write; `mdr`, the data bus's last value. */
+   must look (an access that would leave none is the call); `plain`, no time
+   passes in the C's accesses and nothing is waiting on them: where there is
+   memory, a load or a store and no more; `mdr`, the data bus's last value. */
 typedef struct {
     const uint8_t *rd;
     uint8_t *wr;
@@ -56,7 +57,8 @@ typedef struct {
 } nshvc_bus_region;
 
 typedef struct {
-    int32_t left, wrote_left;
+    int32_t left;
+    int32_t plain;
     uint8_t mdr;
     nshvc_bus_region region[2048];
 } nshvc_bus_state;
@@ -72,12 +74,20 @@ extern nshvc_bus_state nshvc_bus;
 static inline uint8_t nshvc_bus_rd8_inline(uint32_t addr)
 {
     const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
-    int32_t left = nshvc_bus.left - r->cost_rd;
-    if (NSHVC_LIKELY(r->rd && left > 0)) {
-        uint8_t v = r->rd[addr & 0x1FFF];
-        nshvc_bus.left = left;
-        nshvc_bus.mdr = v;
-        return v;
+    if (NSHVC_LIKELY(r->rd != 0)) {
+        if (NSHVC_LIKELY(nshvc_bus.plain)) {
+            uint8_t v = r->rd[addr & 0x1FFF];
+            nshvc_bus.mdr = v;
+            return v;
+        } else {
+            int32_t left = nshvc_bus.left - r->cost_rd;
+            if (NSHVC_LIKELY(left > 0)) {
+                uint8_t v = r->rd[addr & 0x1FFF];
+                nshvc_bus.left = left;
+                nshvc_bus.mdr = v;
+                return v;
+            }
+        }
     }
     return nshvc_bus_rd8(addr);
 }
@@ -85,12 +95,20 @@ static inline uint8_t nshvc_bus_rd8_inline(uint32_t addr)
 static inline void nshvc_bus_wr8_inline(uint32_t addr, uint8_t value)
 {
     const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
-    int32_t left = nshvc_bus.left - r->cost_wr;
-    if (NSHVC_LIKELY(r->wr && left > 0)) {
-        r->wr[addr & 0x1FFF] = value;
-        nshvc_bus.left = nshvc_bus.wrote_left = left;
-        nshvc_bus.mdr = value;
-        return;
+    if (NSHVC_LIKELY(r->wr != 0)) {
+        if (NSHVC_LIKELY(nshvc_bus.plain)) {
+            r->wr[addr & 0x1FFF] = value;
+            nshvc_bus.mdr = value;
+            return;
+        } else {
+            int32_t left = nshvc_bus.left - r->cost_wr;
+            if (NSHVC_LIKELY(left > 0)) {
+                r->wr[addr & 0x1FFF] = value;
+                nshvc_bus.left = left;
+                nshvc_bus.mdr = value;
+                return;
+            }
+        }
     }
     nshvc_bus_wr8(addr, value);
 }
@@ -99,13 +117,21 @@ static inline void nshvc_bus_wr8_inline(uint32_t addr, uint8_t value)
 static inline uint16_t nshvc_bus_rd16_inline(uint32_t addr)
 {
     const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
-    int32_t left = nshvc_bus.left - 2 * r->cost_rd;
     uint32_t o = addr & 0x1FFF;
-    if (NSHVC_LIKELY(r->rd && left > 0 && o != 0x1FFF)) {
-        uint8_t hi = r->rd[o + 1];
-        nshvc_bus.left = left;
-        nshvc_bus.mdr = hi;
-        return (uint16_t)(r->rd[o] | hi << 8);
+    if (NSHVC_LIKELY(r->rd != 0 && o != 0x1FFF)) {
+        if (NSHVC_LIKELY(nshvc_bus.plain)) {
+            uint8_t hi = r->rd[o + 1];
+            nshvc_bus.mdr = hi;
+            return (uint16_t)(r->rd[o] | hi << 8);
+        } else {
+            int32_t left = nshvc_bus.left - 2 * r->cost_rd;
+            if (NSHVC_LIKELY(left > 0)) {
+                uint8_t hi = r->rd[o + 1];
+                nshvc_bus.left = left;
+                nshvc_bus.mdr = hi;
+                return (uint16_t)(r->rd[o] | hi << 8);
+            }
+        }
     }
     return nshvc_bus_rd16(addr);
 }
@@ -113,14 +139,23 @@ static inline uint16_t nshvc_bus_rd16_inline(uint32_t addr)
 static inline void nshvc_bus_wr16_inline(uint32_t addr, uint16_t value)
 {
     const nshvc_bus_region *r = &nshvc_bus.region[addr >> 13 & 0x7FF];
-    int32_t left = nshvc_bus.left - 2 * r->cost_wr;
     uint32_t o = addr & 0x1FFF;
-    if (NSHVC_LIKELY(r->wr && left > 0 && o != 0x1FFF)) {
-        r->wr[o] = (uint8_t)value;
-        r->wr[o + 1] = (uint8_t)(value >> 8);
-        nshvc_bus.left = nshvc_bus.wrote_left = left;
-        nshvc_bus.mdr = (uint8_t)(value >> 8);
-        return;
+    if (NSHVC_LIKELY(r->wr != 0 && o != 0x1FFF)) {
+        if (NSHVC_LIKELY(nshvc_bus.plain)) {
+            r->wr[o] = (uint8_t)value;
+            r->wr[o + 1] = (uint8_t)(value >> 8);
+            nshvc_bus.mdr = (uint8_t)(value >> 8);
+            return;
+        } else {
+            int32_t left = nshvc_bus.left - 2 * r->cost_wr;
+            if (NSHVC_LIKELY(left > 0)) {
+                r->wr[o] = (uint8_t)value;
+                r->wr[o + 1] = (uint8_t)(value >> 8);
+                nshvc_bus.left = left;
+                nshvc_bus.mdr = (uint8_t)(value >> 8);
+                return;
+            }
+        }
     }
     nshvc_bus_wr16(addr, value);
 }

@@ -32,6 +32,9 @@ void     host_sleep_ms(uint32_t ms);
 /* the calling thread keeps time for the game (paces frames): ask the OS to
    wake it on time (no timer coalescing) */
 void     host_thread_interactive(void);
+/* fn called every ms milliseconds, on a thread of its own, for as long as the
+   program runs (front/console.c's watchdog; it may end the program) */
+void     host_every(uint32_t ms, void (*fn)(void));
 
 /* ---- files ------------------------------------------------------------------ */
 int         host_mkdir(const char *path);

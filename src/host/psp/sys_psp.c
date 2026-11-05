@@ -16,6 +16,31 @@ void host_sleep_ms(uint32_t ms) { sceKernelDelayThread((SceUInt)ms * 1000u); }
 /* threads run by priority, with no timer coalescing to ask off */
 void host_thread_interactive(void) {}
 
+static uint32_t s_every_ms;
+static void (*s_every)(void);
+
+static int every_thread(SceSize args, void *argp)
+{
+    (void)args;
+    (void)argp;
+    for (;;) {
+        sceKernelDelayThread((SceUInt)s_every_ms * 1000u);
+        s_every();
+    }
+    return 0;
+}
+
+/* (a priority over the game's thread, so it wakes while the game runs) */
+void host_every(uint32_t ms, void (*fn)(void))
+{
+    SceUID t;
+    s_every_ms = ms;
+    s_every = fn;
+    t = sceKernelCreateThread("nshvc_every", every_thread, 0x11, 0x4000, PSP_THREAD_ATTR_USER, NULL);
+    if (t >= 0)
+        sceKernelStartThread(t, 0, NULL);
+}
+
 /* made, or there already (0x80010011: the system's EEXIST) */
 int host_mkdir(const char *path)
 {

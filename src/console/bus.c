@@ -1467,10 +1467,10 @@ static inline uint8_t *wram_at(uint32_t addr)
 
 /* Code run with interrupts held (an app's, outside the console's time), or
    with the S-CPU's costs off (nshvc_set_cpu_costs(0)), costs nothing, so a
-   loop of it that waits for the hardware never ends; such a loop reads and
-   does not write. 20,000,000 reads with no write or wait between them are
-   taken for one. */
-static uint32_t spin_reads;
+   loop of it that waits for the hardware never ends: the front end's watchdog
+   ends the run, naming the last access made through the console. */
+static volatile uint32_t last_access;
+uint32_t snes_last_access(void) { return last_access; }
 
 /* the time before an access: the allowance (the C's own, by the access's
    kind, `write`; none for the console's interrupt sequence, `game` 0),
@@ -1491,19 +1491,8 @@ static void allowance_spend(uint32_t addr, int write)
 
 static int access_begins(uint32_t addr, unsigned cc, int game, int write)
 {
-    if (interrupts_held) {
-        if (++spin_reads >= 20000000u)
-            snes_fatal("with interrupts held, the S-CPU made 20,000,000 reads and no write (the last of $%06X): a "
-                       "loop that waits for the console's time, which does not pass held", (unsigned)addr);
+    if (interrupts_held || !allowance_on)
         return 0;
-    }
-    if (!allowance_on) {
-        if (++spin_reads >= 20000000u)
-            snes_fatal("with the S-CPU's costs off, it made 20,000,000 reads and no write (the last of $%06X): a "
-                       "loop that waits for the console's time, which its accesses do not take (wait with "
-                       "nshvc_wait_until)", (unsigned)addr);
-        return 0;
-    }
     if (game)
         allowance_spend(addr, write);
     cycle_begins(cc);
@@ -1554,6 +1543,7 @@ static uint8_t access_rd(uint32_t addr, int game)
     addr &= 0xFFFFFF;
     cc = acc_lookup(addr, &kind);
     dbg_last_read = addr;
+    last_access = addr;
     if (fast_time(kind, cc, game, 0, &carry, &pre)) {
         allowance_carry = carry;
         snes_clock += pre + cc - 4;
@@ -1644,27 +1634,18 @@ static void between(void)
    while anything could come between two operations: an interrupt raised,
    a DMA or HDMA due, the chip able to raise its IRQ, a read-modify-write
    open, or a hook watching the accesses. With interrupts held or the
-   costs off, accesses take no time: a read spends 1 of the reads left
-   before 20,000,000 with no write (access_begins), a write none.
+   costs off, accesses take no time, so nothing is spent: where nothing else
+   is waiting on them they are a load or a store alone (nshvc_bus.plain).
    Nativeshvc's own code runs with the limit 0 (bus_enter), and sets it
    again before the C runs (bus_leave): as an access returns, and round a
    handler, a wait's condition or the frame's hook. */
-#define NO_WRITE INT32_MIN
 static int32_t bus_left0;            /* nshvc_bus.left as last set */
-static int bus_free;                 /* as last set: accesses take no time */
 static int bus_key = -1;             /* the regions' costs as built: MEMSEL's bit 0 | bus_free << 1 */
 
 static void bus_settle_now(void)
 {
     int32_t left = nshvc_bus.left, used = bus_left0 - left;
-    if (nshvc_bus.wrote_left != NO_WRITE) {
-        /* (a write: the reads since it, with no time; none, with) */
-        spin_reads = bus_free ? (uint32_t)(nshvc_bus.wrote_left - left) : 0;
-        nshvc_bus.wrote_left = NO_WRITE;
-    } else if (bus_free) {
-        spin_reads += (uint32_t)used;
-    }
-    if (!bus_free && used) {
+    if (used) {
         uint32_t t = allowance_carry + (uint32_t)used;
         snes_clock += t / 10;
         allowance_carry = t % 10;
@@ -1680,7 +1661,7 @@ static void bus_settle_now(void)
    enter and leave, and the most of them) */
 static inline __attribute__((always_inline)) void bus_settle_inline(void)
 {
-    if (nshvc_bus.left != bus_left0 || nshvc_bus.wrote_left != NO_WRITE)
+    if (nshvc_bus.left != bus_left0)
         bus_settle_now();
 }
 static void bus_settle(void) { bus_settle_inline(); }
@@ -1688,6 +1669,7 @@ static void bus_settle(void) { bus_settle_inline(); }
 static void bus_enter(void)
 {
     bus_settle_inline();
+    nshvc_bus.plain = 0;
     nshvc_bus.left = bus_left0 = 0;
 }
 
@@ -1719,21 +1701,15 @@ static void regions_place(void)
     bus_key = -1;
 }
 
-/* each region's costs: its bus time and its kind's weight in tenths, or,
-   accesses taking no time, a read 1 and a write 0 */
-static void regions_build(int key, int free)
+/* each region's costs: its bus time and its kind's weight in tenths */
+static void regions_build(int key)
 {
     unsigned i;
     for (i = 0; i < 2048; i++) {
         nshvc_bus_region *g = &nshvc_bus.region[i];
         unsigned info = acc_info[memsel & 1][i >> 3][i & 7], cc = info & 15, kind = info >> 4;
-        if (free) {
-            g->cost_rd = 1;
-            g->cost_wr = 0;
-        } else {
-            g->cost_rd = (int32_t)(10 * cc + allowance[0][kind]);
-            g->cost_wr = (int32_t)(10 * cc + allowance[1][kind]);
-        }
+        g->cost_rd = (int32_t)(10 * cc + allowance[0][kind]);
+        g->cost_wr = (int32_t)(10 * cc + allowance[1][kind]);
     }
     bus_key = key;
 }
@@ -1741,18 +1717,16 @@ static void regions_build(int key, int free)
 static void bus_leave(void)
 {
     int32_t left = 0;
-    int free = interrupts_held || !allowance_on;
+    int free = interrupts_held || !allowance_on, plain = 0;
     bus_settle_inline();
     if (((memsel & 1) | free << 1) != bus_key)
-        regions_build((memsel & 1) | free << 1, free);
-    bus_free = free;
+        regions_build((memsel & 1) | free << 1);
     if (!snes_read_hook && !snes_write_hook && !rmw_open && !turn.on) {
         if (free) {
             /* No time passes in the C's accesses: nothing comes due between
                two of its operations, from the console or the chip (whose
                clock does not move), but an interrupt raised already. */
-            if ((interrupts_held || !(nmi_pending | timeup_flag | cart_irq)) && spin_reads < 20000000u)
-                left = (int32_t)(20000000u - spin_reads);
+            plain = interrupts_held || !(nmi_pending | timeup_flag | cart_irq);
         } else if (!(nmi_pending | timeup_flag | cart_irq | dma_active | dma_pending | hdma_pending) &&
                    next_event > snes_clock && !chip_watch(0)) {
             /* up to the next deadline, less 40 clocks for each refresh
@@ -1774,6 +1748,7 @@ static void bus_leave(void)
         }
     }
     nshvc_bus.left = bus_left0 = left;
+    nshvc_bus.plain = plain;
 }
 
 uint64_t snes_now(void)
@@ -1855,7 +1830,7 @@ static void access_wr(uint32_t addr, uint8_t value, int game)
     unsigned cc, kind, carry, pre;
     addr &= 0xFFFFFF;
     cc = acc_lookup(addr, &kind);
-    spin_reads = 0;
+    last_access = addr | 0x1000000u;
     if (fast_time(kind, cc, game, 1, &carry, &pre)) {
         allowance_carry = carry;
         snes_clock += pre + cc;
@@ -2148,7 +2123,6 @@ static int wait_step(uint64_t until, int *look)
 {
     uint32_t n = 0xFFFFFFFFu;
     uint64_t lp = NEVER, t, s0 = snes_clock;
-    spin_reads = 0;
     /* one due already (one a handler held, its I flag now clear) */
     if (check_interrupts())
         return 1;
@@ -2241,7 +2215,6 @@ uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx)
         }
     }
     turn = keep;
-    spin_reads = 0;
     from = snes_clock - from;
     bus_leave();
     return from;
@@ -2309,8 +2282,7 @@ void snes_power(void)
     uint32_t n;
     /* the inline accesses: the call until the C first runs */
     nshvc_bus.left = bus_left0 = 0;
-    nshvc_bus.wrote_left = NO_WRITE;
-    bus_free = 0;
+    nshvc_bus.plain = 0;
     chip_at = UINT64_MAX;
     memset(wram, 0, sizeof wram);
     wram_port = 0;
@@ -2366,7 +2338,6 @@ void snes_power(void)
     memset(&turn, 0, sizeof turn);
     frames = vblanks = 0;
     interrupts_held = 0;
-    spin_reads = 0;
     allowance_set();
     irq_at = NEVER;
     ppu_reset();

@@ -361,10 +361,8 @@ static uint8_t spc_rd_reg(uint16_t addr);
    handshakes in the console's time. The boot ROM's work states its own
    cycles, the accesses' included (ipl, below). With the costs off
    (nshvc_set_cpu_costs(0), a game's Enhanced mode) the driver's C takes no
-   time, as the S-CPU's does: its time passes in its waits; a loop of reads
-   with no wait or write between them that would then never end (20,000,000
-   of them) stops the run. */
-static uint32_t spc_spin;
+   time, as the S-CPU's does: its time passes in its waits (a loop of reads
+   that waits for it and so never ends: the front end's watchdog). */
 
 static void access_cycle(uint16_t addr, int write)
 {
@@ -372,15 +370,8 @@ static void access_cycle(uint16_t addr, int write)
     unsigned n = 1;
     if (in_ipl)
         return;
-    if (!snes_costs_on()) {
-        if (write || turn_on)
-            spc_spin = 0;
-        else if (++spc_spin >= 20000000u)
-            snes_fatal("with the costs off, the SPC700's code made 20,000,000 reads and no write or wait (the last of "
-                       "$%04X): a loop that waits for the sound unit's time, which its accesses do not take (wait "
-                       "with spc_wait_until)", (unsigned)addr);
+    if (!snes_costs_on())
         return;
-    }
     if (p) {
         spc_carry += p->spc_tenths[write][addr >= 0xF0 && addr <= 0xFF];
         n += spc_carry / 10;

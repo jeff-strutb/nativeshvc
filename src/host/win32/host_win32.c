@@ -17,6 +17,29 @@ uint64_t host_ticks_ns(void)
            (uint64_t)(c.QuadPart % f.QuadPart) * 1000000000u / (uint64_t)f.QuadPart;
 }
 
+static uint32_t s_every_ms;
+static void (*s_every)(void);
+
+static DWORD WINAPI every_thread(LPVOID arg)
+{
+    (void)arg;
+    for (;;) {
+        Sleep(s_every_ms);
+        s_every();
+    }
+    return 0;
+}
+
+void host_every(uint32_t ms, void (*fn)(void))
+{
+    HANDLE t;
+    s_every_ms = ms;
+    s_every = fn;
+    t = CreateThread(NULL, 0, every_thread, NULL, 0, NULL);
+    if (t)
+        CloseHandle(t);
+}
+
 /* Sleep() wakes on the system timer's tick (15.6 ms unless a program asks
    for finer): the first sleep asks for 1 ms */
 void host_sleep_ms(uint32_t ms)
