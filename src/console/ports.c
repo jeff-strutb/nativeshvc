@@ -159,24 +159,35 @@ void ports_latch(int level)
     device_latch(1, level);
 }
 
-/* a joypad's bit n (B, Y, SELECT, START, up, down, left, right, A, X, L,
-   R): the pad's own bits; its cross holds no two opposite directions */
-static unsigned pad_bit(uint16_t b, unsigned n)
+/* A device's bits as one word, the first at the top; past its len, 1s.
+   Takes n (1 to 16) of them at once, the last at the bottom. */
+static unsigned take(uint32_t w, unsigned len, unsigned *c, unsigned n)
 {
-    switch (n) {
-    case 4: return (b & NSHVC_UP) && !(b & NSHVC_DOWN);
-    case 5: return (b & NSHVC_DOWN) && !(b & NSHVC_UP);
-    case 6: return (b & NSHVC_LEFT) && !(b & NSHVC_RIGHT);
-    case 7: return (b & NSHVC_RIGHT) && !(b & NSHVC_LEFT);
-    }
-    return n < 12 ? b >> (15 - n) & 1 : 0;
+    uint64_t s = (uint64_t)w << 32 | 0xFFFFFFFFu;
+    unsigned at = *c;
+    if (len < 32)
+        s |= (uint64_t)(0xFFFFFFFFu >> len) << 32;
+    *c = at + n < len ? at + n : len;
+    return (unsigned)((s << at) >> (64 - n));
 }
 
-static unsigned scope_data(int p)
+/* a joypad's 16 bits at the word's top (B, Y, SELECT, START, up, down, left,
+   right, A, X, L, R, then the signature's 0s): its cross holds no two
+   opposite directions */
+static uint32_t pad_word(uint16_t b)
+{
+    uint32_t w = b & 0xFFF0u;
+    if ((b & NSHVC_UP) && (b & NSHVC_DOWN))
+        w &= ~(uint32_t)(NSHVC_UP | NSHVC_DOWN);
+    if ((b & NSHVC_LEFT) && (b & NSHVC_RIGHT))
+        w &= ~(uint32_t)(NSHVC_LEFT | NSHVC_RIGHT);
+    return w << 16;
+}
+
+static unsigned scope_bits(int p, unsigned n)
 {
     struct port *s = &port[p];
-    if (s->counter >= 8)
-        return 1;
+    uint32_t w;
     if (s->counter == 0) {
         unsigned b = gun_buttons[0];
         int t = (b & NSHVC_GUN_TRIGGER) != 0, tu = (b & NSHVC_GUN_TURBO) != 0, pa = (b & NSHVC_GUN_PAUSE) != 0;
@@ -198,22 +209,16 @@ static unsigned scope_data(int p)
             s->pauselock = 0;
         s->offscreen = s->sx < 0 || s->sy < 0 || s->sx >= 256 || s->sy >= (int)snes_vdisp();
     }
-    switch (s->counter++) {
-    case 0: return s->offscreen ? 0 : (unsigned)s->trigger;
-    case 1: return (unsigned)s->cursor;
-    case 2: return (unsigned)s->turbo;
-    case 3: return (unsigned)s->pause;
-    case 6: return (unsigned)s->offscreen;
-    }
-    return 0;
+    /* trigger, cursor, turbo, pause, 0, 0, off screen, 0 */
+    w = (uint32_t)(s->offscreen ? 0 : s->trigger) << 31 | (uint32_t)s->cursor << 30 |
+        (uint32_t)s->turbo << 29 | (uint32_t)s->pause << 28 | (uint32_t)s->offscreen << 25;
+    return take(w, 8, &s->counter, n);
 }
 
-static unsigned justifier_data(int p)
+static unsigned justifier_bits(int p, unsigned n)
 {
     struct port *s = &port[p];
-    unsigned n;
-    if (s->counter >= 32)
-        return 1;
+    uint32_t w;
     if (s->counter == 0) {
         s->jtrigger[0] = (gun_buttons[0] & NSHVC_GUN_TRIGGER) != 0;
         s->jstart[0] = (gun_buttons[0] & NSHVC_GUN_START) != 0;
@@ -222,75 +227,70 @@ static unsigned justifier_data(int p)
             s->jstart[1] = (gun_buttons[1] & NSHVC_GUN_START) != 0;
         }
     }
-    n = s->counter++;
-    if (n >= 12 && n <= 14)
-        return 1;                                /* the signature, 1110 */
-    if (n >= 16 && n <= 23)
-        return n & 1;                            /* the ID, 01010101 */
-    switch (n) {
-    case 24: return (unsigned)s->jtrigger[0];
-    case 25: return (unsigned)s->jtrigger[1];
-    case 26: return (unsigned)s->jstart[0];
-    case 27: return (unsigned)s->jstart[1];
-    case 28: return (unsigned)s->active;
+    /* 12 zeros, the signature (1110), the ID (01010101), both triggers, both
+       starts, which gun the latch is for */
+    w = 0x000E5500u | (uint32_t)s->jtrigger[0] << 7 | (uint32_t)s->jtrigger[1] << 6 |
+        (uint32_t)s->jstart[0] << 5 | (uint32_t)s->jstart[1] << 4 | (uint32_t)s->active << 3;
+    return take(w, 32, &s->counter, n);
+}
+
+static unsigned mouse_bits(int p, unsigned n)
+{
+    struct port *s = &port[p];
+    uint32_t w;
+    if (s->latched) {
+        s->speed = (s->speed + n) % 3;
+        return 0;
     }
-    return 0;
+    /* 8 zeros, the buttons, its speed, the signature, then Y and X */
+    w = (uint32_t)s->mr << 23 | (uint32_t)s->ml << 22 | (uint32_t)s->speed << 20 | 1u << 16 |
+        (uint32_t)s->mdy << 15 | (uint32_t)s->my << 8 | (uint32_t)s->mdx << 7 | (uint32_t)s->mx;
+    return take(w, 32, &s->counter, n);
+}
+
+void ports_bits(int p, unsigned n, unsigned *line1, unsigned *line2)
+{
+    struct port *s = &port[p];
+    const unsigned all = (1u << n) - 1;
+    *line1 = *line2 = 0;
+    switch (plugged[p]) {
+    case NSHVC_PORT_JOYPAD:
+        if (s->counter < 16 && s->latched)
+            *line1 = held[pad_base(p)] & NSHVC_B ? all : 0;
+        else
+            *line1 = take(pad_word(s->pad[0]), 16, &s->counter, n);
+        return;
+    case NSHVC_PORT_MULTITAP: {
+        unsigned *c = iobit(p) ? &s->counter : &s->counter2;
+        int a = iobit(p) ? 0 : 2;
+        unsigned at = *c;
+        if (s->latched) {
+            *line2 = all;
+            return;
+        }
+        *line1 = take(pad_word(s->pad[a]), 16, c, n);
+        *c = at;
+        *line2 = take(pad_word(s->pad[a + 1]), 16, c, n);
+        return;
+    }
+    case NSHVC_PORT_MOUSE:
+        *line1 = mouse_bits(p, n);
+        return;
+    case NSHVC_PORT_SUPERSCOPE:
+        *line1 = scope_bits(p, n);
+        return;
+    case NSHVC_PORT_JUSTIFIER:
+    case NSHVC_PORT_JUSTIFIERS:
+        *line1 = justifier_bits(p, n);
+        return;
+    }
 }
 
 unsigned ports_data(int p)
 {
-    struct port *s = &port[p];
-    unsigned n;
-    switch (plugged[p]) {
-    case NSHVC_PORT_JOYPAD:
-        if (s->counter >= 16)
-            return 1;
-        if (s->latched)
-            return held[pad_base(p)] & NSHVC_B ? 1 : 0;
-        return pad_bit(s->pad[0], s->counter++);
-    case NSHVC_PORT_MULTITAP: {
-        unsigned *c = iobit(p) ? &s->counter : &s->counter2;
-        int a = iobit(p) ? 0 : 2;
-        if (s->latched)
-            return 2;
-        if (*c >= 16)
-            return 3;
-        n = (*c)++;
-        if (n >= 12)
-            return 0;
-        return pad_bit(s->pad[a], n) | pad_bit(s->pad[a + 1], n) << 1;
-    }
-    case NSHVC_PORT_MOUSE:
-        if (s->latched) {
-            s->speed = (s->speed + 1) % 3;
-            return 0;
-        }
-        if (s->counter >= 32)
-            return 1;
-        n = s->counter++;
-        if (n < 8)
-            return 0;
-        switch (n) {
-        case 8: return (unsigned)s->mr;
-        case 9: return (unsigned)s->ml;
-        case 10: return s->speed >> 1 & 1;
-        case 11: return s->speed & 1;
-        case 15: return 1;
-        case 16: return (unsigned)s->mdy;
-        case 24: return (unsigned)s->mdx;
-        }
-        if (n >= 17 && n <= 23)
-            return (unsigned)s->my >> (23 - n) & 1;
-        if (n >= 25)
-            return (unsigned)s->mx >> (31 - n) & 1;
-        return 0;
-    case NSHVC_PORT_SUPERSCOPE:
-        return scope_data(p);
-    case NSHVC_PORT_JUSTIFIER:
-    case NSHVC_PORT_JUSTIFIERS:
-        return justifier_data(p);
-    }
-    return 0;
+    unsigned line1, line2;
+    ports_bits(p, 1, &line1, &line2);
+    return line1 | line2 << 1;
 }
 
 /* line vdisp begins (the picture done): a light gun on port 2 that points

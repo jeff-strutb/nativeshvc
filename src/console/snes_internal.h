@@ -37,6 +37,8 @@ uint8_t snes_wrio(void);                     /* WRIO ($4201): the ports' IOBit p
 void ports_reset(const int *ports);          /* power on: what the cartridge has plugged in */
 void ports_latch(int level);                 /* the latch line both ports share */
 unsigned ports_data(int port);               /* a clock on the port: data line 1, line 2 in bit 1 */
+/* n clocks on the port (1 to 16) at once: each data line's bits, the last at the bottom */
+void ports_bits(int port, unsigned n, unsigned *line1, unsigned *line2);
 void ports_frame(void);                      /* line vdisp begins: port 2's light gun latches */
 
 /* ---- dma.c ---- */

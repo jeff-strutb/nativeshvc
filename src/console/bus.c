@@ -979,51 +979,75 @@ static void cpu_reg_write(uint16_t off, uint8_t v)
         dma_write(off, v);
 }
 
-/* one edge of the automatic read (start: the frame's first) */
-static void joy_edge(int start)
-{
-    int on = nmitimen & 1;
-    if (start)
-        joy_counter = 0;
-    else if (joy_counter >= 33)
-        return;
-    else
-        joy_counter++;
-    if (joy_counter == 0) {
-        joy_auto_latch = on;
-        ports_latch(joy_auto_latch | joy_cpu_latch);
-        if (on)
-            joy_reg[0] = joy_reg[1] = joy_reg[2] = joy_reg[3] = 0;
-    }
-    if (joy_counter == 1) {
-        joy_auto_latch = 0;
-        ports_latch(joy_cpu_latch);
-    }
-    if (joy_counter != 1 && !on) {
-        joy_counter = 33;
-        return;
-    }
-    if (joy_counter >= 2) {
-        if (!(joy_counter & 1)) {
-            joy_bits[0] = ports_data(0);
-            joy_bits[1] = ports_data(1);
-        } else {
-            joy_reg[0] = (uint16_t)(joy_reg[0] << 1 | (joy_bits[0] & 1));
-            joy_reg[1] = (uint16_t)(joy_reg[1] << 1 | (joy_bits[1] & 1));
-            joy_reg[2] = (uint16_t)(joy_reg[2] << 1 | (joy_bits[0] >> 1 & 1));
-            joy_reg[3] = (uint16_t)(joy_reg[3] << 1 | (joy_bits[1] >> 1 & 1));
-        }
-    }
-}
-
-/* the automatic read's edges up to now (counter 34: the frame's first
-   edge still to come) */
+/* The automatic read's edges up to now, from the clock with no walk over
+   them. Edge 0 (counter 34: the frame's first, still to come) raises the
+   latch, edge 1 lowers it. Edges 2 to 33 take turns: an even one clocks the
+   ports, the odd one after it shifts the bits into JOY1-4. Nothing they use
+   changes between two calls: a write to $4016, $4200 or $4201 comes here
+   first. */
 static void joy_run(void)
 {
-    while (joy_next <= snes_clock) {
-        joy_edge(joy_counter == 34);
-        joy_next = joy_counter < 33 ? joy_next + 128 : NEVER;
+    unsigned c, e, reads, shifts, carried, left;
+    unsigned a1 = 0, a2 = 0, b1 = 0, b2 = 0;
+    uint64_t k;
+    if (joy_next > snes_clock)
+        return;
+    if (joy_counter == 34) {
+        int on = nmitimen & 1;
+        joy_counter = 0;
+        joy_auto_latch = on;
+        ports_latch(joy_auto_latch | joy_cpu_latch);
+        if (!on) {
+            joy_counter = 33;
+            joy_next = NEVER;
+            return;
+        }
+        joy_reg[0] = joy_reg[1] = joy_reg[2] = joy_reg[3] = 0;
+        joy_next += 128;
+        if (joy_next > snes_clock)
+            return;
     }
+    if (joy_counter == 0) {
+        joy_counter = 1;
+        joy_auto_latch = 0;
+        ports_latch(joy_cpu_latch);
+        joy_next += 128;
+        if (joy_next > snes_clock)
+            return;
+    }
+    /* turned off before edge 2: it ends there (later, the write ends it) */
+    if (!(nmitimen & 1)) {
+        joy_counter = 33;
+        joy_next = NEVER;
+        return;
+    }
+    c = joy_counter;
+    k = (snes_clock - joy_next) / 128 + 1;
+    e = k < 33 - c ? c + (unsigned)k : 33;
+    reads = e / 2 - c / 2;
+    shifts = (e + 1) / 2 - (c + 1) / 2;
+    carried = !(c & 1);          /* a read that waits for its shift */
+    if (reads) {
+        ports_bits(0, reads, &a1, &a2);
+        ports_bits(1, reads, &b1, &b2);
+    }
+    if (carried) {
+        a1 |= (joy_bits[0] & 1) << reads;
+        a2 |= (joy_bits[0] >> 1 & 1) << reads;
+        b1 |= (joy_bits[1] & 1) << reads;
+        b2 |= (joy_bits[1] >> 1 & 1) << reads;
+    }
+    left = reads + carried - shifts;
+    joy_reg[0] = (uint16_t)((uint32_t)joy_reg[0] << shifts | a1 >> left);
+    joy_reg[1] = (uint16_t)((uint32_t)joy_reg[1] << shifts | b1 >> left);
+    joy_reg[2] = (uint16_t)((uint32_t)joy_reg[2] << shifts | a2 >> left);
+    joy_reg[3] = (uint16_t)((uint32_t)joy_reg[3] << shifts | b2 >> left);
+    if (reads) {
+        joy_bits[0] = (a1 & 1) | (a2 & 1) << 1;
+        joy_bits[1] = (b1 & 1) | (b2 & 1) << 1;
+    }
+    joy_counter = e;
+    joy_next = e < 33 ? joy_next + (e - c) * (uint64_t)128 : NEVER;
 }
 
 static void joy_latch_write(uint8_t v)

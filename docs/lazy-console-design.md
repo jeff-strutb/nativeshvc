@@ -40,6 +40,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `dma.c` `dma_reset`, `direct`, `dma_direct_only`, `hdma_active`, `later_done`, `hdma_init` | the 8 channels | the channels' registers, the transfer's start |
 | `dma.c` `vram_run` | the bytes of one run | VRAM words read back or drawn |
 | `ports.c` `device_reset`, `ports_reset`, `device_latch` | the ports and their pads | what the joypad registers return |
+| `bus.c` `joy_run` | none: the edges passed come from the clock, and each device gives its bits as one word (`ports.c` `ports_bits`) | JOY1-4, when read |
 | `ppu.c` `cv_fill`, `page_changed` | buffers and layers | the canvas's texels, the copies' state |
 | `ppu.c` `ppu_vram_port_run` | a DMA's bytes | VRAM |
 | `ppu.c` `obj_eval` | 128 sprites and their tiles | STAT77's flags, when read |
@@ -63,7 +64,6 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step and no `run_events` pass a line: each line takes up its transfer directly at the same clocks, and the deadlines are worked out once when the lines are done (a transfer that moves them does so itself). Line by line through `wait_step` near a deadline, with a running chip, a wait reading the DMA registers or memory a channel writes, or a hook on the accesses |
 | `bus.c` `irq_find` | `for (;;)`, `l++` | lines until the next IRQ's time, only with the IRQ enabled | the next deadline |
 | `bus.c` `refresh_take` | `while` | a refresh passed, one for each line of settled work | the S-CPU's clock. Costs on only (Original mode's time); with the costs off no work is charged, and a wait sets the next refresh directly |
-| `bus.c` `joy_run` | `while (joy_next <= clock)` | **the automatic read's 33 edges, run when a joypad register is read** | a bit of JOY1-4 each. **The note's closed form is not done**: each edge's device read has effects on that device (its shift, a mouse's or a gun's state), so the bits are read one at a time, once a frame at most, only when observed |
 | `bus.c` `nshvc_wait_until` | `for (;;)` and its `while` | a look per possible change of what the condition read | the condition the game waits on |
 | `bus.c` `snes_wai`, `snes_loop_forever` | `for (;;)` | one interrupt taken or deadline reached | the game's handlers |
 | `dispatch.c` `cpu_main` | `for (;;)` | one entry of the game | the game's own C |
@@ -76,10 +76,8 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 
 1. The boot ROM (`apu.c` `ipl`) runs as its instructions with their cycles, not as a protocol
    on port writes: left as it is, for a decision.
-2. The joypad's automatic read walks its edges when observed: no closed form (above).
-3. A DSP sample walks 32 clock cases: the block mixer was exact but no faster, and was removed.
-
-4. HDMA's lines in a wait take no wait step and no event pass, but each line's transfer is
+2. A DSP sample walks 32 clock cases: the block mixer was exact but no faster, and was removed.
+3. HDMA's lines in a wait take no wait step and no event pass, but each line's transfer is
    still made at its clock, and with a chip running, or a deadline a line away, the lines stay
    deadlines: not computed at the next observation.
 
