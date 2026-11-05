@@ -88,7 +88,11 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 `tests/unit/scaling_check.c` (tests/README.md): a frame's cost the same whatever the console's
 time holds. The sound CPU's timers are not in it.
 
-Measured at `d3c0a26`, the best of 5 batches of 200 frames, a frame's cost:
+Measured at `d3c0a26`, the best of 5 batches of 200 frames, a frame's cost, **in builds with
+no optimisation (no `CMAKE_BUILD_TYPE`): the ratios to idle mean something, the times do not**.
+A Release build a commit or two before it took 43.0 us idle on the desktop and 3,869.8 us in
+PPSSPP, with display, NMI and IRQ at 0.96-1.01 of idle; `d3c0a26` itself has not been timed
+in Release:
 
 | scene | desktop (Linux x86-64, headless) | PPSSPP, an instruction-count estimate |
 |---|---|---|
