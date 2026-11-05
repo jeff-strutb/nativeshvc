@@ -50,7 +50,8 @@ void script_takes(void);
 int script_frame(uint16_t *b0, uint16_t *b1);
 
 /* the picture a shot holds (console.c): nshvc_picture's, or with
-   NSHVC_SCALE the frame presented at that scale (*presented 1) */
+   NSHVC_SCALE the frame presented at that scale, or on the renderer's own
+   target at NSHVC_SCALE=target (*presented 1) */
 const uint32_t *front_shot_picture(int *w, int *h, int *presented);
 
 #endif

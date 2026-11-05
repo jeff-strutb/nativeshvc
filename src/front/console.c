@@ -967,26 +967,40 @@ static int show_mode7(int ow, int oh, const int d[4]);
 static void show_picture(const int d[4]);
 
 /* a shot's picture: the console's (nshvc_picture), or at NSHVC_SCALE the
-   frame presented by the renderer on a target that size, read back */
+   frame presented by the renderer on a target that size, read back;
+   NSHVC_SCALE=target, on the renderer's own target whatever the screen's
+   width (a platform's fixed screen). A presented shot draws no console's
+   picture, so it can show a frame nshvc_picture cannot (the PSP's canvas) */
 const uint32_t *front_shot_picture(int *w, int *h, int *presented)
 {
     double sx, sy;
     static uint32_t *buf;
     static size_t cap;
-    int pw, ph, d[4];
-    const uint32_t *px = nshvc_picture(&pw, &ph);
+    const char *e = getenv("NSHVC_SCALE");
+    int target = e && !strcmp(e, "target"), d[4];
     size_t len;
     shot_scale(&sx, &sy);
-    *w = sx ? (int)(pw * sx + 0.5) : pw;
-    *h = sy ? (int)(ph * sy + 0.5) : ph;
-    if (*w < 1)
-        *w = 1;
-    if (*h < 1)
-        *h = 1;
     *presented = 0;
-    if (!sx)
-        return px;
+    if (!sx && !target)
+        return nshvc_picture(w, h);
     *presented = 1;
+    rr_need();
+    if (target) {
+        rr_target(w, h);
+    } else {
+        const PpuFrame *f = ppu_frame();
+        const uint32_t *desc;
+        size_t nw;
+        uint32_t wp[3];
+        int pw = ppu_frame_width(f), ph = f->screen_height;
+        frame_desc(&desc, &nw, &pw, &ph, wp);
+        *w = (int)(pw * sx + 0.5);
+        *h = (int)(ph * sy + 0.5);
+        if (*w < 1)
+            *w = 1;
+        if (*h < 1)
+            *h = 1;
+    }
     len = (size_t)*w * (size_t)*h;
     if (len > cap) {
         free(buf);
@@ -998,7 +1012,6 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
     d[0] = d[1] = 0;
     d[2] = *w;
     d[3] = *h;
-    rr_need();
     rr_size(*w, *h);
     ge_holds();
     rr_begin(0xFF000000u);
