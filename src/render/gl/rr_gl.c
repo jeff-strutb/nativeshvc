@@ -183,40 +183,51 @@ static void targets(int w, int h)
     s_rh = h;
 }
 
-int rr_open(void)
+/* every program (gl_ctx_run: the compose shaders can take a driver many seconds) */
+static void programs(void *ok_)
 {
-    void *win = host_window_handle();
-    int w = 0, h = 0;
-    if (!gl_ctx_open(win) || !gl_api_load())
-        return 0;
-    s_window = win != NULL;
+    int *ok = (int *)ok_;
+    size_t n;
+    char *fs;
+
     s_copy = program(k_vs, k_copy);
     s_sharp = program(k_vs, k_sharp);
     s_over = program(k_vs, k_over);
     s_m7 = program(k_vs, k_m7);
     if (!s_copy || !s_sharp || !s_over || !s_m7)
+        return;
+    n = sizeof k_cp_pre + sizeof k_compose_body + sizeof k_cp_post;
+    if (!(fs = (char *)malloc(n)))
+        return;
+    snprintf(fs, n, "%s%s%s", k_cp_pre, k_compose_body, k_cp_post);
+    s_cp = program(k_vs, fs);
+    free(fs);
+    if (!s_cp)
+        return;
+    glUniform1i(glGetUniformLocation(s_cp, "fdb"), 12);
+    n = sizeof k_cp_pre + sizeof k_compose_body + sizeof k_cpr_post;
+    if (!(fs = (char *)malloc(n)))
+        return;
+    snprintf(fs, n, "%s%s%s", k_cp_pre, k_compose_body, k_cpr_post);
+    s_cpr = program(k_vs, fs);
+    free(fs);
+    if (!s_cpr)
+        return;
+    glUniform1i(glGetUniformLocation(s_cpr, "fdb"), 12);
+    *ok = 1;
+}
+
+int rr_open(void)
+{
+    void *win = host_window_handle();
+    int w = 0, h = 0, ok = 0;
+    if (!gl_ctx_open(win) || !gl_api_load())
+        return 0;
+    s_window = win != NULL;
+    gl_ctx_run(programs, &ok);
+    if (!ok)
         return 0;
     {
-        size_t n = sizeof k_cp_pre + sizeof k_compose_body + sizeof k_cp_post;
-        char *fs = (char *)malloc(n);
-        if (!fs)
-            return 0;
-        snprintf(fs, n, "%s%s%s", k_cp_pre, k_compose_body, k_cp_post);
-        s_cp = program(k_vs, fs);
-        free(fs);
-        if (!s_cp)
-            return 0;
-        glUniform1i(glGetUniformLocation(s_cp, "fdb"), 12);
-        n = sizeof k_cp_pre + sizeof k_compose_body + sizeof k_cpr_post;
-        fs = (char *)malloc(n);
-        if (!fs)
-            return 0;
-        snprintf(fs, n, "%s%s%s", k_cp_pre, k_compose_body, k_cpr_post);
-        s_cpr = program(k_vs, fs);
-        free(fs);
-        if (!s_cpr)
-            return 0;
-        glUniform1i(glGetUniformLocation(s_cpr, "fdb"), 12);
         glGenTextures(1, &s_rectex);
         glGenTextures(1, &s_picutex);
         glGenFramebuffers(1, &s_cpfbo);

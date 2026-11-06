@@ -40,6 +40,24 @@ typedef BOOL (WINAPI *PFNSWAPINTERVAL)(int);
 static HDC s_dc;
 static HGLRC s_rc;
 static HMODULE s_gl;
+static PFNCREATEATTRIBS s_create;
+static int s_pf;
+static const int k_attrs[] = { WGL_CONTEXT_MAJOR_VERSION_ARB, 3, WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+                               WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
+static int s_on_window;
+
+/* a hidden window to hold a context */
+static HWND hidden_window(void)
+{
+    WNDCLASSA wc;
+    memset(&wc, 0, sizeof wc);
+    wc.style = CS_OWNDC;
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = "RrGlHidden";
+    RegisterClassA(&wc);
+    return CreateWindowExA(0, "RrGlHidden", "", WS_OVERLAPPEDWINDOW, 0, 0, 16, 16, NULL, NULL, wc.hInstance, NULL);
+}
 
 void *gl_ctx_proc(const char *name)
 {
@@ -57,20 +75,11 @@ int gl_ctx_open(void *win)
     HWND w = (HWND)win;
     PIXELFORMATDESCRIPTOR pfd;
     HGLRC legacy;
-    PFNCREATEATTRIBS create;
     PFNSWAPINTERVAL interval;
     int pf;
-    static const int attrs[] = { WGL_CONTEXT_MAJOR_VERSION_ARB, 3, WGL_CONTEXT_MINOR_VERSION_ARB, 3,
-                                 WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
+    s_on_window = w != NULL;
     if (!w) {   /* offscreen: a hidden window to hold the context */
-        WNDCLASSA wc;
-        memset(&wc, 0, sizeof wc);
-        wc.style = CS_OWNDC;
-        wc.lpfnWndProc = DefWindowProcA;
-        wc.hInstance = GetModuleHandleA(NULL);
-        wc.lpszClassName = "RrGlHidden";
-        RegisterClassA(&wc);
-        w = CreateWindowExA(0, "RrGlHidden", "", WS_OVERLAPPEDWINDOW, 0, 0, 16, 16, NULL, NULL, wc.hInstance, NULL);
+        w = hidden_window();
         if (!w)
             return 0;
     }
@@ -84,10 +93,11 @@ int gl_ctx_open(void *win)
     pfd.cDepthBits = 24;
     if (!(pf = ChoosePixelFormat(s_dc, &pfd)) || !SetPixelFormat(s_dc, pf, &pfd))
         return 0;
+    s_pf = pf;
     if (!(legacy = wglCreateContext(s_dc)) || !wglMakeCurrent(s_dc, legacy))
         return 0;
-    create = (PFNCREATEATTRIBS)(void *)wglGetProcAddress("wglCreateContextAttribsARB");
-    if (!create || !(s_rc = create(s_dc, NULL, attrs))) {
+    s_create = (PFNCREATEATTRIBS)(void *)wglGetProcAddress("wglCreateContextAttribsARB");
+    if (!s_create || !(s_rc = s_create(s_dc, NULL, k_attrs))) {
         fprintf(stderr, "rr: gl: no 3.3 core context\n");
         wglMakeCurrent(NULL, NULL);
         wglDeleteContext(legacy);
@@ -106,6 +116,70 @@ void gl_ctx_swap(void)
 {
     if (s_dc)
         SwapBuffers(s_dc);
+}
+
+typedef struct {
+    HDC dc;
+    HGLRC rc;
+    void (*fn)(void *);
+    void *arg;
+    volatile LONG ran;
+} GlRun;
+
+static DWORD WINAPI run_thread(LPVOID p)
+{
+    GlRun *r = (GlRun *)p;
+    if (wglMakeCurrent(r->dc, r->rc)) {
+        r->fn(r->arg);
+        glFinish();                     /* its objects whole for the other context */
+        wglMakeCurrent(NULL, NULL);
+        r->ran = 1;
+    }
+    return 0;
+}
+
+int host_close_pending(void);
+
+void gl_ctx_run(void (*fn)(void *), void *arg)
+{
+    GlRun r;
+    HWND w;
+    HANDLE t = NULL;
+    PIXELFORMATDESCRIPTOR pfd;
+
+    memset(&r, 0, sizeof r);
+    r.fn = fn;
+    r.arg = arg;
+    /* a context of its own, on a hidden window of the same pixel format */
+    w = s_on_window ? hidden_window() : NULL;
+    if (w && (r.dc = GetDC(w)) != NULL) {
+        memset(&pfd, 0, sizeof pfd);
+        pfd.nSize = sizeof pfd;
+        if (DescribePixelFormat(r.dc, s_pf, sizeof pfd, &pfd) && SetPixelFormat(r.dc, s_pf, &pfd))
+            r.rc = s_create(r.dc, s_rc, k_attrs);
+        /* (a driver's compiler may go deep: as much stack as the main thread could want) */
+        if (r.rc)
+            t = CreateThread(NULL, 16u << 20, run_thread, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    }
+    while (t) {
+        MSG m;
+        if (MsgWaitForMultipleObjects(1, &t, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0)
+            break;
+        while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+        if (host_close_pending())       /* nothing has begun, nothing to keep: not waiting for the driver */
+            TerminateProcess(GetCurrentProcess(), 0);
+    }
+    if (t)
+        CloseHandle(t);
+    if (r.rc)
+        wglDeleteContext(r.rc);
+    if (w)
+        DestroyWindow(w);
+    if (!r.ran)                         /* no thread or context to be had: here, as ever */
+        fn(arg);
 }
 
 #elif defined(__APPLE__)
@@ -139,9 +213,11 @@ int gl_ctx_open(void *win)
 }
 
 void gl_ctx_swap(void) {}
+void gl_ctx_run(void (*fn)(void *), void *arg) { fn(arg); }
 
 #else
 void *gl_ctx_proc(const char *name) { (void)name; return NULL; }
 int gl_ctx_open(void *win) { (void)win; return 0; }
 void gl_ctx_swap(void) {}
+void gl_ctx_run(void (*fn)(void *), void *arg) { fn(arg); }
 #endif

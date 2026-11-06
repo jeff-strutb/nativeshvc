@@ -261,6 +261,12 @@ int   gl_ctx_open(void *win);
 void *gl_ctx_proc(const char *name);
 /* the window's back buffer shown (nothing offscreen) */
 void  gl_ctx_swap(void);
+/* fn(arg) with objects it makes shared with this context, the host's window kept
+   alive meanwhile where that matters (Windows: on a thread of its own, on a context
+   of its own, this thread servicing the window's messages, as a driver may take many
+   seconds over a large shader; closing the window then ends the program, nothing
+   having begun). Returns when it has returned. */
+void  gl_ctx_run(void (*fn)(void *), void *arg);
 /* every pointer above looked up: 1 when all were found */
 int   gl_api_load(void);
 
