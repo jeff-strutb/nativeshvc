@@ -321,6 +321,56 @@ void host_window_close(void)
     }
 }
 
+/* vkGetInstanceProcAddr, the Vulkan library being loaded here (render/vulkan): NULL
+   on a computer without it */
+void *host_vulkan_loader(void)
+{
+    HMODULE v = LoadLibraryA("vulkan-1.dll");
+    return v ? (void *)GetProcAddress(v, "vkGetInstanceProcAddr") : NULL;
+}
+
+int host_close_pending(void);
+
+typedef struct {
+    void (*fn)(void *);
+    void *arg;
+} PumpedRun;
+
+static DWORD WINAPI pumped_thread(LPVOID p)
+{
+    PumpedRun *r = (PumpedRun *)p;
+    r->fn(r->arg);
+    return 0;
+}
+
+/* fn(arg) on a thread with as much stack as the main one could want (a driver's
+   compiler may go deep), the window serviced until it returns; on this thread if
+   none can be had. A close asked for meanwhile ends the program: nothing has begun. */
+void host_run_pumped(void (*fn)(void *), void *arg)
+{
+    PumpedRun r;
+    HANDLE t;
+    r.fn = fn;
+    r.arg = arg;
+    t = s_win ? CreateThread(NULL, 16u << 20, pumped_thread, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL) : NULL;
+    if (!t) {
+        fn(arg);
+        return;
+    }
+    for (;;) {
+        MSG m;
+        if (MsgWaitForMultipleObjects(1, &t, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0)
+            break;
+        while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+        if (host_close_pending())
+            TerminateProcess(GetCurrentProcess(), 0);
+    }
+    CloseHandle(t);
+}
+
 int host_window_visible(void)
 {
     return s_win && IsWindowVisible(s_win) && !IsIconic(s_win);

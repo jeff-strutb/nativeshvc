@@ -9,7 +9,8 @@
 #                 (none: the app supplies host.h's functions itself)
 #   NSHVC_RENDER  none or soft (the default for null: no picture; the tests
 #                 bring the reference's, tests/ref) | metal (macos, ios) |
-#                 gl (windows) | vulkan
+#                 vulkan (the default for windows) | gl
+#   NSHVC_VULKAN_INCLUDE  windows, vulkan: the folder holding vulkan/vulkan.h
 #   NSHVC_TESTS   build the tests (tests/)
 #   NSHVC_EXAMPLES build the examples (examples/)
 cmake_minimum_required(VERSION 3.16)
@@ -26,7 +27,7 @@ set(NSHVC_HOST "null" CACHE STRING "the host: null, macos, windows, ios, none")
 if(APPLE AND NOT NSHVC_HOST STREQUAL "null")
   set(_render_default metal)
 elseif(WIN32)
-  set(_render_default gl)
+  set(_render_default vulkan)
 else()
   set(_render_default soft)
 endif()
@@ -136,9 +137,19 @@ elseif(NSHVC_RENDER STREQUAL "gl")
     target_link_libraries(nshvc PUBLIC GL)
   endif()
 elseif(NSHVC_RENDER STREQUAL "vulkan")
-  find_package(Vulkan REQUIRED)
   target_sources(nshvc PRIVATE src/render/vulkan/rr_vulkan.c)
-  target_link_libraries(nshvc PUBLIC Vulkan::Vulkan)
+  if(WIN32)
+    # vulkan-1.dll is loaded when the renderer opens: its headers alone, looked in
+    # last so a cross compiler keeps its own system headers
+    set(NSHVC_VULKAN_INCLUDE "" CACHE PATH "the folder holding vulkan/vulkan.h")
+    if(NSHVC_VULKAN_INCLUDE)
+      target_compile_options(nshvc PRIVATE -idirafter "${NSHVC_VULKAN_INCLUDE}")
+    endif()
+    target_link_libraries(nshvc PUBLIC gdi32)
+  else()
+    find_package(Vulkan REQUIRED)
+    target_link_libraries(nshvc PUBLIC Vulkan::Vulkan)
+  endif()
 else()
   message(FATAL_ERROR "nativeshvc: no renderer ${NSHVC_RENDER}")
 endif()
