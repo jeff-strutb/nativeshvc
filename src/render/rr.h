@@ -6,7 +6,7 @@
  * where the port places them, scaled with sharp bilinear filtering (whole
  * pixels at any size, blended only across the one target pixel a pixel's
  * edge falls in), then the target is shown. A backend (Metal, OpenGL,
- * Vulkan, the PSP's GE, or none with no picture) only has to do that; the
+ * Vulkan, or none with no picture) only has to do that; the
  * CPU's drawing of it, for the checks, is tests/ref/rr_soft.c.
  *
  *   RR_SIZE=WxH   headless: the target's size (a window sets it otherwise)
@@ -130,8 +130,7 @@ void rr_size(int w, int h);
    GPU and kept: at cells of radius_px / 4 pixels square (at least 1), each
    the mean of its pixels; three box blurs across and down, each 4 cells
    either side (none at radius_px 0); then tint (0xAARRGGBB) laid over at
-   its alpha. A platform without a compositor's arithmetic makes it as its
-   GPU makes a blur of that spread. Drawn over parallelogram q as an
+   its alpha. Drawn over parallelogram q as an
    overlay of its cells is, bilinear (rr_backdrop_draw). 0 when it cannot. */
 int rr_backdrop_make(float radius_px, uint32_t tint);
 void rr_backdrop_draw(const float q[6]);

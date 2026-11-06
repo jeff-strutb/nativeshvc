@@ -138,8 +138,7 @@ static unsigned line_len_of(unsigned l) { return (unsigned)(SNES_LINE_CLOCKS + (
 
 /* the line clock c falls in (past the frame's last, the next frame's as
    this frame's lines go on: the next frame's first lines are all 1,364).
-   (c is never more than a frame and a little past frame_start: 32 bits,
-   a divide the PSP makes in one instruction) */
+   (c is never more than a frame and a little past frame_start: 32 bits) */
 static unsigned line_of(uint64_t c)
 {
     uint32_t o = (uint32_t)(c - frame_start);

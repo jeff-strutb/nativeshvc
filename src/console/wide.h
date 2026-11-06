@@ -1,7 +1,6 @@
 /*
  * wide.h: a 64-bit number times a 32-bit one, exactly (96 bits), compared
- * and divided, in 64-bit integers: the same on every processor, a 32-bit
- * one with no wider integer (the PSP's) included.
+ * and divided, in 64-bit integers: the same on every processor.
  */
 #ifndef PORT_WIDE_H
 #define PORT_WIDE_H

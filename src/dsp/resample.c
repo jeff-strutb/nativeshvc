@@ -6,8 +6,7 @@
  * 32 taps; the taps come from a table of 512 phases, interpolated
  * linearly between the two nearest. The output's time is kept in input
  * frames as a whole and a 32-bit fraction (an integer: no double's
- * arithmetic per frame, which a host without a double FPU makes in
- * software).
+ * arithmetic per frame).
  */
 #include <math.h>
 #include <stdint.h>

@@ -40,8 +40,7 @@ static inline float rr_sharp(float p, float d, int *i)
 
 /* A blend's weight t in whole 256ths (W, t's nearest): of a and b,
    each channel a + floor(((b - a) W + 128) / 256), integers throughout, so
-   a GPU with no shaders (the PSP's GE: a table of b - a) makes it exactly
-   for any pair of values, and a shader in floats exactly too. */
+   a shader in floats makes it exactly for any pair of values. */
 static inline int rr_mix_w(float t) { return (int)floorf(t * 256.0f + 0.5f); }
 
 /* The standard sample positions (Direct3D's and Vulkan's

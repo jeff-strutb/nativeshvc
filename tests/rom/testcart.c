@@ -328,7 +328,7 @@ int main(int argc, char **argv)
     fclose(f);
     {
         /* the buffer the file's size (a header's bytes at most 64 KB in:
-           at least that), the rest given back (a PSP's memory is 24 MB) */
+           at least that), the rest given back */
         uint8_t *fit = (uint8_t *)realloc(rom, rom_size > 0x10000 ? rom_size : 0x10000);
         if (fit)
             rom = fit;

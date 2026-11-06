@@ -45,7 +45,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `ppu.c` `ppu_vram_port_run` | a DMA's bytes | VRAM |
 | `ppu.c` `obj_eval` | 128 sprites and their tiles | STAT77's flags, when read |
 | `ppu.c` `record_line` | a line's mid-line writes | a frame-record line's segments |
-| `ppu.c` `cp_decode`, `cp_sprites`, `cp_state`, `ppu_compose`, `ppu_frame_presents`, `m7_state`, `mode7_segs` | a frame's lines, parts and sprites, once a frame presented | the description the GPU draws |
+| `ppu.c` `cp_decode`, `cp_sprites`, `cp_state`, `ppu_compose`, `frame_presents`, `m7_state`, `mode7_segs` | a frame's lines, parts and sprites, once a frame presented | the description the GPU draws |
 | `mixer.c` `mix_init`, `mix_voice_states`, `decode`, `sample_end`, `mix_control`, `sets_passed`, `mix_before_ram_write` | 8 voices, 4 BRR samples, 2 channels, a voice's reads | a sample's voices and echo, what the driver reads |
 | `mixer_regs.c` `mix_regs_reset` | the registers | what the driver reads |
 | `resample.c` | the table's taps; a pull's frames | samples the host plays |
@@ -96,23 +96,17 @@ time holds. The sound CPU's timers are not in it.
 
 Measured at `d3c0a26`, the best of 5 batches of 200 frames, a frame's cost, **in builds with
 no optimisation (no `CMAKE_BUILD_TYPE`): the ratios to idle mean something, the times do not**.
-A Release build a commit or two before it took 43.0 us idle on the desktop and 3,869.8 us in
-PPSSPP, with display, NMI and IRQ at 0.96-1.01 of idle; `d3c0a26` itself has not been timed
-in Release:
+A Release build a commit or two before it took 43.0 us idle on the desktop; `d3c0a26` itself
+has not been timed in Release:
 
-| scene | desktop (Linux x86-64, headless) | PPSSPP, an instruction-count estimate |
-|---|---|---|
-| idle | 187.4 us | 24,262.0 us |
-| display | 202.4 us, 1.08 of idle | 24,245.0 us, 1.00 of idle |
-| NMI and joypads | 197.1 us, 1.05 | 24,307.3 us, 1.00 |
-| IRQ masked | 198.9 us, 1.06 | 24,260.8 us, 1.00 |
-| IRQ | 190.1 us, 1.01 | 24,276.1 us, 1.00 |
-| an HDMA byte each line | 220.6 us, 0.139 us a line over the display's | 27,671.3 us, 15.322 us a line |
-| a frame alone, among 100 | 203.4 us, 197.1 us | 24,224.5 us, 24,222.7 us |
+| scene | desktop (Linux x86-64, headless) |
+|---|---|
+| idle | 187.4 us |
+| display | 202.4 us, 1.08 of idle |
+| NMI and joypads | 197.1 us, 1.05 |
+| IRQ masked | 198.9 us, 1.06 |
+| IRQ | 190.1 us, 1.01 |
+| an HDMA byte each line | 220.6 us, 0.139 us a line over the display's |
+| a frame alone, among 100 | 203.4 us, 197.1 us |
 
 The HDMA row is the game's own work, printed and not judged.
-
-## Stated limits of the verification
-
-PPSSPP does not model Allegrex timing: a PSP number from it is an instruction-count estimate
-of the CPU's list building, not a hardware time.

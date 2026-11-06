@@ -229,9 +229,7 @@ void nshvc_run_frame(void);
 /* the finished frame: width x height pixels, 0xFFRRGGBB, top row first:
    256 by 224 (239 with overscan), or the size nshvc_ext_screen asked for;
    twice as wide in a frame with a hires line. Drawn by the platform's GPU
-   and read back: a call that costs a GPU's round trip. On the PSP a frame
-   showing a canvas is drawn at the target's resolution alone, so has no
-   picture: fatal. (Since 2.21.) */
+   and read back: a call that costs a GPU's round trip. (Since 2.21.) */
 const uint32_t *nshvc_picture(int *width, int *height);
 /* frames finished since power on */
 uint32_t nshvc_frames(void);
@@ -331,10 +329,7 @@ void nshvc_set_register_write_hook(void (*fn)(uint32_t addr, uint8_t value));
 /* ---- extensions: past the console's limits, each off by default ---------------- */
 
 /* The screen the game asks for, from the next frame: width 256 to 8192
-   and height 224 to 8192, both even (since 2.7; to 1024 x 480 before),
-   or the platform's own limit, fatal past it (the PSP: 512 x 240, a hires
-   or interlaced frame 256 across, no interlaced hires frame (512 x 448):
-   its picture's 122,880 pixels; since 2.20);
+   and height 224 to 8192, both even (since 2.7; to 1024 x 480 before);
    256 x 224 (or 239 with SETINI's overscan) is the console's own. Memory
    and the time to draw a frame grow with the screen asked for. The console's picture sits at its centre
    (its column 0 at (width - 256) / 2, its line 1 at (height - 224) / 2,
@@ -477,10 +472,7 @@ void nshvc_ext_vram_direct(int page);
    naming up to 1,024 characters). (Since 2.5.)
    nshvc_ext_canvas_scale: k for the window as it is now (its pixels a
    console pixel, rounded up), the k to draw at; headless, NSHVC_SCALE's
-   (its shots that window's picture), else 1; at most the platform's limit,
-   the screen times k within what its GPU spans (the PSP: 512 x 512 texels,
-   a whole k, so a 320-wide screen gets 1), a canvas past it fatal (since
-   2.21). The canvas is copied, and
+   (its shots that window's picture), else 1. The canvas is copied, and
    a frame shows the canvas as it stands when the frame begins; a line in a
    hires mode, or the layer under mosaic, shows the layer's own tiles.
    texels NULL (or count 0): no canvas. The console's picture (nshvc_picture)

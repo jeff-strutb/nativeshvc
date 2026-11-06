@@ -8,8 +8,8 @@
  * each line is the game's own work: printed, not judged.
  *
  * What it costs is the host's time: the best of 5 batches of 200 frames. Run
- * with nothing else running; in PPSSPP it is an instruction count, not a
- * PSP's time. The sound unit's timers are not here: they need a driver.
+ * with nothing else running. The sound unit's timers are not here: they need
+ * a driver.
  *
  *   scaling_check              exit 0 when every one holds
  *   scaling_check SCENE N      N frames of the scene alone, for a profiler
