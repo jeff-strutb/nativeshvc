@@ -61,7 +61,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `apu.c` `spc_main` | `for (;;)` | one entry of the driver | the driver's own C |
 | `apu.c` `boot_run` | `while`, one state a read of a port | **the boot ROM's protocol as states, up to the S-CPU's time**, each at the cycle its fixed counts give and each poll passed at once to the read that can see a change. A byte, its index seen, is one step, `boot_byte`, its echo shown from its cycle. Its clear is 239 writes where something can see them (`boot_clear_unseen`), one step of 2,388 cycles where nothing can | the reply a game's upload reads; the samples the DSP makes |
 | `bus.c` `run_events` | `for (;;)` | one deadline a pass | NMI, IRQ, HDMA, the field: what the game's handlers and reads see |
-| `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step and no `run_events` pass a line: each line takes up its transfer directly at the same clocks, and the deadlines are worked out once when the lines are done (a transfer that moves them does so itself). Lines that move no byte and reload no table are passed in one step (`dma.c` `hdma_quiet`), so the cost follows the bytes moved. Line by line through `wait_step` near a deadline, with a running chip, a wait reading the DMA registers or memory a channel writes, or a hook on the accesses |
+| `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step and no `run_events` pass a line: each line takes up its transfer directly at the same clocks, and the deadlines are worked out once when the lines are done (a transfer that moves them does so itself). Lines that move no byte and reload no table are passed in one step (`dma.c` `hdma_quiet`), so the cost follows the bytes moved. Line by line through `wait_step` near a deadline, with a wait reading the DMA registers or memory a channel writes (each line is what it observes), or a hook on the accesses (a debugging tool, and what `hdma_bulk_check` compares against). A running chip is run ahead to each transfer's start and no further, and the transfer's accesses of it bring it to their clocks |
 | `bus.c` `irq_find` | `for (;;)`, `l++` | lines until the next IRQ's time, only with the IRQ enabled | the next deadline |
 | `bus.c` `refresh_take` | `while` | a refresh passed, one for each line of settled work | the S-CPU's clock. Costs on only (Original mode's time); with the costs off no work is charged, and a wait sets the next refresh directly |
 | `bus.c` `nshvc_wait_until` | `for (;;)` and its `while` | a look per possible change of what the condition read | the condition the game waits on |
@@ -84,10 +84,10 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
    the voice in hand made in the chip's order. The DSP is still the chip's arithmetic and read
    order, a sample at a time. All eight voices are worked out each sample, silent or not.
 3. HDMA's lines in a wait are made in bulk before the wait's next stop, those that move nothing
-   passed at once, so the cost follows the bytes moved. With something able to see them (a chip
-   running, a hook, a wait reading the DMA registers or memory a channel writes), or a deadline
-   a line away, the lines stay deadlines, one at a time. Original mode's stay deadlines too
-   while its timed C runs across them.
+   passed at once, so the cost follows the bytes moved. With something able to see them (a hook,
+   a wait reading the DMA registers or memory a channel writes), or a deadline a line away, the
+   lines stay deadlines, one at a time. Original mode's stay deadlines while its timed C runs
+   across them.
 
 ## How it is checked
 

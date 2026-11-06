@@ -2174,9 +2174,28 @@ static void wait_to(uint64_t to)
    given back as unit_edge's), and none of the wait's looks or event passes
    between them, so long as no interrupt or deadline, and nothing the wait stops
    for, falls before the transfer ends. Those a line
-   away, a running chip (it runs ahead to the wait's step, a table read of its
-   memory behind it), a wait reading the DMA registers, or memory a channel
-   writes, or a hook on the accesses: wait_step, a line at a time. */
+   away, a wait reading the DMA registers, or memory a channel writes, or a hook
+   on the accesses: wait_step, a line at a time. A running chip is run ahead to
+   the start of each transfer and no further, so a rise of its IRQ before that
+   stops the lines at its clock. The S-CPU cannot take a rise within a transfer,
+   which holds the bus, and the transfer's own reads and writes of the chip bring
+   it up to their clocks: it is never ahead of them. */
+
+/* Of q lines that move nothing from hdma_from, those whose transfers end before
+   `m` and the vertical blank's */
+static unsigned hdma_quiet_lines(unsigned q, uint64_t m)
+{
+    unsigned last = snes_vdisp() - 1;
+    if (last >= frame_len)
+        last = frame_len - 1;
+    if (line_at(last) + HDMA_AT + HDMA_SPAN_MAX >= m) {
+        last = line_of(m);
+        if (line_at(last) + HDMA_AT + HDMA_SPAN_MAX >= m)
+            last--;
+    }
+    return last - hdma_from < q - 1 ? last - hdma_from + 1 : q;
+}
+
 static void hdma_bulk(uint64_t until)
 {
     uint64_t limit = until, t, at;
@@ -2184,7 +2203,7 @@ static void hdma_bulk(uint64_t until)
     /* (no line of HDMA is the next thing to come: none of this) */
     if (next_event == next_real)
         return;
-    if (dma_active || dma_pending || hdma_pending || dma_mdmaen || snes_read_hook || snes_write_hook || snes_dma_hook || chip_watch(0) ||
+    if (dma_active || dma_pending || hdma_pending || dma_mdmaen || snes_read_hook || snes_write_hook || snes_dma_hook ||
         turn.dma || (turn.mem && hdma_writes_a()))
         return;
     if ((t = interrupt_due_at()) > snes_clock && t < limit)
@@ -2199,23 +2218,16 @@ static void hdma_bulk(uint64_t until)
         unsigned q = hdma_quiet();
         /* lines that move nothing, as many as this stretch holds, all but the
            last passed at once: the clock at a line's point is the same */
+        if (q > 1)
+            q = hdma_quiet_lines(q, limit < next_real ? limit : next_real);
+        /* the chip to this transfer's start (none, or none running: nothing);
+           its IRQ risen first: no line of these, the wait goes on to it */
+        if (chip_run_ahead((uint32_t)((q > 1 ? line_at(hdma_from + q - 1) + HDMA_AT : at) + 6 - snes_clock)))
+            break;
         if (q > 1) {
-            uint64_t m = limit < next_real ? limit : next_real;
-            unsigned last = snes_vdisp() - 1;
-            if (last >= frame_len)
-                last = frame_len - 1;
-            if (line_at(last) + HDMA_AT + HDMA_SPAN_MAX >= m) {
-                last = line_of(m);
-                if (line_at(last) + HDMA_AT + HDMA_SPAN_MAX >= m)
-                    last--;
-            }
-            if (last - hdma_from < q - 1)
-                q = last - hdma_from + 1;
-            if (q > 1) {
-                hdma_skip(q - 1);
-                hdma_from += q - 1;
-                at = hdma_next();
-            }
+            hdma_skip(q - 1);
+            hdma_from += q - 1;
+            at = hdma_next();
         }
         /* (nothing due in the transfer: the next line's point is past it) */
         next_event = next_real;
@@ -2231,6 +2243,9 @@ static void hdma_bulk(uint64_t until)
         look_dma++;
         unit_back();
         dma_active = 0;
+        /* (the chip's IRQ, risen in the transfer: no line past it) */
+        if (cart_irq && cart_irq_at < limit)
+            limit = cart_irq_at;
     }
     if (any)
         events_next();
