@@ -17,11 +17,12 @@
  * At power on the SPC700 runs its boot ROM: it clears its zero page, puts
  * $AA, $BB on ports 0 and 1, and takes the blocks the S-CPU sends by the
  * ROM's protocol, then jumps where the S-CPU says. The ROM's own bytes are
- * not here: ipl() does what that code does, instruction for instruction,
- * its accesses and its cycles (the boot ROM is the console's: its time is
- * kept, as the hardware's is), so the S-CPU's upload sees the same replies
- * at the same pace. Code the S-CPU uploads and starts is the game's C (the
- * runtime's snes_spc_hooks).
+ * not here: boot_run() is its protocol as states, brought up to the S-CPU's
+ * time at each sync, each access at the cycle its fixed counts give and each
+ * poll passed at once to the read that can see a change (the boot ROM is the
+ * console's: its time is kept, as the hardware's is), so the S-CPU's upload
+ * sees the same replies at the same pace. Code the S-CPU uploads and starts
+ * is the game's C (the runtime's snes_spc_hooks).
  */
 #include <stdatomic.h>
 #include <stdio.h>
@@ -64,6 +65,8 @@ static int16_t ring[RING * 2];
 static atomic_uint ring_w, ring_r;
 
 static void spc_main(void *arg);
+static void boot_run(void);
+static int in_ipl;                           /* the boot ROM is running (its accesses cost nothing) */
 
 /* NSHVC_SPCLOG=FILE: each SPC700 write and read of $F0-$FF (its time in
    half cycles, 1 write or 0 read, the address, the value), as the oracle's
@@ -94,6 +97,7 @@ void apu_reset(void)
     t01_div = t2_div = 0;
     spc_cycles = spc_target = dsp_at = 0;
     spc_carry = 0;
+    in_ipl = 0;
     atomic_store(&ring_w, 0);
     atomic_store(&ring_r, 0);
     mix_init(aram);
@@ -158,7 +162,7 @@ void apu_flush(void)
         snes_fatal("the SPC700's code used all of its stack's %u bytes", (unsigned)CORO_SPC_STACK);
 }
 
-static void spc_advance(unsigned cycles)
+static void spc_pass(unsigned cycles)
 {
     spc_cycles += cycles;
     t01_div += cycles;
@@ -172,6 +176,14 @@ static void spc_advance(unsigned cycles)
         timer_steps(2, t2_div / 16);
         t2_div %= 16;
     }
+}
+
+static void spc_advance(unsigned cycles)
+{
+    spc_pass(cycles);
+    /* (the boot ROM goes back from boot_run, on the S-CPU's stack) */
+    if (in_ipl)
+        return;
     /* an access at or before the S-CPU's time (spc_target: its time in
        whole cycles, rounded down) is made now; one past it waits */
     if (spc_cycles > spc_target) {
@@ -197,8 +209,12 @@ void apu_sync(void)
         spc_target = c / m * SPC_HZ + c % m * SPC_HZ / m;
     }
     if (spc_cycles <= spc_target) {
-        main_co = coro_current();
-        coro_switch(main_co, spc_co);
+        if (!in_ipl) {
+            main_co = coro_current();
+            coro_switch(main_co, spc_co);
+        }
+        if (in_ipl)
+            boot_run();
     }
 }
 
@@ -271,7 +287,6 @@ void spc_boot_rom(void);
  * may write, and the DSP's registers, which the chip changes as it runs: a
  * cycle on; the rest of RAM and $F0-$F2, only the driver's own writes. A
  * condition that writes looks again a cycle on. */
-static int in_ipl;                           /* (below: the boot ROM's own accesses cost nothing) */
 static int turn_on, turn_step;
 static uint64_t turn_until;
 
@@ -484,22 +499,42 @@ void spc_boot_rom(void)
 
 const uint8_t *snes_aram(void) { return aram; }
 
-/* the boot ROM's work (see the file's comment): its 64 bytes at $FFC0, an
-   instruction at a time, each with its cycles (up to and including each
-   access). The boot ROM is the console's own code, so its time is the
-   console's: an S-CPU that writes a port's index a cycle before its byte
-   (a word to $2140) is answered as the console answers it. */
-static void ipl_cyc(unsigned n)
+/* The boot ROM's work (see the file's comment): its protocol as states. Each
+   state is an access at the cycle it stands at, made once the S-CPU's time has
+   reached it, and goes to the next by the ROM's fixed cycle counts. The ROM is
+   the console's own code, so its time is the console's: an S-CPU that writes a
+   port's index a cycle before its byte (a word to $2140) is answered as the
+   console answers it. */
+enum {
+    B_START, B_CLEAR, B_CLEAR_RD, B_CLEAR_WR, B_AA_RD, B_AA_WR, B_BB_RD, B_BB_WR, B_CC,
+    B_NEXT, B_BYTE, B_DATA, B_ECHO_RD, B_ECHO_WR, B_TO_LO, B_TO_HI, B_STORE_RD, B_STORE_WR,
+    B_PAGE_RD, B_PAGE_WR, B_ANOTHER, B_F6, B_F7, B_TO0_RD, B_TO0_WR, B_TO1_WR, B_F4, B_F5,
+    B_REPLY_RD, B_REPLY_WR, B_JUMP_LO, B_JUMP_HI
+};
+static unsigned boot_state;
+static uint8_t boot_a, boot_x, boot_y, boot_v;
+static uint16_t boot_p;
+static int boot_n, boot_z;
+
+static uint8_t boot_nz(uint8_t v)
 {
-    spc_advance(n);
+    boot_z = v == 0;
+    boot_n = v >> 7;
+    return v;
 }
 
-/* A poll loop's turns that see what the last saw, passed at once: the next
-   turn reads port n `at` cycles in and is `turn` long; while its read is at
-   or before the S-CPU's time (where the S-CPU's port writes come in) and
-   sees `seen`, the turn is the last again, its time passed. A write still
-   coming into sight (port_read) is met turn by turn. */
-static void ipl_hold(unsigned at, unsigned turn, int n, uint8_t seen)
+static void boot_go(unsigned cycles, unsigned state)
+{
+    spc_pass(cycles);
+    boot_state = state;
+}
+
+/* A poll's turns that see what the last saw, passed at once: the next turn
+   reads port n `at` cycles in and is `turn` long; while its read is at or
+   before the S-CPU's time (where the S-CPU's port writes come in) and sees
+   `seen`, the turn is the last again, its time passed. A write still coming
+   into sight (port_read) is met turn by turn. */
+static void boot_hold(unsigned at, unsigned turn, int n, uint8_t seen)
 {
     uint64_t t = spc_cycles + at, k;
     if (spclog || t > spc_target || port_in[n] != seen)
@@ -507,33 +542,14 @@ static void ipl_hold(unsigned at, unsigned turn, int n, uint8_t seen)
     if (port_prev[n] != port_in[n] && port_old_at(n, t))
         return;
     k = (spc_target - t) / turn + 1;
-    if (k > 0xFFFFu)
-        k = 0xFFFFu;
-    spc_advance((unsigned)k * turn);
-}
-
-static int ipl_n, ipl_z;
-static uint8_t ipl_nz(uint8_t v)
-{
-    ipl_z = v == 0;
-    ipl_n = v >> 7;
-    return v;
-}
-static void ipl_cmp(uint8_t x, uint8_t y) { ipl_nz((uint8_t)(x - y)); }
-/* a store: the dummy read, then the write */
-static void ipl_st(uint16_t addr, uint8_t v, unsigned before_read, unsigned before_write)
-{
-    ipl_cyc(before_read);
-    spc_rd(addr);
-    ipl_cyc(before_write);
-    spc_wr(addr, v);
+    spc_pass((unsigned)(k < 0xFFFFu ? k : 0xFFFFu) * turn);
 }
 
 /* The clear's writes can be seen by nothing: each puts 0 over 0, and the echo
    cannot write among them. (The DSP reads this RAM on its own clock, and a
    driver's zero page is not all 0 when it jumps back here: then the writes
    are made in turn, each between the same two of its clocks.) */
-static int ipl_clear_unseen(void)
+static int boot_clear_unseen(void)
 {
     unsigned p;
     if (spclog)
@@ -544,146 +560,220 @@ static int ipl_clear_unseen(void)
     return 1;
 }
 
-static void ipl(void)
+/* FFE9 bpl $FFDA: to the byte's poll, or on to see a new block */
+static void boot_skip(int polling, uint8_t seen)
 {
-    uint8_t a, x, y;
-    uint16_t p;
-    /* FFC0 mov x,#$EF; FFC2 mov sp,x; FFC3 mov a,#$00 */
-    x = ipl_nz(0xEF);
-    ipl_cyc(2);
-    spc.sp = x;
-    ipl_cyc(2);
-    a = ipl_nz(0x00);
-    ipl_cyc(2);
-    /* FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5: $EF down to $01, 10 cycles
-       a turn and 8 the last */
-    if (ipl_clear_unseen()) {
-        x = ipl_nz(0);
-        ipl_cyc(238 * 10 + 8);
-    } else {
-        do {
-            ipl_st(x, a, 3, 1);
-            x = ipl_nz((uint8_t)(x - 1));
-            ipl_cyc(2);
-            ipl_cyc(ipl_z ? 2 : 4);
-        } while (!ipl_z);
+    if (boot_n) {
+        boot_go(2 + 3, B_ANOTHER);
+        return;
     }
-    /* FFC9 mov $F4,#$AA; FFCC mov $F5,#$BB */
-    ipl_st(0xF4, 0xAA, 4, 1);
-    ipl_st(0xF5, 0xBB, 4, 1);
-    do {
-        /* FFCF cmp $F4,#$CC; FFD2 bne $FFCF */
-        uint8_t v;
-        ipl_cyc(4);
-        ipl_cmp(v = spc_rd(0xF4), 0xCC);
-        ipl_cyc(1);
-        ipl_cyc(ipl_z ? 2 : 4);
-        if (!ipl_z)
-            ipl_hold(4, 9, 0, v);
-    } while (!ipl_z);
-    /* FFD4 bra $FFEF */
-    ipl_cyc(4);
-    goto block;
-next:
-    /* FFD6 mov y,$F4; FFD8 bne $FFD6 */
-    ipl_cyc(3);
-    y = ipl_nz(spc_rd(0xF4));
-    if (!ipl_z) {
-        ipl_cyc(4);
-        ipl_hold(3, 7, 0, y);
-        goto next;
+    spc_pass(4);
+    if (polling)
+        boot_hold(3, 11, 0, seen);
+    boot_go(3, B_BYTE);
+}
+
+static void boot_run(void)
+{
+    while (in_ipl && spc_cycles <= spc_target) {
+        switch (boot_state) {
+        case B_START:
+            /* FFC0 mov x,#$EF; FFC2 mov sp,x; FFC3 mov a,#$00 */
+            boot_x = 0xEF;
+            spc.sp = boot_x;
+            boot_a = 0x00;
+            boot_go(2 + 2 + 2, B_CLEAR);
+            break;
+        case B_CLEAR:
+            /* FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5: $EF down to $01, 10
+               cycles a turn and 8 the last */
+            if (boot_clear_unseen()) {
+                boot_x = 0;
+                boot_go(238 * 10 + 8 + 4, B_AA_RD);
+            } else {
+                boot_go(3, B_CLEAR_RD);
+            }
+            break;
+        case B_CLEAR_RD:
+            spc_rd(boot_x);
+            boot_go(1, B_CLEAR_WR);
+            break;
+        case B_CLEAR_WR:
+            spc_wr(boot_x, boot_a);
+            boot_x = boot_nz((uint8_t)(boot_x - 1));
+            if (boot_z)
+                boot_go(2 + 2 + 4, B_AA_RD);
+            else
+                boot_go(2 + 4 + 3, B_CLEAR_RD);
+            break;
+        case B_AA_RD:
+            /* FFC9 mov $F4,#$AA; FFCC mov $F5,#$BB */
+            spc_rd(0xF4);
+            boot_go(1, B_AA_WR);
+            break;
+        case B_AA_WR:
+            spc_wr(0xF4, 0xAA);
+            boot_go(4, B_BB_RD);
+            break;
+        case B_BB_RD:
+            spc_rd(0xF5);
+            boot_go(1, B_BB_WR);
+            break;
+        case B_BB_WR:
+            spc_wr(0xF5, 0xBB);
+            boot_go(4, B_CC);
+            break;
+        case B_CC:
+            /* FFCF cmp $F4,#$CC; FFD2 bne $FFCF; FFD4 bra $FFEF */
+            boot_v = spc_rd(0xF4);
+            if (boot_v == 0xCC) {
+                boot_go(1 + 2 + 4 + 3, B_F6);
+            } else {
+                spc_pass(1 + 4);
+                boot_hold(4, 9, 0, boot_v);
+                boot_go(4, B_CC);
+            }
+            break;
+        case B_NEXT:
+            /* FFD6 mov y,$F4; FFD8 bne $FFD6 */
+            boot_y = boot_nz(spc_rd(0xF4));
+            if (boot_z) {
+                boot_go(2 + 3, B_BYTE);
+            } else {
+                spc_pass(4);
+                boot_hold(3, 7, 0, boot_y);
+                boot_go(3, B_NEXT);
+            }
+            break;
+        case B_BYTE:
+            /* FFDA cmp y,$F4; FFDC bne $FFE9 */
+            boot_v = spc_rd(0xF4);
+            boot_nz((uint8_t)(boot_y - boot_v));
+            if (boot_z) {
+                boot_go(2 + 3, B_DATA);
+            } else {
+                spc_pass(4);
+                boot_skip(1, boot_v);
+            }
+            break;
+        case B_DATA:
+            /* FFDE mov a,$F5; FFE0 mov $F4,y */
+            boot_a = boot_nz(spc_rd(0xF5));
+            boot_go(3, B_ECHO_RD);
+            break;
+        case B_ECHO_RD:
+            spc_rd(0xF4);
+            boot_go(1, B_ECHO_WR);
+            break;
+        case B_ECHO_WR:
+            spc_wr(0xF4, boot_y);
+            boot_go(3, B_TO_LO);
+            break;
+        case B_TO_LO:
+            /* FFE2 mov [$00]+y,a */
+            boot_p = spc_rd(0x00);
+            boot_go(1, B_TO_HI);
+            break;
+        case B_TO_HI:
+            boot_p = (uint16_t)(boot_p | spc_rd(0x01) << 8);
+            boot_go(2, B_STORE_RD);
+            break;
+        case B_STORE_RD:
+            spc_rd((uint16_t)(boot_p + boot_y));
+            boot_go(1, B_STORE_WR);
+            break;
+        case B_STORE_WR:
+            spc_wr((uint16_t)(boot_p + boot_y), boot_a);
+            /* FFE4 inc y; FFE5 bne $FFDA */
+            boot_y = boot_nz((uint8_t)(boot_y + 1));
+            if (boot_z)
+                boot_go(2 + 2 + 3, B_PAGE_RD);
+            else
+                boot_go(2 + 4 + 3, B_BYTE);
+            break;
+        case B_PAGE_RD:
+            /* FFE7 inc $01 */
+            boot_v = boot_nz((uint8_t)(spc_rd(0x01) + 1));
+            boot_go(1, B_PAGE_WR);
+            break;
+        case B_PAGE_WR:
+            spc_wr(0x01, boot_v);
+            boot_skip(0, 0);
+            break;
+        case B_ANOTHER:
+            /* FFEB cmp y,$F4; FFED bpl $FFDA */
+            boot_nz((uint8_t)(boot_y - spc_rd(0xF4)));
+            if (boot_n)
+                boot_go(2 + 3, B_F6);
+            else
+                boot_go(4 + 3, B_BYTE);
+            break;
+        case B_F6:
+            /* FFEF movw ya,$F6; FFF1 movw $00,ya */
+            boot_a = spc_rd(0xF6);
+            boot_go(2, B_F7);
+            break;
+        case B_F7:
+            boot_y = spc_rd(0xF7);
+            boot_go(3, B_TO0_RD);
+            break;
+        case B_TO0_RD:
+            spc_rd(0x00);
+            boot_go(1, B_TO0_WR);
+            break;
+        case B_TO0_WR:
+            spc_wr(0x00, boot_a);
+            boot_go(1, B_TO1_WR);
+            break;
+        case B_TO1_WR:
+            spc_wr(0x01, boot_y);
+            boot_go(3, B_F4);
+            break;
+        case B_F4:
+            /* FFF3 movw ya,$F4; FFF5 mov $F4,a */
+            boot_a = spc_rd(0xF4);
+            boot_go(2, B_F5);
+            break;
+        case B_F5:
+            boot_y = spc_rd(0xF5);
+            boot_go(3, B_REPLY_RD);
+            break;
+        case B_REPLY_RD:
+            spc_rd(0xF4);
+            boot_go(1, B_REPLY_WR);
+            break;
+        case B_REPLY_WR:
+            spc_wr(0xF4, boot_a);
+            /* FFF7 mov a,y; FFF8 mov x,a; FFF9 bne $FFD6 */
+            boot_a = boot_y;
+            boot_x = boot_nz(boot_a);
+            if (boot_z)
+                boot_go(2 + 2 + 2 + 5, B_JUMP_LO);
+            else
+                boot_go(2 + 2 + 4 + 3, B_NEXT);
+            break;
+        case B_JUMP_LO:
+            /* FFFB jmp [$0000+x] */
+            boot_p = spc_rd(boot_x);
+            boot_go(1, B_JUMP_HI);
+            break;
+        case B_JUMP_HI:
+            boot_p = (uint16_t)(boot_p | spc_rd((uint8_t)(boot_x + 1)) << 8);
+            spc.a = boot_a;
+            spc.x = boot_x;
+            spc.y = boot_y;
+            spc.n = (uint8_t)boot_n;
+            spc.z = (uint8_t)boot_z;
+            jump_to = boot_p;
+            jump_entry = NULL;
+            in_ipl = 0;
+            main_co = coro_current();
+            coro_switch(main_co, spc_co);
+            break;
+        }
     }
-    ipl_cyc(2);
-byte:
-    /* FFDA cmp y,$F4; FFDC bne $FFE9 */
-    ipl_cyc(3);
-    ipl_cmp(y, spc_rd(0xF4));
-    if (!ipl_z) {
-        ipl_cyc(4);
-        goto skip;
-    }
-    ipl_cyc(2);
-    /* FFDE mov a,$F5; FFE0 mov $F4,y */
-    ipl_cyc(3);
-    a = ipl_nz(spc_rd(0xF5));
-    ipl_st(0xF4, y, 3, 1);
-    /* FFE2 mov [$00]+y,a */
-    ipl_cyc(3);
-    p = spc_rd(0x00);
-    ipl_cyc(1);
-    p = (uint16_t)(p | spc_rd(0x01) << 8);
-    ipl_st((uint16_t)(p + y), a, 2, 1);
-    /* FFE4 inc y; FFE5 bne $FFDA */
-    y = ipl_nz((uint8_t)(y + 1));
-    ipl_cyc(2);
-    if (!ipl_z) {
-        ipl_cyc(4);
-        goto byte;
-    }
-    ipl_cyc(2);
-    /* FFE7 inc $01 */
-    ipl_cyc(3);
-    {
-        uint8_t v = ipl_nz((uint8_t)(spc_rd(0x01) + 1));
-        ipl_cyc(1);
-        spc_wr(0x01, v);
-    }
-skip:
-    /* FFE9 bpl $FFDA */
-    if (!ipl_n) {
-        ipl_cyc(4);
-        goto byte;
-    }
-    ipl_cyc(2);
-    /* FFEB cmp y,$F4; FFED bpl $FFDA */
-    ipl_cyc(3);
-    ipl_cmp(y, spc_rd(0xF4));
-    if (!ipl_n) {
-        ipl_cyc(4);
-        goto byte;
-    }
-    ipl_cyc(2);
-block:
-    /* FFEF movw ya,$F6; FFF1 movw $00,ya */
-    ipl_cyc(3);
-    a = spc_rd(0xF6);
-    ipl_cyc(2);
-    y = spc_rd(0xF7);
-    ipl_cyc(3);
-    spc_rd(0x00);
-    ipl_cyc(1);
-    spc_wr(0x00, a);
-    ipl_cyc(1);
-    spc_wr(0x01, y);
-    /* FFF3 movw ya,$F4; FFF5 mov $F4,a */
-    ipl_cyc(3);
-    a = spc_rd(0xF4);
-    ipl_cyc(2);
-    y = spc_rd(0xF5);
-    ipl_st(0xF4, a, 3, 1);
-    /* FFF7 mov a,y; FFF8 mov x,a; FFF9 bne $FFD6 */
-    a = ipl_nz(y);
-    ipl_cyc(2);
-    x = ipl_nz(a);
-    ipl_cyc(2);
-    if (!ipl_z) {
-        ipl_cyc(4);
-        goto next;
-    }
-    ipl_cyc(2);
-    /* FFFB jmp [$0000+x] */
-    ipl_cyc(5);
-    p = spc_rd(x);
-    ipl_cyc(1);
-    p = (uint16_t)(p | spc_rd((uint8_t)(x + 1)) << 8);
-    spc.a = a;
-    spc.x = x;
-    spc.y = y;
-    spc.n = (uint8_t)ipl_n;
-    spc.z = (uint8_t)ipl_z;
-    jump_to = p;
-    jump_entry = NULL;
-    port_longjmp(jb);
+    if (spc_cycles > spc_target && spc_cycles - dsp_at >= 1024)
+        dsp_catch_up();
 }
 
 static void spc_main(void *arg)
@@ -693,11 +783,16 @@ static void spc_main(void *arg)
     jump_entry = NULL;
     for (;;) {
         if (port_setjmp(jb) == 0) {
-            in_ipl = jump_to == 0xFFC0;
-            if (jump_to == 0xFFC0 && (control & 0x80))
-                ipl();
-            else if (jump_to == 0xFFC0)
-                snes_fatal("SPC700 jumps to $FFC0 with the boot ROM unmapped");
+            /* the boot ROM runs from apu_sync (boot_run), and comes back here
+               where it jumps */
+            while (jump_to == 0xFFC0) {
+                if (!(control & 0x80))
+                    snes_fatal("SPC700 jumps to $FFC0 with the boot ROM unmapped");
+                in_ipl = 1;
+                boot_state = B_START;
+                while (in_ipl)
+                    coro_switch(spc_co, main_co);
+            }
             if (jump_entry)
                 jump_entry();
             else if (snes_spc_run_hook) {

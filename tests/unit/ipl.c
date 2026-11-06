@@ -24,6 +24,9 @@
  *                apart, as on the console). The driver takes them right
  *                with the profile's weights for its own work (--profile),
  *                as the console's driver does with its instructions' time.
+ *   --driver --reboot   the driver then writes to its zero page and jumps to
+ *                the boot ROM (spc_boot_rom), which clears it and takes a
+ *                third upload: those bytes where they were sent, the page 0
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,9 +39,11 @@
 
 #define DEST 0x0800
 #define LEN 4096
+#define AGAIN_DEST 0x3000
+#define AGAIN_LEN 512
 
 static uint8_t sent[LEN];
-static int driver_mode, sweep, cpu_only;
+static int driver_mode, sweep, cpu_only, reboot;
 
 /* each word's two bytes: the clocks from the index's write to the byte's */
 static long gap[LEN];
@@ -79,6 +84,11 @@ static void driver_main(void)
     for (;;) {
         static uint8_t never = 0x5A;
         spc_wait_until(f4_is, &never);
+        if (reboot) {
+            spc_wr(0x20, 0x77);
+            spc_wr(0x21, 0x88);
+            spc_boot_rom();
+        }
     }
 }
 
@@ -126,6 +136,12 @@ static void abi_reset(void)
         want = 0xAA;
         nshvc_wait_until(port0_is, &want);
         upload(DEST, sent, LEN, 0);
+        if (reboot) {
+            wr8(0x002140, 0x5A);
+            want = 0xAA;
+            nshvc_wait_until(port0_is, &want);
+            upload(AGAIN_DEST, sent, AGAIN_LEN, 0);
+        }
         goto check;
     }
     /* the block's address, a byte not 0 (a block, not the jump), $CC */
@@ -165,7 +181,21 @@ check:
     printf("%s %d of %d bytes land where they were sent", bad ? "FAIL" : "ok  ", LEN - bad, LEN);
     if (bad)
         printf(" (first wrong at %d: %02X, sent %02X)", first, snes_aram()[DEST + first], sent[first]);
-    printf("\n%d check(s) failed\n", (bad != 0) + (apart != 0));
+    printf("\n");
+    if (reboot) {
+        int again = 0, page = 0;
+        for (i = 0; i < AGAIN_LEN; i++)
+            again += snes_aram()[AGAIN_DEST + i] != sent[i];
+        for (i = 0x02; i <= 0xEF; i++)
+            page += snes_aram()[i] != 0;
+        printf("%s the boot ROM again: %d of %d bytes wrong, %d of the zero page's not cleared\n",
+               again || page ? "FAIL" : "ok  ", again, AGAIN_LEN, page);
+        if (again || page) {
+            printf("%d check(s) failed\n", (bad != 0) + (apart != 0) + 1);
+            exit(1);
+        }
+    }
+    printf("%d check(s) failed\n", (bad != 0) + (apart != 0));
     exit(bad || apart ? 1 : 0);
 }
 
@@ -206,6 +236,8 @@ int main(int argc, char **argv)
         }
         if (!strcmp(argv[i], "--sweep"))
             sweep = 1;
+        if (!strcmp(argv[i], "--reboot"))
+            reboot = 1;
     }
     cart.map = NSHVC_LOROM;
     cart.rom = rom;
