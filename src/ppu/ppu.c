@@ -31,7 +31,6 @@
 #include "snes.h"
 
 static uint16_t vram[PPU_VRAM_PAGES * 0x8000];
-static uint64_t vram_gen;             /* VRAM's writes (and size changes) so far: a copy's (take_version) */
 static uint64_t cgram_gen;            /* CGRAM's writes so far: whether a line's palette is the last's */
 static int vram_pages = 1;            /* nshvc_ext_vram */
 static unsigned port_page;            /* the page the data port reads and writes */
@@ -200,7 +199,6 @@ int ppu_line_hires(const PpuScreen *l)
 void ppu_reset(void)
 {
     memset(vram, 0, sizeof vram);
-    vram_gen++;
     vram_pages = 1;
     port_page = 0;
     direct_page = -1;
@@ -506,12 +504,10 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
         if (direct_page >= 0) {
             a = (uint32_t)direct_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
             vram[a] = (uint16_t)((vram[a] & 0xFF00) | v);
-            vram_gen++;
             page_changed((unsigned)direct_page);
         } else if (vram_open()) {
             dirty = 1;
             vram[a] = (uint16_t)((vram[a] & 0xFF00) | v);
-            vram_gen++;
         }
         if (!(vmain & 0x80))
             vram_step();
@@ -522,12 +518,10 @@ static void ppu_write_reg(uint8_t reg, uint8_t v)
         if (direct_page >= 0) {
             a = (uint32_t)direct_page << 15 | (vram_remap(vmaddr) & 0x7FFF);
             vram[a] = (uint16_t)((vram[a] & 0x00FF) | v << 8);
-            vram_gen++;
             page_changed((unsigned)direct_page);
         } else if (vram_open()) {
             dirty = 1;
             vram[a] = (uint16_t)((vram[a] & 0x00FF) | v << 8);
-            vram_gen++;
         }
         if (vmain & 0x80)
             vram_step();
@@ -673,7 +667,6 @@ void ppu_ext_vram(int kb)
     if (kb < 64 || kb > 64 * PPU_VRAM_PAGES || kb % 64)
         snes_fatal("nshvc_ext_vram(%d): 64 to %d KB, in 64 KB pages", kb, 64 * PPU_VRAM_PAGES);
     vram_pages = kb / 64;
-    vram_gen++;
     dirty = 1;
 }
 
@@ -769,7 +762,6 @@ void ppu_ext_vram_copy(int to_page, int from_page)
     if (to_page == from_page)
         return;
     memcpy(&vram[(unsigned)to_page << 15], &vram[(unsigned)from_page << 15], 0x8000 * sizeof vram[0]);
-    vram_gen++;
     page_changed((unsigned)to_page);
 }
 
@@ -803,8 +795,6 @@ void ppu_vram_port_run(const uint8_t *b, const uint8_t *v, unsigned n)
         if (!hi == !hi_steps)
             vmaddr = (uint16_t)(vmaddr + step);
     }
-    if (open)
-        vram_gen += n;
 }
 
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
@@ -1382,7 +1372,6 @@ static void take_version(void)
 {
     if (making->versions < PPU_VERSIONS) {
         memcpy(making->vram[making->versions], vram, (size_t)vram_pages * 0x8000 * sizeof vram[0]);
-        making->vram_gen[making->versions] = vram_gen;
         memcpy(making->oam[making->versions], oam, sizeof oam);
         memcpy(making->oam[making->versions] + 544, ext_xp, sizeof ext_xp);
         memcpy(making->oam[making->versions] + 672, ext_yp, sizeof ext_yp);
@@ -1735,7 +1724,7 @@ static uint32_t cp_sprites(uint32_t *n)
         cp_spr[cp_spr_n++] = (uint32_t)o->x;
         cp_spr[cp_spr_n++] = (r & 0xFF) | w >> 3 << 8 | (uint32_t)((o->attr >> 6) & 1) << 12 |
                              (uint32_t)((o->attr >> 1) & 7) << 13 | (uint32_t)((o->attr >> 4) & 3) << 16 |
-                             (uint32_t)(keep[hit[k]] + 1) << 18 | (uint32_t)hit[k] << 24;
+                             (uint32_t)(keep[hit[k]] + 1) << 18;
         cp_spr[cp_spr_n++] = o->name;
         (*n)++;
     }
@@ -1941,12 +1930,6 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     cp_w[CP_CVFY] = f->cv_on && f->cv_screen ? (uint32_t)f->cv_fy : 0u;
     cp_w[CP_CVGEN] = f->cv_on ? (uint32_t)f->cv_gen : 0u;
     cp_w[CP_TOP] = (uint32_t)f->top;
-    cp_w[CP_VCOPY] = (uint32_t)vwords;
-    for (v = 0; v < PPU_VERSIONS; v++) {
-        uint64_t g = v < (size_t)f->versions ? f->vram_gen[v] : 0;
-        cp_w[CP_VGEN + 2 * v] = (uint32_t)g;
-        cp_w[CP_VGEN + 2 * v + 1] = (uint32_t)(g >> 32);
-    }
     *words = n + cp_parts_n + cp_spr_n;
     /* a texture's texels past the description: the backend's copy (rr.h RrCvGpu) */
     if (f->cv_on && f->cv_gpu)
@@ -2022,7 +2005,6 @@ static unsigned cgram_target(unsigned ahead)
     w[CP_ROWS] = (uint32_t)rows;
     w[CP_STATES] = (uint32_t)st;
     w[CP_PALS] = (uint32_t)pal;
-    w[CP_VCOPY] = (uint32_t)vwords;
     rr_cp_fd = w;
     cp_fdb = 0;
     cp_load(si);

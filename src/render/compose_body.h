@@ -71,21 +71,18 @@
 #define CP_CVW 23        /* its texels across and down */
 #define CP_CVH 24
 #define CP_TOP 25        /* the hardware's line 1's row */
-#define CP_VCOPY 26      /* a VRAM copy's 16-bit words */
-#define CP_VGEN 27       /* each copy's count of VRAM writes before it (ppu.h vram_gen), low
-                            word then high: copies with the same count, the same words */
-#define CP_CVFX 35       /* a screen canvas over the whole screen (k 0): its texels across and
+#define CP_CVFX 26       /* a screen canvas over the whole screen (k 0): its texels across and
                             down (0: k a console pixel) */
-#define CP_CVFY 36
-#define CP_CVGEN 37      /* the canvas's texels' count of changes (ppu.h cv_gen): the same count,
+#define CP_CVFY 27
+#define CP_CVGEN 28      /* the canvas's texels' count of changes (ppu.h cv_gen): the same count,
                             the same texels */
-#define CP_CVGPU 38      /* a canvas the GPU holds: the image, its fence's event and value, each two
+#define CP_CVGPU 29      /* a canvas the GPU holds: the image, its fence's event and value, each two
                             words, low first */
-#define CP_CVFORM 44     /* 0 none; 1 a texture, copied by the backend on the GPU to word CP_CV, past
+#define CP_CVFORM 35     /* 0 none; 1 a texture, copied by the backend on the GPU to word CP_CV, past
                             the description's own (rr.h RrCvGpu) */
-#define CP_CVROW 45      /* a canvas of characters the GPU holds: its characters a row; a screen
+#define CP_CVROW 36      /* a canvas of characters the GPU holds: its characters a row; a screen
                             canvas: 0. No shader reads CP_CVGPU, CP_CVFORM or this. */
-#define CP_HEADER 46
+#define CP_HEADER 37
 
 #define CP_ST 28         /* a state's words */
 #define CP_S_INIDISP 0   /* inidisp, obsel, bgmode, mosaic */
@@ -114,8 +111,7 @@
                             right, a word each */
 #define CP_S_WMAP 26     /* the windows' map (nshvc_ext_window_map): its scale (16.16), its offset */
 
-#define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept, its
-                            place in the priority order (bits 24-30); name */
+#define CP_SE 3          /* a sprite entry: X; row, columns, flips, palette, priority, kept; name */
 
 /* the description drawn from: its first word (cp_woven sets it) */
 CP_VAR U32 cp_fdb;

@@ -76,9 +76,6 @@ typedef struct {
                                                    lines are the field's rows of a picture twice as
                                                    tall, woven with the frame before's */
     int versions;
-    uint64_t vram_gen[PPU_VERSIONS];            /* each copy's VRAM writes before it (and its
-                                                   size's changes): two copies with the same,
-                                                   the same words */
     uint16_t vram[PPU_VERSIONS][PPU_VRAM_PAGES * 0x8000];
     uint8_t oam[PPU_VERSIONS][PPU_OAM_EXT];     /* the table, then the sprites' X and Y pages */
     uint8_t segs[PPU_MAX_HEIGHT + 1];           /* segments past the first (0: none) */

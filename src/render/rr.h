@@ -82,15 +82,15 @@ typedef struct {
 } RrCvGpu;
 static inline int rr_cv_gpu(const uint32_t *desc, RrCvGpu *g)
 {
-    if (desc[44] != 1u)                 /* CP_CVFORM */
+    if (desc[35] != 1u)                 /* CP_CVFORM */
         return 0;
-    g->image = desc[38] | (uint64_t)desc[39] << 32;
-    g->event = desc[40] | (uint64_t)desc[41] << 32;
-    g->value = desc[42] | (uint64_t)desc[43] << 32;
+    g->image = desc[29] | (uint64_t)desc[30] << 32;
+    g->event = desc[31] | (uint64_t)desc[32] << 32;
+    g->value = desc[33] | (uint64_t)desc[34] << 32;
     g->w = desc[23];                    /* CP_CVW */
     g->h = desc[24];                    /* CP_CVH */
-    g->gen = desc[37];                  /* CP_CVGEN */
-    g->row = desc[45];                  /* CP_CVROW */
+    g->gen = desc[28];                  /* CP_CVGEN */
+    g->row = desc[36];                  /* CP_CVROW */
     g->k = desc[18];                    /* CP_CVK */
     g->count = desc[17];                /* CP_CVCOUNT */
     return 1;
