@@ -46,14 +46,6 @@ const uint8_t *nshvc_oam(void) { return ppu_oam(); }
 uint8_t nshvc_peek(uint32_t addr) { return snes_peek(addr); }
 void nshvc_ext_screen(int width, int height)
 {
-    int mw, mh;
-    rr_screen_max(&mw, &mh);
-    if (width > mw || height > mh)
-        nshvc_fatal("nshvc_ext_screen(%d, %d): this platform's screen is at most %d x %d", width, height, mw, mh);
-    rr_canvas_max(&mw, &mh);
-    if (mw > 0 && ppu_canvas_k() && (width * ppu_canvas_k() > mw || height * ppu_canvas_k() > mh))
-        nshvc_fatal("nshvc_ext_screen(%d, %d): the canvas on, at k %d, past this platform's %d x %d texels", width, height,
-                    ppu_canvas_k(), mw, mh);
     snes_ppu_catch_up();
     ppu_ext_screen(width, height);
 }
@@ -95,37 +87,19 @@ void nshvc_ext_canvas_presented(int *w, int *h)
     if (h)
         *h = ph < 1 ? 1 : ph;
 }
-/* a canvas past the platform's (rr_canvas_max): fatal. w x h its texels
-   (a character canvas's: none, 0), k a whole scale's (0: none) */
-static void canvas_fits(const char *what, int w, int h, int k)
-{
-    const PpuFrame *f = ppu_frame();
-    int mw, mh;
-    rr_canvas_max(&mw, &mh);
-    if (mw > 0 && (w > mw || h > mh || (k > 0 && (f->width * k > mw || f->screen_height * k > mh))))
-        nshvc_fatal("%s: %d x %d texels at k %d on a %d x %d screen: this platform's canvas is at most %d x %d texels "
-                    "(the screen times k too)",
-                    what, w ? w : f->width * k, h ? h : f->screen_height * k, k, f->width, f->screen_height, mw, mh);
-}
 void nshvc_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k)
 {
     snes_ppu_catch_up();
-    if (texels && count > 0)
-        canvas_fits("nshvc_ext_canvas_chars", 0, 0, k);
     ppu_ext_canvas_chars(layer, word_addr, count, texels, k);
 }
 void nshvc_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette)
 {
     snes_ppu_catch_up();
-    if (texels)
-        canvas_fits("nshvc_ext_canvas_screen", w, h, k);
     ppu_ext_canvas_screen(layer, texels, w, h, k, priority, palette);
 }
 void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette)
 {
     snes_ppu_catch_up();
-    if (texels)
-        canvas_fits("nshvc_ext_canvas_screen32", w, h, k);
     ppu_ext_canvas_screen32(layer, texels, w, h, k, priority, palette);
 }
 
@@ -469,30 +443,13 @@ static void sound_drain(void)
 /* the canvas's texels a console pixel along each axis for a picture shown
    w x h: the window's pixels a console pixel, rounded up (so a canvas at
    that scale has at least a texel a window pixel) */
-/* k at most the platform's canvas allows (rr_canvas_max) */
-static int canvas_k_max(int k)
-{
-    const PpuFrame *f = ppu_frame();
-    int mw, mh, kw, kh;
-    rr_canvas_max(&mw, &mh);
-    if (mw <= 0)
-        return k;
-    kw = mw / f->width;
-    kh = mh / f->screen_height;
-    if (k > kw)
-        k = kw;
-    if (k > kh)
-        k = kh;
-    return k < 1 ? 1 : k;
-}
-
 static void canvas_scale(int w, int h)
 {
     const PpuFrame *f = ppu_frame();
     presented_w = w;
     presented_h = h;
     int kx = (w + f->width - 1) / f->width, ky = (h + f->screen_height - 1) / f->screen_height;
-    ppu_set_canvas_scale(canvas_k_max(kx > ky ? kx : ky));
+    ppu_set_canvas_scale(kx > ky ? kx : ky);
 }
 
 /* the checks' (tests/ref, front_check.h): after each headless frame */
@@ -656,7 +613,6 @@ void nshvc_ext_canvas_screen_gpu(int layer, NshvcGpuHandle handle, int w, int h,
             nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0)", name);
         if (format != (api == NSHVC_GPU_METAL ? NSHVC_GPU_FORMAT_METAL : NSHVC_GPU_FORMAT_VULKAN))
             nshvc_fatal("%s: format %u: 32-bit unsigned texels (MTLPixelFormatR32Uint, VK_FORMAT_R32_UINT)", name, (unsigned)format);
-        canvas_fits(name, w, h, 0);
     }
     ppu_ext_canvas_screen_gpu(name, layer, handle.image, w, h, priority, fence.event, fence.value);
 }
@@ -666,11 +622,8 @@ void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcG
 {
     static const char name[] = "nshvc_ext_canvas_chars_gpu";
     snes_ppu_catch_up();
-    if (handle.image && count > 0) {
-        if (!gpu_api(NULL))
-            nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0)", name);
-        canvas_fits(name, 0, 0, k);
-    }
+    if (handle.image && count > 0 && !gpu_api(NULL))
+        nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0)", name);
     ppu_ext_canvas_chars_gpu(name, layer, word_addr, count, handle.image, per_row, k, fence.event, fence.value);
 }
 
@@ -768,29 +721,6 @@ static int m7_cols_cap, m7_rows_cap;
 /* the last frame's record and where it samples drawn at ow x oh; 0 when it
    is drawn as its picture scaled (no Mode 7 or canvas in it, or an
    interlaced weave) */
-/* (rr.h: a backend that presents Mode 7 as any frame says so) */
-__attribute__((weak)) void rr_screen_max(int *w, int *h)
-{
-    *w = PPU_EXT_WIDTH;
-    *h = PPU_EXT_HEIGHT;
-}
-
-__attribute__((weak)) int rr_mode7_plain(void) { return 0; }
-
-__attribute__((weak)) int rr_compose_canvas(void) { return 1; }
-
-__attribute__((weak)) void rr_canvas_max(int *w, int *h)
-{
-    *w = 0;
-    *h = 0;
-}
-
-__attribute__((weak)) int rr_mode7_window(int what)
-{
-    (void)what;
-    return 1;
-}
-
 /* The last frame, presenting Mode 7 or a canvas, drawn at ow x oh over d
    by the renderer's compositor (its picture and records the GPU's); 0
    when it is not drawn so (an interlaced weave, or no Mode 7 or canvas
@@ -904,7 +834,7 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
     d[3] = *h;
     rr_size(*w, *h);
     rr_begin(0xFF000000u);
-    if (!(rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(*w, *h, d)))
+    if (!show_mode7(*w, *h, d))
         show_picture(d);
     rr_present();
     if (!rr_read(buf))
@@ -1085,7 +1015,7 @@ static void show(void)
         rr_backdrop_draw(q);
     } else if (paused)
         ;                                /* no backdrop could be made: black */
-    else if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(w, h, d))
+    else if (show_mode7(w, h, d))
         ;
     else
         show_picture(d);
@@ -1221,8 +1151,6 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
 {
     const char *script = NULL, *out_dir = ".";
     int i;
-    ppu_set_mode7_plain(rr_mode7_plain());
-    ppu_set_compose_canvas(rr_compose_canvas());
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--headless"))
             headless = 1;
@@ -1271,7 +1199,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         double sx, sy;
         shot_scale(&sx, &sy);
         if (sx > 0)
-            ppu_set_canvas_scale(canvas_k_max((int)ceil(sx > sy ? sx : sy)));
+            ppu_set_canvas_scale((int)ceil(sx > sy ? sx : sy));
     }
     if (counts_f) {
         nshvc_set_read_hook(count_read);

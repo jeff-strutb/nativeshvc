@@ -108,31 +108,6 @@ static inline size_t rr_cv_gpu_bytes(const RrCvGpu *g)
    a channel, as rr_image's). */
 struct RrMode7;
 struct RrM7Samples;
-/* 1 when the backend presents such a frame at the target's resolution
-   (rr_mode7, rr_compose_mode7: every backend's, the front end's default;
-   the PSP's a frame with a canvas and no Mode 7 line); 0 when it presents
-   it as any frame, the picture at the console's resolution scaled
-   (rr_compose, rr_image). what: the frame's (ppu.c ppu_frame_presents),
-   1 a Mode 7 line, 2 a canvas, 4 a canvas on a pseudo-hires line. */
-int rr_mode7_window(int what);
-/* 1 when the backend presents a Mode 7 line at the console's resolution,
-   scaled as any picture, in a frame presented at the target's (a canvas
-   frame's): its records' Mode 7 pixels the picture's own (ppu.c
-   ppu_set_mode7_plain); the front end's default 0 */
-int rr_mode7_plain(void);
-/* the largest screen the platform draws on its GPU (nshvc_ext_screen):
-   width and height; the front end's default the contract's (8192) */
-void rr_screen_max(int *w, int *h);
-/* the most texels a canvas (nshvc_ext_canvas_chars, _screen) spans on its
-   GPU, across and down: a character canvas's screen times k, a screen
-   canvas's texels (at a whole k, its screen times k too); the front end's
-   default none (0) */
-void rr_canvas_max(int *w, int *h);
-/* 1 when the backend reads a screen canvas's texels from the frame's
-   description; 0 from the record (RrMode7.cv: rr_compose_mode7), so they are
-   copied into no description (ppu.h ppu_set_compose_canvas); the front end's
-   default 1 */
-int rr_compose_canvas(void);
 void rr_mode7(const struct RrMode7 *m, const int d[4], const struct RrM7Samples *s);
 /* a frame presenting Mode 7 or a canvas: its picture and records drawn by
    the backend's compositor from its description (ppu.c ppu_compose_m7),

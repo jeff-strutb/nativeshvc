@@ -12,8 +12,7 @@
  *                         with sharp bilinear, read back, against the
  *                         reference's drawing (rr_ref_image); a frame with
  *                         Mode 7 or a canvas presented by its record against
- *                         rr_ref_mode7 (as any frame where the renderer
- *                         presents it so: rr_mode7_window); at exit, the
+ *                         rr_ref_mode7; at exit, the
  *                         frames and pixels that differ by more than 1 in a
  *                         channel (a GPU's filtering rounds)
  */
@@ -82,7 +81,6 @@ static void frame_check(const PpuFrame *finished)
         size_t nw;
         check_pic = grow(check_pic, &check_cap, (size_t)w * (size_t)h, sizeof *check_pic);
         ppu_draw_frame(finished, check_pic);
-        ppu_set_compose_canvas(1);           /* (the description's own texels, as the C build reads them) */
         rr_cp_fd = ppu_compose(finished, &nw);
         for (y = 0; y < h; y++)
             for (x = 0; x < w; x++) {
@@ -236,7 +234,7 @@ static void rr_check(void)
     rr_begin(0xFF000000u);
     for (i = 0; i < tw * th; i++)
         want[i] = 0xFF000000u;
-    if (rr_mode7_window(ppu_frame_presents(ppu_frame())) && ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
+    if (ppu_frame_mode7(ppu_frame()) && ph == ppu_frame()->screen_height) {
         int gpu;
         recorded = 1;
         gpu = front_show_mode7(tw, th, d);

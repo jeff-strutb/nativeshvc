@@ -286,8 +286,7 @@ static void game(void)
     nshvc_ext_vram(192);
     for (sc = 0; sc < NSCENES; sc++) {
         w(0x00, 0x80);
-        /* (the last scene's canvas off before the screen changes: at its k
-           it may not fit the next screen, rr_canvas_max) */
+        /* (the last scene's canvas off before the screen changes) */
         nshvc_ext_canvas_chars(0, 0, 0, NULL, 1);
         setup(sc);
         if (sc == 7)

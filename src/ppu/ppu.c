@@ -104,11 +104,11 @@ static struct {
 /* The canvases' texels: each asked for copied once into a buffer, which
    the canvas asked for and each frame record that took it hold (refs; the
    frame records' own, cv_slot), so a frame keeps the texels it began with
-   without a copy of its own; 64-byte aligned (a GPU reads them as they
-   are). At most the canvas asked for and three frames' at once. */
+   without a copy of its own. At most the canvas asked for and three frames'
+   at once. */
 #define CV_BUFS 5
 static struct {
-    uint8_t *raw, *data;
+    uint8_t *data;
     size_t cap;
     int refs;
 } cv_buf[CV_BUFS];
@@ -132,11 +132,10 @@ static void cv_fill(const void *texels, size_t len)
     if (pick < 0)
         snes_fatal("the canvas's buffers all held (%d)", CV_BUFS);
     if (cv_buf[pick].cap < len) {
-        free(cv_buf[pick].raw);
-        cv_buf[pick].raw = (uint8_t *)malloc(len + 64);
-        if (!cv_buf[pick].raw)
+        free(cv_buf[pick].data);
+        cv_buf[pick].data = (uint8_t *)malloc(len);
+        if (!cv_buf[pick].data)
             snes_fatal("no memory for the canvas (%zu bytes)", len);
-        cv_buf[pick].data = cv_buf[pick].raw + ((64u - ((uintptr_t)cv_buf[pick].raw & 63u)) & 63u);
         cv_buf[pick].cap = len;
     }
     memcpy(cv_buf[pick].data, texels, len);
@@ -836,9 +835,6 @@ void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_
     cv_now.gen++;
 }
 
-/* the canvas asked for (from the next frame): its whole k, 0 when none or
-   over the whole screen (k 0) */
-int ppu_canvas_k(void) { return cv_now.on && !cv_now.fx ? cv_now.k : 0; }
 void ppu_set_canvas_scale(int k) { cv_scale = k < 1 ? 1 : k > 64 ? 64 : k; }
 int ppu_canvas_scale(void) { return cv_scale; }
 
@@ -1785,10 +1781,6 @@ static void cp_state(uint32_t *o, const PpuScreen *l, uint32_t pal, uint32_t vba
     o[27] = (uint32_t)l->wmap_offset;
 }
 
-/* a screen canvas's texels in the description (rr.h rr_compose_canvas) */
-static int compose_canvas = 1;
-void ppu_set_compose_canvas(int on) { compose_canvas = on != 0; }
-
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
 {
     static uint32_t st_of[PPU_MAX_HEIGHT + 1][PPU_SEGS + 1];
@@ -1830,7 +1822,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     }
     /* the canvas's texels */
     cv = n;
-    if (f->cv_on && !f->cv_gpu && (compose_canvas || !f->cv_screen)) {
+    if (f->cv_on && !f->cv_gpu) {
         /* four texels a word, the first the low byte (a full-colour
            canvas's a word each): in memory, the texels in order on a
            little-endian host (every host nativeshvc builds for), so one
@@ -2101,7 +2093,10 @@ static int pres_is_cv_low(const PpuFrame *f, const PpuScreen *st)
     return !((st->mosaic & (1u << n)) && (st->mosaic >> 4));
 }
 
-int ppu_frame_presents(const PpuFrame *f)
+/* what the frame presents at the window's resolution: 1 a Mode 7 line, 2 a
+   line showing a canvas, 4 a pseudo-hires line showing the canvas at the
+   console's resolution (or-ed) */
+static int frame_presents(const PpuFrame *f)
 {
     int line, k, what = 0;
     for (line = 1; line <= f->height; line++) {
@@ -2117,7 +2112,7 @@ int ppu_frame_presents(const PpuFrame *f)
 
 int ppu_frame_mode7(const PpuFrame *f)
 {
-    return ppu_frame_presents(f) != 0;
+    return frame_presents(f) != 0;
 }
 
 
@@ -2187,12 +2182,6 @@ static int cv_state(RrMode7 *m, const PpuScreen *st, const uint16_t *pal, int n)
 }
 
 
-/* a Mode 7 line's pixels recorded as the picture's own (RR_M7_NOT): a
-   platform presenting Mode 7 at the console's resolution, scaled as any
-   picture (rr.h rr_mode7_plain), a canvas still at the window's */
-static int m7_plain;
-void ppu_set_mode7_plain(int on) { m7_plain = on != 0; }
-int ppu_mode7_plain(void) { return m7_plain; }
 int ppu_ext_limits_on(void) { return ext_limits; }
 int ppu_ext_wrap_on(void) { return ext_wrap; }
 

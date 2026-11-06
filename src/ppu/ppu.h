@@ -139,16 +139,8 @@ int ppu_woven(int *w, int *h, int from[2]);
 /* a frame's picture's width: f->width, twice that when a line is hires */
 static inline int ppu_frame_width(const PpuFrame *f) { return f->hires ? 2 * f->width : f->width; }
 struct RrMode7;
-/* (ppu.c m7_plain) */
-void ppu_set_mode7_plain(int on);
-/* (rr.h rr_compose_canvas) */
-void ppu_set_compose_canvas(int on);
 /* whether a line of f shows a Mode 7 layer or the frame's canvas */
 int ppu_frame_mode7(const PpuFrame *f);
-/* what the frame presents at the window's resolution: 1 a Mode 7 line, 2 a
-   line showing a canvas, 4 a pseudo-hires line showing the canvas at the
-   console's resolution (or-ed) */
-int ppu_frame_presents(const PpuFrame *f);
 
 /* ---- the console's side ---- */
 void ppu_reset(void);
@@ -189,7 +181,6 @@ void ppu_ext_sprite_wrap(int on);
 void ppu_ext_layer_outside(int layer, const uint16_t *map, int size);
 void ppu_ext_vram_copy(int to_page, int from_page);
 void ppu_ext_canvas_chars(int layer, unsigned word_addr, int count, const uint8_t *texels, int k);
-int ppu_canvas_k(void);
 /* STAT77's flags brought up to the beam: line v, h clocks into it, the
    frame's vdisp (225, or 240 with overscan); before a read of $213E */
 void ppu_stat_catch_up(unsigned v, unsigned h, unsigned vdisp);
@@ -230,7 +221,6 @@ extern void (*ppu_frame_hook)(const PpuFrame *f);
 extern void (*ppu_reset_hook)(void);
 int ppu_ext_limits_on(void);
 int ppu_ext_wrap_on(void);
-int ppu_mode7_plain(void);
 /* a frame described for a compositor (render/compose_body.h): its words */
 const uint32_t *ppu_compose(const PpuFrame *f, size_t *words);
 /* the same with each part's segment for the records of a frame presenting
