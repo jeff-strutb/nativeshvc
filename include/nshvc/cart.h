@@ -69,7 +69,17 @@ struct nshvc_chip {
        cost profile's weights), and the chip is not synced for them. */
     const uint8_t *(*direct_read)(uint32_t addr);
     uint8_t *(*direct_write)(uint32_t addr);
+    /* Optional (since 2.23). The S-CPU waits on `addr`, which the chip just
+       answered with `seen`, itself brought up to nshvc_cart_clock: the master
+       clock from which a read of it could next answer otherwise, its own work
+       being all that changes it till then. NSHVC_CART_NO_CHANGE: only an access
+       of the S-CPU's could change it. 0, or no call: the chip cannot tell, and
+       the wait reads it again every few clocks. A clock too late makes the wait
+       see the change late; it must not be guessed. */
+    uint64_t (*next_change)(uint32_t addr, uint8_t seen);
 };
+
+#define NSHVC_CART_NO_CHANGE UINT64_MAX
 
 /* ---- what the connector gives a chip ---- */
 /* the master clock: clocks since power on (21.477 MHz NTSC); in a sync,

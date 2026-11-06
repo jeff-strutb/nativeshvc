@@ -67,8 +67,11 @@ static atomic_uint ring_w, ring_r;
 static void spc_main(void *arg);
 static void boot_run(void);
 static int in_ipl;                           /* the boot ROM is running (its accesses cost nothing) */
-static uint64_t echo_at;                     /* the cycle the boot ROM's last byte's echo shows from */
-static uint8_t echo_before;                  /* port 0 until then */
+/* The SPC700 can be ahead of the S-CPU (boot_byte, apu_port_change): the cycle
+   each port's last change shows from, and the port until then */
+static uint64_t out_at[4];
+static uint8_t out_before[4];
+static int stop_at_port;                     /* apu_port_change: back at a port's change */
 
 /* NSHVC_SPCLOG=FILE: each SPC700 write and read of $F0-$FF (its time in
    half cycles, 1 write or 0 read, the address, the value), as the oracle's
@@ -98,7 +101,8 @@ void apu_reset(void)
     memset(t_count, 0, sizeof t_count);
     t01_div = t2_div = 0;
     spc_cycles = spc_target = dsp_at = 0;
-    echo_at = 0;
+    memset(out_at, 0, sizeof out_at);
+    stop_at_port = 0;
     spc_carry = 0;
     in_ipl = 0;
     atomic_store(&ring_w, 0);
@@ -209,15 +213,17 @@ static void spc_advance(unsigned cycles)
    after the counters', tests/rom's measured frame) */
 static uint64_t apu_clock(void) { return snes_clock + 4; }
 
-void apu_sync(void)
+/* the SPC700's time at the sound unit's clock c. The master clock's rate:
+   NTSC's 315/88 x 6 MHz whole (the reference's, against which the two
+   processors' ports are timed) */
+static uint64_t spc_time_at(uint64_t c)
 {
-    uint64_t c = apu_clock();
-    {
-        /* the master clock's rate: NTSC's 315/88 x 6 MHz whole (the
-           reference's, against which the two processors' ports are timed) */
-        uint64_t m = snes_pal() ? 21281370u : 21477272u;
-        spc_target = c / m * SPC_HZ + c % m * SPC_HZ / m;
-    }
+    uint64_t m = snes_pal() ? 21281370u : 21477272u;
+    return c / m * SPC_HZ + c % m * SPC_HZ / m;
+}
+
+static void spc_run_to_target(void)
+{
     if (spc_cycles <= spc_target) {
         if (!in_ipl) {
             main_co = coro_current();
@@ -226,6 +232,39 @@ void apu_sync(void)
         if (in_ipl)
             boot_run();
     }
+}
+
+void apu_sync(void)
+{
+    spc_target = spc_time_at(apu_clock());
+    spc_run_to_target();
+}
+
+/* A wait of the S-CPU's on the ports, with nothing that can write them before
+   the console's clock `until`: the SPC700 run ahead through that time, back at
+   its first change of a port, so the wait goes to it directly. *at: the first
+   clock a read of the port sees it (the first whose spc_time_at reaches its
+   cycle), or ~0 with no change before `until`. 0 when the log is on: its records
+   are in the order they are made. */
+int apu_port_change(uint64_t until, uint64_t *at)
+{
+    uint64_t now, best = ~(uint64_t)0, m = snes_pal() ? 21281370u : 21477272u;
+    int n;
+    if (spclog)
+        return 0;
+    now = spc_time_at(apu_clock());
+    spc_target = spc_time_at(until + 4);
+    stop_at_port = 1;
+    spc_run_to_target();
+    stop_at_port = 0;
+    spc_target = now;
+    for (n = 0; n < 4; n++)
+        if (out_at[n] > now && out_at[n] < best)
+            best = out_at[n];
+    *at = ~(uint64_t)0;
+    if (best != ~(uint64_t)0)
+        *at = best / SPC_HZ * m + (best % SPC_HZ * m + SPC_HZ - 1) / SPC_HZ - 4;
+    return 1;
 }
 
 int snes_audio_queued(void)
@@ -249,12 +288,12 @@ int snes_audio_take(int16_t *lr, int max)
 }
 
 /* ---- the S-CPU's side ---- */
-/* (a byte's echo, worked out ahead of the S-CPU, shows from its cycle: boot_byte) */
 uint8_t apu_port_read(uint8_t port)
 {
-    if (!(port & 3) && spc_target < echo_at)
-        return echo_before;
-    return port_out[port & 3];
+    port &= 3;
+    if (spc_target < out_at[port])
+        return out_before[port];
+    return port_out[port];
 }
 void apu_port_write(uint8_t port, uint8_t v)
 {
@@ -300,8 +339,9 @@ void spc_boot_rom(void);
  * port: where a write of the S-CPU's comes into sight (port_read), or,
  * seen already, past the S-CPU's time, where its next write can come (the
  * SPC700 hands back there); a timer's counter: its next count; RAM the echo
- * may write, and the DSP's registers, which the chip changes as it runs: a
- * cycle on; the rest of RAM and $F0-$F2, only the driver's own writes. A
+ * may write, and the DSP's registers the chip changes: the next clock it can
+ * (mix_ram_next, mix_reg_next); the rest of RAM, the DSP's other registers and
+ * $F0-$F2, only the driver's own writes. A
  * condition that writes looks again a cycle on. */
 static int turn_on, turn_step;
 static uint64_t turn_until;
@@ -355,8 +395,12 @@ static void turn_note(uint16_t addr, uint8_t v)
     } else if (addr >= 0xFD && addr <= 0xFF) {
         int n = addr - 0xFD;
         c = t_count[n] ? spc_cycles : timer_next(n);
-    } else if (addr == 0xF3 || mix_echo_may_write(addr)) {
-        c = spc_cycles + 1;
+    } else if (addr == 0xF3) {
+        unsigned n = mix_reg_next(dsp_addr & 0x7F);
+        if (n)
+            c = spc_cycles + n;
+    } else if (mix_echo_may_write(addr)) {
+        c = spc_cycles + (unsigned)mix_ram_next();
     }
     if (c < turn_until)
         turn_until = c;
@@ -492,7 +536,19 @@ void spc_wr(uint16_t addr, uint8_t v)
         if (dsp_addr < 0x80)
             mix_reg_write(dsp_addr, v);
         return;
-    case 0xF4: case 0xF5: case 0xF6: case 0xF7: port_out[addr - 0xF4] = v; return;
+    case 0xF4: case 0xF5: case 0xF6: case 0xF7: {
+        int n = addr - 0xF4;
+        if (port_out[n] == v)
+            return;
+        /* (several at a cycle: all show from it) */
+        if (out_at[n] != spc_cycles)
+            out_before[n] = port_out[n];
+        out_at[n] = spc_cycles;
+        port_out[n] = v;
+        if (stop_at_port)
+            spc_target = spc_cycles;
+        return;
+    }
     case 0xFA: case 0xFB: case 0xFC: t_target[addr - 0xFA] = v; return;
     }
 }
@@ -523,10 +579,7 @@ const uint8_t *snes_aram(void) { return aram; }
    port's index a cycle before its byte (a word to $2140) is answered as the
    console answers it. A byte, its index seen, is one step (boot_byte). */
 enum {
-    B_START, B_CLEAR, B_CLEAR_RD, B_CLEAR_WR, B_AA_RD, B_AA_WR, B_BB_RD, B_BB_WR, B_CC,
-    B_NEXT, B_BYTE, B_DATA, B_STORE_RD, B_STORE_WR,
-    B_PAGE_RD, B_PAGE_WR, B_ANOTHER, B_F6, B_F7, B_TO0_RD, B_TO0_WR, B_TO1_WR, B_F4, B_F5,
-    B_REPLY_RD, B_REPLY_WR, B_JUMP_LO, B_JUMP_HI
+    B_START, B_CC, B_NEXT, B_BYTE, B_DATA, B_STORE_RD, B_STORE_WR, B_PAGE, B_ANOTHER, B_F6, B_F7, B_F4, B_F5, B_JUMP
 };
 static unsigned boot_state;
 static uint8_t boot_a, boot_x, boot_y, boot_v;
@@ -595,7 +648,7 @@ static void boot_stored(void)
 {
     boot_y = boot_nz((uint8_t)(boot_y + 1));
     if (boot_z)
-        boot_go(2 + 2 + 3, B_PAGE_RD);
+        boot_go(2 + 2 + 3, B_PAGE);
     else
         boot_go(2 + 4 + 3, B_BYTE);
 }
@@ -617,8 +670,6 @@ static void boot_byte(void)
     if (spclog)
         spc_rd(0xF4);
     spc_pass(1);
-    echo_before = port_out[0];
-    echo_at = spc_cycles;
     spc_wr(0xF4, boot_y);
     spc_pass(3);
     boot_p = spc_rd(0x00);
@@ -637,55 +688,52 @@ static void boot_byte(void)
     boot_stored();
 }
 
+/* The ROM's start, up to its first poll, in one step: nothing in it reads what the
+   S-CPU can change. FFC0 mov x,#$EF; FFC2 mov sp,x; FFC3 mov a,#$00; then the
+   clear, FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5, $EF down to $01, 10 cycles a
+   turn and 8 the last; FFC9 mov $F4,#$AA; FFCC mov $F5,#$BB. Each write's cycle
+   its own (the DSP sees the RAM at it, the S-CPU the ports from it). */
+static void boot_start(void)
+{
+    boot_x = 0xEF;
+    spc.sp = boot_x;
+    boot_a = 0x00;
+    spc_pass(2 + 2 + 2);
+    if (boot_clear_unseen()) {
+        boot_x = 0;
+        spc_pass(238 * 10 + 8 + 4);
+    } else {
+        spc_pass(3);
+        for (;;) {
+            if (spclog)
+                spc_rd(boot_x);
+            spc_pass(1);
+            spc_wr(boot_x, boot_a);
+            boot_x = boot_nz((uint8_t)(boot_x - 1));
+            if (boot_z)
+                break;
+            spc_pass(2 + 4 + 3);
+        }
+        spc_pass(2 + 2 + 4);
+    }
+    if (spclog)
+        spc_rd(0xF4);
+    spc_pass(1);
+    spc_wr(0xF4, 0xAA);
+    spc_pass(4);
+    if (spclog)
+        spc_rd(0xF5);
+    spc_pass(1);
+    spc_wr(0xF5, 0xBB);
+    boot_go(4, B_CC);
+}
+
 static void boot_run(void)
 {
     while (in_ipl && spc_cycles <= spc_target) {
         switch (boot_state) {
         case B_START:
-            /* FFC0 mov x,#$EF; FFC2 mov sp,x; FFC3 mov a,#$00 */
-            boot_x = 0xEF;
-            spc.sp = boot_x;
-            boot_a = 0x00;
-            boot_go(2 + 2 + 2, B_CLEAR);
-            break;
-        case B_CLEAR:
-            /* FFC5 mov (x),a; FFC6 dec x; FFC7 bne $FFC5: $EF down to $01, 10
-               cycles a turn and 8 the last */
-            if (boot_clear_unseen()) {
-                boot_x = 0;
-                boot_go(238 * 10 + 8 + 4, B_AA_RD);
-            } else {
-                boot_go(3, B_CLEAR_RD);
-            }
-            break;
-        case B_CLEAR_RD:
-            spc_rd(boot_x);
-            boot_go(1, B_CLEAR_WR);
-            break;
-        case B_CLEAR_WR:
-            spc_wr(boot_x, boot_a);
-            boot_x = boot_nz((uint8_t)(boot_x - 1));
-            if (boot_z)
-                boot_go(2 + 2 + 4, B_AA_RD);
-            else
-                boot_go(2 + 4 + 3, B_CLEAR_RD);
-            break;
-        case B_AA_RD:
-            /* FFC9 mov $F4,#$AA; FFCC mov $F5,#$BB */
-            spc_rd(0xF4);
-            boot_go(1, B_AA_WR);
-            break;
-        case B_AA_WR:
-            spc_wr(0xF4, 0xAA);
-            boot_go(4, B_BB_RD);
-            break;
-        case B_BB_RD:
-            spc_rd(0xF5);
-            boot_go(1, B_BB_WR);
-            break;
-        case B_BB_WR:
-            spc_wr(0xF5, 0xBB);
-            boot_go(4, B_CC);
+            boot_start();
             break;
         case B_CC:
             /* FFCF cmp $F4,#$CC; FFD2 bne $FFCF; FFD4 bra $FFEF */
@@ -731,12 +779,10 @@ static void boot_run(void)
             spc_wr((uint16_t)(boot_p + boot_y), boot_a);
             boot_stored();
             break;
-        case B_PAGE_RD:
+        case B_PAGE:
             /* FFE7 inc $01 */
             boot_v = boot_nz((uint8_t)(spc_rd(0x01) + 1));
-            boot_go(1, B_PAGE_WR);
-            break;
-        case B_PAGE_WR:
+            spc_pass(1);
             spc_wr(0x01, boot_v);
             boot_skip(0, 0);
             break;
@@ -754,18 +800,14 @@ static void boot_run(void)
             boot_go(2, B_F7);
             break;
         case B_F7:
+            /* (then FFF1 movw $00,ya, reading no port) */
             boot_y = spc_rd(0xF7);
-            boot_go(3, B_TO0_RD);
-            break;
-        case B_TO0_RD:
-            spc_rd(0x00);
-            boot_go(1, B_TO0_WR);
-            break;
-        case B_TO0_WR:
+            spc_pass(3);
+            if (spclog)
+                spc_rd(0x00);
+            spc_pass(1);
             spc_wr(0x00, boot_a);
-            boot_go(1, B_TO1_WR);
-            break;
-        case B_TO1_WR:
+            spc_pass(1);
             spc_wr(0x01, boot_y);
             boot_go(3, B_F4);
             break;
@@ -775,29 +817,24 @@ static void boot_run(void)
             boot_go(2, B_F5);
             break;
         case B_F5:
+            /* (then FFF5 mov $F4,a; FFF7 mov a,y; FFF8 mov x,a; FFF9 bne $FFD6) */
             boot_y = spc_rd(0xF5);
-            boot_go(3, B_REPLY_RD);
-            break;
-        case B_REPLY_RD:
-            spc_rd(0xF4);
-            boot_go(1, B_REPLY_WR);
-            break;
-        case B_REPLY_WR:
+            spc_pass(3);
+            if (spclog)
+                spc_rd(0xF4);
+            spc_pass(1);
             spc_wr(0xF4, boot_a);
-            /* FFF7 mov a,y; FFF8 mov x,a; FFF9 bne $FFD6 */
             boot_a = boot_y;
             boot_x = boot_nz(boot_a);
             if (boot_z)
-                boot_go(2 + 2 + 2 + 5, B_JUMP_LO);
+                boot_go(2 + 2 + 2 + 5, B_JUMP);
             else
                 boot_go(2 + 2 + 4 + 3, B_NEXT);
             break;
-        case B_JUMP_LO:
+        case B_JUMP:
             /* FFFB jmp [$0000+x] */
             boot_p = spc_rd(boot_x);
-            boot_go(1, B_JUMP_HI);
-            break;
-        case B_JUMP_HI:
+            spc_pass(1);
             boot_p = (uint16_t)(boot_p | spc_rd((uint8_t)(boot_x + 1)) << 8);
             spc.a = boot_a;
             spc.x = boot_x;

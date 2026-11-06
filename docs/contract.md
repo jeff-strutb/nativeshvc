@@ -150,6 +150,10 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.23:** `nshvc_chip.next_change`, optional: when a register of the chip's that the S-CPU
+  waits on could next answer otherwise, so the wait goes there and does not read it again every
+  few clocks. A chip without it is waited on as before. (2.22 is on its own branch, not yet
+  merged.)
 - **2.21:** every picture is the platform's GPU's. `nshvc_picture` is drawn by the GPU and
   read back, and fatal on the PSP for a frame showing a canvas, which is drawn at the
   target's resolution alone. A canvas past what the platform's GPU spans is fatal, and

@@ -264,6 +264,17 @@ int hdma_writes_a(void)
     return 0;
 }
 
+/* a channel on writes the sound unit's ports ($2140-$217F): up to 4 registers
+   from its B-bus address */
+int hdma_writes_ports(void)
+{
+    int i;
+    for (i = 0; i < 8; i++)
+        if ((dma_hdmaen & (1u << i)) && !(ch[i].dmap & 0x80) && ch[i].bbad >= 0x3D && ch[i].bbad < 0x80)
+            return 1;
+    return 0;
+}
+
 int hdma_active(void)
 {
     int i;

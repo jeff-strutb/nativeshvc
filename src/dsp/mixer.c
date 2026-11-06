@@ -453,9 +453,32 @@ static inline __attribute__((always_inline)) void voice_read(int v, int which)
     }
 }
 
+/* A voice with nothing in hand: released at level 0, no key-on under way or
+   being taken, no pitch, its counter short of the next values. Its sample
+   changes nothing and nothing it reads is used: the block's bytes go to a decode
+   or a cut, and a key-on's first sample reads the directory afresh. (A voice
+   with a pitch goes on decoding at level 0: what it decodes, a key-on's first
+   decode and the interpolation use, from the RAM as it stands then.) */
+static inline __attribute__((always_inline)) int voice_idle(const Voice *vc, int v)
+{
+    return !vc->level && vc->stage == RELEASE && !vc->kon_delay && !vc->step_pitch && vc->pos < 0x4000 &&
+           !(every_other && (kon_now >> v & 1));
+}
+
 /* Voices 1-7's sample, all its reads passed */
 static inline __attribute__((always_inline)) void voice_sample(int v)
 {
+    Voice *vc = &voice[v];
+    vc->step_pitch = now.v[v].pitch_lo | now.v[v].pitch_hi << 8;
+    if (voice_idle(vc, v)) {
+        if (rd < 1)
+            step_entry((v + 1) & 7);
+        rd = 0;
+        vc->looped = vc->out = 0;
+        vc->level_out = vc->outx_new = vc->envx_new = 0;
+        endx_before = endx;
+        return;
+    }
     if (rd < 1)
         voice_read(v, 0);
     if (rd < 2)
@@ -567,10 +590,17 @@ static inline __attribute__((always_inline)) void clock_30(void)
 /* voice 0's next reads, the echo's filter and the sample's output */
 static inline __attribute__((always_inline)) void sample_end(void)
 {
-    int ch;
-    if (rd < 1)
-        head_read(0);
+    int ch, idle;
     step_settings(0);
+    /* (a key-on it takes next sample reads the directory then, its first) */
+    idle = !voice[0].level && voice[0].stage == RELEASE && !voice[0].kon_delay && !voice[0].step_pitch &&
+           voice[0].pos < 0x4000;
+    if (rd < 1) {
+        if (idle)
+            step_entry(1);
+        else
+            head_read(0);
+    }
     if (rd < 2)
         head_read(1);
     for (ch = 0; ch < 2; ch++)
@@ -581,7 +611,7 @@ static inline __attribute__((always_inline)) void sample_end(void)
         head_read(2);
     for (ch = 0; ch < 2; ch++)
         echo_in[ch] += tap(3, ch) + tap(4, ch) + tap(5, ch);
-    if (rd < 4)
+    if (rd < 4 && !idle)
         head_read(3);
     rd = 0;
     for (ch = 0; ch < 2; ch++) {           /* tap 6 wraps, the newest saturates */
@@ -898,6 +928,36 @@ void mix_voice_output_write(int v, uint8_t value)
         if (in_latch < 8 && at_outx_next[in_latch] < rel && at_outx[in_latch] >= rel)
             voice[in_latch].outx_new = value;
     }
+}
+
+/* The clocks from now until a read of register `reg` could next answer otherwise
+   (a set's clock is seen a clock on), but for a write of the game's: 0 for a
+   register only the game changes. */
+int mix_reg_next(uint8_t reg)
+{
+    int v, at;
+    reg &= 0x7F;
+    if (reg == 0x7C) {
+        for (v = 0; v < 8; v++)
+            if (at_endx[v] + 1 > rel)
+                return at_endx[v] + 1 - rel;
+        return 32 - rel + at_endx[0] + 1;
+    }
+    if ((reg & 0x0F) != 0x8 && (reg & 0x0F) != 0x9)
+        return 0;
+    at = ((reg & 0x0F) == 0x8 ? at_envx : at_outx)[reg >> 4] + 1;
+    return at > rel ? at - rel : 32 - rel + at;
+}
+
+/* The clocks from now until a read of the RAM could see the echo's next write:
+   after clock 29's, after clock 30's */
+int mix_ram_next(void)
+{
+    if (rel < AT_ESA_EDL + 1)
+        return AT_ESA_EDL + 1 - rel;
+    if (rel < AT_KEYS_NOISE + 1)
+        return AT_KEYS_NOISE + 1 - rel;
+    return 32 - rel + AT_ESA_EDL + 1;
 }
 
 int mix_phase(void) { return (rel + 28) & 31; }

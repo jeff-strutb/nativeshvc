@@ -84,6 +84,10 @@ void mix_settle(void);
 /* Call before each write to the sound memory, made at this clock: the chip's
    reads before it do not see it, those after it do */
 void mix_before_ram_write(void);
+/* the clocks until a read of a register (0: only the game changes it), or of
+   the RAM the echo writes, could next answer otherwise */
+int mix_reg_next(uint8_t reg);
+int mix_ram_next(void);
 /* 1 while the echo writes the sound RAM (FLG's echo-write bit clear) */
 int mix_writes_ram(void);
 /* 1 if the echo may write the byte at addr in the clocks to come before a

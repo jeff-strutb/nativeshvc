@@ -57,7 +57,7 @@ static uint32_t sram_mask;
    memory). The clock looked at directly (snes_vcounter and the rest, a
    chip's nshvc_cart_clock) counts as a read. */
 typedef struct {
-    int on, step, dma, mem;
+    int on, step, port, dma, mem;
     uint64_t until;
 } Turn;
 static Turn turn;
@@ -432,6 +432,7 @@ static uint64_t begin_next(void)
 int hdma_active(void);
 int hdma_enabled(void);
 int hdma_writes_a(void);
+int hdma_writes_ports(void);
 
 /* the next line's HDMA point while HDMA runs (lines before the vertical
    blank's) */
@@ -651,12 +652,25 @@ static void dma_now(void)
    the next deadline, so at most a refresh or two a step but for the
    work settled, whose refreshes are its own lines' (Original mode's
    charged time; none in Enhanced mode, where the C takes none). */
+/* The refreshes the clock has passed, each adding its 40 clocks, which can pass
+   the next. A line is far longer than 40, so the k-th (from 0) is passed exactly
+   when the clock plus k refreshes reaches it, and the count comes at once from
+   the clock: from the shortest a refresh can come after the last (the shortest
+   line, less the unit's clock's 7, less a refresh), put right by the lines'
+   actual lengths in a pass or two. */
 static void refresh_take(void)
 {
-    while (snes_clock >= refresh_next) {
-        snes_clock += REFRESH_CLOCKS;
-        refresh_next = refresh_of(line_of(refresh_next) + 1);
-    }
+    unsigned l, n;
+    if (snes_clock < refresh_next)
+        return;
+    l = line_of(refresh_next);
+    n = (unsigned)((snes_clock - refresh_next) / (SNES_LINE_CLOCKS - 4 - 7 - REFRESH_CLOCKS)) + 1;
+    while (n > 1 && snes_clock + (uint64_t)REFRESH_CLOCKS * (n - 1) < refresh_of(l + n - 1))
+        n--;
+    while (snes_clock + (uint64_t)REFRESH_CLOCKS * n >= refresh_of(l + n))
+        n++;
+    snes_clock += (uint64_t)REFRESH_CLOCKS * n;
+    refresh_next = refresh_of(l + n);
 }
 
 /* the refreshes from refresh_next on before clock e (e at most the
@@ -2024,9 +2038,11 @@ void wr16_rmw(uint32_t addr, uint16_t value)
    its own. The clock goes there, the console's deadlines on the way (an
    interrupt taken at its clock, its handler run, is a look again; so are
    the NMI's flag, the vertical blank's and the frame's start, which change
-   what reads see, and HDMA's work where a read could see it). A read the
-   console cannot tell the next change of (the sound unit's ports, the
-   chip's registers, a read with an effect of its own such as a data
+   what reads see, and HDMA's work where a read could see it). The sound
+   unit's ports: the SPC700 runs ahead to its next change of one, while nothing
+   can write them (wait_port_ahead). The chip's registers: the chip says when
+   (nshvc_chip.next_change). A read the console cannot tell the next change of
+   (a chip's with no answer, a read with an effect of its own such as a data
    port's) has the condition look again WAIT_STEP clocks on, as the loop
    would within a few of its turns. A wait with nothing of its own to read
    (WAI, a loop for ever, the vertical blank's wait) goes from one
@@ -2078,13 +2094,19 @@ static uint64_t hvbjoy_changes(void)
    answer otherwise (made now, at the clock it would be: snes_clock for at
    once; NEVER: only at a look again), *step set where the console cannot
    tell, *dma and *mem where HDMA's work could change it. */
-static uint64_t read_changes(uint32_t addr, uint8_t seen, int by_chip, int *step, int *dma, int *mem)
+static uint64_t read_changes(uint32_t addr, uint8_t seen, int by_chip, int *step, int *port, int *dma, int *mem)
 {
     uint8_t bank = (uint8_t)(addr >> 16);
     uint16_t off = (uint16_t)addr;
     if (by_chip) {
-        *step = 1;
-        return NEVER;
+        uint64_t t = chip && chip->next_change ? chip->next_change(addr, seen) : 0;
+        if (!t) {
+            *step = 1;
+            return NEVER;
+        }
+        if (t == NSHVC_CART_NO_CHANGE)
+            return NEVER;
+        return t > snes_clock ? t : snes_clock;
     }
     if (bank == 0x7E || bank == 0x7F || (!(bank & 0x40) && off < 0x2000)) {
         *mem = 1;
@@ -2093,9 +2115,12 @@ static uint64_t read_changes(uint32_t addr, uint8_t seen, int by_chip, int *step
     if (!(bank & 0x40) && off < 0x6000) {
         if (off >= 0x2100 && off < 0x2200) {
             unsigned r = off & 0xFF;
-            /* the sound unit's ports; reads with an effect of their own:
-               the counters' latch and its bytes, the data ports, STAT78 */
-            if ((r >= 0x40 && r < 0x80) || (r >= 0x37 && r <= 0x3D) || r == 0x3F || r == 0x80)
+            /* the sound unit's ports */
+            if (r >= 0x40 && r < 0x80)
+                *port = 1;
+            /* reads with an effect of their own: the counters' latch and its
+               bytes, the data ports, STAT78 */
+            else if ((r >= 0x37 && r <= 0x3D) || r == 0x3F || r == 0x80)
                 *step = 1;
             return NEVER;
         }
@@ -2133,7 +2158,7 @@ static uint64_t read_changes(uint32_t addr, uint8_t seen, int by_chip, int *step
    worked out at the clock it took its value (access_rd) */
 static void turn_note(uint32_t addr, uint8_t v)
 {
-    uint64_t c = read_changes(addr, v, read_by_chip, &turn.step, &turn.dma, &turn.mem);
+    uint64_t c = read_changes(addr, v, read_by_chip, &turn.step, &turn.port, &turn.dma, &turn.mem);
     if (c < turn.until)
         turn.until = c;
 }
@@ -2313,6 +2338,40 @@ static int wait_step(uint64_t until, int *look)
     return check_interrupts();
 }
 
+/* A wait reading the sound unit's ports. Up to the wait's next stop nothing can
+   write them: no handler runs before the next interrupt can come due, no DMA is
+   under way, an HDMA channel's next line if one writes them. So the SPC700 runs ahead to there,
+   back at its first change of a port, and the wait goes to the clock a read
+   first sees it, where the condition looks again. A running chip's IRQ is not
+   known ahead, and with one of these the wait looks again WAIT_STEP on. */
+static void wait_port_ahead(void)
+{
+    /* (a condition that also reads what HDMA's lines change can end at one) */
+    uint64_t next = turn.dma || turn.mem ? next_event : next_real;
+    uint64_t limit, t, at;
+    if (dma_active || dma_pending || hdma_pending || dma_mdmaen || chip_watch(0)) {
+        turn.step = 1;
+        return;
+    }
+    /* (an HDMA channel writing the ports: no further than its next line) */
+    if (hdma_writes_ports())
+        next = next_event;
+    limit = turn.until < next ? turn.until : next;
+    if ((t = interrupt_due_at()) > snes_clock && t < limit)
+        limit = t;
+    if (timeup_flag && timeup_at > snes_clock && timeup_at < limit)
+        limit = timeup_at;
+    if (cart_irq && cart_irq_at > snes_clock && cart_irq_at < limit)
+        limit = cart_irq_at;
+    if (limit <= snes_clock || !apu_port_change(limit, &at)) {
+        turn.step = 1;
+        return;
+    }
+    if (at < limit)
+        limit = at > snes_clock ? at : snes_clock;
+    turn.until = limit;
+}
+
 /* a wait while interrupts are held (code an app runs outside the console's
    time) could never end as the console's would */
 static void wait_allowed(const char *what)
@@ -2346,6 +2405,8 @@ uint64_t nshvc_wait_until(int (*ready)(void *ctx), void *ctx)
            turn looks again at once, at what its handler did */
         if (interrupts_taken != taken)
             continue;
+        if (turn.port && !turn.step)
+            wait_port_ahead();
         if (turn.step && snes_clock + WAIT_STEP < turn.until)
             turn.until = snes_clock + WAIT_STEP;
         while (snes_clock < turn.until && look_again == looks && (!turn.dma || look_dma == dmas) &&
