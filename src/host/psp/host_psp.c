@@ -32,6 +32,7 @@
 #include <psppower.h>
 #include <pspthreadman.h>
 
+#include "nshvc/nshvc.h"
 #include "host.h"
 #include "host_psp.h"
 
@@ -123,17 +124,50 @@ static int s_last = 0;                       /* the one last set to show */
 
 static void *fb_addr(int i) { return (char *)sceGeEdramGetAddr() + (size_t)i * FB_BYTES; }
 
+/* VRAM the frame about to be drawn reads (nshvc_ext_canvas_screen_ge,
+   nshvc_ext_overlay_gpu; host_ge_hold): no buffer it is in is drawn into */
+static const void *s_hold[3];
+static int s_loan = -1;                      /* the buffer lent since the last was shown (host_ge_vram) */
+
+void host_ge_hold(const void *a, const void *b, const void *c)
+{
+    s_hold[0] = a;
+    s_hold[1] = b;
+    s_hold[2] = c;
+}
+
+static int held(int i)
+{
+    const char *base = (const char *)fb_addr(i);
+    int k;
+    for (k = 0; k < 3; k++) {
+        const char *p = (const char *)s_hold[k];
+        if (p && p >= base && p < base + FB_BYTES)
+            return 1;
+    }
+    return 0;
+}
+
+/* a buffer neither on screen, waiting to be, nor held; with none, a vertical
+   blank frees the one on screen */
 static void *screen_target(void)
 {
-    int i;
-    if (s_next >= 0 && sceDisplayGetVcount() != s_next_vcount) {
-        s_shown = s_next;                    /* a vertical blank has passed: it is on screen */
-        s_next = -1;
+    int tries, i;
+    for (tries = 0; tries < 2; tries++) {
+        if (s_next >= 0 && sceDisplayGetVcount() != s_next_vcount) {
+            s_shown = s_next;                /* a vertical blank has passed: it is on screen */
+            s_next = -1;
+        }
+        for (i = 0; i < 3; i++)
+            if (i != s_shown && i != s_next && !held(i)) {
+                s_target = i;
+                return fb_addr(i);
+            }
+        if (!tries)
+            sceDisplayWaitVblankStart();
     }
-    for (i = 0; i == s_shown || i == s_next; i++)
-        ;
-    s_target = i;
-    return fb_addr(i);
+    nshvc_fatal("the picture and the overlay the GE reads in two of the screen's buffers: in one loan, at most");
+    return NULL;
 }
 
 static void screen_show(void)
@@ -142,6 +176,8 @@ static void screen_show(void)
     sceDisplaySetFrameBuf(fb_addr(s_target), FB_STRIDE, PSP_DISPLAY_PIXEL_FORMAT_8888, PSP_DISPLAY_SETBUF_NEXTFRAME);
     s_next = s_target;
     s_last = s_target;
+    s_loan = -1;
+    host_ge_hold(NULL, NULL, NULL);
 }
 
 static void *screen_shown(void) { return fb_addr(s_last); }
@@ -168,7 +204,24 @@ void *host_ge_vram(size_t *bytes)
         s_ge_lent = sceGeSaveContext(&s_ge_kept) >= 0;
     }
     *bytes = FB_BYTES;
-    return screen_target();
+    if (s_loan < 0) {
+        screen_target();
+        s_loan = s_target;
+    }
+    return fb_addr(s_loan);
+}
+
+/* the depth buffer: the VRAM past the screen's buffers, the renderer's only
+   while it draws (render/psp/rr_psp_pic.h; while paused the backdrop's, so
+   lent by the front end then not at all) */
+void *host_ge_depth(int *stride)
+{
+    if (s_shown < 0) {
+        *stride = 0;
+        return NULL;
+    }
+    *stride = FB_STRIDE;
+    return (char *)sceGeEdramGetAddr() + HOST_PSP_VRAM_USED;
 }
 
 static void ge_back(void)

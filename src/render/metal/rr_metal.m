@@ -621,6 +621,55 @@ void rr_image(const uint32_t *argb, int w, int h, const int d[4])
 
 static int compose(const uint32_t *desc, size_t words, int w, int h, const uint32_t wp[4], const int d[4]);
 
+int rr_gpu_device(struct NshvcGpuLoan *loan)
+{
+    if (!s_dev)
+        return NSHVC_GPU_NONE;
+    loan->device = (__bridge void *)s_dev;
+    loan->queue = (__bridge void *)s_q;
+    return NSHVC_GPU_METAL;
+}
+
+/* a texture canvas's bytes past the description (rr.h RrCvGpu); 0 for none */
+static size_t cv_gpu_bytes(const uint32_t *desc)
+{
+    RrCvGpu g;
+    return rr_cv_gpu(desc, &g) ? rr_cv_gpu_bytes(&g) : 0;
+}
+
+/* a texture canvas's texels copied on the GPU to byte `at` of b, the game's
+   event passed first; no encoder open on c. A canvas of characters: each one
+   from its place in the texture's grid to its place in the row-by-row bytes
+   the shaders read. */
+static void cv_gpu_copy(id<MTLCommandBuffer> c, const uint32_t *desc, id<MTLBuffer> b, size_t at)
+{
+    RrCvGpu g;
+    id<MTLTexture> t;
+    id<MTLBlitCommandEncoder> e;
+    if (!rr_cv_gpu(desc, &g))
+        return;
+    t = (__bridge id<MTLTexture>)(void *)(uintptr_t)g.image;
+    if (g.event)
+        [c encodeWaitForEvent:(__bridge id<MTLEvent>)(void *)(uintptr_t)g.event value:g.value];
+    e = [c blitCommandEncoder];
+    if (g.row) {
+        NSUInteger k8 = 8u * (NSUInteger)g.k, n = k8 * k8;
+        uint32_t ci;
+        if (t.pixelFormat != MTLPixelFormatR8Uint)
+            nshvc_fatal("nshvc_ext_canvas_chars_gpu: the texture's format %d: MTLPixelFormatR8Uint", (int)t.pixelFormat);
+        for (ci = 0; ci < g.count; ci++)
+            [e copyFromTexture:t sourceSlice:0 sourceLevel:0
+                  sourceOrigin:MTLOriginMake((NSUInteger)(ci % g.row) * k8, (NSUInteger)(ci / g.row) * k8, 0)
+                    sourceSize:MTLSizeMake(k8, k8, 1) toBuffer:b destinationOffset:at + (size_t)ci * n
+        destinationBytesPerRow:k8 destinationBytesPerImage:n];
+    } else {
+        [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                sourceSize:MTLSizeMake(g.w, g.h, 1) toBuffer:b destinationOffset:at
+     destinationBytesPerRow:(NSUInteger)g.w * 4 destinationBytesPerImage:(NSUInteger)g.w * g.h * 4];
+    }
+    [e endEncoding];
+}
+
 int rr_compose(const uint32_t *desc, size_t words, int w, int h, const int d[4])
 {
     static const uint32_t none[4] = { 0, 0, 0, 0 };
@@ -643,12 +692,13 @@ static int compose(const uint32_t *desc, size_t words, int w, int h, const uint3
         if (!s_cp || !s_enc || w <= 0 || h <= 0 || d[2] <= d[0] || d[3] <= d[1])
             return 0;
         t = pic_tex(w, h);
-        if (!s_cpbuf[s_pi] || [s_cpbuf[s_pi] length] < words * 4)
-            s_cpbuf[s_pi] = [s_dev newBufferWithLength:words * 4 * 2 options:MTLResourceStorageModeShared];
+        if (!s_cpbuf[s_pi] || [s_cpbuf[s_pi] length] < words * 4 + cv_gpu_bytes(desc))
+            s_cpbuf[s_pi] = [s_dev newBufferWithLength:(words * 4 + cv_gpu_bytes(desc)) * 2 options:MTLResourceStorageModeShared];
         memcpy([s_cpbuf[s_pi] contents], desc, words * 4);
         /* the picture first, in a pass of its own, then the target's pass
            goes on */
         [s_enc endEncoding];
+        cv_gpu_copy(s_cmd, desc, s_cpbuf[s_pi], words * 4);
         ce = [s_cmd computeCommandEncoder];
         [ce setComputePipelineState:s_cp];
         [ce setBuffer:s_cpbuf[s_pi] offset:0 atIndex:0];
@@ -700,8 +750,8 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
         MTLRenderPassDescriptor *rp;
         if (!s_cpr || !s_enc || np == 0 || d[2] <= d[0] || d[3] <= d[1])
             return 0;
-        if (!s_cpbuf[s_pi] || [s_cpbuf[s_pi] length] < words * 4)
-            s_cpbuf[s_pi] = [s_dev newBufferWithLength:words * 4 * 2 options:MTLResourceStorageModeShared];
+        if (!s_cpbuf[s_pi] || [s_cpbuf[s_pi] length] < words * 4 + cv_gpu_bytes(desc))
+            s_cpbuf[s_pi] = [s_dev newBufferWithLength:(words * 4 + cv_gpu_bytes(desc)) * 2 options:MTLResourceStorageModeShared];
         if (!s_recbuf[s_pi] || [s_recbuf[s_pi] length] < np * 16) {
             s_recbuf[s_pi] = [s_dev newBufferWithLength:np * 16 options:MTLResourceStorageModePrivate];
             s_picbuf[s_pi] = [s_dev newBufferWithLength:np * 4 options:MTLResourceStorageModePrivate];
@@ -711,6 +761,7 @@ int rr_compose_mode7(const uint32_t *desc, size_t words, const struct RrMode7 *m
         memcpy([s_cpbuf[s_pi] contents], desc, words * 4);
         /* the picture and records first, in a pass of their own */
         [s_enc endEncoding];
+        cv_gpu_copy(s_cmd, desc, s_cpbuf[s_pi], words * 4);
         ce = [s_cmd computeCommandEncoder];
         [ce setComputePipelineState:s_cpr];
         [ce setBuffer:s_cpbuf[s_pi] offset:0 atIndex:0];
@@ -877,6 +928,49 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int n, const float *uv
     }
 }
 
+/* an overlay from a texture of the game's (rr.h), its event passed first: the
+   target's pass ended for it and gone on with */
+void rr_overlay_gpu(uint64_t image, uint64_t view, int w, int h, const float q[6], float alpha, uint64_t event,
+                    uint64_t value)
+{
+    @autoreleasepool {
+        static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+        id<MTLTexture> t = (__bridge id<MTLTexture>)(void *)(uintptr_t)image;
+        size_t o = (s_vused + 15) & ~(size_t)15;
+        float c[4][4] = { { q[0], q[1], 0, 0 }, { q[2], q[3], 1, 0 }, { q[4], q[5], 0, 1 },
+                          { q[2] + q[4] - q[0], q[3] + q[5] - q[1], 1, 1 } };
+        float *v;
+        int i;
+        (void)view;
+        (void)w;
+        (void)h;
+        if (!s_enc || o + 6 * 16 > VB_SIZE)
+            return;
+        if (event) {
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            [s_enc endEncoding];
+            [s_cmd encodeWaitForEvent:(__bridge id<MTLEvent>)(void *)(uintptr_t)event value:value];
+            rp.colorAttachments[0].texture = s_col;
+            rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            s_enc = [s_cmd renderCommandEncoderWithDescriptor:rp];
+        }
+        s_vused = o + 6 * 16;
+        v = (float *)((char *)[s_vb[s_pi] contents] + o);
+        for (i = 0; i < 6; i++) {
+            v[4 * i + 0] = c[ix[i]][0] / s_rw * 2 - 1;
+            v[4 * i + 1] = 1 - c[ix[i]][1] / s_rh * 2;
+            v[4 * i + 2] = c[ix[i]][2];
+            v[4 * i + 3] = c[ix[i]][3];
+        }
+        [s_enc setRenderPipelineState:s_over];
+        [s_enc setVertexBuffer:s_vb[s_pi] offset:o atIndex:0];
+        [s_enc setFragmentTexture:t atIndex:0];
+        [s_enc setFragmentBytes:&alpha length:sizeof alpha atIndex:0];
+        [s_enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+    }
+}
+
 void rr_present(void)
 {
     @autoreleasepool {
@@ -1037,8 +1131,10 @@ int rr_picture(const uint32_t *desc, size_t words, int w, int h, const uint32_t 
             td.storageMode = MTLStorageModeShared;
             t = [s_dev newTextureWithDescriptor:td];
         }
-        b = [s_dev newBufferWithBytes:desc length:words * 4 options:MTLResourceStorageModeShared];
+        b = [s_dev newBufferWithLength:words * 4 + cv_gpu_bytes(desc) options:MTLResourceStorageModeShared];
+        memcpy([b contents], desc, words * 4);
         c = [s_q commandBuffer];
+        cv_gpu_copy(c, desc, b, words * 4);
         ce = [c computeCommandEncoder];
         [ce setComputePipelineState:s_cp];
         [ce setBuffer:b offset:0 atIndex:0];

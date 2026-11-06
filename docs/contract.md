@@ -1,8 +1,8 @@
-# The game contract, version 2.21
+# The game contract, version 2.22
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.21: the console is behaviour exact, the game's C states no time, and each
+contract is at 2.22: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
 game written to it plays on every later 2.x without a change.
@@ -150,6 +150,66 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **2.22:** pictures the GPU holds, each optional and reported by a query; a host without
+  one goes on as before. No texel of them crosses to the CPU.
+  - `nshvc_ext_gpu_device(&loan)`, the query on Metal and Vulkan: lends the host's device
+    and queue (`NshvcGpuLoan`: Metal an `id<MTLDevice>` and `id<MTLCommandQueue>`; Vulkan
+    the instance, physical device, device, queue and queue family) and returns
+    `NSHVC_GPU_METAL` or `NSHVC_GPU_VULKAN`; 0 on a host with none (the PSP's query is
+    `nshvc_ext_ge_vram2`). Vulkan's queue family has graphics and compute, `shaderInt64` is
+    enabled where the device has it, and the game shares the console's one thread, so the
+    queue needs no lock, a frame of the console's perhaps in flight on it.
+  - `nshvc_ext_canvas_screen_gpu(layer, handle, w, h, format, priority, fence)`: a
+    full-colour screen canvas at k 0, palette 0, from a texture in place of
+    `nshvc_ext_canvas_screen32`'s texels. `handle` (`NshvcGpuHandle`) an `MTLTexture`, or a
+    `VkImage` with its view in `SHADER_READ_ONLY_OPTIMAL`; `format` `NSHVC_GPU_FORMAT_METAL`
+    or `_VULKAN`, 32-bit unsigned texels of the same encodings (0 transparent, `0x000000ii`
+    an index, `0xFFrrggbb` a colour); `fence` (`NshvcGpuFence`) an `MTLSharedEvent` and
+    value, or a binary `VkSemaphore`, waited on before the console reads it, 0 none. The
+    console copies it on the GPU into the canvas's buffer once for each frame drawn from it,
+    so every path of a frame (the presentation, the compositor, `nshvc_picture`) reads it as
+    any full-colour canvas's: a Vulkan image needs `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`. Handed
+    in the vertical blank or the frame hook for the frame about to begin, and kept through
+    that frame's presenting until the next is handed or the frame hook after it ends; none
+    handed by then, the canvas is off, so a game hands one each frame (its fence 0 for a
+    picture that stands). A hand in the vertical blank after a hook that handed none counts.
+    While paused no frame is made and it stays, handed or not, for the frame after the
+    pause. An interlaced frame showing it is fatal.
+  - `nshvc_ext_canvas_screen_ge(layer, vram_address, stride, w, h, psm, priority)`, the
+    PSP's: the same canvas from VRAM in the loan, read straight by the console's GE list, no
+    copy to the CPU. `GU_PSM_8888` alone, its words as the GE drew them (`0xttbbggrr`): tt
+    (the GE's alpha, the stencil) not 0 a colour; 0 an index in rr, or transparent. The
+    game's list synced before the frame hook returns. Kept alike. The loan's address now
+    stands until the frame is presented (it could move on a vertical blank), and the console
+    draws the frame into another of the screen's buffers, waiting a vertical blank when both
+    others are on screen or waiting. A picture that stands is the same address handed again,
+    nothing drawn over it. Paused, it is let go, its buffer wanted for the pause's overlay,
+    so a picture is drawn and handed after the pause. A frame showing it has no
+    `nshvc_picture`, as any canvas's there (2.21).
+  - `nshvc_ext_canvas_chars_gpu(layer, word_addr, count, handle, per_row, k, fence)` and, the
+    PSP's, `nshvc_ext_canvas_chars_ge(layer, word_addr, count, vram_address, stride, per_column, psm, k)`: a
+    canvas of characters from the GPU in place of `nshvc_ext_canvas_chars`'s texels, the
+    console placing them as ever (the layer's map and scroll, each tile's flips, priority and
+    palette). The texture: 8-bit unsigned texels (`R8Uint`), the characters in a grid, `per_row`
+    of them a row, each `8k x 8k`, copied on the GPU, needing `TRANSFER_SRC` on Vulkan. VRAM,
+    read straight: by column, `per_column` characters a column, the columns past what a row holds
+    (at most 512 texels) going on in a band below. The GE draws no 8-bit target, so the value is
+    the low bits of a pixel it drew: `GU_PSM_8888`'s red, any depth; `GU_PSM_4444`'s red, a layer
+    of 4 bits or fewer, for more room (at a row of 512, 8888 holds 512 x 272 texels, 4444 512 x
+    512). Past the loan's buffer or 512 texels down is fatal. Handed, kept and let go as the
+    screen forms.
+  - `nshvc_ext_overlay_gpu(handle, w, h, fence)`: an overlay from a texture (8 bits a
+    channel, unsigned normalized, straight alpha, sampled), or on the PSP from VRAM (`handle`'s
+    image its address, its view its stride; `GU_PSM_8888`, its alpha the stencil, the column
+    and row past w x h read by the filter being the game's), in place of an overlay's CPU
+    texels. It returns the overlay's id for `nshvc_overlay_place`, the same each call (one
+    such overlay; -1 when `NSHVC_OVERLAYS` are made). Kept as the canvas's, and shown while
+    paused.
+  - `nshvc_ext_ge_vram2(&bytes, &depth, &depth_stride)`: the loan of `nshvc_ext_ge_vram` with
+    a 16-bit depth buffer of the screen's size (the PSP: 512 pixels a row, 272 rows, 278,528
+    bytes, 8 KB aligned), its contents not kept; `depth` NULL while paused, where the
+    backdrop is. Set by the GE's commands (ZBP, ZBW), the graphics library's kept state left
+    as found.
 - **2.21:** every picture is the platform's GPU's. `nshvc_picture` is drawn by the GPU and
   read back, and fatal on the PSP for a frame showing a canvas, which is drawn at the
   target's resolution alone. A canvas past what the platform's GPU spans is fatal, and

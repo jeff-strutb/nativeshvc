@@ -754,13 +754,44 @@ void rr_overlay(const uint32_t *argb, int w, int h, const float q[6], float alph
     rr_overlay_quads(argb, w, h, 1, uv, q, alpha);
 }
 
+static void over_draw(int W, int H, int tbw, const void *t, int nq, const float *uv, const float *q, float alpha);
+
+/* VRAM the game drew, as a texture the GE reads (rr.h) */
+int rr_ge_picture(const char *what, const void *vram, int stride, int w, int h, int psm)
+{
+    uintptr_t base = (uintptr_t)sceGeEdramGetAddr(), a = (uintptr_t)vram;
+    size_t buf = HOST_PSP_VRAM_USED / 3, off = a - base, bpp = psm == GU_PSM_8888 ? 4u : 2u, row = (size_t)stride * bpp;
+    if (psm != GU_PSM_8888 && psm != GU_PSM_4444)
+        nshvc_fatal("%s: psm %d: GU_PSM_8888, or a character canvas's GU_PSM_4444", what, psm);
+    if (w < 1 || h < 1 || w > 512 || h > 512 || stride < w || (row & 15) || (a & 15) || a < base ||
+        off + row * (size_t)h > HOST_PSP_VRAM_USED || off / buf != (off + row * (size_t)h - 1) / buf)
+        nshvc_fatal("%s: %d x %d at %p, %d pixels a row: 16 bytes aligned, each row too, at most 512 x 512, "
+                    "in one of the screen's buffers (nshvc_ext_ge_vram)", what, w, h, vram, stride);
+    return 1;
+}
+
+/* an overlay's image in the GE's VRAM: read as it stands, the column and row
+   past it the game's (nshvc_ext_overlay_gpu) */
+void rr_overlay_gpu(uint64_t image, uint64_t view, int w, int h, const float q[6], float alpha, uint64_t event,
+                    uint64_t value)
+{
+    const float uv[4] = { 0, 0, (float)w, (float)h };
+    int W, H;
+    (void)event;
+    (void)value;
+    if (!s_screen || w <= 0 || h <= 0)
+        return;
+    for (W = 4; W < w + 1; W <<= 1)
+        ;
+    for (H = 1; H < h + 1; H <<= 1)
+        ;
+    over_draw(W, H, (int)view, (const void *)(uintptr_t)image, 1, uv, q, alpha);
+}
+
 void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *uv, const float *q, float alpha)
 {
-    int W, H, x, y, i, j;
-    uint32_t *t, vc = 0x00FFFFFFu | (uint32_t)(alpha * 255.0f + 0.5f) << 24;
-    OV *v;
-    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
-    float c[4][4];
+    int W, H, x, y;
+    uint32_t *t;
     if (!s_screen || w <= 0 || h <= 0 || nq <= 0)
         return;
     if (w > 511 || h > 511)
@@ -791,6 +822,18 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
         o[w] = o[w - 1];
     }
     sceKernelDcacheWritebackRange(t, (unsigned)((size_t)W * (size_t)(h + 1) * 4));
+    over_draw(W, H, W, t, nq, uv, q, alpha);
+}
+
+/* nq parallelograms from texture t (W x H, tbw texels a row), filtered,
+   blended by its alpha times the constant's */
+static void over_draw(int W, int H, int tbw, const void *t, int nq, const float *uv, const float *q, float alpha)
+{
+    int i, j;
+    uint32_t vc = 0x00FFFFFFu | (uint32_t)(alpha * 255.0f + 0.5f) << 24;
+    OV *v;
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    float c[4][4];
     list_open();
     v = (OV *)sceGuGetMemory(nq * 6 * (int)sizeof(OV));
     for (j = 0; j < nq; j++) {
@@ -814,7 +857,7 @@ void rr_overlay_quads(const uint32_t *argb, int w, int h, int nq, const float *u
     sceGuScissor(0, 0, TW, TH);
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-    sceGuTexImage(0, W, H, W, t);
+    sceGuTexImage(0, W, H, tbw, t);
     sceGuTexFlush();
     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
     sceGuTexWrap(GU_CLAMP, GU_CLAMP);
