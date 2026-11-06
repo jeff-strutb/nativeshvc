@@ -1272,6 +1272,9 @@ void ppu_stat_catch_up(unsigned v, unsigned h, unsigned vdisp)
     unsigned r;
     if (!stat_f)
         return;
+    /* (both flags up: they stay till the frame's reset, whatever the rows) */
+    if (range_over && time_over)
+        return;
     for (r = (unsigned)stat_row; r <= v && r <= 240; r++) {
         unsigned line = r ? r : 1;
         uint8_t ro = range_over, to = time_over;

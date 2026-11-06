@@ -154,10 +154,13 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
   `nshvc_ext_ge_vram2`, `nshvc_ext_canvas_screen_ge`, `nshvc_ext_canvas_chars_ge`,
   `nshvc_ext_overlay_gpu`'s VRAM form, and `NSHVC_SCALE=target`. They were the GE's alone: on
   every other platform the loans returned NULL and the rest were fatal, so a game that calls
-  none of them builds and plays as under 2.22. Every picture stays the platform's GPU's, and
+  none of them builds and plays as under 2.23. Every picture stays the platform's GPU's, and
   a frame its renderer cannot draw stays fatal. The screen's limit is the contract's 8192 x
   8192 everywhere, and no platform limit caps a canvas or `nshvc_ext_canvas_scale`. The
   entries below are the record as each version stood, the PSP's limits included.
+- **2.23:** `nshvc_chip.next_change`, optional: when a register of the chip's that the S-CPU
+  waits on could next answer otherwise, so the wait goes there and does not read it again every
+  few clocks. A chip without it is waited on as before.
 - **2.22:** pictures the GPU holds, each optional and reported by a query; a host without
   one goes on as before. No texel of them crosses to the CPU.
   - `nshvc_ext_gpu_device(&loan)`, the query on Metal and Vulkan: lends the host's device

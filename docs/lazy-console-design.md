@@ -57,19 +57,19 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `apu.c` `dsp_catch_up` | `while (cycles)`, `for (i < got)` | samples due since last observed, in chunks | audio samples; OUTX, ENVX, ENDX when read |
 | `mixer.c` `mix_run` | `while (n >= 32 - rel)` | samples that end in the clocks passed | an audio sample each, worked out whole by the read clocks' tables (`at_` in `mixer.c`): no work for the clocks between. A write reaches this sample or the next by its setting's read clock. A read of ENDX, ENVX or OUTX, or a write of the sound RAM, has the voices whose reads have passed worked out at once, and the rest at the sample's end |
 | `apu.c` `spc_wr` | `while (mix_key_unread())` | the DSP's next key read | the write waits for it, as the driver sees |
-| `apu.c` `spc_wait_until` | `for (;;)` | the driver's wait, one look per possible change | the condition the driver waits on |
+| `apu.c` `spc_wait_until` | `for (;;)` | the driver's wait, one look per possible change: a DSP register at the next clock the chip sets it (`mix_reg_next`), RAM the echo writes at its next write (`mix_ram_next`). A condition that writes, and any wait with `NSHVC_SPCLOG`, looks each cycle | the condition the driver waits on |
 | `apu.c` `spc_main` | `for (;;)` | one entry of the driver | the driver's own C |
-| `apu.c` `boot_run` | `while`, one state a read of a port | **the boot ROM's protocol as states, up to the S-CPU's time**, each at the cycle its fixed counts give and each poll passed at once to the read that can see a change. A byte, its index seen, is one step, `boot_byte`, its echo shown from its cycle. Its clear is 239 writes where something can see them (`boot_clear_unseen`), one step of 2,388 cycles where nothing can | the reply a game's upload reads; the samples the DSP makes |
+| `apu.c` `boot_run` | `while`, one state a read of a port | **the boot ROM's protocol as states, up to the S-CPU's time**, each at the cycle its fixed counts give and each poll passed at once to the read that can see a change. Only a read of a port stands as a state, and a store to $F0-$FF: what follows one, reading no port, is its step (`boot_start`, `boot_byte`), a port it writes shown from the write's cycle. Its clear is 239 writes where something can see them (`boot_clear_unseen`), one step of 2,388 cycles where nothing can | the reply a game's upload reads; the samples the DSP makes |
 | `bus.c` `run_events` | `for (;;)` | one deadline a pass | NMI, IRQ, HDMA, the field: what the game's handlers and reads see |
 | `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step and no `run_events` pass a line: each line takes up its transfer directly at the same clocks, and the deadlines are worked out once when the lines are done (a transfer that moves them does so itself). Lines that move no byte and reload no table are passed in one step (`dma.c` `hdma_quiet`), so the cost follows the bytes moved. Line by line through `wait_step` near a deadline, with a wait reading the DMA registers or memory a channel writes (each line is what it observes), or a hook on the accesses (a debugging tool, and what `hdma_bulk_check` compares against). A running chip is run ahead to each transfer's start and no further, and the transfer's accesses of it bring it to their clocks |
 | `bus.c` `irq_find` | `for (;;)`, `l++` | lines until the next IRQ's time, only with the IRQ enabled | the next deadline |
-| `bus.c` `refresh_take` | `while` | a refresh passed, one for each line of settled work | the S-CPU's clock. Costs on only (Original mode's time); with the costs off no work is charged, and a wait sets the next refresh directly |
-| `bus.c` `nshvc_wait_until` | `for (;;)` and its `while` | a look per possible change of what the condition read | the condition the game waits on |
+| `bus.c` `refresh_take` | `while`, a pass or two | none: the refreshes passed come from the clock, put right by the lines' lengths | the S-CPU's clock. Costs on only (Original mode's time); with the costs off no work is charged, and a wait sets the next refresh directly |
+| `bus.c` `nshvc_wait_until` | `for (;;)` and its `while` | a look per possible change of what the condition read: for the sound unit's ports, the SPC700 run ahead to its next change (`wait_port_ahead`, `apu.c` `apu_port_change`). for a chip's register, the clock the chip gives (`nshvc_chip.next_change`). **A chip's registers with no such answer, reads with an effect of their own, and ports with a chip running, DMA under way or an HDMA channel on them, still look again every 64 clocks (`WAIT_STEP`)** | the condition the game waits on |
 | `bus.c` `snes_wai`, `snes_loop_forever` | `for (;;)` | one interrupt taken or deadline reached | the game's handlers |
 | `dispatch.c` `cpu_main` | `for (;;)` | one entry of the game | the game's own C |
 | `dma.c` `dma_run` | channels; bytes | each byte a game's DMA moves | the bytes written; the clock read |
 | `dma.c` `hdma_line` | 8 channels, on an HDMA line only | an HDMA transfer the game turned on | registers changed for that line. Original mode's lines are still deadlines while its timed C runs, as its writes interleave with the tables |
-| `ppu.c` `ppu_stat_catch_up` | `r` from the last evaluated row to the beam | one row's evaluation, only when $213E is read | STAT77's range and time over flags, sticky across rows |
+| `ppu.c` `ppu_stat_catch_up` | `r` from the last evaluated row to the beam | one row's evaluation, only when $213E is read and a flag is still down | STAT77's range and time over flags, sticky across rows |
 | `ppu.c` `ppu_render_lines` | lines first to end | one record entry a line: state and palette indices, mosaic row (lines with no change share a state) | the compositor's row table, a STAT77 read. Written line by line because the vertical mosaic's row depends on the line |
 
 ## What is not done to the note's full standard
@@ -88,6 +88,22 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
    a wait reading the DMA registers or memory a channel writes), or a deadline a line away, the
    lines stay deadlines, one at a time. Original mode's stay deadlines while its timed C runs
    across them.
+
+4. A wait reading a chip's registers, where the chip has no `next_change` (none has it yet), or a
+   register whose read has an effect of its own, looks again every 64 clocks, so its cost follows
+   the time waited. So does a wait on the sound ports
+   with a chip running, DMA under way or an HDMA channel writing them.
+
+5. Compiled and never run, so nothing above counts as narrowed by them until it has been: the
+   boot ROM's steps `boot_start` and `boot_byte`, with only its reads of a port and its stores to
+   $F0-$FF left as states; a DSP voice with no pitch, released at level 0, doing nothing in a
+   sample (`voice_idle`), which leaves a silent voice with a pitch decoding at full cost; the
+   S-CPU's wait on the sound ports (`wait_port_ahead`); the SPC700's waits on DSP registers and
+   echo RAM (`mix_reg_next`, `mix_ram_next`); HDMA's lines in bulk with a chip running; a chip's
+   `next_change`, which no chip implements yet; `refresh_take`'s count from the clock; STAT77's
+   evaluation ending when both its flags are up.
+6. A wait whose condition looks at the clock itself (`snes_now`) looks again every 64 clocks: the
+   console cannot tell what it does with it.
 
 ## How it is checked
 
