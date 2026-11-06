@@ -487,6 +487,11 @@ static int make_device(void)
     memset(&feat, 0, sizeof feat);
     feat.shaderInt64 = have.shaderInt64;
     ci.pEnabledFeatures = &feat;
+    {
+        VkPhysicalDeviceProperties pr;
+        vkGetPhysicalDeviceProperties(s_phys, &pr);
+        fprintf(stderr, "rr: vulkan: %s (of %u), queue family %u, surface %d\n", pr.deviceName, nd, s_qfam, s_surface != VK_NULL_HANDLE);
+    }
     if (!VK_OK(vkCreateDevice(s_phys, &ci, NULL, &s_dev)))
         return 0;
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
@@ -885,7 +890,7 @@ static int m7_make(VkShaderModule vs)
     VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
                                           { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
     VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-    VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 22 * 4 };
+    VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24 * 4 };
     VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
     VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -1325,7 +1330,11 @@ const char *rr_name(void) { return "vulkan"; }
 static void wait_frame(void)
 {
     if (s_submitted) {
-        vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
+        VkResult r = vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, 5000000000ull);
+        if (r != VK_SUCCESS) {
+            fprintf(stderr, "rr: vulkan: the GPU's frame not done in 5 s: %d\n", (int)r);
+            vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
+        }
         s_submitted = 0;
     }
 }
@@ -1690,12 +1699,16 @@ static int swap_make(void)
     int rank = 0;
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(s_phys, s_qfam, s_surface, &ok);
-    if (!ok || !VK_OK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_phys, s_surface, &caps)))
+    if (!ok || !VK_OK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_phys, s_surface, &caps))) {
+        fprintf(stderr, "rr: vulkan: no swapchain: surface support %d\n", (int)ok);
         return 0;
+    }
     if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0)
         return 0;                                  /* minimised */
-    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        fprintf(stderr, "rr: vulkan: no swapchain: usage flags %x have no transfer\n", (unsigned)caps.supportedUsageFlags);
         return 0;
+    }
     vkGetPhysicalDeviceSurfaceFormatsKHR(s_phys, s_surface, &nf, fmts);
     ci.imageFormat = nf ? fmts[0].format : FMT;
     ci.imageColorSpace = nf ? fmts[0].colorSpace : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -1736,6 +1749,8 @@ static int swap_make(void)
         return 0;
     s_swap_w = ci.imageExtent.width;
     s_swap_h = ci.imageExtent.height;
+    fprintf(stderr, "rr: vulkan: swapchain %ux%u, target %dx%d, format %d, present mode %d, %u images min\n", s_swap_w, s_swap_h, s_rw,
+            s_rh, (int)ci.imageFormat, (int)ci.presentMode, ci.minImageCount);
     vkGetSwapchainImagesKHR(s_dev, s_swap, &s_nswap, NULL);
     s_swap_img = (VkImage *)calloc(s_nswap, sizeof *s_swap_img);
     vkGetSwapchainImagesKHR(s_dev, s_swap, &s_nswap, s_swap_img);
@@ -1774,6 +1789,10 @@ void rr_present(void)
             swap_make();
         if (s_swap) {
             VkResult r = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, s_sem_acquire, VK_NULL_HANDLE, &img);
+            static VkResult r_last = VK_SUCCESS;
+            if (r != r_last)
+                fprintf(stderr, "rr: vulkan: acquire %d, swapchain %ux%u, target %dx%d\n", (int)r, s_swap_w, s_swap_h, s_rw, s_rh);
+            r_last = r;
             if (r == VK_ERROR_OUT_OF_DATE_KHR)
                 swap_destroy();
             else if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)
@@ -1825,17 +1844,27 @@ void rr_present(void)
         si.pWaitDstStageMask = wait_sts;
         s_ngwait = 0;
     }
-    vkQueueSubmit(s_queue, 1, &si, s_fence);
+    {
+        VkResult r = vkQueueSubmit(s_queue, 1, &si, s_fence);
+        static VkResult r_last = VK_SUCCESS;
+        if (r != r_last)
+            fprintf(stderr, "rr: vulkan: submit %d\n", (int)r);
+        r_last = r;
+    }
     s_submitted = 1;
     if (show) {
         VkPresentInfoKHR pr = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         VkResult r;
+        static VkResult p_last = VK_SUCCESS;
         pr.waitSemaphoreCount = 1;
         pr.pWaitSemaphores = &s_sem_done[img];
         pr.swapchainCount = 1;
         pr.pSwapchains = &s_swap;
         pr.pImageIndices = &img;
         r = vkQueuePresentKHR(s_queue, &pr);
+        if (r != p_last)
+            fprintf(stderr, "rr: vulkan: present %d\n", (int)r);
+        p_last = r;
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
             wait_frame();
             swap_destroy();
