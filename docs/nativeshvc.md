@@ -57,7 +57,7 @@ cmake -S . -B build/macos -DNSHVC_HOST=macos -DNSHVC_RENDER=metal && cmake --bui
 |---|---|
 | `null` (headless) | `none` (no picture; the test programs bring the reference's, `tests/ref`) |
 | `macos` | `metal` (default), `gl`, `vulkan` |
-| `windows` | `gl` (default), `vulkan` |
+| `windows` | `vulkan` (default; `vulkan-1.dll` loaded at start, `NSHVC_VULKAN_INCLUDE` the folder of its headers), `gl` |
 | `ios` (`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64`) | `metal` |
 | `none` (the app supplies `src/host/host.h`) | any |
 

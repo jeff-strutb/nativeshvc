@@ -16,6 +16,9 @@
 #if defined(__APPLE__)
 #define VK_USE_PLATFORM_METAL_EXT
 #endif
+#if defined(_WIN32)
+#define VK_NO_PROTOTYPES        /* the library loaded when the renderer opens (below) */
+#endif
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +55,59 @@ typedef VkResult (VKAPI_PTR *rr_create_win32_surface)(VkInstance, const rr_win32
                                                      const VkAllocationCallbacks *, VkSurfaceKHR *);
 #define RR_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR ((VkStructureType)1000009000)
 #define RR_KHR_WIN32_SURFACE_EXTENSION_NAME "VK_KHR_win32_surface"
+
+/* The library is found when the renderer opens, not when the program does: a
+   computer without one is told so by the console (rr_open's 0). Every call this
+   file makes is a pointer of the call's own name. The KHR's are only asked for
+   with a surface; an instance without its extensions may have none of them. */
+void *host_vulkan_loader(void);
+void host_run_pumped(void (*fn)(void *), void *arg);
+#define RR_VK_GLOBAL(X) X(vkEnumerateInstanceExtensionProperties) X(vkCreateInstance)
+#define RR_VK_INSTANCE(X) \
+    X(vkAllocateCommandBuffers) X(vkAllocateDescriptorSets) X(vkAllocateMemory) X(vkBeginCommandBuffer) \
+    X(vkBindBufferMemory) X(vkBindImageMemory) X(vkCmdBeginRenderPass) X(vkCmdBindDescriptorSets) X(vkCmdBindPipeline) \
+    X(vkCmdBindVertexBuffers) X(vkCmdBlitImage) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdDispatch) \
+    X(vkCmdDraw) X(vkCmdEndRenderPass) X(vkCmdPipelineBarrier) X(vkCmdPushConstants) X(vkCmdSetScissor) \
+    X(vkCmdSetViewport) X(vkCreateBuffer) X(vkCreateCommandPool) X(vkCreateComputePipelines) X(vkCreateDescriptorPool) \
+    X(vkCreateDescriptorSetLayout) X(vkCreateDevice) X(vkCreateFence) X(vkCreateFramebuffer) \
+    X(vkCreateGraphicsPipelines) X(vkCreateImage) X(vkCreateImageView) X(vkCreatePipelineLayout) X(vkCreateRenderPass) \
+    X(vkCreateSampler) X(vkCreateSemaphore) X(vkCreateShaderModule) X(vkDestroyBuffer) X(vkDestroyFramebuffer) \
+    X(vkDestroyImage) X(vkDestroyImageView) X(vkDestroySemaphore) X(vkDeviceWaitIdle) X(vkEndCommandBuffer) \
+    X(vkEnumerateDeviceExtensionProperties) X(vkEnumeratePhysicalDevices) X(vkFreeMemory) \
+    X(vkGetBufferMemoryRequirements) X(vkGetDeviceQueue) X(vkGetImageMemoryRequirements) X(vkGetPhysicalDeviceFeatures) \
+    X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceQueueFamilyProperties) \
+    X(vkMapMemory) X(vkQueueSubmit) X(vkResetCommandBuffer) X(vkResetFences) X(vkUnmapMemory) X(vkUpdateDescriptorSets) \
+    X(vkWaitForFences)
+#define RR_VK_KHR(X) \
+    X(vkAcquireNextImageKHR) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
+    X(vkGetPhysicalDeviceSurfaceFormatsKHR) X(vkGetPhysicalDeviceSurfacePresentModesKHR) \
+    X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetSwapchainImagesKHR) X(vkQueuePresentKHR)
+#define RR_VK_DECL(f) static PFN_##f f;
+static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+RR_VK_GLOBAL(RR_VK_DECL) RR_VK_INSTANCE(RR_VK_DECL) RR_VK_KHR(RR_VK_DECL)
+
+static int vk_load_global(void)
+{
+    if (!(vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)host_vulkan_loader())) {
+        fprintf(stderr, "rr: vulkan: no vulkan-1.dll\n");
+        return 0;
+    }
+#define RR_VK_LOAD(f) if (!(f = (PFN_##f)vkGetInstanceProcAddr(NULL, #f))) return 0;
+    RR_VK_GLOBAL(RR_VK_LOAD)
+#undef RR_VK_LOAD
+    return 1;
+}
+
+static int vk_load_instance(VkInstance inst)
+{
+#define RR_VK_LOAD(f) if (!(f = (PFN_##f)vkGetInstanceProcAddr(inst, #f))) { fprintf(stderr, "rr: vulkan: no %s\n", #f); return 0; }
+    RR_VK_INSTANCE(RR_VK_LOAD)
+#undef RR_VK_LOAD
+#define RR_VK_LOAD(f) f = (PFN_##f)vkGetInstanceProcAddr(inst, #f);
+    RR_VK_KHR(RR_VK_LOAD)
+#undef RR_VK_LOAD
+    return 1;
+}
 #endif
 
 #define FMT VK_FORMAT_B8G8R8A8_UNORM      /* 0xAARRGGBB little-endian, as the pictures come */
@@ -138,6 +194,7 @@ static VkBuffer s_read;                /* the frame read back */
 static VkDeviceMemory s_read_mem;
 static uint8_t *s_read_map;
 static VkDeviceSize s_read_size;
+static int s_col_drawn, s_read_fresh;  /* the target holds a frame; s_read has it (read_take) */
 
 static VkSurfaceKHR s_surface;
 static VkSwapchainKHR s_swap;
@@ -312,6 +369,10 @@ static int make_instance(int window)
     VkExtensionProperties ext[64];
     uint32_t n = 64, nw = 0;
     const char *want[5];
+#if defined(_WIN32)
+    if (!vk_load_global())
+        return 0;
+#endif
     vkEnumerateInstanceExtensionProperties(NULL, &n, ext);
 #if defined(__APPLE__)
     if (window && has_ext(ext, n, VK_KHR_SURFACE_EXTENSION_NAME) && has_ext(ext, n, VK_EXT_METAL_SURFACE_EXTENSION_NAME)) {
@@ -338,7 +399,13 @@ static int make_instance(int window)
     ci.pApplicationInfo = &app;
     ci.enabledExtensionCount = nw;
     ci.ppEnabledExtensionNames = want;
-    return VK_OK(vkCreateInstance(&ci, NULL, &s_inst));
+    if (!VK_OK(vkCreateInstance(&ci, NULL, &s_inst)))
+        return 0;
+#if defined(_WIN32)
+    if (!vk_load_instance(s_inst))
+        return 0;
+#endif
+    return 1;
 }
 
 static int surface_make(void)
@@ -370,22 +437,35 @@ static int make_device(void)
     VkExtensionProperties ext[256];
     VkPhysicalDeviceFeatures have, feat;
     const char *want[2];
+    int best = -1;
     if (!VK_OK(vkEnumeratePhysicalDevices(s_inst, &nd, devs)) || nd == 0)
         return 0;
     s_phys = VK_NULL_HANDLE;
-    for (i = 0; i < nd && !s_phys; i++) {
+    for (i = 0; i < nd; i++) {          /* one that can show the window; a discrete GPU, then an integrated */
         VkQueueFamilyProperties qf[16];
+        VkPhysicalDeviceProperties pr;
         uint32_t nq = 16;
+        int score;
+        vkGetPhysicalDeviceProperties(devs[i], &pr);
+        score = pr.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 :
+                pr.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
+        if (score <= best)
+            continue;
         vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &nq, qf);
-        for (j = 0; j < nq; j++)
+        for (j = 0; j < nq; j++) {
+            VkBool32 shows = VK_TRUE;
             /* (the compositor's compute and the frame's graphics on one queue,
                lent to the game too: nshvc_ext_gpu_device) */
-            if ((qf[j].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
-                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
-                s_phys = devs[i];
-                s_qfam = j;
-                break;
-            }
+            if ((qf[j].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) !=
+                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+                continue;
+            if (s_surface && (vkGetPhysicalDeviceSurfaceSupportKHR(devs[i], j, s_surface, &shows) != VK_SUCCESS || !shows))
+                continue;
+            s_phys = devs[i];
+            s_qfam = j;
+            best = score;
+            break;
+        }
     }
     if (!s_phys)
         return 0;
@@ -407,6 +487,11 @@ static int make_device(void)
     memset(&feat, 0, sizeof feat);
     feat.shaderInt64 = have.shaderInt64;
     ci.pEnabledFeatures = &feat;
+    {
+        VkPhysicalDeviceProperties pr;
+        vkGetPhysicalDeviceProperties(s_phys, &pr);
+        fprintf(stderr, "rr: vulkan: %s (of %u), queue family %u, surface %d\n", pr.deviceName, nd, s_qfam, s_surface != VK_NULL_HANDLE);
+    }
     if (!VK_OK(vkCreateDevice(s_phys, &ci, NULL, &s_dev)))
         return 0;
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
@@ -472,6 +557,7 @@ static void targets(int w, int h)
                 &s_read_map);
     s_rw = w;
     s_rh = h;
+    s_col_drawn = s_read_fresh = 0;
 }
 
 static VkShaderModule module(const uint32_t *code, size_t size)
@@ -804,7 +890,7 @@ static int m7_make(VkShaderModule vs)
     VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
                                           { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
     VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-    VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 22 * 4 };
+    VkPushConstantRange pc = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24 * 4 };
     VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 } };
     VkDescriptorPoolCreateInfo dpi = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -1157,7 +1243,7 @@ static void m7_draw(const struct RrMode7 *m, const int d[4], const struct RrM7Sa
     vkCmdEndRenderPass(s_cmd);
 }
 
-int rr_open(void)
+static int open_now(void)
 {
     VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
@@ -1167,8 +1253,12 @@ int rr_open(void)
     int w = 0, h = 0, win = host_window_handle() != NULL;
     if (!make_instance(win))
         return 0;
-    if (win && !surface_make())
+    if (win && !surface_make()) {
         fprintf(stderr, "rr: vulkan: no window surface; drawing offscreen\n");
+#if defined(_WIN32)
+        return 0;                       /* (a window nothing would ever show in: the console's message instead) */
+#endif
+    }
     if (!make_device())
         return 0;
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1214,6 +1304,21 @@ int rr_open(void)
     return 1;
 }
 
+#if defined(_WIN32)
+/* The driver compiles the pipelines as they are made, which on some takes tens of
+   seconds on a first run: on a thread, the window serviced meanwhile. */
+static void open_run(void *arg) { *(int *)arg = open_now(); }
+
+int rr_open(void)
+{
+    int ok = 0;
+    host_run_pumped(open_run, &ok);
+    return ok;
+}
+#else
+int rr_open(void) { return open_now(); }
+#endif
+
 void rr_close(void)
 {
     if (s_dev)
@@ -1225,7 +1330,11 @@ const char *rr_name(void) { return "vulkan"; }
 static void wait_frame(void)
 {
     if (s_submitted) {
-        vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
+        VkResult r = vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, 5000000000ull);
+        if (r != VK_SUCCESS) {
+            fprintf(stderr, "rr: vulkan: the GPU's frame not done in 5 s: %d\n", (int)r);
+            vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX);
+        }
         s_submitted = 0;
     }
 }
@@ -1585,15 +1694,21 @@ static int swap_make(void)
     VkSurfaceCapabilitiesKHR caps;
     VkSwapchainCreateInfoKHR ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     VkSurfaceFormatKHR fmts[32];
-    uint32_t nf = 32, i;
+    VkPresentModeKHR modes[16];
+    uint32_t nf = 32, nm = 16, i;
+    int rank = 0;
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(s_phys, s_qfam, s_surface, &ok);
-    if (!ok || !VK_OK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_phys, s_surface, &caps)))
+    if (!ok || !VK_OK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_phys, s_surface, &caps))) {
+        fprintf(stderr, "rr: vulkan: no swapchain: surface support %d\n", (int)ok);
         return 0;
+    }
     if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0)
         return 0;                                  /* minimised */
-    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        fprintf(stderr, "rr: vulkan: no swapchain: usage flags %x have no transfer\n", (unsigned)caps.supportedUsageFlags);
         return 0;
+    }
     vkGetPhysicalDeviceSurfaceFormatsKHR(s_phys, s_surface, &nf, fmts);
     ci.imageFormat = nf ? fmts[0].format : FMT;
     ci.imageColorSpace = nf ? fmts[0].colorSpace : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -1617,12 +1732,25 @@ static int swap_make(void)
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.preTransform = caps.currentTransform;
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    /* the game paces its own frames (console.c), a present never holding it to the
+       display's: the newest frame shown at each refresh, unshown ones replaced;
+       else at once; FIFO only where there is no other */
     ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(s_phys, s_surface, &nm, modes) >= 0)
+        for (i = 0; i < nm; i++) {
+            int r = modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ? 2 : modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ? 1 : 0;
+            if (r > rank) {
+                rank = r;
+                ci.presentMode = modes[i];
+            }
+        }
     ci.clipped = VK_TRUE;
     if (!VK_OK(vkCreateSwapchainKHR(s_dev, &ci, NULL, &s_swap)))
         return 0;
     s_swap_w = ci.imageExtent.width;
     s_swap_h = ci.imageExtent.height;
+    fprintf(stderr, "rr: vulkan: swapchain %ux%u, target %dx%d, format %d, present mode %d, %u images min\n", s_swap_w, s_swap_h, s_rw,
+            s_rh, (int)ci.imageFormat, (int)ci.presentMode, ci.minImageCount);
     vkGetSwapchainImagesKHR(s_dev, s_swap, &s_nswap, NULL);
     s_swap_img = (VkImage *)calloc(s_nswap, sizeof *s_swap_img);
     vkGetSwapchainImagesKHR(s_dev, s_swap, &s_nswap, s_swap_img);
@@ -1646,7 +1774,6 @@ void rr_present(void)
     VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSemaphore waits[GPU_WAITS + 1];
     VkPipelineStageFlags wait_sts[GPU_WAITS + 1];
-    VkBufferImageCopy cp;
     uint32_t img = 0;
     int show = 0;
     if (!s_recording)
@@ -1662,6 +1789,10 @@ void rr_present(void)
             swap_make();
         if (s_swap) {
             VkResult r = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, s_sem_acquire, VK_NULL_HANDLE, &img);
+            static VkResult r_last = VK_SUCCESS;
+            if (r != r_last)
+                fprintf(stderr, "rr: vulkan: acquire %d, swapchain %ux%u, target %dx%d\n", (int)r, s_swap_w, s_swap_h, s_rw, s_rh);
+            r_last = r;
             if (r == VK_ERROR_OUT_OF_DATE_KHR)
                 swap_destroy();
             else if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)
@@ -1686,19 +1817,13 @@ void rr_present(void)
         barrier(s_cmd, s_swap_img[img], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     }
-    /* the frame kept for a read back */
-    memset(&cp, 0, sizeof cp);
-    cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    cp.imageSubresource.layerCount = 1;
-    cp.imageExtent.width = (uint32_t)s_rw;
-    cp.imageExtent.height = (uint32_t)s_rh;
-    cp.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_read, 1, &cp);
     barrier(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     vkEndCommandBuffer(s_cmd);
     s_recording = 0;
+    s_col_drawn = 1;
+    s_read_fresh = 0;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s_cmd;
     /* the game's fences, and the acquired image's */
@@ -1719,22 +1844,68 @@ void rr_present(void)
         si.pWaitDstStageMask = wait_sts;
         s_ngwait = 0;
     }
-    vkQueueSubmit(s_queue, 1, &si, s_fence);
+    {
+        VkResult r = vkQueueSubmit(s_queue, 1, &si, s_fence);
+        static VkResult r_last = VK_SUCCESS;
+        if (r != r_last)
+            fprintf(stderr, "rr: vulkan: submit %d\n", (int)r);
+        r_last = r;
+    }
     s_submitted = 1;
     if (show) {
         VkPresentInfoKHR pr = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         VkResult r;
+        static VkResult p_last = VK_SUCCESS;
         pr.waitSemaphoreCount = 1;
         pr.pWaitSemaphores = &s_sem_done[img];
         pr.swapchainCount = 1;
         pr.pSwapchains = &s_swap;
         pr.pImageIndices = &img;
         r = vkQueuePresentKHR(s_queue, &pr);
+        if (r != p_last)
+            fprintf(stderr, "rr: vulkan: present %d\n", (int)r);
+        p_last = r;
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) {
             wait_frame();
             swap_destroy();
         }
     }
+}
+
+/* the frame last presented into s_read, for whoever reads it (a shot, the pause's
+   backdrop): copied only then, each frame's picture being the window's alone */
+static void read_take(void)
+{
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkBufferImageCopy cp;
+    wait_frame();
+    if (s_read_fresh || !s_col_drawn || s_recording)
+        return;
+    vkResetFences(s_dev, 1, &s_fence);
+    vkResetCommandBuffer(s_cmd, 0);
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(s_cmd, &bi);
+    barrier(s_cmd, s_col, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    memset(&cp, 0, sizeof cp);
+    cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    cp.imageSubresource.layerCount = 1;
+    cp.imageExtent.width = (uint32_t)s_rw;
+    cp.imageExtent.height = (uint32_t)s_rh;
+    cp.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_read, 1, &cp);
+    barrier(s_cmd, s_col, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    vkEndCommandBuffer(s_cmd);
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &s_cmd;
+    vkQueueSubmit(s_queue, 1, &si, s_fence);
+    s_submitted = 1;
+    wait_frame();
+    s_read_fresh = 1;
 }
 
 /* the pause's backdrop (rr_backdrop_make): blur.comp over the frame read
@@ -1814,7 +1985,7 @@ int rr_backdrop_make(float radius_px, uint32_t tint)
     int cell = (int)(radius_px / 4), k, a = 0, i;
     if (s_recording || (!s_bp && !blur_make()))
         return 0;
-    wait_frame();
+    read_take();
     cell = cell < 1 ? 1 : cell;
     memset(&p, 0, sizeof p);
     p.tw = (uint32_t)s_rw;
@@ -2030,7 +2201,7 @@ void rr_size(int w, int h)
 
 int rr_read(uint32_t *argb)
 {
-    wait_frame();
+    read_take();
     memcpy(argb, s_read_map, (size_t)s_read_size);
     return 1;
 }
