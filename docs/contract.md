@@ -1,20 +1,20 @@
-# The game contract, version 2.22
+# The game contract, version 3.0
 
 This is what a decompiled game writes against and what nativeshvc promises in return.
 nativeshvc is a behaviour-exact implementation of the console, not an emulator. The
-contract is at 2.22: the console is behaviour exact, the game's C states no time, and each
+contract is at 3.0: the console is behaviour exact, the game's C states no time, and each
 access it makes costs what the console's bus takes for it, and its cost profile's weight
 (Changes, below). A
-game written to it plays on every later 2.x without a change.
+game written to it plays on every later 3.x without a change.
 
 ## How it changes
 
-- **Major version (3.0):** the only kind of release that may change or remove anything a
+- **Major version (4.0):** the only kind of release that may change or remove anything a
   game writes or relies on below.
-- **Minor version (2.1):** may only add things: a new call, a new extension, or a new field
-  at the end of a struct that a zeroed struct leaves off. A 2.0 game builds and plays the
+- **Minor version (3.1):** may only add things: a new call, a new extension, or a new field
+  at the end of a struct that a zeroed struct leaves off. A 3.0 game builds and plays the
   same.
-- **Patch version (2.0.1):** brings the console closer to the hardware where it differed
+- **Patch version (3.0.1):** brings the console closer to the hardware where it differed
   from the reference (bsnes, accuracy profile). The contract is the hardware's behaviour,
   so this is a fix, not a change of contract.
 - `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` in `nshvc.h` say which version a build is.
@@ -150,6 +150,14 @@ The SPC700 takes no interrupts. The DSP, timers, ports and boot ROM are the cons
 
 ## Changes
 
+- **3.0:** the PSP is no longer a platform. Removed: `nshvc_ext_ge_vram`,
+  `nshvc_ext_ge_vram2`, `nshvc_ext_canvas_screen_ge`, `nshvc_ext_canvas_chars_ge`,
+  `nshvc_ext_overlay_gpu`'s VRAM form, and `NSHVC_SCALE=target`. They were the GE's alone: on
+  every other platform the loans returned NULL and the rest were fatal, so a game that calls
+  none of them builds and plays as under 2.22. Every picture stays the platform's GPU's, and
+  a frame its renderer cannot draw stays fatal. The screen's limit is the contract's 8192 x
+  8192 everywhere, and no platform limit caps a canvas or `nshvc_ext_canvas_scale`. The
+  entries below are the record as each version stood, the PSP's limits included.
 - **2.22:** pictures the GPU holds, each optional and reported by a query; a host without
   one goes on as before. No texel of them crosses to the CPU.
   - `nshvc_ext_gpu_device(&loan)`, the query on Metal and Vulkan: lends the host's device

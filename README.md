@@ -284,16 +284,16 @@ nativeshvc is not written for it, and it aligns to nativeshvc as any game does.
 
 ## Status
 
-Version 2.22.0. The game contract, what a game writes against and what the console
-promises it, is in [docs/contract.md](docs/contract.md), at 2.22: behaviour exact, each
+Version 3.0.0. The game contract, what a game writes against and what the console
+promises it, is in [docs/contract.md](docs/contract.md), at 3.0: behaviour exact, each
 access costing the bus's time and the game's cost profile's weight, or no time with the
 costs off in a game's Enhanced mode (see [Enhancement support](#enhancement-support)). A game built against it plays on
-every later 2.x unchanged; only a 3.0 may change it. The cost profile's standard is
+every later 3.x unchanged; only a 4.0 may change it. The cost profile's standard is
 [docs/cost-profile.md](docs/cost-profile.md); its acceptance bar is not set (an Original
 mode's profile is an approximation, and its report gives the error).
 
 **Platform hosts still to come.** These are separate implementations of the host
-interface, outside the standard; a game written against 2.x needs no change for them:
+interface, outside the standard; a game written against 3.x needs no change for them:
 
 - **Windows:** the host is written and cross-builds with MinGW with no warnings, but has
   never been run on Windows. Its saving and loading of states, and calls that put the
