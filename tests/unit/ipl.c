@@ -122,9 +122,13 @@ static void upload(uint16_t dest, const uint8_t *data, int len, int jump)
     }
 }
 
+#define UPLOAD_FRAME_CLOCKS 357368   /* a frame's clocks, NTSC */
+#define UPLOAD_FRAMES 120            /* far over what they take, far under a stall */
+
 static void abi_reset(void)
 {
     uint8_t want;
+    long took;
     int i, bad = 0, first = -1, apart = 0, split = 0, bad_whole = 0;
     cpu.e = 0;
     want = 0xAA;
@@ -161,6 +165,15 @@ static void abi_reset(void)
     /* the boot ROM echoes the index before it stores the byte (as the
        console's does): the last store a few of its cycles on */
 check:
+    /* the upload's time: on the console a byte's turn is a few tens of the
+       SPC700's cycles, so these bytes take some 10 frames. An answer the S-CPU
+       or the SPC700 sees late shows here and in no byte. */
+    took = (long)(snes_now() / UPLOAD_FRAME_CLOCKS);
+    printf("%s the uploads took %ld frames, at most %d\n", took > UPLOAD_FRAMES ? "FAIL" : "ok  ", took, UPLOAD_FRAMES);
+    if (took > UPLOAD_FRAMES) {
+        printf("1 check(s) failed\n");
+        exit(1);
+    }
     nshvc_wait_vblank();
     for (i = 0; i < LEN; i++) {
         int wrong = snes_aram()[DEST + i] != sent[i];

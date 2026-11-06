@@ -253,14 +253,22 @@ int apu_port_change(uint64_t until, uint64_t *at)
     if (spclog)
         return 0;
     now = spc_time_at(apu_clock());
-    spc_target = spc_time_at(until + 4);
-    stop_at_port = 1;
-    spc_run_to_target();
-    stop_at_port = 0;
-    spc_target = now;
+    /* A change made and not yet seen (the boot ROM's byte, worked out ahead):
+       that is the next, and the SPC700 goes no further, or it would pass what
+       the S-CPU writes in answer. */
     for (n = 0; n < 4; n++)
         if (out_at[n] > now && out_at[n] < best)
             best = out_at[n];
+    if (best == ~(uint64_t)0) {
+        spc_target = spc_time_at(until + 4);
+        stop_at_port = 1;
+        spc_run_to_target();
+        stop_at_port = 0;
+        spc_target = now;
+        for (n = 0; n < 4; n++)
+            if (out_at[n] > now && out_at[n] < best)
+                best = out_at[n];
+    }
     *at = ~(uint64_t)0;
     if (best != ~(uint64_t)0)
         *at = best / SPC_HZ * m + (best % SPC_HZ * m + SPC_HZ - 1) / SPC_HZ - 4;
