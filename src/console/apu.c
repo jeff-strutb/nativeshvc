@@ -67,6 +67,8 @@ static atomic_uint ring_w, ring_r;
 static void spc_main(void *arg);
 static void boot_run(void);
 static int in_ipl;                           /* the boot ROM is running (its accesses cost nothing) */
+static uint64_t echo_at;                     /* the cycle the boot ROM's last byte's echo shows from */
+static uint8_t echo_before;                  /* port 0 until then */
 
 /* NSHVC_SPCLOG=FILE: each SPC700 write and read of $F0-$FF (its time in
    half cycles, 1 write or 0 read, the address, the value), as the oracle's
@@ -96,6 +98,7 @@ void apu_reset(void)
     memset(t_count, 0, sizeof t_count);
     t01_div = t2_div = 0;
     spc_cycles = spc_target = dsp_at = 0;
+    echo_at = 0;
     spc_carry = 0;
     in_ipl = 0;
     atomic_store(&ring_w, 0);
@@ -125,14 +128,14 @@ static void timer_steps(int n, unsigned k)
     t_stage[n] = (uint8_t)((k - first) % period);
 }
 
-/* The DSP runs a clock a cycle, as the chip does, but behind the SPC700:
- * its clocks are run when something could tell, up to the SPC700's cycle,
- * and so each clock has what it would have had at its time. It reads the
- * RAM and its registers, which only the SPC700 writes (each write waits
- * for it); the SPC700 sees it in its registers' reads and, where the echo
- * may have written, the RAM's; the S-CPU and the host see it in the
- * samples, which come at least each 1,024 cycles the SPC700 hands back and
- * at each frame's end (apu_flush). */
+/* The DSP's clock is brought up to the SPC700's when something could tell,
+ * and it makes each sample that ends by then (mixer.c), each with what the
+ * SPC700 had written by the clock the chip reads it. It reads the RAM and its
+ * registers, which only the SPC700 writes (each write brings it up first);
+ * the SPC700 sees it in its registers' reads and, where the echo may have
+ * written, the RAM's; the S-CPU and the host see it in the samples, which
+ * come at least each 1,024 cycles the SPC700 hands back and at each frame's
+ * end (apu_flush). */
 static void dsp_catch_up(void)
 {
     uint64_t cycles = spc_cycles - dsp_at;
@@ -155,9 +158,16 @@ static void dsp_catch_up(void)
     }
 }
 
-void apu_flush(void)
+/* the DSP up to the SPC700's cycle, and the echo's writes by then in the RAM */
+static void dsp_see_ram(void)
 {
     dsp_catch_up();
+    mix_settle();
+}
+
+void apu_flush(void)
+{
+    dsp_see_ram();
     if (spc_co && !coro_stack_ok(spc_co))
         snes_fatal("the SPC700's code used all of its stack's %u bytes", (unsigned)CORO_SPC_STACK);
 }
@@ -239,7 +249,13 @@ int snes_audio_take(int16_t *lr, int max)
 }
 
 /* ---- the S-CPU's side ---- */
-uint8_t apu_port_read(uint8_t port) { return port_out[port & 3]; }
+/* (a byte's echo, worked out ahead of the S-CPU, shows from its cycle: boot_byte) */
+uint8_t apu_port_read(uint8_t port)
+{
+    if (!(port & 3) && spc_target < echo_at)
+        return echo_before;
+    return port_out[port & 3];
+}
 void apu_port_write(uint8_t port, uint8_t v)
 {
     port &= 3;
@@ -402,7 +418,7 @@ uint8_t spc_rd(uint16_t addr)
     dbg_last = addr;
     if (addr < 0xF0 || addr > 0xFF) {
         if (mix_echo_may_write(addr))
-            dsp_catch_up();
+            dsp_see_ram();
         v = aram[addr];
     } else {
         v = spc_rd_reg(addr);
@@ -423,7 +439,7 @@ static uint8_t spc_rd_reg(uint16_t addr)
     case 0xF4: case 0xF5: case 0xF6: case 0xF7: return port_read(addr - 0xF4);
     case 0xF8: case 0xF9:
         if (mix_echo_may_write(addr))
-            dsp_catch_up();
+            dsp_see_ram();
         return aram[addr];
     case 0xFD: case 0xFE: case 0xFF:
         v = t_count[addr - 0xFD];
@@ -449,6 +465,7 @@ void spc_wr(uint16_t addr, uint8_t v)
         spclog_put(1, addr, v);
     /* a write to a register lands in the RAM under it too, where the DSP,
        which reads the RAM itself, finds it */
+    mix_before_ram_write();
     aram[addr] = v;
     if (addr < 0xF0 || addr > 0xFF)
         return;
@@ -499,15 +516,15 @@ void spc_boot_rom(void)
 
 const uint8_t *snes_aram(void) { return aram; }
 
-/* The boot ROM's work (see the file's comment): its protocol as states. Each
-   state is an access at the cycle it stands at, made once the S-CPU's time has
+/* The boot ROM's work (see the file's comment): its protocol as states. A
+   state that reads a port stands at its cycle until the S-CPU's time has
    reached it, and goes to the next by the ROM's fixed cycle counts. The ROM is
    the console's own code, so its time is the console's: an S-CPU that writes a
    port's index a cycle before its byte (a word to $2140) is answered as the
-   console answers it. */
+   console answers it. A byte, its index seen, is one step (boot_byte). */
 enum {
     B_START, B_CLEAR, B_CLEAR_RD, B_CLEAR_WR, B_AA_RD, B_AA_WR, B_BB_RD, B_BB_WR, B_CC,
-    B_NEXT, B_BYTE, B_DATA, B_ECHO_RD, B_ECHO_WR, B_TO_LO, B_TO_HI, B_STORE_RD, B_STORE_WR,
+    B_NEXT, B_BYTE, B_DATA, B_STORE_RD, B_STORE_WR,
     B_PAGE_RD, B_PAGE_WR, B_ANOTHER, B_F6, B_F7, B_TO0_RD, B_TO0_WR, B_TO1_WR, B_F4, B_F5,
     B_REPLY_RD, B_REPLY_WR, B_JUMP_LO, B_JUMP_HI
 };
@@ -571,6 +588,53 @@ static void boot_skip(int polling, uint8_t seen)
     if (polling)
         boot_hold(3, 11, 0, seen);
     boot_go(3, B_BYTE);
+}
+
+/* After the store: FFE4 inc y; FFE5 bne $FFDA */
+static void boot_stored(void)
+{
+    boot_y = boot_nz((uint8_t)(boot_y + 1));
+    if (boot_z)
+        boot_go(2 + 2 + 3, B_PAGE_RD);
+    else
+        boot_go(2 + 4 + 3, B_BYTE);
+}
+
+/* A byte's work, from the read of its value to the next poll, in one step:
+   FFDE mov a,$F5; FFE0 mov $F4,y; FFE2 mov [$00]+y,a. Nothing in it reads what
+   the S-CPU can still change, so it is worked out at once, up to 20 cycles
+   ahead of the S-CPU. The S-CPU sees the echo from the echo's cycle
+   (apu_port_read); the DSP sees the RAM at its cycles, as spc_wr brings it up
+   to each. The ROM's other reads, of $F4 and of the byte it stores over, change
+   nothing. A store to the registers can touch the ports and the timers, whose
+   time is the S-CPU's: that one waits for it as a state of its own. */
+static void boot_byte(void)
+{
+    uint16_t to;
+    boot_a = boot_nz(spc_rd(0xF5));
+    spc_pass(3);
+    /* (the log's record of it) */
+    if (spclog)
+        spc_rd(0xF4);
+    spc_pass(1);
+    echo_before = port_out[0];
+    echo_at = spc_cycles;
+    spc_wr(0xF4, boot_y);
+    spc_pass(3);
+    boot_p = spc_rd(0x00);
+    spc_pass(1);
+    boot_p = (uint16_t)(boot_p | spc_rd(0x01) << 8);
+    spc_pass(2);
+    to = (uint16_t)(boot_p + boot_y);
+    if (to >= 0xF0 && to <= 0xFF) {
+        boot_state = B_STORE_RD;
+        return;
+    }
+    if (spclog)
+        spc_rd(to);
+    spc_pass(1);
+    spc_wr(to, boot_a);
+    boot_stored();
 }
 
 static void boot_run(void)
@@ -657,26 +721,7 @@ static void boot_run(void)
             }
             break;
         case B_DATA:
-            /* FFDE mov a,$F5; FFE0 mov $F4,y */
-            boot_a = boot_nz(spc_rd(0xF5));
-            boot_go(3, B_ECHO_RD);
-            break;
-        case B_ECHO_RD:
-            spc_rd(0xF4);
-            boot_go(1, B_ECHO_WR);
-            break;
-        case B_ECHO_WR:
-            spc_wr(0xF4, boot_y);
-            boot_go(3, B_TO_LO);
-            break;
-        case B_TO_LO:
-            /* FFE2 mov [$00]+y,a */
-            boot_p = spc_rd(0x00);
-            boot_go(1, B_TO_HI);
-            break;
-        case B_TO_HI:
-            boot_p = (uint16_t)(boot_p | spc_rd(0x01) << 8);
-            boot_go(2, B_STORE_RD);
+            boot_byte();
             break;
         case B_STORE_RD:
             spc_rd((uint16_t)(boot_p + boot_y));
@@ -684,12 +729,7 @@ static void boot_run(void)
             break;
         case B_STORE_WR:
             spc_wr((uint16_t)(boot_p + boot_y), boot_a);
-            /* FFE4 inc y; FFE5 bne $FFDA */
-            boot_y = boot_nz((uint8_t)(boot_y + 1));
-            if (boot_z)
-                boot_go(2 + 2 + 3, B_PAGE_RD);
-            else
-                boot_go(2 + 4 + 3, B_BYTE);
+            boot_stored();
             break;
         case B_PAGE_RD:
             /* FFE7 inc $01 */
@@ -796,7 +836,7 @@ static void spc_main(void *arg)
             if (jump_entry)
                 jump_entry();
             else if (snes_spc_run_hook) {
-                dsp_catch_up();               /* (the routine is found by the RAM's bytes) */
+                dsp_see_ram();                /* (the routine is found by the RAM's bytes) */
                 snes_spc_run_hook(jump_to);
             } else
                 snes_fatal("SPC700 started with no runtime");

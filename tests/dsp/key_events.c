@@ -57,6 +57,7 @@ int main(int argc, char **argv)
                 break;
             a = (uint16_t)(rec[5] | rec[6] << 8);
             if (rec[4] == 1) {
+                mix_before_ram_write();
                 ram[a] = rec[7];
                 if (a == 0xF2)
                     f2 = rec[7];

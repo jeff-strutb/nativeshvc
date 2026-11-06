@@ -4,17 +4,24 @@
  * Written from Nocash's fullsnes ("SNES APU DSP" chapters) and checked
  * against the reference's sound chip by mix_replay (tests/dsp), which feeds
  * this mixer the chip's inputs at the chip's clocks and compares every
- * frame. Where fullsnes is silent the behaviour here is what that check
+ * sample. Where fullsnes is silent the behaviour here is what that check
  * measured, and says so.
  *
- * A frame is 32 clocks, one an SPC700 cycle, and the chip does its work at
- * fixed clocks of it: each voice in nine steps (the chart at clock_steps), the
- * echo over clocks 22-30, the shared settings taken at 27-30. A voice
- * reads its settings, and the sound memory, at the clock of the step that
- * uses them, so a change the game makes between two clocks reaches the
- * steps after it and not those before, as on the console. Values are the
- * chip's: decoded samples 15 bits signed, envelope levels 11 bits, sums 16
- * bits.
+ * A sample is made whole, not clock by clock. The chip takes 32 of its clocks
+ * to a sample (one an SPC700 cycle) and reads each setting and the sound
+ * memory at a fixed clock: the at_ tables below. Counted from clock 28, where
+ * the last sample has just come out, those clocks fall in one order: the
+ * echo's writes, the voices from 0 to 7, the echo's reads and the sample's
+ * output. So a setting written at a clock reaches this sample if its read is
+ * still to come, and the next if not (a value already read stays as it was
+ * until the sample ends), and the sample is worked out from those values at
+ * its end, voice by voice. Values are the chip's: decoded samples 15 bits
+ * signed, envelope levels 11 bits, sums 16 bits.
+ *
+ * Something may need part of a sample before its end: a read of ENDX, ENVX or
+ * OUTX, or a write of the sound memory the voices read. Then the voices whose
+ * reads have all passed are worked out at once, by the same tables, and the
+ * rest at the end.
  */
 #include <string.h>
 
@@ -23,20 +30,14 @@
 enum { RELEASE, ATTACK, DECAY, SUSTAIN };
 
 typedef struct {
-    /* what the game set (read at the clocks the steps use them) */
-    int8_t vol_l, vol_r;
-    uint16_t pitch;
-    uint8_t entry;
-    int adsr, attack, decay, sustain_level, sustain_rate;
-    uint8_t gain;
     /* taken by the steps a few clocks before they are used */
-    uint8_t srcn;            /* the directory entry (step 1) */
-    uint16_t dir_addr;       /* its address (worked out at the next voice's step 1) */
-    uint16_t next_block;     /* the entry's start or loop address (step 2) */
-    int adsr_on, adsr_attack, adsr_decay;   /* ADSR's first byte (step 2) */
-    int step_pitch;          /* the pitch, low byte at step 2, high at 3 */
-    uint8_t header, data;    /* the block's header and the byte pair's first (step 3) */
-    int looped;              /* the block just ended with a loop (step 4, for ENDX) */
+    uint8_t srcn;            /* the directory entry */
+    uint16_t dir_addr;       /* its address (worked out by the next voice's entry) */
+    uint16_t next_block;     /* the entry's start or loop address */
+    int adsr_on, adsr_attack, adsr_decay;   /* ADSR's first byte */
+    int step_pitch;          /* the pitch this sample */
+    uint8_t header, data, second;   /* the block's header and the byte pair */
+    int looped;              /* the block just ended with a loop (for ENDX) */
     uint8_t level_out;       /* the level ENVX will be given */
     /* playing */
     int16_t hist[24];        /* the last 12 decoded values, twice (no wrap when read) */
@@ -44,35 +45,87 @@ typedef struct {
     int pos;                 /* the pitch counter: bits 12-13 the value, 4-11 the Gaussian index */
     uint16_t block;          /* the BRR block being decoded */
     int byte;                /* the next pair of bytes in it: 1, 3, 5, 7 */
-    int kon_delay;           /* the frames left of a key-on's start (5 to 0) */
+    int kon_delay;           /* the samples left of a key-on's start (5 to 0) */
     int stage, level;
     int bent;                /* the last level computed (bent increase) */
-    int out;                 /* this frame's output, 15 bits (pitch modulation, OUTX) */
-    /* what the game reads back */
-    uint8_t envx, outx;
+    int out;                 /* this sample's output, 15 bits (pitch modulation, OUTX) */
+    /* what the game reads back, and what this sample's end has it become */
+    uint8_t envx, outx, envx_new, outx_new;
 } __attribute__((aligned(256))) Voice;   /* (256 bytes: a voice's address a shift of its number) */
+
+/* What the game set: `now` as this sample's reads see it, `next` the latest,
+   which `now` becomes when the sample ends */
+typedef struct {
+    int8_t vol_l, vol_r;
+    uint8_t pitch_lo, pitch_hi, entry;
+    uint8_t adsr, attack, decay, sustain_level, sustain_rate, gain;
+} VoiceSettings;
+
+typedef struct {
+    VoiceSettings v[8];
+    int8_t mvol_l, mvol_r, evol_l, evol_r, efb, fir[8];
+    uint8_t pmon, non, eon, dir_page, echo_page, echo_len, reset, muted, echo_off_28, echo_off_29, noise_rate;
+} Settings;
+
+static Settings now, next;
+static int deferred;                      /* a write that waits for the sample's end */
+
+/* The chip's read clocks, counted from clock 28 (the chip's clock is this +
+   28, mod 32), fullsnes's timing chart as measured; voices 0-7. A write made
+   at `rel` lands before that clock's work. */
+static const uint8_t at_entry[8] = { 21, 24, 3, 6, 9, 12, 15, 18 };      /* SRCN */
+static const uint8_t at_dir[8] = { 25, 4, 7, 10, 13, 16, 19, 22 };       /* the directory, ADSR1, the pitch's low byte */
+static const uint8_t at_hi[8] = { 26, 5, 8, 11, 14, 17, 20, 23 };        /* the pitch's high byte */
+static const uint8_t at_fetch[8] = { 29, 5, 8, 11, 14, 17, 20, 23 };     /* the block's header, the pair's first byte */
+static const uint8_t at_sample[8] = { 2, 5, 8, 11, 14, 17, 20, 23 };     /* ADSR2, GAIN, FLG's reset */
+static const uint8_t at_left[8] = { 3, 6, 9, 12, 15, 18, 21, 24 };       /* VOLL, the pair's second byte */
+static const uint8_t at_right[8] = { 4, 7, 10, 13, 16, 19, 22, 25 };     /* VOLR: the voice's last read */
+static const uint8_t at_outx_next[8] = { 5, 8, 11, 14, 17, 20, 23, 26 }; /* the value OUTX will be given */
+static const uint8_t at_endx[8] = { 6, 9, 12, 15, 18, 21, 24, 27 };      /* ENDX set; the value ENVX will be given */
+static const uint8_t at_outx[8] = { 7, 10, 13, 16, 19, 22, 25, 28 };     /* OUTX set */
+static const uint8_t at_envx[8] = { 8, 11, 14, 17, 20, 23, 26, 29 };     /* ENVX set */
+static const uint8_t at_tap[8] = { 26, 27, 27, 28, 28, 28, 29, 29 };     /* the echo's filter */
+/* the shared settings */
+enum {
+    AT_DIR_NON_EON = 0,                   /* and FLG's echo bit, first */
+    AT_ESA_EDL = 1,                       /* and FLG's echo bit, again; KON's latch cleared */
+    AT_KEYS_NOISE = 2,                    /* KON and KOFF taken; the noise's rate */
+    AT_EFB_LEFT = 30,                     /* EFB, MVOLL, EVOLL */
+    AT_PMON_RIGHT = 31,                   /* PMON, MVOLR, EVOLR, FLG's mute */
+};
+/* the echo's reads of the sound memory, and voice 0's last two of a sample */
+static const uint8_t at_head[4] = { 25, 26, 27, 29 };
+
+/* A sample's work, in the order of those clocks */
+enum {
+    S_28, S_29, S_30, S_31,               /* the shared settings and the echo's writes, voice 0's sample and left */
+    S_VOICES,                             /* voice 0's right; each next one a voice's whole sample, 1-7 */
+    S_END = S_VOICES + 8,                 /* voice 0's next reads; the echo's filter; the sample's output */
+    S_DONE
+};
+
+static int rel;                           /* the clock to run next, counted from clock 28: 0-31 */
+static int sect;                          /* the sample's work done so far (S_) */
+static int rd;                            /* the voice in hand's reads of the memory taken */
+static int ram_seen;                      /* the clock of the last write to the memory */
+static int outx_set, envx_set;            /* the voices whose OUTX, ENVX have been given theirs, this sample */
 
 static uint8_t *mem;
 static Voice voice[8];
-static uint8_t dir_page, echo_page, echo_len_set;
-static int8_t mvol_l, mvol_r, evol_l, evol_r, efb, fir[8];
-static uint8_t pmon, non, eon, released;
-static int reset_held, muted, echo_off, noise_rate;
+static uint8_t released;
 static int counter, every_other;
 static int c3, c5;                        /* (counter + 1,040) mod 3 and (counter + 536) mod 5 */
 static int noise;                         /* 15 bits */
-static int phase;                         /* the clock to run next, 0-31 */
 /* the shared settings as taken at clocks 27-30 */
 static uint8_t pmon_now, non_now, eon_now, dir_now, koff_now, kon_now, kon_pending;
 static int key_unread;        /* a KON or KOFF written, not yet taken (mix_key_unread) */
-/* ENDX, and the values ENDX, OUTX and ENVX are next given (a write to one
-   1-2 clocks before is overwritten) */
-static uint8_t endx, endx_next, outx_next, envx_next;
+/* ENDX; as it was before the last voice worked out, which is the value until
+   its clock (at_endx) */
+static uint8_t endx, endx_before;
 static int main_sum[2], echo_sum[2], echo_in[2];
 static int echo_hist[8][2], echo_at;
 static int echo_index, echo_length, echo_esa, echo_ptr, echo_writes_off;
 static int16_t made_l, made_r;
-static int made;
 
 /* The chip's Gaussian interpolation table, as fullsnes gives it: gauss[i]
    weighs a value (511 - i) / 256 values away; each position's four
@@ -150,130 +203,14 @@ static int clamp16(int v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; 
 static int wrap15(int v) { return (int16_t)(v << 1) >> 1; }
 static int rd16(uint16_t at) { return mem[at] | mem[(uint16_t)(at + 1)] << 8; }
 
-/* ---- setup ----------------------------------------------------------------------------- */
-void mix_init(uint8_t *memory)
-{
-    int v;
-    mem = memory;
-    memset(voice, 0, sizeof voice);
-    for (v = 0; v < 8; v++)
-        voice[v].byte = 1;
-    dir_page = echo_page = echo_len_set = 0;
-    mvol_l = mvol_r = evol_l = evol_r = efb = 0;
-    memset(fir, 0, sizeof fir);
-    pmon = non = eon = released = 0;
-    /* fullsnes: after reset, released, muted, echo writes off, noise stopped */
-    reset_held = muted = echo_off = 1;
-    noise_rate = 0;
-    counter = 0;
-    c3 = 1040 % 3;
-    c5 = 536 % 5;
-    every_other = 1;
-    noise = 0x4000;                        /* -4000h */
-    phase = 0;
-    pmon_now = non_now = eon_now = dir_now = koff_now = kon_now = kon_pending = 0;
-    key_unread = 0;
-    endx = endx_next = outx_next = envx_next = 0;
-    memset(main_sum, 0, sizeof main_sum);
-    memset(echo_sum, 0, sizeof echo_sum);
-    memset(echo_in, 0, sizeof echo_in);
-    memset(echo_hist, 0, sizeof echo_hist);
-    echo_at = 0;
-    echo_index = echo_length = echo_esa = echo_ptr = echo_writes_off = 0;
-    made = 0;
-}
-
-void mix_voice_volume(int v, int8_t left, int8_t right) { voice[v & 7].vol_l = left; voice[v & 7].vol_r = right; }
-void mix_voice_pitch(int v, uint16_t pitch) { voice[v & 7].pitch = pitch & 0x3FFF; }
-void mix_voice_sample(int v, uint8_t entry) { voice[v & 7].entry = entry; }
-
-void mix_voice_envelope(int v, int adsr, int attack, int decay, int sustain_level, int sustain_rate)
-{
-    Voice *vc = &voice[v & 7];
-    vc->adsr = adsr != 0;
-    vc->attack = attack & 15;
-    vc->decay = decay & 7;
-    vc->sustain_level = sustain_level & 7;
-    vc->sustain_rate = sustain_rate & 31;
-}
-
-void mix_voice_gain(int v, uint8_t gain) { voice[v & 7].gain = gain; }
-void mix_key_on(uint8_t voices) { kon_pending = voices; key_unread = 1; }
-void mix_key_off(uint8_t voices) { released = voices; key_unread = 1; }
-int mix_key_unread(void) { return key_unread; }
-void mix_pitch_modulation(uint8_t voices) { pmon = voices; }
-void mix_noise(uint8_t voices) { non = voices; }
-void mix_echo_voices(uint8_t voices) { eon = voices; }
-void mix_master_volume(int8_t left, int8_t right) { mvol_l = left; mvol_r = right; }
-
-void mix_control(int reset, int mute, int echo_writes_off, int rate)
-{
-    reset_held = reset != 0;
-    muted = mute != 0;
-    echo_off = echo_writes_off != 0;
-    noise_rate = rate & 31;
-}
-
-void mix_directory(uint8_t page) { dir_page = page; }
-void mix_echo_buffer(uint8_t page, uint8_t length) { echo_page = page; echo_len_set = length & 15; }
-void mix_echo_volume(int8_t left, int8_t right) { evol_l = left; evol_r = right; }
-void mix_echo_feedback(int8_t feedback) { efb = feedback; }
-void mix_echo_filter(int tap, int8_t coefficient) { fir[tap & 7] = coefficient; }
-
-uint8_t mix_voices_ended(void) { return endx; }
-/* the echo writes the RAM while FLG lets it or its write already under way
-   was let */
-int mix_writes_ram(void) { return !echo_off || !echo_writes_off; }
-int mix_echo_may_write(uint16_t addr)
-{
-    /* an entry is 4 bytes at an index under the length (0: the one entry) */
-    int span = echo_length > echo_len_set * 0x800 ? echo_length : echo_len_set * 0x800;
-    if (!mix_writes_ram())
-        return 0;
-    if (span < 4)
-        span = 4;
-    return (uint16_t)(addr - (echo_esa << 8)) < span || (uint16_t)(addr - (echo_page << 8)) < span;
-}
-/* any write to ENDX clears it */
-void mix_clear_ended(void) { endx = endx_next = 0; }
-uint8_t mix_voice_level(int v) { return voice[v & 7].envx; }
-int8_t mix_voice_output(int v) { return (int8_t)voice[v & 7].outx; }
-/* a write to ENVX or OUTX: kept until the voice's step gives it its own */
-void mix_voice_level_write(int v, uint8_t value) { voice[v & 7].envx = envx_next = value; }
-void mix_voice_output_write(int v, uint8_t value) { voice[v & 7].outx = outx_next = value; }
-int mix_phase(void) { return phase; }
-/* the clocks to run until a KON or KOFF written now is taken: at clock 30
-   of a frame whose clock 29 left every_other set (it flips there) */
-int mix_key_clocks(void)
-{
-    int p = phase, e = every_other;
-    if (p <= 29)
-        return (e ^ 1) ? 31 - p : 63 - p;
-    if (p == 30)
-        return e ? 1 : 33;
-    return (e ^ 1) ? 32 : 64;
-}
-
-void mix_voice_states(int32_t *o)
-{
-    int i;
-    for (i = 0; i < 8; i++) {
-        o[5 * i] = voice[i].level;
-        o[5 * i + 1] = voice[i].stage;
-        o[5 * i + 2] = voice[i].pos;
-        o[5 * i + 3] = voice[i].block;
-        o[5 * i + 4] = voice[i].byte;
-    }
-}
-
 /* ---- samples ---------------------------------------------------------------------------- */
 /* four more values of the voice's sample: one byte pair of its block,
    rebuilt with the block's shift and prediction filter (fullsnes, BRR);
-   the header and the pair's first byte as step 3 read them */
+   the header and the pair's bytes as their clocks read them */
 static inline __attribute__((always_inline)) void decode(Voice *vc)
 {
     int shift = vc->header >> 4, filter = (vc->header >> 2) & 3, i;
-    unsigned bits = (unsigned)vc->data << 8 | mem[(uint16_t)(vc->block + vc->byte + 1)];
+    unsigned bits = (unsigned)vc->data << 8 | vc->second;
     for (i = 0; i < 4; i++) {
         int k = vc->hist_next + i;
         int old = vc->hist[k + 11], older = vc->hist[k + 10];
@@ -309,12 +246,12 @@ static inline __attribute__((always_inline)) int interpolate(const Voice *vc)
     return clamp16(out) >> 1;
 }
 
-/* the envelope's next level (fullsnes, ADSR/Gain): ADSR's first byte as
-   step 2 took it, its second and the gain as they are now. The stage moves
-   on from the level computed even on a frame its rate does not step (as
+/* the envelope's next level (fullsnes, ADSR/Gain): ADSR's first byte as its
+   clock took it, its second and the gain as they are now. The stage moves
+   on from the level computed even on a sample its rate does not step (as
    measured): attack ends past 7FFh, decay at the sustain level's top byte
    (in gain mode the gain's top bits, fullsnes's noted quirk). */
-static inline __attribute__((always_inline)) void envelope(Voice *vc)
+static inline __attribute__((always_inline)) void envelope(Voice *vc, const VoiceSettings *s)
 {
     int level = vc->level, rate, top;
     if (vc->stage == RELEASE) {
@@ -323,22 +260,22 @@ static inline __attribute__((always_inline)) void envelope(Voice *vc)
         return;
     }
     if (vc->adsr_on) {
-        top = vc->sustain_level;
+        top = s->sustain_level;
         if (vc->stage == ATTACK) {
             rate = vc->adsr_attack * 2 + 1;
             level += rate == 31 ? 0x400 : 0x20;
         } else {
-            rate = vc->stage == DECAY ? vc->adsr_decay * 2 + 16 : vc->sustain_rate;
+            rate = vc->stage == DECAY ? vc->adsr_decay * 2 + 16 : s->sustain_rate;
             level -= ((level - 1) >> 8) + 1;
         }
     } else {
-        int mode = vc->gain >> 5;
-        top = vc->gain >> 5;
-        if (!(vc->gain & 0x80)) {          /* direct: a fixed level */
-            level = vc->gain * 16;
+        int mode = s->gain >> 5;
+        top = s->gain >> 5;
+        if (!(s->gain & 0x80)) {           /* direct: a fixed level */
+            level = s->gain * 16;
             rate = 31;
         } else {
-            rate = vc->gain & 31;
+            rate = s->gain & 31;
             if (mode == 4)
                 level -= 0x20;
             else if (mode == 5)
@@ -359,53 +296,58 @@ static inline __attribute__((always_inline)) void envelope(Voice *vc)
         vc->level = level;
 }
 
-/* ---- a voice's nine steps ---------------------------------------------------------------
+/* ---- a voice's sample -------------------------------------------------------------------
    fullsnes's DSP timing chart, the steps named by what each does. */
 
-/* 1: the voice's directory entry taken; the voice before it, which took
-   its own a step 1 ago, has its entry's address worked out (from the
-   directory page as taken at clock 28) */
+/* the voice's directory entry taken; the voice before it, which took its own
+   a step ago, has its entry's address worked out (from the directory page as
+   taken at clock 28) */
 static inline __attribute__((always_inline)) void step_entry(int v)
 {
     Voice *before = &voice[(v + 7) & 7];
     /* added: an entry past 63 carries into the page */
     before->dir_addr = (uint16_t)((dir_now << 8) + (before->srcn << 2));
-    voice[v].srcn = voice[v].entry;
+    voice[v].srcn = now.v[v].entry;
 }
 
-/* 2: the entry read (its start while a key-on is under way, else its
-   loop), ADSR's first byte and the pitch's low byte taken */
-static inline __attribute__((always_inline)) void step_directory(int v)
+/* the entry read: its start while a key-on is under way, else its loop */
+static inline __attribute__((always_inline)) void step_directory(Voice *vc)
 {
-    Voice *vc = &voice[v];
     vc->next_block = (uint16_t)rd16((uint16_t)(vc->dir_addr + (vc->kon_delay ? 0 : 2)));
-    vc->adsr_on = vc->adsr;
-    vc->adsr_attack = vc->attack;
-    vc->adsr_decay = vc->decay;
-    vc->step_pitch = vc->pitch & 0xFF;
 }
 
-/* 3, in three parts (voice 0's on clocks of their own): the pitch's high
-   bits; the block's header and the byte pair's first byte; the sample */
-static inline __attribute__((always_inline)) void step_pitch_high(int v) { voice[v].step_pitch += voice[v].pitch & 0x3F00; }
-
-static inline __attribute__((always_inline)) void step_fetch(int v)
+static inline __attribute__((always_inline)) void step_fetch(Voice *vc)
 {
-    Voice *vc = &voice[v];
     vc->data = mem[(uint16_t)(vc->block + vc->byte)];
     vc->header = mem[vc->block];
+}
+
+static inline __attribute__((always_inline)) void step_second(Voice *vc)
+{
+    vc->second = mem[(uint16_t)(vc->block + vc->byte + 1)];
+}
+
+/* ADSR's first byte and the pitch, as their clocks took them */
+static inline __attribute__((always_inline)) void step_settings(int v)
+{
+    Voice *vc = &voice[v];
+    const VoiceSettings *s = &now.v[v];
+    vc->adsr_on = s->adsr;
+    vc->adsr_attack = s->attack;
+    vc->adsr_decay = s->decay;
+    vc->step_pitch = s->pitch_lo | s->pitch_hi << 8;
 }
 
 static inline __attribute__((always_inline)) void step_sample(int v)
 {
     Voice *vc = &voice[v];
     int s;
-    /* pitch modulation by the voice before's output, made this frame */
+    /* pitch modulation by the voice before's output, made this sample */
     if (pmon_now >> v & 1)
         vc->step_pitch += ((voice[(v + 7) & 7].out >> 4) * vc->step_pitch) >> 10;
     if (vc->kon_delay) {
-        /* a key-on's five frames: the first sets the voice on its sample's
-           start (this frame's header counts for nothing), the next three
+        /* a key-on's five samples: the first sets the voice on its sample's
+           start (this sample's header counts for nothing), the next three
            decode its first three byte pairs; no pitch, no envelope */
         if (vc->kon_delay == 5) {
             vc->block = vc->next_block;
@@ -425,11 +367,11 @@ static inline __attribute__((always_inline)) void step_sample(int v)
     vc->out = (s * vc->level) >> 11;
     vc->level_out = (uint8_t)(vc->level >> 4);
     /* cut at once: the reset flag, or a block that ends with no loop */
-    if (reset_held || (vc->header & 3) == 1) {
+    if ((now.reset >> v & 1) || (vc->header & 3) == 1) {
         vc->stage = RELEASE;
         vc->level = 0;
     }
-    /* fullsnes: key-on and release are taken every other frame */
+    /* fullsnes: key-on and release are taken every other sample */
     if (every_other) {
         if (koff_now >> v & 1)
             vc->stage = RELEASE;
@@ -439,7 +381,7 @@ static inline __attribute__((always_inline)) void step_sample(int v)
         }
     }
     if (!vc->kon_delay)
-        envelope(vc);
+        envelope(vc, &now.v[v]);
 }
 
 /* fullsnes, output mixer: the sample times the volume, SAR 6, the sums
@@ -450,14 +392,14 @@ static inline __attribute__((always_inline)) void output(const Voice *vc, int v,
     /* (no output: the sums unchanged, each already within 16 bits) */
     if (!vc->out)
         return;
-    amp = (vc->out * (ch ? vc->vol_r : vc->vol_l)) >> 6;
+    amp = (vc->out * (ch ? now.v[v].vol_r : now.v[v].vol_l)) >> 6;
     main_sum[ch] = clamp16(main_sum[ch] + amp);
     if (eon_now >> v & 1)
         echo_sum[ch] = clamp16(echo_sum[ch] + amp);
 }
 
-/* 4: the byte pair decoded when the pitch counter has passed four values,
-   the block moved on at its end; the pitch added; the left output */
+/* the byte pair decoded when the pitch counter has passed four values, the
+   block moved on at its end; the pitch added; the left output */
 static inline __attribute__((always_inline)) void step_decode(int v)
 {
     Voice *vc = &voice[v];
@@ -480,85 +422,59 @@ static inline __attribute__((always_inline)) void step_decode(int v)
     output(vc, v, 0);
 }
 
-/* 5: the right output; ENDX's next value (the voice's bit set on a loop,
-   cleared as a key-on starts) */
+/* the right output; ENDX (the voice's bit set on a loop, cleared as a key-on
+   starts), and the values OUTX and ENVX will be given */
 static inline __attribute__((always_inline)) void step_right(int v)
 {
     Voice *vc = &voice[v];
     output(vc, v, 1);
-    endx_next = (uint8_t)((endx | vc->looped << v) & ~(vc->kon_delay == 5 ? 1u << v : 0u));
+    endx_before = endx;
+    endx = (uint8_t)((endx | vc->looped << v) & ~(vc->kon_delay == 5 ? 1u << v : 0u));
+    vc->outx_new = (uint8_t)(vc->out >> 7);
+    vc->envx_new = vc->level_out;
 }
 
-/* 6-9: OUTX's and ENVX's next values, then ENDX, OUTX and ENVX set */
-static inline __attribute__((always_inline)) void step_outx(int v) { outx_next = (uint8_t)(voice[v].out >> 7); }
-static inline __attribute__((always_inline)) void step_endx(int v)
+/* Voices 1-7's reads of the memory, each at its clock: a write of the memory
+   between them comes after those before it (mix_before_ram_write) */
+static inline __attribute__((always_inline)) void voice_read(int v, int which)
 {
-    endx = endx_next;
-    envx_next = voice[v].level_out;
-}
-static inline __attribute__((always_inline)) void step_set_outx(int v) { voice[v].outx = outx_next; }
-static inline __attribute__((always_inline)) void step_set_envx(int v) { voice[v].envx = envx_next; }
-
-/* Each clock's steps, voice by voice: fullsnes's timing chart, a voice's
-   steps 2 to 9 on consecutive clocks, three voices in hand at once, voice
-   0's step 3 spread out round the echo's clocks. The step's clocks for
-   voices 0-7:
-
-     entry       17 20 31  2  5  8 11 14
-     directory   21  0  3  6  9 12 15 18
-     pitch high  22  1  4  7 10 13 16 19
-     fetch       25  1  4  7 10 13 16 19
-     sample      30  1  4  7 10 13 16 19
-     decode      31  2  5  8 11 14 17 20
-     right        0  3  6  9 12 15 18 21
-     outx         1  4  7 10 13 16 19 22
-     endx         2  5  8 11 14 17 20 23
-     set outx     3  6  9 12 15 18 21 24
-     set envx     4  7 10 13 16 19 22 25
-
-   each clock's in that order (the chart's rows, then voice), called
-   directly: a switch on the clock, not a table of calls a clock looks up */
-static inline __attribute__((always_inline)) void clock_steps(int c)
-{
-    switch (c) {
-    case 0: step_directory(1); step_right(0); break;
-    case 1: step_pitch_high(1); step_fetch(1); step_sample(1); step_outx(0); break;
-    case 2: step_entry(3); step_decode(1); step_endx(0); break;
-    case 3: step_directory(2); step_right(1); step_set_outx(0); break;
-    case 4: step_pitch_high(2); step_fetch(2); step_sample(2); step_outx(1); step_set_envx(0); break;
-    case 5: step_entry(4); step_decode(2); step_endx(1); break;
-    case 6: step_directory(3); step_right(2); step_set_outx(1); break;
-    case 7: step_pitch_high(3); step_fetch(3); step_sample(3); step_outx(2); step_set_envx(1); break;
-    case 8: step_entry(5); step_decode(3); step_endx(2); break;
-    case 9: step_directory(4); step_right(3); step_set_outx(2); break;
-    case 10: step_pitch_high(4); step_fetch(4); step_sample(4); step_outx(3); step_set_envx(2); break;
-    case 11: step_entry(6); step_decode(4); step_endx(3); break;
-    case 12: step_directory(5); step_right(4); step_set_outx(3); break;
-    case 13: step_pitch_high(5); step_fetch(5); step_sample(5); step_outx(4); step_set_envx(3); break;
-    case 14: step_entry(7); step_decode(5); step_endx(4); break;
-    case 15: step_directory(6); step_right(5); step_set_outx(4); break;
-    case 16: step_pitch_high(6); step_fetch(6); step_sample(6); step_outx(5); step_set_envx(4); break;
-    case 17: step_entry(0); step_decode(6); step_endx(5); break;
-    case 18: step_directory(7); step_right(6); step_set_outx(5); break;
-    case 19: step_pitch_high(7); step_fetch(7); step_sample(7); step_outx(6); step_set_envx(5); break;
-    case 20: step_entry(1); step_decode(7); step_endx(6); break;
-    case 21: step_directory(0); step_right(7); step_set_outx(6); break;
-    case 22: step_pitch_high(0); step_outx(7); step_set_envx(6); break;
-    case 23: step_endx(7); break;
-    case 24: step_set_outx(7); break;
-    case 25: step_fetch(0); step_set_envx(7); break;
-    case 30: step_sample(0); break;
-    case 31: step_entry(2); step_decode(0); break;
+    Voice *vc = &voice[v];
+    switch (which) {
+    case 0:
+        step_entry((v + 1) & 7);
+        step_directory(vc);
+        break;
+    case 1:
+        step_fetch(vc);
+        break;
+    case 2:
+        step_second(vc);
+        break;
     }
 }
 
-/* ---- the echo, clocks 22-30 -------------------------------------------------------------
+/* Voices 1-7's sample, all its reads passed */
+static inline __attribute__((always_inline)) void voice_sample(int v)
+{
+    if (rd < 1)
+        voice_read(v, 0);
+    if (rd < 2)
+        voice_read(v, 1);
+    if (rd < 3)
+        voice_read(v, 2);
+    rd = 0;
+    step_settings(v);
+    step_sample(v);
+    step_decode(v);
+    step_right(v);
+}
+
+/* ---- the echo ---------------------------------------------------------------------------
    fullsnes, echo: the oldest entry out of the delay line, through the
    8-tap filter (the oldest seven summed without saturation, the newest
    with), mixed in at the echo volume; the echo voices and the feedback
-   written back in its place. Each setting is read at the clock that uses
-   it. */
-static int tap(int i, int ch) { return (echo_hist[(echo_at + 1 + i) & 7][ch] * fir[i]) >> 6; }
+   written back in its place. */
+static int tap(int i, int ch) { return (echo_hist[(echo_at + 1 + i) & 7][ch] * now.fir[i]) >> 6; }
 
 static void echo_read(int ch)
 {
@@ -569,8 +485,8 @@ static void echo_read(int ch)
    volume, each term 16 bits, the sum saturating */
 static int final(int ch)
 {
-    int m = (int16_t)((main_sum[ch] * (ch ? mvol_r : mvol_l)) >> 7);
-    int e = (int16_t)((echo_in[ch] * (ch ? evol_r : evol_l)) >> 7);
+    int m = (int16_t)((main_sum[ch] * (ch ? now.mvol_r : now.mvol_l)) >> 7);
+    int e = (int16_t)((echo_in[ch] * (ch ? now.evol_r : now.evol_l)) >> 7);
     return clamp16(m + e);
 }
 
@@ -583,145 +499,466 @@ static void echo_write(int ch)
     echo_sum[ch] = 0;
 }
 
-static inline __attribute__((always_inline)) void echo_clock(int c)
+/* The sample's last reads of the memory, each at its clock (at_head) */
+static inline __attribute__((always_inline)) void head_read(int which)
 {
-    int ch;
-    switch (c) {
-    case 22:                              /* the left's newest entry, tap 0 */
+    switch (which) {
+    case 0:
+        step_entry(1);
+        step_directory(&voice[0]);
+        break;
+    case 1:                               /* the next entry, left */
         echo_at = (echo_at + 1) & 7;
         echo_ptr = (uint16_t)((echo_esa << 8) + echo_index);
         echo_read(0);
-        for (ch = 0; ch < 2; ch++)
-            echo_in[ch] = tap(0, ch);
         break;
-    case 23:                              /* taps 1-2, the right's newest entry */
-        for (ch = 0; ch < 2; ch++)
-            echo_in[ch] += tap(1, ch) + tap(2, ch);
+    case 2:                               /* right (only tap 7 reads the newest) */
         echo_read(1);
         break;
-    case 24:
-        for (ch = 0; ch < 2; ch++)
-            echo_in[ch] += tap(3, ch) + tap(4, ch) + tap(5, ch);
+    case 3:
+        step_fetch(&voice[0]);
         break;
-    case 25:                              /* tap 6 wraps, the newest saturates */
-        for (ch = 0; ch < 2; ch++) {
-            int s = (int16_t)(echo_in[ch] + tap(6, ch));
-            echo_in[ch] = clamp16(s + (int16_t)tap(7, ch)) & ~1;
+    }
+}
+
+/* ---- a sample's work, in its clocks' order ---------------------------------------------- */
+static inline __attribute__((always_inline)) void clock_28(void)
+{
+    non_now = now.non;
+    eon_now = now.eon;
+    dir_now = now.dir_page;
+    echo_writes_off = now.echo_off_28;
+}
+
+/* the next entry; the left written */
+static inline __attribute__((always_inline)) void clock_29(void)
+{
+    /* a key-on is cleared from KON's latch 63 clocks after it is taken */
+    if ((every_other ^= 1) != 0)
+        kon_pending &= (uint8_t)~kon_now;
+    echo_esa = now.echo_page;
+    /* the length is taken when the index comes round to 0 */
+    if (!echo_index)
+        echo_length = now.echo_len * 0x800;
+    echo_index += 4;
+    if (echo_index >= echo_length)
+        echo_index = 0;
+    echo_write(0);
+    echo_writes_off = now.echo_off_29;
+}
+
+static inline __attribute__((always_inline)) void clock_30(void)
+{
+    if (every_other) {
+        kon_now = kon_pending;
+        koff_now = released;
+        key_unread = 0;
+    }
+    if (--counter < 0)
+        counter = COUNTER_PERIOD - 1;
+    c3 = c3 ? c3 - 1 : 2;
+    c5 = c5 ? c5 - 1 : 4;
+    if (rate_due(now.noise_rate))
+        noise = ((noise >> 1) & 0x3FFF) | (((noise ^ (noise >> 1)) & 1) << 14);
+    step_sample(0);
+    echo_write(1);
+}
+
+/* voice 0's next reads, the echo's filter and the sample's output */
+static inline __attribute__((always_inline)) void sample_end(void)
+{
+    int ch;
+    if (rd < 1)
+        head_read(0);
+    step_settings(0);
+    if (rd < 2)
+        head_read(1);
+    for (ch = 0; ch < 2; ch++)
+        echo_in[ch] = tap(0, ch);
+    for (ch = 0; ch < 2; ch++)
+        echo_in[ch] += tap(1, ch) + tap(2, ch);
+    if (rd < 3)
+        head_read(2);
+    for (ch = 0; ch < 2; ch++)
+        echo_in[ch] += tap(3, ch) + tap(4, ch) + tap(5, ch);
+    if (rd < 4)
+        head_read(3);
+    rd = 0;
+    for (ch = 0; ch < 2; ch++) {           /* tap 6 wraps, the newest saturates */
+        int s = (int16_t)(echo_in[ch] + tap(6, ch));
+        echo_in[ch] = clamp16(s + (int16_t)tap(7, ch)) & ~1;
+    }
+    made_l = (int16_t)final(0);
+    for (ch = 0; ch < 2; ch++)
+        echo_sum[ch] = clamp16(echo_sum[ch] + (int16_t)((echo_in[ch] * now.efb) >> 7)) & ~1;
+    made_r = (int16_t)final(1);
+    main_sum[0] = main_sum[1] = 0;
+    if (now.muted)
+        made_l = made_r = 0;
+    pmon_now = now.pmon & 0xFE;            /* voice 0 has no voice before it */
+}
+
+/* The sample's work from where it stands to `end` (S_) */
+static void sections(int end)
+{
+    if (sect >= end)
+        return;
+#define SECTION(k) case k: if (k >= end) break; /* fall through */
+    switch (sect) {
+    SECTION(S_28) clock_28();
+    SECTION(S_29) clock_29();
+    SECTION(S_30) clock_30();
+    SECTION(S_31)
+        step_second(&voice[0]);
+        step_decode(0);
+    SECTION(S_VOICES) step_right(0);
+    SECTION(S_VOICES + 1) voice_sample(1);
+    SECTION(S_VOICES + 2) voice_sample(2);
+    SECTION(S_VOICES + 3) voice_sample(3);
+    SECTION(S_VOICES + 4) voice_sample(4);
+    SECTION(S_VOICES + 5) voice_sample(5);
+    SECTION(S_VOICES + 6) voice_sample(6);
+    SECTION(S_VOICES + 7) voice_sample(7);
+    SECTION(S_END) sample_end();
+    }
+#undef SECTION
+    sect = end;
+}
+
+/* OUTX and ENVX given what they get at clocks already passed */
+static void sets_passed(void)
+{
+    int run = sect <= S_VOICES ? 0 : sect >= S_END ? 8 : sect - S_VOICES;
+    while (outx_set < run && at_outx[outx_set] < rel) {
+        voice[outx_set].outx = voice[outx_set].outx_new;
+        outx_set++;
+    }
+    while (envx_set < run && at_envx[envx_set] < rel) {
+        voice[envx_set].envx = voice[envx_set].envx_new;
+        envx_set++;
+    }
+}
+
+/* What can be worked out by this clock: the shared settings' work and voices
+   whose last read has passed. Voice 0's next reads and the echo's filter wait
+   for the sample's end: nothing sees them before it. (The first S_VOICES
+   sections' clocks are 0 to S_VOICES - 1, voice 0's last read the next, and
+   each voice's after it comes 3 clocks on: at_right.) */
+void mix_settle(void)
+{
+    int end = rel <= S_VOICES ? rel : S_VOICES + 1 + (rel - S_VOICES - 1) / 3;
+    sections(end < S_END ? end : S_END);
+    sets_passed();
+}
+
+/* Before a write to the memory lands: every read at an earlier clock is made,
+   and those to come will see it. (Many writes at one clock need it once.) */
+void mix_before_ram_write(void)
+{
+    if (rel == ram_seen)
+        return;
+    ram_seen = rel;
+    mix_settle();
+    if (sect == S_END) {
+        while (rd < 4 && at_head[rd] < rel) {
+            head_read(rd);
+            rd++;
         }
-        break;
-    case 26:                              /* the left out (held a clock); the feedback */
-        made_l = (int16_t)final(0);
-        for (ch = 0; ch < 2; ch++)
-            echo_sum[ch] = clamp16(echo_sum[ch] + (int16_t)((echo_in[ch] * efb) >> 7)) & ~1;
-        break;
-    case 27:                              /* the right out: the frame made */
-        made_r = (int16_t)final(1);
-        main_sum[0] = main_sum[1] = 0;
-        if (muted)
-            made_l = made_r = 0;
-        made = 1;
-        break;
-    case 28:
-        echo_writes_off = echo_off;
-        break;
-    case 29:                              /* the next entry; the left written */
-        echo_esa = echo_page;
-        /* the length is taken when the index comes round to 0 */
-        if (!echo_index)
-            echo_length = echo_len_set * 0x800;
-        echo_index += 4;
-        if (echo_index >= echo_length)
-            echo_index = 0;
-        echo_write(0);
-        echo_writes_off = echo_off;
-        break;
-    case 30:
-        echo_write(1);
-        break;
-    }
-}
-
-/* ---- the shared settings, clocks 27-30 -------------------------------------------------- */
-static inline __attribute__((always_inline)) void shared_clock(int c)
-{
-    switch (c) {
-    case 27:
-        pmon_now = pmon & 0xFE;           /* voice 0 has no voice before it */
-        break;
-    case 28:
-        non_now = non;
-        eon_now = eon;
-        dir_now = dir_page;
-        break;
-    case 29:
-        /* a key-on is cleared from KON's latch 63 clocks after it is taken */
-        if ((every_other ^= 1) != 0)
-            kon_pending &= (uint8_t)~kon_now;
-        break;
-    case 30:
-        if (every_other) {
-            kon_now = kon_pending;
-            koff_now = released;
-            key_unread = 0;
+    } else if (sect > S_VOICES) {
+        int v = sect - S_VOICES;
+        while (rd < 3 && (rd == 0 ? at_dir[v] : rd == 1 ? at_fetch[v] : at_left[v]) < rel) {
+            voice_read(v, rd);
+            rd++;
         }
-        if (--counter < 0)
-            counter = COUNTER_PERIOD - 1;
-        c3 = c3 ? c3 - 1 : 2;
-        c5 = c5 ? c5 - 1 : 4;
-        if (rate_due(noise_rate))
-            noise = ((noise >> 1) & 0x3FFF) | (((noise ^ (noise >> 1)) & 1) << 14);
-        break;
     }
 }
 
-/* clock c's work: a frame made, when one is, in made_l and made_r */
-static inline __attribute__((always_inline)) void clock_at(int c)
+/* ---- setup ----------------------------------------------------------------------------- */
+void mix_init(uint8_t *memory)
 {
-    if (c >= 27)
-        shared_clock(c);
-    clock_steps(c);
-    if (c >= 22)
-        echo_clock(c);
+    int v;
+    mem = memory;
+    memset(voice, 0, sizeof voice);
+    memset(&now, 0, sizeof now);
+    for (v = 0; v < 8; v++)
+        voice[v].byte = 1;
+    released = 0;
+    /* fullsnes: after reset, released, muted, echo writes off, noise stopped */
+    now.reset = 0xFF;
+    now.muted = now.echo_off_28 = now.echo_off_29 = 1;
+    next = now;
+    deferred = 0;
+    counter = 0;
+    c3 = 1040 % 3;
+    c5 = 536 % 5;
+    every_other = 1;
+    noise = 0x4000;                        /* -4000h */
+    /* it starts at the chip's clock 0, none of the clocks before it run */
+    rel = at_right[0];
+    sect = S_VOICES;
+    rd = outx_set = envx_set = 0;
+    ram_seen = -1;
+    pmon_now = non_now = eon_now = dir_now = koff_now = kon_now = kon_pending = 0;
+    key_unread = 0;
+    endx = endx_before = 0;
+    memset(main_sum, 0, sizeof main_sum);
+    memset(echo_sum, 0, sizeof echo_sum);
+    memset(echo_in, 0, sizeof echo_in);
+    memset(echo_hist, 0, sizeof echo_hist);
+    echo_at = 0;
+    echo_index = echo_length = echo_esa = echo_ptr = echo_writes_off = 0;
 }
 
-/* Clocks from phase on, to the frame's end or end (at most 32): the
-   frame's clocks in line, each with its clock known (no clock looked up),
-   entered at the first's (a run from any clock as fast as a whole frame) */
-static inline __attribute__((always_inline)) void clocks_from(int c, int end)
+/* ---- what the game sets: this sample if its read is still to come --------------------- */
+#define SET(field, value, at) do { \
+        next.field = (value); \
+        if ((at) >= rel) \
+            now.field = next.field; \
+        else \
+            deferred = 1; \
+    } while (0)
+
+void mix_voice_volume(int v, int8_t left, int8_t right)
 {
-#define CLOCK(k) case k: if (k >= end) break; clock_at(k); /* fall through */
-    switch (c) {
-    CLOCK(0) CLOCK(1) CLOCK(2) CLOCK(3) CLOCK(4) CLOCK(5) CLOCK(6) CLOCK(7)
-    CLOCK(8) CLOCK(9) CLOCK(10) CLOCK(11) CLOCK(12) CLOCK(13) CLOCK(14) CLOCK(15)
-    CLOCK(16) CLOCK(17) CLOCK(18) CLOCK(19) CLOCK(20) CLOCK(21) CLOCK(22) CLOCK(23)
-    CLOCK(24) CLOCK(25) CLOCK(26) CLOCK(27) CLOCK(28) CLOCK(29) CLOCK(30) CLOCK(31)
+    v &= 7;
+    SET(v[v].vol_l, left, at_left[v]);
+    SET(v[v].vol_r, right, at_right[v]);
+}
+
+void mix_voice_pitch(int v, uint16_t pitch)
+{
+    v &= 7;
+    SET(v[v].pitch_lo, (uint8_t)pitch, at_dir[v]);
+    SET(v[v].pitch_hi, (uint8_t)(pitch >> 8 & 0x3F), at_hi[v]);
+}
+
+void mix_voice_sample(int v, uint8_t entry)
+{
+    v &= 7;
+    SET(v[v].entry, entry, at_entry[v]);
+}
+
+void mix_voice_envelope(int v, int adsr, int attack, int decay, int sustain_level, int sustain_rate)
+{
+    v &= 7;
+    SET(v[v].adsr, adsr != 0, at_dir[v]);
+    SET(v[v].attack, (uint8_t)(attack & 15), at_dir[v]);
+    SET(v[v].decay, (uint8_t)(decay & 7), at_dir[v]);
+    SET(v[v].sustain_level, (uint8_t)(sustain_level & 7), at_sample[v]);
+    SET(v[v].sustain_rate, (uint8_t)(sustain_rate & 31), at_sample[v]);
+}
+
+void mix_voice_gain(int v, uint8_t gain)
+{
+    v &= 7;
+    SET(v[v].gain, gain, at_sample[v]);
+}
+
+/* KON's latch and KOFF change between the sample's clocks that use them */
+void mix_key_on(uint8_t voices)
+{
+    mix_settle();
+    kon_pending = voices;
+    key_unread = 1;
+}
+
+void mix_key_off(uint8_t voices)
+{
+    mix_settle();
+    released = voices;
+    key_unread = 1;
+}
+
+int mix_key_unread(void)
+{
+    mix_settle();
+    return key_unread;
+}
+
+void mix_pitch_modulation(uint8_t voices) { SET(pmon, voices, AT_PMON_RIGHT); }
+void mix_noise(uint8_t voices) { SET(non, voices, AT_DIR_NON_EON); }
+void mix_echo_voices(uint8_t voices) { SET(eon, voices, AT_DIR_NON_EON); }
+
+void mix_master_volume(int8_t left, int8_t right)
+{
+    SET(mvol_l, left, AT_EFB_LEFT);
+    SET(mvol_r, right, AT_PMON_RIGHT);
+}
+
+void mix_control(int reset, int mute, int echo_writes_off_set, int rate)
+{
+    uint8_t all = reset ? 0xFF : 0, still = 0;
+    int v;
+    /* (what mix_echo_may_write goes by, up to this write) */
+    mix_settle();
+    for (v = 0; v < 8; v++)
+        still |= (uint8_t)((at_sample[v] >= rel) << v);
+    next.reset = all;
+    now.reset = (uint8_t)((now.reset & ~still) | (all & still));
+    if (still != 0xFF)
+        deferred = 1;
+    SET(muted, mute != 0, AT_PMON_RIGHT);
+    SET(echo_off_28, echo_writes_off_set != 0, AT_DIR_NON_EON);
+    SET(echo_off_29, echo_writes_off_set != 0, AT_ESA_EDL);
+    SET(noise_rate, (uint8_t)(rate & 31), AT_KEYS_NOISE);
+}
+
+void mix_directory(uint8_t page) { SET(dir_page, page, AT_DIR_NON_EON); }
+
+void mix_echo_buffer(uint8_t page, uint8_t length)
+{
+    /* (what mix_echo_may_write goes by, up to this write) */
+    mix_settle();
+    SET(echo_page, page, AT_ESA_EDL);
+    SET(echo_len, (uint8_t)(length & 15), AT_ESA_EDL);
+}
+
+void mix_echo_volume(int8_t left, int8_t right)
+{
+    SET(evol_l, left, AT_EFB_LEFT);
+    SET(evol_r, right, AT_PMON_RIGHT);
+}
+
+void mix_echo_feedback(int8_t feedback) { SET(efb, feedback, AT_EFB_LEFT); }
+
+void mix_echo_filter(int tap_n, int8_t coefficient)
+{
+    tap_n &= 7;
+    SET(fir[tap_n], coefficient, at_tap[tap_n]);
+}
+
+/* ---- what the game reads back, by the same clocks ------------------------------------- */
+/* ENDX: a voice worked out has given it its bit only at its clock */
+uint8_t mix_voices_ended(void)
+{
+    mix_settle();
+    if (rel > at_right[0]) {
+        int v = (rel - at_right[0] - 1) / 3;
+        if (v < 8 && at_right[v] < rel && at_endx[v] >= rel)
+            return endx_before;
     }
-#undef CLOCK
+    return endx;
 }
 
+/* the echo writes the RAM while FLG lets it or its write already under way
+   was let */
+int mix_writes_ram(void) { return !next.echo_off_29 || !echo_writes_off; }
+
+int mix_echo_may_write(uint16_t addr)
+{
+    /* an entry is 4 bytes at an index under the length (0: the one entry) */
+    int span = echo_length > next.echo_len * 0x800 ? echo_length : next.echo_len * 0x800;
+    if (!mix_writes_ram())
+        return 0;
+    if (span < 4)
+        span = 4;
+    return (uint16_t)(addr - (echo_esa << 8)) < span || (uint16_t)(addr - (next.echo_page << 8)) < span;
+}
+
+/* any write to ENDX clears it, and a voice's bit on its way (at its clock it
+   gives what the write left) */
+void mix_clear_ended(void)
+{
+    mix_settle();
+    endx = endx_before = 0;
+}
+
+uint8_t mix_voice_level(int v)
+{
+    mix_settle();
+    return voice[v & 7].envx;
+}
+
+int8_t mix_voice_output(int v)
+{
+    mix_settle();
+    return (int8_t)voice[v & 7].outx;
+}
+
+/* A write to ENVX or OUTX: kept until the voice's clock gives it its own. The
+   chip passes each value on through one latch, which the write also sets: the
+   voice whose value is in the latch gets the write's instead. */
+void mix_voice_level_write(int v, uint8_t value)
+{
+    mix_settle();
+    voice[v & 7].envx = value;
+    if (rel > at_endx[0]) {
+        int in_latch = (rel - at_endx[0] - 1) / 3;
+        if (in_latch < 8 && at_endx[in_latch] < rel && at_envx[in_latch] >= rel)
+            voice[in_latch].envx_new = value;
+    }
+}
+
+void mix_voice_output_write(int v, uint8_t value)
+{
+    mix_settle();
+    voice[v & 7].outx = value;
+    if (rel > at_outx_next[0]) {
+        int in_latch = (rel - at_outx_next[0] - 1) / 3;
+        if (in_latch < 8 && at_outx_next[in_latch] < rel && at_outx[in_latch] >= rel)
+            voice[in_latch].outx_new = value;
+    }
+}
+
+int mix_phase(void) { return (rel + 28) & 31; }
+
+/* the clocks to run until a KON or KOFF written now is taken: at clock 30
+   of a sample whose clock 29 left every_other set (it flips there) */
+int mix_key_clocks(void)
+{
+    int p, e;
+    mix_settle();
+    p = mix_phase();
+    e = every_other;
+    if (p <= 29)
+        return (e ^ 1) ? 31 - p : 63 - p;
+    if (p == 30)
+        return e ? 1 : 33;
+    return (e ^ 1) ? 32 : 64;
+}
+
+/* (at a sample's end: within one, voices not yet worked out show the last) */
+void mix_voice_states(int32_t *o)
+{
+    int i;
+    for (i = 0; i < 8; i++) {
+        o[5 * i] = voice[i].level;
+        o[5 * i + 1] = voice[i].stage;
+        o[5 * i + 2] = voice[i].pos;
+        o[5 * i + 3] = voice[i].block;
+        o[5 * i + 4] = voice[i].byte;
+    }
+}
+
+/* ---- time ------------------------------------------------------------------------------- */
 __attribute__((noinline)) int mix_run(int n, int16_t *out, int max)
 {
     int k = 0;
-    while (n > 0) {
-        /* the frame's clocks from phase (a frame made at most once: clock 27) */
-        int c = phase, end = c + n < 32 ? c + n : 32;
-        clocks_from(c, end);
-        n -= end - c;
-        phase = end & 31;
-        if (!made)
-            continue;
-        made = 0;
+    /* each sample that ends in these clocks; no work for the clocks between */
+    while (n >= 32 - rel) {
+        n -= 32 - rel;
+        sections(S_DONE);
+        rel = 32;
+        sets_passed();
+        rel = 0;
+        sect = S_28;
+        outx_set = envx_set = 0;
+        ram_seen = -1;
+        if (deferred) {
+            now = next;
+            deferred = 0;
+        }
         if (k < max) {
             out[2 * k] = made_l;
             out[2 * k + 1] = made_r;
         }
         k++;
     }
+    rel += n;
     return k < max ? k : max;
 }
 
-/* (one clock as a run of one: the clock's work in mix_run alone, kept in
-   line there and only there) */
+/* (one clock as a run of one) */
 int mix_clock(int16_t *out_l, int16_t *out_r)
 {
     int16_t f[2];
@@ -731,4 +968,3 @@ int mix_clock(int16_t *out_l, int16_t *out_r)
     *out_r = f[1];
     return 1;
 }
-
