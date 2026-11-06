@@ -73,11 +73,6 @@ int  host_window_visible(void);
    the OS's handle (a CAMetalLayer on macOS and iOS, an HWND on Windows; NULL
    without a window) and its drawable size in pixels */
 void *host_window_handle(void);
-/* VRAM the game's own drawing on the GPU may use while it runs (from the
-   call until its run of the frame returns): the address on the GPU's bus,
-   *bytes of it; NULL where the host has none to lend (the PSP's: one of
-   its screen's buffers; front/console.c's own, for every other host) */
-void *host_ge_vram(size_t *bytes);
 void host_window_pixels(int *w, int *h);
 /* the window's size in points (the OS's units for touches and layout; 0
    without a window) */

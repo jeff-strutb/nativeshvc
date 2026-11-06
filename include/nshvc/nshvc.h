@@ -534,39 +534,13 @@ void nshvc_ext_canvas_presented(int *w, int *h);
    and a brightness below 15 come to the console's 5 bits (docs/contract.md
    2.14). (Since 2.14; k 0, the texels over the whole screen, since 2.15.) */
 void nshvc_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
-/* The GPU's memory the game's own GPU drawing may use (an Enhanced mode's
-   picture drawn by the game with the platform's graphics library, its
-   texels then handed to a canvas): its address on the GPU's bus, *bytes
-   of it (bytes may be NULL), lent from the call until the frame is next
-   presented (through the game's run of the frame and the frame hook,
-   nshvc_hooks.frame, after it), its contents not kept; the game's work on
-   it done (its lists finished and synced) by then. The GPU's own state is
-   put back after; the graphics library's kept state (on the PSP: its
-   draw, depth and display buffers, so no sceGuDrawBuffer, sceGuDepthBuffer,
-   sceGuDispBuffer, sceGuDisplay, sceGuSwapBuffers, sceGuInit or sceGuTerm;
-   sceGuDrawBufferList instead) left as found. NULL (and 0) on a platform
-   with none to lend, or headless with no renderer open.
-   On the PSP: VRAM, 557,056 bytes (8 KB aligned), the screen's buffer
-   neither shown nor waiting to be. (Since 2.15.) */
-void *nshvc_ext_ge_vram(size_t *bytes);
-/* The same loan with a depth buffer: the colour memory as
-   nshvc_ext_ge_vram's (its return and *bytes), *depth 16 bits a pixel of the
-   screen's size, at most 512 x 272 (278,528 bytes), *depth_stride pixels a
-   row, its contents not kept. Any argument may be NULL. Lent as the colour
-   memory is, its address on the GPU's bus, 8 KB aligned; the game's list sets
-   it with the GE's own commands (ZBP, ZBW: sceGuSendCommandi 158, 159, not
-   sceGuDepthBuffer, kept as above). NULL (and 0): a platform with none. While
-   paused (nshvc_ext_pause) *depth alone is NULL: the backdrop is there. (Since
-   2.22.) */
-void *nshvc_ext_ge_vram2(size_t *bytes, void **depth, int *depth_stride);
-
 /* ---- pictures the GPU holds: no texel crosses to the CPU (since 2.22) ------------ */
 
 /* The host's GPU lent to the game, to draw its picture on: its
    NSHVC_GPU_METAL or NSHVC_GPU_VULKAN, the fields filled (loan may be NULL), or
    0, none. This is the query: 0, and nshvc_ext_canvas_screen_gpu and a
    texture's nshvc_ext_overlay_gpu are fatal; a game goes on with
-   nshvc_ext_canvas_screen32. The PSP: 0 (its query is nshvc_ext_ge_vram2).
+   nshvc_ext_canvas_screen32.
    Metal: device an id<MTLDevice>, queue an id<MTLCommandQueue> (bridged, not
    retained). Vulkan: device a VkDevice, queue a VkQueue, instance a VkInstance,
    physical_device a VkPhysicalDevice, queue_family its index, a family with
@@ -586,7 +560,7 @@ typedef struct NshvcGpuLoan {
    Vulkan: image a VkImage, view its VkImageView, one level and layer, on the
    lent device, in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL as handed and as left.
    (A handle's 64 bits: (uint64_t)(uintptr_t)(__bridge void *)texture.) image 0:
-   none. The PSP's overlay: image its VRAM address, view its stride in pixels. */
+   none. */
 typedef struct NshvcGpuHandle {
     uint64_t image, view;
 } NshvcGpuHandle;
@@ -595,7 +569,7 @@ typedef struct NshvcGpuHandle {
    event a binary VkSemaphore the game's submission signals, waited on once,
    by the first frame that shows the handle; value 0. A handle shown again (or
    work already known done, or on the lent queue with its own barrier): event 0,
-   none. Not read on the PSP. */
+   none. */
 typedef struct NshvcGpuFence {
     uint64_t event, value;
 } NshvcGpuFence;
@@ -622,51 +596,20 @@ int nshvc_ext_gpu_device(NshvcGpuLoan *loan);
    fatal. nshvc_picture reads it as the frame's presenting does. */
 void nshvc_ext_canvas_screen_gpu(int layer, NshvcGpuHandle handle, int w, int h, uint32_t format, int priority,
                                  NshvcGpuFence fence);
-/* The PSP's: the same canvas from VRAM, read straight by the console's GE
-   list. vram_address in the loan (nshvc_ext_ge_vram: its address as lent, 16
-   bytes aligned, the picture inside that buffer), stride pixels a row (a multiple
-   of 4, at least w), w at most 512, psm GU_PSM_8888 (else fatal). The
-   texels as the GE drew them, a word 0xttbbggrr: tt (the GE's alpha, its
-   stencil) 0 and bb, gg 0: rr an index (0 transparent); tt not 0: the colour.
-   So a colour is drawn with its stencil not 0, an index or the clear with it 0.
-   The game's list is synced before the frame hook returns. Kept as
-   nshvc_ext_canvas_screen_gpu's, and until then the console draws its frames
-   into none of that buffer: the loan taken once, the same address until the
-   frame is presented; with both the others of the screen's buffers on screen
-   or waiting, it waits for the next vertical blank. A picture that stands: the
-   same address handed again, nothing drawn over it, stays whole for that frame
-   (the loan's contents are not kept otherwise). Paused, it is let go: the
-   buffer is wanted (the pause's overlay in it), so a picture is drawn and handed
-   after the pause. An overlay shown with it is in the same buffer. NULL: off. */
-void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w, int h, int psm, int priority);
 /* A canvas of characters from the game's own GPU work, in place of
    nshvc_ext_canvas_chars's texels and in every other way that call's (layer,
    word_addr, count, k: the console places them by the layer's map and scroll,
    each tile's flips, priority and palette; one canvas at a time). A character is
    8k x 8k texels, each a pixel value as a tile's.
-   _gpu: a texture of 8-bit unsigned texels (MTLPixelFormatR8Uint, VK_FORMAT_R8_UINT;
+   The texture: 8-bit unsigned texels (MTLPixelFormatR8Uint, VK_FORMAT_R8_UINT;
    the handle and fence as nshvc_ext_canvas_screen_gpu's, Vulkan's image with
    VK_IMAGE_USAGE_TRANSFER_SRC_BIT), the characters in a grid from its top left,
    per_row of them a row. Copied by the console on the GPU, past its fence, once
    for each frame drawn from it.
-   _ge, the PSP's: VRAM in the loan as nshvc_ext_canvas_screen_ge's, read straight
-   by the console's GE list. Its characters by column, per_column of them a
-   column: character i is in column c = i / per_column, row i % per_column. A band
-   holds n = min(stride, 512) / 8k columns, and past it the columns go on in a band
-   below: character i's top left texel is at x = (c % n) 8k, y = ((c / n) per_column +
-   i % per_column) 8k. The GE draws no 8-bit target, so a value is in a texel's low
-   bits: psm GU_PSM_8888, its red, any depth; or GU_PSM_4444, its red, a layer of 4
-   bits or fewer (above them, its green: read by an 8-bit layer). All of it inside
-   the loan's one buffer and 512 texels down, past it fatal. So at a row of 512: 8888
-   holds 512 x 272 texels, 4444 512 x 512 (the buffer's 544 rows). A game's list
-   drawing a part that wraps points its draw buffer at that band (the depth buffer
-   covers 272 rows).
-   Handed, kept and let go as nshvc_ext_canvas_screen_gpu's and _ge's are, a VRAM
-   canvas let go while paused too. Handle 0, vram_address NULL or count 0: off. */
+   Handed, kept and let go as nshvc_ext_canvas_screen_gpu's is. Handle 0 or count
+   0: off. */
 void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcGpuHandle handle, int per_row, int k,
                                 NshvcGpuFence fence);
-void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *vram_address, int stride, int per_column,
-                               int psm, int k);
 /* An overlay from a texture of the game's, in place of nshvc_overlay_image's
    CPU texels: its id for nshvc_overlay_place, the same for every call (one such
    overlay; -1 when NSHVC_OVERLAYS are made, and it is made at the first call),
@@ -675,12 +618,8 @@ void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *v
    channel, unsigned normalized (MTLPixelFormatBGRA8Unorm); Vulkan: the same,
    sampled through view. handle and fence as nshvc_ext_canvas_screen_gpu's,
    kept alike: not handed again by the end of the frame hook after a frame showed
-   it, it is drawn no more (its place and id kept). The PSP: image its VRAM
-   address, view its stride, GU_PSM_8888 in the loan as
-   nshvc_ext_canvas_screen_ge's, its alpha the GE's (the stencil the game's list
-   wrote), and the GE's filter reads a column and a row past w x h: the game's
-   too, its last repeated or clear (w and h at most 511). nshvc_overlay_update on
-   it is fatal. image 0: none for now. A host with neither: fatal. */
+   it, it is drawn no more (its place and id kept). nshvc_overlay_update on
+   it is fatal. image 0: none for now. A host with no GPU to lend: fatal. */
 int nshvc_ext_overlay_gpu(NshvcGpuHandle handle, int w, int h, NshvcGpuFence fence);
 /* The same pages as registers on the B bus, for the game's code and its
    HDMA (a page per line, as any of the PPU's registers): $21C0-$21C3

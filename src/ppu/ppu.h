@@ -106,8 +106,7 @@ typedef struct {
     const uint8_t *cv;
     uint32_t cv_gen;
     /* a canvas the GPU holds (no cv): 1 a texture (cv_image, its fence's
-       cv_event and cv_value), 2 VRAM (cv_image its address, cv_value its
-       stride); 0 none. A screen canvas's texels 32 bits (cv_len 0); a canvas of
+       cv_event and cv_value); 0 none. A screen canvas's texels 32 bits (cv_len 0); a canvas of
        characters', cv_row of them a row, its bytes cv_len as they lie once
        copied. */
     int cv_gpu, cv_row;
@@ -196,21 +195,16 @@ int ppu_canvas_k(void);
 void ppu_stat_catch_up(unsigned v, unsigned h, unsigned vdisp);
 void ppu_ext_canvas_screen(int layer, const uint8_t *texels, int w, int h, int k, int priority, int palette);
 void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, int k, int priority, int palette);
-/* a screen canvas the GPU holds, form 1 or 2 (PpuFrame cv_gpu), its texels
+/* a screen canvas the GPU holds (PpuFrame cv_gpu), its texels
    over the whole screen; image 0: off */
-void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t image, int w, int h, int priority,
+void ppu_ext_canvas_screen_gpu(const char *name, int layer, uint64_t image, int w, int h, int priority,
                                uint64_t event, uint64_t value);
-/* a canvas of characters the GPU holds, form 1 (row of them a row) or 2 (row
-   of them a column); image 0: off */
-void ppu_ext_canvas_chars_gpu(const char *name, int form, int layer, unsigned word_addr, int count, uint64_t image, int row,
+/* a canvas of characters the GPU holds, row of them a row; image 0: off */
+void ppu_ext_canvas_chars_gpu(const char *name, int layer, unsigned word_addr, int count, uint64_t image, int row,
                               int k, uint64_t event, uint64_t value);
 /* the frame hook has ended: a canvas the GPU holds that the last finished
    frame took, none handed since, is let go */
 void ppu_canvas_gpu_end(void);
-/* a canvas in VRAM (form 2) let go, whatever frame took it */
-void ppu_canvas_ge_off(void);
-/* the VRAM of a canvas asked for and not yet let go (form 2), or 0 */
-uint64_t ppu_canvas_ge_asked(void);
 /* the texels a console pixel spans along each axis at the window's size
    now (nshvc_ext_canvas_scale): the front end sets it as it presents */
 void ppu_set_canvas_scale(int k);

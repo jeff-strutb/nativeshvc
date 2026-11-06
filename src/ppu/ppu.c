@@ -892,7 +892,7 @@ void ppu_ext_canvas_screen32(int layer, const uint32_t *texels, int w, int h, in
 
 /* no texels of its own here: the frame takes the handle as it begins, as any
    canvas's texels */
-void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t image, int w, int h, int priority,
+void ppu_ext_canvas_screen_gpu(const char *name, int layer, uint64_t image, int w, int h, int priority,
                                uint64_t event, uint64_t value)
 {
     cv_release(&cv_now.buf);
@@ -906,7 +906,7 @@ void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t i
         snes_fatal("%s(%d, %d x %d, priority %d): layers 0-3 (BG1-4), a size of 1 x 1 to 65,535 x 65,535, priority 0 or 1",
                    name, layer, w, h, priority);
     cv_now.on = 1;
-    cv_now.gpu = form;
+    cv_now.gpu = 1;
     cv_now.row = 0;
     cv_now.image = image;
     cv_now.event = event;
@@ -926,7 +926,7 @@ void ppu_ext_canvas_screen_gpu(const char *name, int form, int layer, uint64_t i
     cv_now.len = 0;
 }
 
-void ppu_ext_canvas_chars_gpu(const char *name, int form, int layer, unsigned word_addr, int count, uint64_t image, int row,
+void ppu_ext_canvas_chars_gpu(const char *name, int layer, unsigned word_addr, int count, uint64_t image, int row,
                               int k, uint64_t event, uint64_t value)
 {
     cv_release(&cv_now.buf);
@@ -941,7 +941,7 @@ void ppu_ext_canvas_chars_gpu(const char *name, int form, int layer, unsigned wo
                    "characters, k 1 to 64, at least one character a row",
                    name, layer, word_addr, count, k, row, (unsigned)vram_pages << 15);
     cv_now.on = 1;
-    cv_now.gpu = form;
+    cv_now.gpu = 1;
     cv_now.row = row;
     cv_now.image = image;
     cv_now.event = event;
@@ -966,17 +966,6 @@ void ppu_canvas_gpu_end(void)
         cv_now.gen++;
     }
 }
-
-void ppu_canvas_ge_off(void)
-{
-    if (cv_now.on && cv_now.gpu == 2) {
-        cv_now.on = 0;
-        cv_now.gpu = 0;
-        cv_now.gen++;
-    }
-}
-
-uint64_t ppu_canvas_ge_asked(void) { return cv_now.on && cv_now.gpu == 2 ? cv_now.image : 0; }
 
 static void cv_take(void)
 {
@@ -1968,7 +1957,7 @@ const uint32_t *ppu_compose(const PpuFrame *f, size_t *words)
     }
     *words = n + cp_parts_n + cp_spr_n;
     /* a texture's texels past the description: the backend's copy (rr.h RrCvGpu) */
-    if (f->cv_on && f->cv_gpu == 1)
+    if (f->cv_on && f->cv_gpu)
         cp_w[CP_CV] = (uint32_t)*words;
     return cp_w;
 }
@@ -2274,7 +2263,7 @@ const uint32_t *ppu_compose_m7(const PpuFrame *f, size_t *words, RrMode7 *m)
     s = keep_s;
     cp_w[CP_M7SEG] = (uint32_t)n;
     *words = n + parts;
-    if (f->cv_on && f->cv_gpu == 1)
+    if (f->cv_on && f->cv_gpu)
         cp_w[CP_CV] = (uint32_t)*words;
     return cp_w;
 }

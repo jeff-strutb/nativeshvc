@@ -95,20 +95,6 @@ void nshvc_ext_canvas_presented(int *w, int *h)
     if (h)
         *h = ph < 1 ? 1 : ph;
 }
-/* the host's VRAM free while the game runs (host_psp.c); none elsewhere */
-__attribute__((weak)) void *host_ge_vram(size_t *bytes)
-{
-    *bytes = 0;
-    return NULL;
-}
-void *nshvc_ext_ge_vram(size_t *bytes)
-{
-    size_t n = 0;
-    void *p = host_ge_vram(&n);
-    if (bytes)
-        *bytes = p ? n : 0;
-    return p;
-}
 /* a canvas past the platform's (rr_canvas_max): fatal. w x h its texels
    (a character canvas's: none, 0), k a whole scale's (0: none) */
 static void canvas_fits(const char *what, int w, int h, int k)
@@ -524,7 +510,7 @@ static int frame_desc(const uint32_t **desc, size_t *words, int *w, int *h, uint
     if (f->versions == 0)
         return 0;
     if (f->interlace && f->cv_on && f->cv_gpu)
-        nshvc_fatal("a canvas the GPU holds (nshvc_ext_canvas_screen_gpu, _ge) on an interlaced frame: no weave of its texels");
+        nshvc_fatal("a canvas the GPU holds (nshvc_ext_canvas_screen_gpu) on an interlaced frame: no weave of its texels");
     if (!f->interlace) {
         *desc = ppu_compose(f, words);
         *w = ppu_frame_width(f);
@@ -634,45 +620,12 @@ __attribute__((weak)) int rr_gpu_device(struct NshvcGpuLoan *loan)
     (void)loan;
     return 0;
 }
-__attribute__((weak)) int rr_ge_picture(const char *what, const void *vram, int stride, int w, int h, int psm)
-{
-    (void)what; (void)vram; (void)stride; (void)w; (void)h; (void)psm;
-    return 0;
-}
 __attribute__((weak)) void rr_overlay_gpu(uint64_t image, uint64_t view, int w, int h, const float q[6], float alpha,
                                           uint64_t event, uint64_t value)
 {
     (void)image; (void)view; (void)w; (void)h; (void)q; (void)alpha; (void)event; (void)value;
     nshvc_fatal("the renderer (%s) draws no overlay from the GPU", rr_name());
 }
-/* the VRAM the frame about to be drawn reads (host_psp.c: not the buffer it
-   is drawn into); none elsewhere */
-__attribute__((weak)) void host_ge_hold(const void *a, const void *b, const void *c)
-{
-    (void)a; (void)b; (void)c;
-}
-
-/* the depth buffer lent with the host's VRAM, its row in pixels (host_psp.c);
-   none elsewhere */
-__attribute__((weak)) void *host_ge_depth(int *stride)
-{
-    *stride = 0;
-    return NULL;
-}
-
-void *nshvc_ext_ge_vram2(size_t *bytes, void **depth, int *depth_stride)
-{
-    int stride = 0;
-    void *p = nshvc_ext_ge_vram(bytes);
-    /* (while paused that VRAM holds the backdrop: rr_backdrop_make) */
-    void *d = p && !paused ? host_ge_depth(&stride) : NULL;
-    if (depth)
-        *depth = d;
-    if (depth_stride)
-        *depth_stride = d ? stride : 0;
-    return p;
-}
-
 /* the host's GPU, the renderer opened to ask it (0 where neither opens) */
 static int gpu_api(NshvcGpuLoan *loan)
 {
@@ -705,25 +658,7 @@ void nshvc_ext_canvas_screen_gpu(int layer, NshvcGpuHandle handle, int w, int h,
             nshvc_fatal("%s: format %u: 32-bit unsigned texels (MTLPixelFormatR32Uint, VK_FORMAT_R32_UINT)", name, (unsigned)format);
         canvas_fits(name, w, h, 0);
     }
-    ppu_ext_canvas_screen_gpu(name, 1, layer, handle.image, w, h, priority, fence.event, fence.value);
-}
-
-void nshvc_ext_canvas_screen_ge(int layer, void *vram_address, int stride, int w, int h, int psm, int priority)
-{
-    static const char name[] = "nshvc_ext_canvas_screen_ge";
-    snes_ppu_catch_up();
-    if (vram_address) {
-        if (!rr_opened && !rr_open())
-            nshvc_fatal("%s: no renderer", name);
-        rr_opened = 1;
-        if (!rr_ge_picture(name, vram_address, stride, w, h, psm))
-            nshvc_fatal("%s: this host has no GE (nshvc_ext_ge_vram2 NULL)", name);
-        if (psm != RR_GE_PSM_8888)
-            nshvc_fatal("%s: psm %d: GU_PSM_8888 alone", name, psm);
-        canvas_fits(name, w, h, 0);
-    }
-    ppu_ext_canvas_screen_gpu(name, 2, layer, (uint64_t)(uintptr_t)vram_address, w, h, priority, 0,
-                              (uint64_t)(uint32_t)stride);
+    ppu_ext_canvas_screen_gpu(name, layer, handle.image, w, h, priority, fence.event, fence.value);
 }
 
 void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcGpuHandle handle, int per_row, int k,
@@ -736,33 +671,7 @@ void nshvc_ext_canvas_chars_gpu(int layer, unsigned word_addr, int count, NshvcG
             nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0)", name);
         canvas_fits(name, 0, 0, k);
     }
-    ppu_ext_canvas_chars_gpu(name, 1, layer, word_addr, count, handle.image, per_row, k, fence.event, fence.value);
-}
-
-void nshvc_ext_canvas_chars_ge(int layer, unsigned word_addr, int count, void *vram_address, int stride, int per_column,
-                               int psm, int k)
-{
-    static const char name[] = "nshvc_ext_canvas_chars_ge";
-    snes_ppu_catch_up();
-    if (vram_address && count > 0) {
-        int k8 = 8 * k, across, cols, bands;
-        if (k < 1 || k > 64 || stride < k8 || per_column < 1)
-            nshvc_fatal("%s: k %d, a row of %d pixels, %d characters a column: k 1 to 64, a row and a column of at least "
-                        "one character", name, k, stride, per_column);
-        /* the columns a band holds: the row's, at most the GE's 512 texels */
-        across = (stride < 512 ? stride : 512) / k8;
-        cols = (count + per_column - 1) / per_column;
-        bands = (cols + across - 1) / across;
-        if (!rr_opened && !rr_open())
-            nshvc_fatal("%s: no renderer", name);
-        rr_opened = 1;
-        if (!rr_ge_picture(name, vram_address, stride, (cols < across ? cols : across) * k8, bands * per_column * k8, psm))
-            nshvc_fatal("%s: this host has no GE (nshvc_ext_ge_vram2 NULL)", name);
-        canvas_fits(name, 0, 0, k);
-    }
-    /* (the fence's event, unused on the GE: the texels' psm) */
-    ppu_ext_canvas_chars_gpu(name, 2, layer, word_addr, count, (uint64_t)(uintptr_t)vram_address, per_column, k,
-                             (uint64_t)(uint32_t)psm, (uint64_t)(uint32_t)stride);
+    ppu_ext_canvas_chars_gpu(name, layer, word_addr, count, handle.image, per_row, k, fence.event, fence.value);
 }
 
 /* the one overlay whose image the GPU holds */
@@ -775,9 +684,8 @@ int nshvc_ext_overlay_gpu(NshvcGpuHandle handle, int w, int h, NshvcGpuFence fen
     if (handle.image) {
         if (w <= 0 || h <= 0)
             nshvc_fatal("%s: %d x %d", name, w, h);
-        if (!gpu_api(NULL) && !rr_ge_picture(name, (const void *)(uintptr_t)handle.image, (int)handle.view, w + 1, h + 1,
-                                             RR_GE_PSM_8888))
-            nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0, nshvc_ext_ge_vram2 NULL)", name);
+        if (!gpu_api(NULL))
+            nshvc_fatal("%s: this host lends no GPU (nshvc_ext_gpu_device 0)", name);
     }
     if (overlay_gpu_id < 0) {
         if (noverlays == NSHVC_OVERLAYS)
@@ -804,31 +712,18 @@ int nshvc_ext_overlay_gpu(NshvcGpuHandle handle, int w, int h, NshvcGpuFence fen
 
 /* the game's frame hook, and the handles the GPU holds it let go by not
    handing again: those a frame has shown. While the machine stands no frame
-   is made: a texture canvas stays for the next, handed or not. VRAM is let go
-   then, its buffer wanted: with the frame on screen and the frame being drawn,
-   the third of the screen's buffers is the pause's overlay's */
+   is made: a texture canvas stays for the next, handed or not */
 static void frame_hook(void)
 {
     int stood = paused;
     if (hooks.frame)
         hooks.frame();
-    if (paused)
-        ppu_canvas_ge_off();
-    else if (!stood)
+    if (!paused && !stood)
         ppu_canvas_gpu_end();
     if (overlay_gpu_id >= 0 && overlays[overlay_gpu_id].gpu_shown) {
         overlays[overlay_gpu_id].image = 0;
         overlays[overlay_gpu_id].gpu_shown = 0;
     }
-}
-
-/* the VRAM the frame to be drawn reads, for the host (host_ge_hold) */
-static void ge_holds(void)
-{
-    const PpuFrame *f = ppu_frame();
-    uint64_t a = !paused && f->cv_on && f->cv_gpu == 2 ? f->cv_image : 0, c = ppu_canvas_ge_asked();
-    uint64_t b = overlay_gpu_id >= 0 ? overlays[overlay_gpu_id].image : 0;
-    host_ge_hold((const void *)(uintptr_t)a, (const void *)(uintptr_t)b, (const void *)(uintptr_t)c);
 }
 
 /* the finished frame's picture: the GPU's (rr_picture), read back */
@@ -967,27 +862,22 @@ static int show_mode7(int ow, int oh, const int d[4]);
 static void show_picture(const int d[4]);
 
 /* a shot's picture: the console's (nshvc_picture), or at NSHVC_SCALE the
-   frame presented by the renderer on a target that size, read back;
-   NSHVC_SCALE=target, on the renderer's own target whatever the screen's
-   width (a platform's fixed screen). A presented shot draws no console's
-   picture, so it can show a frame nshvc_picture cannot (the PSP's canvas) */
+   frame presented by the renderer on a target that size, read back. A
+   presented shot draws no console's picture */
 const uint32_t *front_shot_picture(int *w, int *h, int *presented)
 {
     double sx, sy;
     static uint32_t *buf;
     static size_t cap;
-    const char *e = getenv("NSHVC_SCALE");
-    int target = e && !strcmp(e, "target"), d[4];
+    int d[4];
     size_t len;
     shot_scale(&sx, &sy);
     *presented = 0;
-    if (!sx && !target)
+    if (!sx)
         return nshvc_picture(w, h);
     *presented = 1;
     rr_need();
-    if (target) {
-        rr_target(w, h);
-    } else {
+    {
         const PpuFrame *f = ppu_frame();
         const uint32_t *desc;
         size_t nw;
@@ -1013,7 +903,6 @@ const uint32_t *front_shot_picture(int *w, int *h, int *presented)
     d[2] = *w;
     d[3] = *h;
     rr_size(*w, *h);
-    ge_holds();
     rr_begin(0xFF000000u);
     if (!(rr_mode7_window(ppu_frame_presents(ppu_frame())) && show_mode7(*w, *h, d)))
         show_picture(d);
@@ -1190,7 +1079,6 @@ static void show(void)
     shown_tw = tw;
     shown_th = th;
     canvas_scale(w, h);
-    ge_holds();
     rr_begin(0xFF000000u);
     if (paused && backdrop) {
         float q[6] = { 0, 0, (float)tw, 0, 0, (float)th };
@@ -1366,8 +1254,7 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv)
         script_load(script, out_dir);
     nshvc_power(cart);
     if (headless && getenv("NSHVC_PRESENT")) {
-        /* each frame presented, the renderer open from the start (its
-           GPU memory lent from the first frame: nshvc_ext_ge_vram) */
+        /* each frame presented, the renderer open from the start */
         const char *lf = getenv("NSHVC_FPS_LOG");
         if (!rr_opened && !rr_open())
             nshvc_fatal("NSHVC_PRESENT: the renderer cannot open");
