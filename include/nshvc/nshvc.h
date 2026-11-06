@@ -210,18 +210,10 @@ int nshvc_main(const nshvc_cart *cart, int argc, char **argv);
 
 /* The game's main: write NSHVC_MAIN(argc, argv) { ... nshvc_main(...) } in
    place of int main(...). On iOS the host keeps the process's main (UIKit's)
-   and runs the game's on a thread of its own as nshvc_game_main; on the PSP
-   it is main with the module header the system's loader needs, the heap all
-   of user memory but 1 MB (kept for the system's own); elsewhere it is
-   main. */
+   and runs the game's on a thread of its own as nshvc_game_main; elsewhere
+   it is main. */
 #if defined(NSHVC_HOST_IOS)
 #define NSHVC_MAIN(argc, argv) int nshvc_game_main(int argc, char **argv)
-#elif defined(__PSP__)
-#include <pspmoduleinfo.h>
-#define NSHVC_MAIN(argc, argv)                                                                                    \
-    PSP_MODULE_INFO("nativeshvc", 0, 1, 0);                                                                       \
-    PSP_HEAP_SIZE_KB(-1024);                                                                                      \
-    int main(int argc, char **argv)
 #else
 #define NSHVC_MAIN(argc, argv) int main(int argc, char **argv)
 #endif

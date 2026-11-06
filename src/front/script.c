@@ -30,14 +30,11 @@
  *             (M:A-B), each without its shots, dumps and saves
  *   save      NAME's history noted (passed on to each new copy)
  *   load      a new copy rebuilds NAME, and goes on from the step after
- *
- * The PSP runs one program and starts no other: no process holds a
- * machine, as on Windows, and a load, which needs a new copy, is fatal.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(_WIN32) && !defined(__PSP__)
+#ifndef _WIN32
 #define SCRIPT_FORK 1          /* processes: fork, and a new copy by posix_spawn */
 #endif
 #ifndef _WIN32
@@ -629,8 +626,6 @@ static void go_on_in_new_copy(const char *plan, int resume)
             nshvc_fatal("cannot start %s: %s", self_argv[0], strerror(err));
         st = child_status(p);
     }
-#elif defined(__PSP__)
-    nshvc_fatal("load needs a new copy of the program, which this system cannot start");
 #else
     {
         char exe[MAX_PATH];

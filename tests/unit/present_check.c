@@ -210,25 +210,14 @@ static void setup(int k)
         w2(0x1D, -0x0100);
         w2(0x1E, 0x0500);
         break;
-    case 12:  /* a larger screen with the console's picture off its centre
-                 (the PSP's: within its 512 x 240) */
-#ifdef PSP
-        nshvc_ext_screen(320, 240);
-        nshvc_ext_screen_origin(8, 10);
-#else
+    case 12:  /* a larger screen with the console's picture off its centre */
         nshvc_ext_screen(320, 272);
         nshvc_ext_screen_origin(8, 40);
-#endif
         break;
     case 13:  /* a large screen, the console's picture near its top right
-                 (at one to one and scaled down; the PSP's its largest) */
-#ifdef PSP
-        nshvc_ext_screen(512, 240);
-        nshvc_ext_screen_origin(250, 4);
-#else
+                 (at one to one and scaled down) */
         nshvc_ext_screen(2048, 1536);
         nshvc_ext_screen_origin(1700, 40);
-#endif
         break;
     case 8:   /* the console's screen again, wrap, magnified with a turn */
         nshvc_ext_screen(256, 224);

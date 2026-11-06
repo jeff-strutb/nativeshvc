@@ -5,9 +5,8 @@
  * stacks of their own and hand
  * control back and forth with the S-CPU's (the program's own stack), one
  * running at a time: a deterministic schedule, no threads. The switch is a
- * few instructions of assembly on arm64, x86-64 and 32-bit MIPS
- * (coro_arm64.S, coro_x86_64.S, coro_mips.S); on Windows, the system's
- * fibers.
+ * few instructions of assembly on arm64 and x86-64 (coro_arm64.S,
+ * coro_x86_64.S); on Windows, the system's fibers.
  */
 #ifndef PORT_CORO_H
 #define PORT_CORO_H
@@ -32,14 +31,8 @@ void coro_switch(Coro *from, Coro *to);
 int coro_stack_ok(const Coro *c);
 
 /* the S-CPU's and the SPC700's stacks: far more than the console's code
-   takes (under 2 KB each, measured), smaller on the PSP, whose memory is
-   24 MB in all */
-#if defined(__PSP__)
-#define CORO_CPU_STACK (1u << 20)
-#define CORO_SPC_STACK (256u << 10)
-#else
+   takes (under 2 KB each, measured) */
 #define CORO_CPU_STACK (16u << 20)
 #define CORO_SPC_STACK (4u << 20)
-#endif
 
 #endif

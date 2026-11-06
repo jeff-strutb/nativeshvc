@@ -125,17 +125,6 @@ Coro *coro_new(void (*fn)(void *), void *arg, size_t stack)
     *--sp = 0;                 /* r13 */
     *--sp = 0;                 /* r14 */
     *--sp = 0;                 /* r15 */
-#elif defined(__mips__)
-    /* coro_swap pops 24 words: s0-s7, s8, ra, $f20-$f31 and two unused;
-       s0 = the coroutine, ra = coro_start */
-    sp -= 24;
-    {
-        int i;
-        for (i = 0; i < 24; i++)
-            sp[i] = 0;
-    }
-    sp[0] = c;                 /* s0 */
-    sp[9] = (void *)coro_start; /* ra */
 #else
 #error "coroutines: no switch for this processor"
 #endif

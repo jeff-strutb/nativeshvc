@@ -294,9 +294,8 @@ static void rr_check(void)
         }
     }
     /* the picture read back from the GPU (nshvc_picture), the reference's
-       exactly (the PSP's: none for a frame with a canvas shown, drawn only
-       at the target's resolution) */
-    if (!(ppu_frame_presents(ppu_frame()) & 6) || strcmp(rr_name(), "psp")) {
+       exactly */
+    {
         int gw, gh;
         const uint32_t *g = nshvc_picture(&gw, &gh);
         long n = 0;
@@ -320,10 +319,9 @@ static void rr_check(void)
     }
 }
 
-/* The hooks set from the environment: as the program starts, and on the PSP
-   again once its main has set the environment from args.txt (psp/args.c). A
-   hook off leaves the console as a game's run has it. */
-void nshvc_check_env(void)
+/* The hooks set from the environment, as the program starts. A hook off
+   leaves the console as a game's run has it. */
+static void check_env(void)
 {
     static int reporting;
     check_on = getenv("NSHVC_PPUCHECK") != NULL;
@@ -337,4 +335,4 @@ void nshvc_check_env(void)
     }
 }
 
-__attribute__((constructor)) static void check_start(void) { nshvc_check_env(); }
+__attribute__((constructor)) static void check_start(void) { check_env(); }

@@ -5,14 +5,13 @@
  * the whole target and read back:
  *
  *   a frame of one colour: that colour with the tint laid over it, exactly
- *   (within rounding: 1, and on the PSP's blend 4 a channel);
+ *   (within rounding: 1);
  *   no blur and no tint: the frame itself;
  *   a white square of 10 x 10 cells on black (a cell the blur's radius / 4):
- *   spread symmetrically, its light kept within 1% (3% on the PSP), its
+ *   spread symmetrically, its light kept within 1%, its
  *   standard deviation the square's with three boxes of 4 cells either side,
  *   sqrt((10^2 - 1) / 12 + 3 * ((2 * 4 + 1)^2 - 1) / 12) = 5.31 cells, and
  *   the cells' bilinear magnification's 1/6 cell^2 with them: within 3%.
- *   The PSP's GE makes its blur by halvings (rr_psp.c): there within 35%.
  *
  *   RR_SIZE=1203x801 build/null-RENDER/tests/backdrop_check
  *
@@ -61,14 +60,12 @@ int main(void)
 {
     const uint32_t c = 0xFF4080C0u, tint = 0x80102030u;
     uint32_t *f;
-    int ge, i, x, y, k, worst = 0, slack;
+    int i, x, y, k, worst = 0, slack = 1;
     if (!rr_open()) {
         fprintf(stderr, "backdrop_check: %s cannot open\n", rr_name());
         return 2;
     }
     rr_target(&tw, &th);
-    ge = !strcmp(rr_name(), "psp");
-    slack = ge ? 4 : 1;
     got = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
     f = (uint32_t *)malloc((size_t)tw * (size_t)th * 4);
     if (!got || !f)
@@ -105,12 +102,12 @@ int main(void)
                 worst = d > worst ? d : worst;
             }
         printf("     no blur, no tint: largest difference %d\n", worst);
-        check(worst <= (ge ? 8 : 2), "no blur and no tint is the frame itself");
+        check(worst <= 2, "no blur and no tint is the frame itself");
     }
 
     /* the white square */
     {
-        int radius = ge ? 8 : 16, cell = radius / 4, side = 10 * cell, x0 = (tw - side) / 2, y0 = (th - side) / 2;
+        int radius = 16, cell = radius / 4, side = 10 * cell, x0 = (tw - side) / 2, y0 = (th - side) / 2;
         double sum = 0, mx = 0, my = 0, vx = 0, vy = 0, want = 255.0 * side * side, sdx, sdy, cx, cy;
         double target = sqrt((10.0 * 10.0 - 1) / 12 + 3 * (9.0 * 9.0 - 1) / 12 + 1.0 / 6);
         for (y = 0; y < th; y++)
@@ -139,9 +136,9 @@ int main(void)
             cy = y0 + side / 2.0;
             printf("     the square: light %.4f of its own, centre off by (%.2f, %.2f) pixels, deviation %.3f x %.3f cells (%.3f)\n",
                    sum / want, mx - cx, my - cy, sdx, sdy, target);
-            check(fabs(sum / want - 1) < (ge ? 0.03 : 0.01), "the square's light is kept");
+            check(fabs(sum / want - 1) < 0.01, "the square's light is kept");
             check(fabs(mx - cx) < cell && fabs(my - cy) < cell, "the spread is about the square's centre");
-            check(fabs(sdx / target - 1) < (ge ? 0.35 : 0.03) && fabs(sdy / target - 1) < (ge ? 0.35 : 0.03),
+            check(fabs(sdx / target - 1) < 0.03 && fabs(sdy / target - 1) < 0.03,
                   "the spread's deviation is the boxes'");
         }
     }
