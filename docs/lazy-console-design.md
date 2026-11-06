@@ -94,14 +94,21 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
    the time waited. So does a wait on the sound ports
    with a chip running, DMA under way or an HDMA channel writing them.
 
-5. Compiled and never run, so nothing above counts as narrowed by them until it has been: the
-   boot ROM's steps `boot_start` and `boot_byte`, with only its reads of a port and its stores to
-   $F0-$FF left as states; a DSP voice with no pitch, released at level 0, doing nothing in a
+5. Run once, at `1b14a1d`, none of it broken on purpose, so the checks are not shown to reach it:
+   the boot ROM's steps `boot_start` and `boot_byte`, with only its reads of a port and its stores
+   to $F0-$FF left as states; a DSP voice with no pitch, released at level 0, doing nothing in a
    sample (`voice_idle`), which leaves a silent voice with a pitch decoding at full cost; the
-   S-CPU's wait on the sound ports (`wait_port_ahead`); the SPC700's waits on DSP registers and
-   echo RAM (`mix_reg_next`, `mix_ram_next`); HDMA's lines in bulk with a chip running; a chip's
-   `next_change`, which no chip implements yet; `refresh_take`'s count from the clock; STAT77's
-   evaluation ending when both its flags are up.
+   SPC700's waits on DSP registers and echo RAM (`mix_reg_next`, `mix_ram_next`); HDMA's lines in
+   bulk with a chip running; `refresh_take`'s count from the clock; STAT77's evaluation ending when
+   both its flags are up. That run: `dsp/fuzz.py` in its three modes, `dsp/keys.py`, `hdma_bulk`
+   and `rom/run.py` 0 differ, on a commit where a real game's boot upload took about 2,000 frames and
+   its picture never started: those checks did not see it. `df81af5` fixes that (`apu_port_change`),
+   `ipl` now checks the uploads' time, and `rom/run.py` has not finished on the fix. With it, that
+   game reaches its title and menu, five shots identical to a build without the waits; no race,
+   window or sound. `ipl --driver --sweep`, with no weights, failed before and fails with more: 16 of
+   4,096 bytes, was 1, as the S-CPU's wait ending at the port's change (`wait_port_ahead`) lets more
+   words split across the refresh. With the profile's weights it lands all 4,096. A chip's
+   `next_change` has not run: no chip implements it. The speed of all this is not measured.
 6. A wait whose condition looks at the clock itself (`snes_now`) looks again every 64 clocks: the
    console cannot tell what it does with it.
 
