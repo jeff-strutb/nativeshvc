@@ -46,7 +46,7 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | `ppu.c` `obj_eval` | 128 sprites and their tiles | STAT77's flags, when read |
 | `ppu.c` `record_line` | a line's mid-line writes | a frame-record line's segments |
 | `ppu.c` `cp_decode`, `cp_sprites`, `cp_state`, `ppu_compose`, `ppu_frame_presents`, `m7_state`, `mode7_segs` | a frame's lines, parts and sprites, once a frame presented | the description the GPU draws |
-| `mixer.c` `mix_init`, `mix_voice_states`, `decode`, `echo_clock` | 8 voices, 4 BRR samples, 2 channels | a sample's voices and echo |
+| `mixer.c` `mix_init`, `mix_voice_states`, `decode`, `sample_end`, `mix_control`, `sets_passed`, `mix_before_ram_write` | 8 voices, 4 BRR samples, 2 channels, a voice's reads | a sample's voices and echo, what the driver reads |
 | `mixer_regs.c` `mix_regs_reset` | the registers | what the driver reads |
 | `resample.c` | the table's taps; a pull's frames | samples the host plays |
 
@@ -55,11 +55,11 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 | where | loop | steps | observed output |
 |---|---|---|---|
 | `apu.c` `dsp_catch_up` | `while (cycles)`, `for (i < got)` | samples due since last observed, in chunks | audio samples; OUTX, ENVX, ENDX when read |
-| `mixer.c` `mix_run` | `while (n > 0)` | samples due | an audio sample each. **Within a sample `clocks_from` still walks the DSP's 32 clock cases.** A whole-sample mixer was built and measured: exact, and no faster, so it was removed. Register writes must land at their own clocks |
+| `mixer.c` `mix_run` | `while (n >= 32 - rel)` | samples that end in the clocks passed | an audio sample each, worked out whole by the read clocks' tables (`at_` in `mixer.c`): no work for the clocks between. A write reaches this sample or the next by its setting's read clock. A read of ENDX, ENVX or OUTX, or a write of the sound RAM, has the voices whose reads have passed worked out at once, and the rest at the sample's end |
 | `apu.c` `spc_wr` | `while (mix_key_unread())` | the DSP's next key read | the write waits for it, as the driver sees |
 | `apu.c` `spc_wait_until` | `for (;;)` | the driver's wait, one look per possible change | the condition the driver waits on |
 | `apu.c` `spc_main` | `for (;;)` | one entry of the driver | the driver's own C |
-| `apu.c` `boot_run` | `while`, one state an access | **the boot ROM's protocol as states, up to the S-CPU's time**, each access at the cycle its fixed counts give and each poll passed at once to the read that can see a change. Its clear is 239 writes where something can see them (`boot_clear_unseen`), one step of 2,388 cycles where nothing can | the reply a game's upload reads; the samples the DSP makes |
+| `apu.c` `boot_run` | `while`, one state a read of a port | **the boot ROM's protocol as states, up to the S-CPU's time**, each at the cycle its fixed counts give and each poll passed at once to the read that can see a change. A byte, its index seen, is one step, `boot_byte`, its echo shown from its cycle. Its clear is 239 writes where something can see them (`boot_clear_unseen`), one step of 2,388 cycles where nothing can | the reply a game's upload reads; the samples the DSP makes |
 | `bus.c` `run_events` | `for (;;)` | one deadline a pass | NMI, IRQ, HDMA, the field: what the game's handlers and reads see |
 | `bus.c` `hdma_bulk` | `while` | an HDMA line of a wait, its transfer | the bytes moved. No wait step and no `run_events` pass a line: each line takes up its transfer directly at the same clocks, and the deadlines are worked out once when the lines are done (a transfer that moves them does so itself). Lines that move no byte and reload no table are passed in one step (`dma.c` `hdma_quiet`), so the cost follows the bytes moved. Line by line through `wait_step` near a deadline, with a running chip, a wait reading the DMA registers or memory a channel writes, or a hook on the accesses |
 | `bus.c` `irq_find` | `for (;;)`, `l++` | lines until the next IRQ's time, only with the IRQ enabled | the next deadline |
@@ -74,10 +74,15 @@ Each loop with what it produces for an observer. Loops over fixed tables and sma
 
 ## What is not done to the note's full standard
 
-1. The boot ROM (`apu.c` `boot_run`) is a state machine, but each of a byte's accesses is still a
-   state of its own, not one reply computed from a port write as the note asks, and a driver
-   jumping back to it still clears its zero page byte by byte, where the DSP can see it.
-2. A DSP sample walks 32 clock cases: the block mixer was exact but no faster, and was removed.
+1. The boot ROM (`apu.c` `boot_run`) answers a byte in one step, but that step still makes the
+   byte's accesses one after another at their cycles, and it waits at each poll and at the read of
+   the byte for the S-CPU's time. A block's start and the jump are still a state an access, and a
+   byte stored to $F0-$FF two. A driver jumping back to it still clears its zero page byte by
+   byte, where the DSP can see it.
+2. A DSP sample is worked out whole only when nothing looks into it: a read of ENDX, ENVX or
+   OUTX, or a write of the sound RAM, splits it at a voice, and a RAM write also has the reads of
+   the voice in hand made in the chip's order. The DSP is still the chip's arithmetic and read
+   order, a sample at a time. All eight voices are worked out each sample, silent or not.
 3. HDMA's lines in a wait are made in bulk before the wait's next stop, those that move nothing
    passed at once, so the cost follows the bytes moved. With something able to see them (a chip
    running, a hook, a wait reading the DMA registers or memory a channel writes), or a deadline

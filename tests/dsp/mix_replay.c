@@ -63,6 +63,7 @@ int main(int argc, char **argv)
             } else if (!rec[4]) {
                 if ((a < 0xF0 || a > 0xFF) && a < 0xFFC0) {
                     mreads++;
+                    mix_settle();
                     if (ram[a] != rec[7] && !mbad++)
                         fprintf(stderr, "first RAM read that differs at clock %llu: $%04X, reference %02X, mixer %02X\n",
                                 (unsigned long long)clocks, a, rec[7], ram[a]);
@@ -74,6 +75,7 @@ int main(int argc, char **argv)
                                 (unsigned long long)clocks, f2 & 0x7F, rec[7], mine);
                 }
             } else {
+                mix_before_ram_write();
                 ram[a] = rec[7];
                 if (a == 0xF2)
                     f2 = rec[7];

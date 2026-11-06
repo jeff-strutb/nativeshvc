@@ -10,8 +10,8 @@
  * addresses; the echo's delay line lives in the same memory. The arithmetic
  * (decoding, Gaussian interpolation, envelopes, the echo's filter) is the
  * sound chip's as Nocash's fullsnes documents it, so the game sounds as it
- * did. It runs a clock at a time, each voice reading what the game set at
- * the clock the chip does, so a change takes effect where it would there.
+ * did. It makes a sample at a time, each voice given what the game had set by
+ * the clock the chip reads it, so a change takes effect where it would there.
  */
 #ifndef PORT_MIXER_H
 #define PORT_MIXER_H
@@ -78,6 +78,12 @@ int mix_clock(int16_t *left, int16_t *right);
    interleaved) while it has room for max; the frames made, at most max (a
    run of n clocks makes n / 32 + 1 at most) */
 int mix_run(int n, int16_t *out, int max);
+/* The sound memory as the chip's clocks up to this one leave it (the echo's
+   writes): call before reading it */
+void mix_settle(void);
+/* Call before each write to the sound memory, made at this clock: the chip's
+   reads before it do not see it, those after it do */
+void mix_before_ram_write(void);
 /* 1 while the echo writes the sound RAM (FLG's echo-write bit clear) */
 int mix_writes_ram(void);
 /* 1 if the echo may write the byte at addr in the clocks to come before a

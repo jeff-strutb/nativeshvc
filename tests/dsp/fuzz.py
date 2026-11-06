@@ -24,7 +24,20 @@ register read and every read of the APU RAM. (The program's own time, its
 pauses, is the SPC700's instruction time, which the C does not keep: the
 DSP is held to the reference with the reference's own writes.)
 
-  python3 tests/dsp/fuzz.py [SEED...]       (default seeds 1-4; about 2 minutes)
+With --ram the program also writes the sound memory while the voices read it:
+one random byte a pass, seven in eight among the sample data the voices play,
+one in eight a directory entry's low byte. So that the writes meet the voices'
+reads, the directory stays at $2000 (DIR $20), each entry's samples in
+$3000-$30FF. The program without --ram is unchanged.
+
+With --edges a program of its own goes at what depends on the clock of a read
+or write within a sample: all eight voices play a short looping sample at a
+fixed level, so ENDX's bits and OUTX change all the time. Over and over, each
+at a random clock of the sample: ENDX cleared and read soon after; a random
+voice's ENVX written, and all eight read; the same for OUTX; and one pass in 16
+FLG's reset set and cleared, and the voices keyed on again.
+
+  python3 tests/dsp/fuzz.py [--ram | --edges] [SEED...]  (default seeds 1-4; about 2 minutes)
 
 Needs NSHVC_ORACLE_CORE and NSHVC_ASAR, as tests/rom/run.py.
 """
@@ -82,6 +95,7 @@ fill:
     mov a,$03
     cmp a,#$80
     bne fill
+    ; RAM_START
     ; a start: the echo's delay line at $8000 (taken at its clock, so a
     ; frame's pause before its writes go on), unmuted, the voices keyed on
     mov $06,#$80
@@ -141,6 +155,7 @@ keep_dir:
     mov a,$05
     and a,#$3F
     or a,#$10
+    ; RAM_DIR
     mov $05,a
     bra keep_end
 keep_flg:
@@ -157,6 +172,7 @@ keep_end:
     mov $f2,a
     mov a,$05
     mov $f3,a
+    ; RAM_WRITES
     ; a register read back
     %rand()
     and a,#$7F
@@ -210,13 +226,194 @@ pause:
     jmp main
 """
 
+# --ram: the directory's entries all in $3000-$30FF: their high bytes
+RAM_START = r"""
+    mov $02,#$01
+    mov $03,#$20
+    mov y,#$00
+dir_fill:
+    mov a,#$30
+    mov ($02)+y,a
+    inc y
+    inc y
+    bne dir_fill
+    inc $03
+    mov a,$03
+    cmp a,#$24
+    bne dir_fill
+"""
+
+# --ram: DIR stays at $20
+RAM_DIR = r"""
+    mov a,#$20
+"""
+
+# --ram: a random byte over the sample data, or an entry's low byte
+RAM_WRITES = r"""
+    %rand()
+    mov $02,a
+    %rand()
+    and a,#$07
+    bne ram_sample
+    %rand()
+    and a,#$03
+    or a,#$20
+    mov $03,a
+    mov a,$02
+    and a,#$FE
+    mov $02,a
+    bra ram_store
+ram_sample:
+    mov $03,#$30
+ram_store:
+    %rand()
+    mov y,#$00
+    mov ($02)+y,a
+"""
+
+# --edges: the program, up to its reads of ENVX and OUTX (READS_8, READS_9)
+EDGES = PROGRAM[:PROGRAM.index("start:")] + r"""
+start:
+    mov x,#$EF
+    mov sp,x
+    mov $00,#SEED_LO
+    mov $01,#SEED_HI
+    ; the directory's entry 0: start and loop both $1100
+    mov $02,#$00
+    mov $03,#$10
+    mov y,#$00
+    mov a,#$00
+    mov ($02)+y,a
+    inc y
+    mov a,#$11
+    mov ($02)+y,a
+    inc y
+    mov a,#$00
+    mov ($02)+y,a
+    inc y
+    mov a,#$11
+    mov ($02)+y,a
+    ; one block at $1100, which ends and loops: shift 12, random values
+    mov $03,#$11
+    mov y,#$00
+    mov a,#$C3
+    mov ($02)+y,a
+block:
+    inc y
+    %rand()
+    mov ($02)+y,a
+    cmp y,#$08
+    bne block
+    ; the voices: audible, near the top pitch (a loop each 4 samples), no
+    ; ADSR, a fixed level by the gain, the sample at entry 0
+    mov $07,#$00
+voices:
+    mov a,$07
+    mov $f2,a
+    mov $f3,#$40
+    inc a
+    mov $f2,a
+    mov $f3,#$40
+    inc a
+    mov $f2,a
+    mov $f3,#$FF
+    inc a
+    mov $f2,a
+    mov $f3,#$3F
+    inc a
+    mov $f2,a
+    mov $f3,#$00
+    inc a
+    mov $f2,a
+    mov $f3,#$00
+    inc a
+    inc a
+    mov $f2,a
+    mov $f3,#$7F
+    mov a,$07
+    clrc
+    adc a,#$10
+    mov $07,a
+    cmp a,#$80
+    bne voices
+    mov $f2,#$6C
+    mov $f3,#$20
+    mov $f2,#$5D
+    mov $f3,#$10
+    mov $f2,#$0C
+    mov $f3,#$40
+    mov $f2,#$1C
+    mov $f3,#$40
+    mov $f2,#$4C
+    mov $f3,#$FF
+    mov $08,#$00
+main:
+    ; ENDX cleared, and read a little after: a bit on its way shows
+    %rand()
+    and a,#$0F
+    inc a
+    mov $07,a
+    mov $f2,#$7C
+    mov $f3,#$00
+    mov x,$07
+endx_wait:
+    dec x
+    bne endx_wait
+    mov a,$f3
+    ; a voice's ENVX written; all eight read
+    %rand()
+    and a,#$70
+    or a,#$08
+    mov $f2,a
+    %rand()
+    mov $f3,a
+READS_8
+    ; a voice's OUTX written; all eight read
+    %rand()
+    and a,#$70
+    or a,#$09
+    mov $f2,a
+    %rand()
+    mov $f3,a
+READS_9
+    ; one pass in 16: FLG's reset set, then cleared, and the voices started
+    inc $08
+    mov a,$08
+    and a,#$0F
+    bne no_reset
+    %rand()
+    and a,#$1F
+    inc a
+    mov x,a
+reset_wait:
+    dec x
+    bne reset_wait
+    mov $f2,#$6C
+    mov $f3,#$A0
+    mov $f3,#$20
+    mov $f2,#$4C
+    mov $f3,#$FF
+no_reset:
+    jmp main
+"""
+for reg in (8, 9):
+    EDGES = EDGES.replace("READS_%d\n" % reg, "".join("    mov $f2,#$%02X\n    mov a,$f3\n" % (v << 4 | reg) for v in range(8)))
+
+MODE = ""                                  # "", "ram" or "edges"
+
 
 def program(seed, outdir):
     asm = os.path.join(outdir, "spc_%d.asm" % seed)
     bin_path = os.path.join(outdir, "spc_%d.bin" % seed)
     s = (seed * 2654435761) & 0xFFFF or 1
+    source = PROGRAM
+    if MODE == "ram":
+        source = (source.replace("    ; RAM_START\n", RAM_START).replace("    ; RAM_DIR\n", RAM_DIR)
+                  .replace("    ; RAM_WRITES\n", RAM_WRITES))
+    elif MODE == "edges":
+        source = EDGES
     with open(asm, "w") as f:
-        f.write(PROGRAM.replace("SEED_LO", "$%02X" % (s & 0xFF)).replace("SEED_HI", "$%02X" % (s >> 8)))
+        f.write(source.replace("SEED_LO", "$%02X" % (s & 0xFF)).replace("SEED_HI", "$%02X" % (s >> 8)))
     subprocess.run([snestest.ASAR, "--no-title-check", asm, bin_path], check=True, stdout=subprocess.DEVNULL)
     with open(bin_path, "rb") as f:
         return f.read()
@@ -225,7 +422,7 @@ def program(seed, outdir):
 def cartridge(seed, outdir):
     """the upload by the boot ROM's protocol, then the S-CPU waits"""
     code = program(seed, outdir)
-    t = snestest.Test("dsp_fuzz_%d" % seed, frames=FRAMES, shots=(), prologue=False)
+    t = snestest.Test("dsp_fuzz_%s%d" % (MODE + "_" if MODE else "", seed), frames=FRAMES, shots=(), prologue=False)
     t.poll(0x2140, 0xAA)
     t.w(0x2142, ORG & 0xFF)
     t.w(0x2143, ORG >> 8)
@@ -248,7 +445,7 @@ def cartridge(seed, outdir):
 
 
 def one(seed):
-    d = os.path.join(BUILD, str(seed))
+    d = os.path.join(BUILD, (MODE + "_" if MODE else "") + str(seed))
     os.makedirs(d, exist_ok=True)
     t = cartridge(seed, d)
     rom = t.build(d)
@@ -265,9 +462,12 @@ def one(seed):
 
 
 def main():
+    global MODE
     if not CORE or not snestest.ASAR:
         sys.exit("fuzz.py: set NSHVC_ORACLE_CORE and NSHVC_ASAR")
-    seeds = [int(a) for a in sys.argv[1:]] or [1, 2, 3, 4]
+    args = sys.argv[1:]
+    MODE = "ram" if "--ram" in args else "edges" if "--edges" in args else ""
+    seeds = [int(a) for a in args if a not in ("--ram", "--edges")] or [1, 2, 3, 4]
     bad = 0
     with concurrent.futures.ThreadPoolExecutor(len(seeds)) as ex:
         for seed, ok, out in ex.map(one, seeds):
