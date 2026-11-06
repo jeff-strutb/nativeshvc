@@ -140,6 +140,40 @@ static void key_event(WPARAM vk, int down)
 /* ---- the window ----------------------------------------------------------------- */
 static HWND s_win;
 
+/* Each monitor's own pixels: a process aware only of the system's DPI is drawn at
+   the primary monitor's scale and stretched by Windows on the others. The calls
+   looked up: Windows 10 1703's and 1607's, the system's scale before them. */
+static void dpi_aware(void)
+{
+    typedef BOOL (WINAPI *SetContext)(HANDLE);
+    HMODULE u = GetModuleHandleA("user32.dll");
+    SetContext set = u ? (SetContext)(void *)GetProcAddress(u, "SetProcessDpiAwarenessContext") : NULL;
+    if (!set || !set((HANDLE)(INT_PTR)-4))    /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */
+        SetProcessDPIAware();
+}
+
+/* the dots per inch of the monitor window h is on */
+static int window_dpi(HWND h)
+{
+    typedef UINT (WINAPI *GetDpi)(HWND);
+    static GetDpi get;
+    static int looked;
+    int dpi = 0;
+    HDC dc;
+    if (!looked) {
+        HMODULE u = GetModuleHandleA("user32.dll");
+        get = u ? (GetDpi)(void *)GetProcAddress(u, "GetDpiForWindow") : NULL;
+        looked = 1;
+    }
+    if (get)
+        dpi = (int)get(h);
+    if (dpi <= 0 && (dc = GetDC(h)) != NULL) {
+        dpi = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(h, dc);
+    }
+    return dpi > 0 ? dpi : 96;
+}
+
 /* full screen: the window, borderless, covering its monitor; the window's
    place before it, to go back to */
 static WINDOWPLACEMENT s_place;
@@ -172,14 +206,7 @@ static void pointer_event(HWND h, WPARAM wp, LPARAM lp)
     static int have;
     static float lx, ly;
     host_event e;
-    HDC dc;
-    int dpi = 96;
-    float s;
-    if ((dc = GetDC(h)) != NULL) {
-        dpi = GetDeviceCaps(dc, LOGPIXELSX);
-        ReleaseDC(h, dc);
-    }
-    s = 96.0f / (float)(dpi > 0 ? dpi : 96);
+    float s = 96.0f / (float)window_dpi(h);
     memset(&e, 0, sizeof e);
     e.type = HOST_EV_MOUSE;
     e.x = (float)(short)LOWORD(lp) * s;
@@ -236,6 +263,16 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         return 0;                     /* the game decides */
     case WM_ERASEBKGND:
         return 1;
+    case WM_DPICHANGED: {             /* on a monitor of another scale: a window at the size Windows suggests, full screen its monitor */
+        const RECT *to = (const RECT *)lp;
+        MONITORINFO mi;
+        mi.cbSize = sizeof mi;
+        if (!((DWORD)GetWindowLongA(h, GWL_STYLE) & WS_OVERLAPPEDWINDOW) &&
+            GetMonitorInfoA(MonitorFromRect(to, MONITOR_DEFAULTTONEAREST), &mi))
+            to = &mi.rcMonitor;
+        SetWindowPos(h, NULL, to->left, to->top, to->right - to->left, to->bottom - to->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
     case WM_MOUSEMOVE:
     case WM_LBUTTONDOWN: case WM_LBUTTONUP:
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
@@ -262,7 +299,7 @@ int host_window_open(int width, int height, const char *title)
     wc.hIcon = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));
     wc.lpszClassName = "PortGameWindow";
     RegisterClassA(&wc);
-    SetProcessDPIAware();
+    dpi_aware();
     r.left = r.top = 0;
     r.right = width * 3;
     r.bottom = height * 3;
@@ -299,15 +336,8 @@ void host_window_pixels(int *w, int *h);
 /* points: pixels at the display's dots per inch over 96 */
 void host_window_points(float *w, float *h)
 {
-    int pw, ph, dpi = 96;
-    HDC dc;
+    int pw, ph, dpi = s_win ? window_dpi(s_win) : 96;
     host_window_pixels(&pw, &ph);
-    if ((dc = GetDC(s_win)) != NULL) {
-        dpi = GetDeviceCaps(dc, LOGPIXELSX);
-        ReleaseDC(s_win, dc);
-    }
-    if (dpi <= 0)
-        dpi = 96;
     *w = (float)pw * 96.0f / (float)dpi;
     *h = (float)ph * 96.0f / (float)dpi;
 }
