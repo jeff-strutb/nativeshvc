@@ -363,6 +363,16 @@ void host_present(const uint32_t *argb, int w, int h, float aspect)
     ReleaseDC(s_win, dc);
 }
 
+/* a close waiting in the queue (render/gl's wait while its shaders are made) */
+int host_close_pending(void)
+{
+    int i;
+    for (i = s_qh; i != s_qt; i = (i + 1) % QMAX)
+        if (s_q[i].type == HOST_EV_CLOSE)
+            return 1;
+    return 0;
+}
+
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {
     MSG m;
