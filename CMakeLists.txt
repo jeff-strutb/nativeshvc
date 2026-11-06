@@ -5,14 +5,11 @@
 #
 # Builds the static library nshvc (the console, a host and a renderer) that a
 # game links with its C. Options:
-#   NSHVC_HOST    null (headless; the default) | macos | windows | ios | psp | none
+#   NSHVC_HOST    null (headless; the default) | macos | windows | ios | none
 #                 (none: the app supplies host.h's functions itself)
 #   NSHVC_RENDER  none or soft (the default for null: no picture; the tests
 #                 bring the reference's, tests/ref) | metal (macos, ios) |
-#                 gl (windows) | vulkan | psp (the GE: psp)
-#
-# The PSP builds with pspdev's toolchain file:
-#   -DCMAKE_TOOLCHAIN_FILE=$PSPDEV/psp/share/pspdev.cmake -DNSHVC_HOST=psp
+#                 gl (windows) | vulkan
 #   NSHVC_TESTS   build the tests (tests/)
 #   NSHVC_EXAMPLES build the examples (examples/)
 cmake_minimum_required(VERSION 3.16)
@@ -25,17 +22,15 @@ if(NOT MSVC)
   enable_language(ASM)
 endif()
 
-set(NSHVC_HOST "null" CACHE STRING "the host: null, macos, windows, ios, psp, none")
+set(NSHVC_HOST "null" CACHE STRING "the host: null, macos, windows, ios, none")
 if(APPLE AND NOT NSHVC_HOST STREQUAL "null")
   set(_render_default metal)
-elseif(NSHVC_HOST STREQUAL "psp")
-  set(_render_default psp)
 elseif(WIN32)
   set(_render_default gl)
 else()
   set(_render_default soft)
 endif()
-set(NSHVC_RENDER "${_render_default}" CACHE STRING "the renderer: none, soft, metal, gl, vulkan, psp")
+set(NSHVC_RENDER "${_render_default}" CACHE STRING "the renderer: none, soft, metal, gl, vulkan")
 option(NSHVC_TESTS "build the tests" OFF)
 option(NSHVC_EXAMPLES "build the examples" OFF)
 
@@ -78,8 +73,6 @@ if(NOT WIN32)
     target_sources(nshvc PRIVATE src/console/coro_arm64.S)
   elseif(_arch MATCHES "x86_64|AMD64|amd64")
     target_sources(nshvc PRIVATE src/console/coro_x86_64.S)
-  elseif(_arch MATCHES "mips")
-    target_sources(nshvc PRIVATE src/console/coro_mips.S)
   else()
     message(FATAL_ERROR "nativeshvc: no coroutine switch for ${_arch} (one architecture a build)")
   endif()
@@ -89,8 +82,6 @@ endif()
 if(WIN32)
   target_sources(nshvc PRIVATE src/host/win32/host_win32.c)
   target_link_libraries(nshvc PUBLIC winmm)
-elseif(PSP)
-  target_sources(nshvc PRIVATE src/host/psp/sys_psp.c)
 elseif(NOT NSHVC_HOST STREQUAL "none")
   target_sources(nshvc PRIVATE src/host/posix/host_posix.c)
   find_package(Threads REQUIRED)
@@ -111,9 +102,6 @@ elseif(NSHVC_HOST STREQUAL "ios")
   set_source_files_properties(src/host/ios/host_ios.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(nshvc PUBLIC "-framework UIKit" "-framework CoreGraphics" "-framework QuartzCore"
     "-framework AudioToolbox" "-framework AVFoundation" "-framework GameController")
-elseif(NSHVC_HOST STREQUAL "psp")
-  target_sources(nshvc PRIVATE src/host/psp/host_psp.c)
-  set(_psp_libs pspdebug pspdisplay pspge pspctrl pspaudio psppower)
 elseif(NSHVC_HOST STREQUAL "windows")
   target_sources(nshvc PRIVATE src/host/windows/host_windows.c)
   target_link_libraries(nshvc PUBLIC ole32 uuid xinput9_1_0 shell32 gdi32 user32)
@@ -147,23 +135,12 @@ elseif(NSHVC_RENDER STREQUAL "gl")
   else()
     target_link_libraries(nshvc PUBLIC GL)
   endif()
-elseif(NSHVC_RENDER STREQUAL "psp")
-  target_sources(nshvc PRIVATE src/render/psp/rr_psp.c src/render/psp/rr_psp_pic.c)
-  target_include_directories(nshvc PRIVATE src/host/psp)
-  list(INSERT _psp_libs 0 pspgu)
 elseif(NSHVC_RENDER STREQUAL "vulkan")
   find_package(Vulkan REQUIRED)
   target_sources(nshvc PRIVATE src/render/vulkan/rr_vulkan.c)
   target_link_libraries(nshvc PUBLIC Vulkan::Vulkan)
 else()
   message(FATAL_ERROR "nativeshvc: no renderer ${NSHVC_RENDER}")
-endif()
-
-# the PSP's system libraries, each once and each before the ones it uses:
-# a library's call stubs must lie together for psp-fixup-imports, which
-# otherwise leaves them unfilled with only a warning
-if(_psp_libs)
-  target_link_libraries(nshvc PUBLIC ${_psp_libs})
 endif()
 
 if(NOT WIN32)
