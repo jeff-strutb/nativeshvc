@@ -639,6 +639,34 @@ static void pass(VkRenderPass rp, VkFramebuffer fb, VkPipeline p, int w, int h)
     vkCmdEndRenderPass(cmd);
 }
 
+/* records the copy of the picture to the readback buffer */
+static void copy_picture(int w, int h)
+{
+    VkBufferImageCopy c;
+    VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    memset(&c, 0, sizeof c);
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = (uint32_t)w;
+    c.imageExtent.height = (uint32_t)h;
+    c.imageExtent.depth = 1;
+    b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = pic.i;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = b.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    vkCmdCopyImageToBuffer(cmd, pic.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.b, 1, &c);
+    b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+}
+
 int rr_draw(eng_packet *p)
 {
     VkDeviceSize db = p->desc_words * 4, sb = (p->store_words ? p->store_words : 1) * 4;
@@ -791,33 +819,8 @@ int rr_draw(eng_packet *p)
                              0, NULL, 0, NULL, 1, &b);
     }
     pass(rp_win, surface ? sc_fb[image] : off.f, pipe_win, ow, oh);
-    if (!surface) {
-        VkBufferImageCopy c;
-        memset(&c, 0, sizeof c);
-        c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        c.imageSubresource.layerCount = 1;
-        c.imageExtent.width = (uint32_t)p->width;
-        c.imageExtent.height = (uint32_t)p->height;
-        c.imageExtent.depth = 1;
-        {
-            VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            b.image = pic.i;
-            b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            b.subresourceRange.levelCount = b.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-            vkCmdCopyImageToBuffer(cmd, pic.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.b, 1, &c);
-            b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-        }
-    }
+    if (!surface)
+        copy_picture(p->width, p->height);
     vkEndCommandBuffer(cmd);
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
@@ -849,10 +852,28 @@ int rr_read(uint32_t *argb, int *w, int *h)
 {
     *w = last_w;
     *h = last_h;
-    if (!ever || !readback.at)
+    if (!ever || (!surface && !readback.at))
         return 0;
     if (argb) {
         vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+        if (surface) {
+            /* a window's pictures aren't copied as they are drawn: copied now */
+            VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+            if (readback.size < (VkDeviceSize)last_w * last_h * 4) {
+                buf_free(&readback);
+                buf_make(&readback, (VkDeviceSize)last_w * last_h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            }
+            vkResetFences(dev, 1, &fence);
+            vkResetCommandBuffer(cmd, 0);
+            vkBeginCommandBuffer(cmd, &begin);
+            copy_picture(last_w, last_h);
+            vkEndCommandBuffer(cmd);
+            si.commandBufferCount = 1;
+            si.pCommandBuffers = &cmd;
+            vkQueueSubmit(queue, 1, &si, fence);
+            vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+        }
         memcpy(argb, readback.at, (size_t)last_w * last_h * 4);
     }
     return 1;

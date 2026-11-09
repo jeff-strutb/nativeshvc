@@ -14,9 +14,10 @@ The engine is built for every platform named in decision C. What has and has not
 - **Speed:** at most 7.9 us of engine work a picture on an Apple M4 Pro, against the 30 us target, which was set on another machine.
 - **Run and passing on Vulkan:** the 36 scenes and the feature game through MoltenVK on macOS, and on Mesa's software driver in a Linux VM,
   with the X11 host running a window there.
-- **Compiled, not run:** D3D12 past device creation (Wine's own D3D12 cannot read DXIL), the Windows and Android hosts, and input from real devices.
-- **Not done:** Android packaging (the SDK's licence must be accepted first). `dxc` must be built or installed where `tools/nshvc-shaders`
-  and `src/render/d3d12/build.sh` run; Homebrew has none.
+- **Run and passing on Android (2026-11-09):** the feature game as a signed APK from `tools/nshvc-build android`, in Google's Android
+  Emulator (API 35, arm64, Vulkan through the host GPU), drawing, reading its picture back, for 4 and 600 updates, and ending cleanly. No real device.
+- **Compiled, not run:** D3D12 past device creation (Wine's own D3D12 cannot read DXIL), including its windowed picture read; the Windows host; input from real devices and touch.
+- **`dxc`:** Homebrew has none. `tools/nshvc-shaders` and `src/render/d3d12/build.sh` use `dxc` on the PATH, else `build/tools/dxc/bin/dxc` (not in git; build it from DirectXShaderCompiler source and place it there with its `lib/libdxcompiler`).
 - **Rules:** see the maintainer's standing instructions.
 - **Build on Windows:** MSYS2 UCRT64 with GCC, CMake and Ninja; `tools/nshvc-build windows path/to/game`.
 

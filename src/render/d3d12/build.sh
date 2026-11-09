@@ -4,6 +4,9 @@
 # HLSL below or ../picture_body.h. DXC names the dxc to use.
 set -e
 cd "$(dirname "$0")"
+if [ -z "$DXC" ] && ! command -v dxc >/dev/null && [ -x "$(dirname "$0")/../../../build/tools/dxc/bin/dxc" ]; then
+  DXC=$(dirname "$0")/../../../build/tools/dxc/bin/dxc
+fi
 DXC=${DXC:-dxc}
 tmp=$(mktemp -d)
 { cat shaders.hlsl.pre ../picture_body.h shaders.hlsl.post; } > "$tmp/all.hlsl"

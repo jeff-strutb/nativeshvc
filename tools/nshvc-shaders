@@ -40,7 +40,7 @@ def main():
         sys.exit(__doc__)
     src, out = sys.argv[1:]
     os.makedirs(out, exist_ok=True)
-    dxc = shutil.which('dxc')
+    dxc = shutil.which('dxc') or shutil.which('dxc', path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'tools', 'dxc', 'bin'))
     with tempfile.TemporaryDirectory() as tmp:
         for n in sorted(os.listdir(src)):
             if not n.endswith('.shade'):

@@ -4,6 +4,7 @@
  * package's assets. Android keeps the activity's thread; the game's main runs
  * on a thread of its own.
  */
+#include <stdatomic.h>
 #include <android/log.h>
 #include <android/native_activity.h>
 #include <android/asset_manager.h>
@@ -210,12 +211,23 @@ static void on_cmd(struct android_app *a, int32_t cmd)
     }
 }
 
+/* the game has returned: the process ends once the activity has finished, by
+   _exit, because exit's destructors would run under the system's own threads */
+static atomic_int game_done;
+static int game_code;
+
 static void *game_thread(void *arg)
 {
     static char name[] = "game";
     char *argv[] = { name, NULL };
+    int code;
     (void)arg;
-    exit(nshvc_game_main(1, argv));
+    code = nshvc_game_main(1, argv);
+    fflush(NULL);
+    game_code = code;
+    atomic_store(&game_done, 1);
+    ANativeActivity_finish(app->activity);
+    return NULL;
 }
 
 void android_main(struct android_app *a)
@@ -228,6 +240,8 @@ void android_main(struct android_app *a)
     for (;;) {
         int events;
         struct android_poll_source *src;
+        if (a->destroyRequested && atomic_load(&game_done))
+            _exit(game_code);
         while (ALooper_pollOnce(started ? 16 : -1, NULL, &events, (void **)&src) >= 0) {
             if (src)
                 src->process(a, src);

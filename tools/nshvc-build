@@ -1,7 +1,11 @@
 #!/bin/sh
 # nshvc-build PLATFORM GAME_DIR: builds and packages a game for a platform.
-# PLATFORM: headless | macos | ios | windows | windows-d3d12 | linux
-# GAME_DIR holds the game's CMakeLists.txt, which calls nshvc_game().
+# PLATFORM: headless | macos | ios | android | windows | windows-d3d12 | linux
+# GAME_DIR holds the game's CMakeLists.txt, which adds the engine from
+# ${NSHVC_ROOT} (this tool sets it) and calls nshvc_game(); see docs/conversion-guide.md.
+# android needs ANDROID_HOME (the SDK, with platforms;android-35 and
+# build-tools;35.0.0) and ANDROID_NDK_HOME; ANDROID_KEYSTORE, ANDROID_KEY_ALIAS and
+# ANDROID_KEY_PASS sign a release (without them, a debug key made in the build folder).
 set -e
 [ $# -eq 2 ] || { echo "usage: nshvc-build PLATFORM GAME_DIR" >&2; exit 2; }
 platform=$1
@@ -21,8 +25,38 @@ case $platform in
       extra="-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres"
     fi ;;
   linux) host=linux; render=vulkan ;;
+  android)
+    host=android
+    render=vulkan
+    if command -v brew >/dev/null; then
+      : "${ANDROID_HOME:=$(brew --prefix)/share/android-commandlinetools}"
+      : "${ANDROID_NDK_HOME:=$(brew --prefix)/share/android-ndk}"
+    fi
+    extra="-DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26" ;;
   *) echo "nshvc-build: no platform $platform" >&2; exit 2 ;;
 esac
 cmake -S "$game" -B "$out" -G Ninja -DCMAKE_BUILD_TYPE=Release -DNSHVC_ROOT="$root" -DNSHVC_HOST=$host -DNSHVC_RENDER=$render $extra
 cmake --build "$out"
+if [ "$platform" = android ]; then
+  tools=$ANDROID_HOME/build-tools/35.0.0
+  apk=$out/apk
+  unsigned=$out/unsigned.apk
+  rm -f "$unsigned" "$out/res.zip"
+  res=
+  if [ -d "$apk/res" ]; then
+    "$tools/aapt2" compile --dir "$apk/res" -o "$out/res.zip"
+    res=$out/res.zip
+  fi
+  assets=
+  [ -d "$apk/assets" ] && assets="-A $apk/assets"
+  "$tools/aapt2" link -o "$unsigned" -I "$ANDROID_HOME/platforms/android-35/android.jar" --manifest "$apk/AndroidManifest.xml" $assets $res
+  (cd "$apk" && zip -q -r "$unsigned" lib)
+  key=${ANDROID_KEYSTORE:-$out/debug.keystore}
+  alias=${ANDROID_KEY_ALIAS:-debug}
+  pass=${ANDROID_KEY_PASS:-android}
+  [ -f "$key" ] || keytool -genkeypair -keystore "$key" -storepass "$pass" -keypass "$pass" -alias "$alias" -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=debug" 2>/dev/null
+  "$tools/zipalign" -f -p 4 "$unsigned" "$out/game.apk"
+  KEYPASS=$pass "$tools/apksigner" sign --ks "$key" --ks-pass env:KEYPASS --ks-key-alias "$alias" --key-pass env:KEYPASS "$out/game.apk"
+  rm -f "$unsigned"
+fi
 echo "built in $out"

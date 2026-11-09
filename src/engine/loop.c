@@ -385,12 +385,14 @@ static void run_live(void)
                     host_cond_wait(game_wake, hs_lock, due - t);
             }
         }
-        if (hs_want) {
+        /* once the run has ended the render thread's request stands, for a read
+           of the last picture at shutdown */
+        if (hs_want && !ended()) {
             hs_want = 0;
             take = 1;
         }
         host_mutex_unlock(hs_lock);
-        if (take && !ended()) {
+        if (take) {
             float between = 0;
             if (updates) {
                 uint64_t from = DUE(updates - 1), to = DUE(updates), t = game_ns();

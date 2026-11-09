@@ -50,7 +50,17 @@ A game whose speed came from how long its work took must set that speed in its o
 
 ## 6. Build
 
-Call `nshvc_game()` from your `CMakeLists.txt` (`cmake/NshvcGame.cmake`), then run:
+Your `CMakeLists.txt` adds the engine from `NSHVC_ROOT`, which `tools/nshvc-build` sets, and calls `nshvc_game()`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(mygame C)
+add_subdirectory(${NSHVC_ROOT} nshvc)
+include(${NSHVC_ROOT}/cmake/NshvcGame.cmake)
+nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data TITLE "My Game")
+```
+
+Then run this, or name `ios`, `android`, `windows`, `windows-d3d12` or `linux` instead:
 
 ```bash
 tools/nshvc-build macos path/to/game

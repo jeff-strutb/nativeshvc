@@ -366,6 +366,26 @@ static void pass(UINT slot, ID3D12PipelineState *p, int w, int h)
     ID3D12GraphicsCommandList_DrawInstanced(list, 3, 1, 0, 0);
 }
 
+/* records the copy of the picture to the readback buffer */
+static void copy_picture(int w, int h)
+{
+    D3D12_TEXTURE_COPY_LOCATION to, from;
+    transition(pic.r, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    memset(&to, 0, sizeof to);
+    memset(&from, 0, sizeof from);
+    to.pResource = readback.r;
+    to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    to.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_UINT;
+    to.PlacedFootprint.Footprint.Width = (UINT)w;
+    to.PlacedFootprint.Footprint.Height = (UINT)h;
+    to.PlacedFootprint.Footprint.Depth = 1;
+    to.PlacedFootprint.Footprint.RowPitch = ((UINT)w * 4 + 255) / 256 * 256;
+    from.pResource = pic.r;
+    from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    ID3D12GraphicsCommandList_CopyTextureRegion(list, &to, 0, 0, 0, &from, NULL);
+    transition(pic.r, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
 int rr_draw(eng_packet *p)
 {
     UINT64 db = (UINT64)p->desc_words * 4, sb = (UINT64)(p->store_words ? p->store_words : 1) * 4;
@@ -480,22 +500,8 @@ int rr_draw(eng_packet *p)
         pass(2 + (UINT)back, pso_win, ow, oh);
         transition(sc_img[back], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     } else {
-        D3D12_TEXTURE_COPY_LOCATION to, from;
         pass(1, pso_win, ow, oh);
-        transition(pic.r, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        memset(&to, 0, sizeof to);
-        memset(&from, 0, sizeof from);
-        to.pResource = readback.r;
-        to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        to.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_UINT;
-        to.PlacedFootprint.Footprint.Width = (UINT)p->width;
-        to.PlacedFootprint.Footprint.Height = (UINT)p->height;
-        to.PlacedFootprint.Footprint.Depth = 1;
-        to.PlacedFootprint.Footprint.RowPitch = ((UINT)p->width * 4 + 255) / 256 * 256;
-        from.pResource = pic.r;
-        from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        ID3D12GraphicsCommandList_CopyTextureRegion(list, &to, 0, 0, 0, &from, NULL);
-        transition(pic.r, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        copy_picture(p->width, p->height);
     }
     ID3D12GraphicsCommandList_Close(list);
     lists[0] = (ID3D12CommandList *)list;
@@ -512,12 +518,29 @@ int rr_read(uint32_t *argb, int *w, int *h)
 {
     *w = last_w;
     *h = last_h;
-    if (!readback.r)
+    if (!pic.r || (!swapchain && !readback.r))
         return 0;
     if (argb) {
         int y;
         UINT pitch = ((UINT)last_w * 4 + 255) / 256 * 256;
         wait_gpu();
+        if (swapchain) {
+            /* a window's pictures aren't copied as they are drawn: copied now */
+            UINT64 need = (UINT64)pitch * (UINT64)last_h;
+            ID3D12CommandList *lists[1];
+            if (readback.size < need) {
+                buf_free(&readback);
+                buf_make(&readback, need, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+            }
+            ID3D12CommandAllocator_Reset(alloc);
+            ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
+            copy_picture(last_w, last_h);
+            ID3D12GraphicsCommandList_Close(list);
+            lists[0] = (ID3D12CommandList *)list;
+            ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
+            ID3D12CommandQueue_Signal(queue, fence, ++fence_at);
+            wait_gpu();
+        }
         for (y = 0; y < last_h; y++)
             memcpy(argb + (size_t)y * last_w, (const char *)readback.at + (size_t)y * pitch, (size_t)last_w * 4);
     }
