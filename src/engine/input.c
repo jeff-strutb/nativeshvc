@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../render/rr_window.h"
 #include "engine.h"
 #include "host.h"
 
@@ -187,8 +188,19 @@ static void pointer_screen(float px, float py, int32_t *x, int32_t *y, uint8_t *
         *on = 0;
         return;
     }
-    *x = (int32_t)(px * (float)sw / w);
-    *y = (int32_t)(py * (float)sh / h);
+    {
+        int vx, vy, vw, vh;
+        rr_view(eng_picture_aspect(), (int)w, (int)h, &vx, &vy, &vw, &vh);
+        px -= (float)vx;
+        py -= (float)vy;
+        if (px < 0 || py < 0 || px >= (float)vw || py >= (float)vh) {
+            *x = *y = -1;
+            *on = 0;
+            return;
+        }
+        *x = (int32_t)(px * (float)sw / (float)vw);
+        *y = (int32_t)(py * (float)sh / (float)vh);
+    }
     *on = 1;
 }
 

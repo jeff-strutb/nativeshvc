@@ -1010,6 +1010,10 @@ static void build(eng_packet *p)
     }
     d[PB_LINES] = (uint32_t)lines;
     d[PB_PW] = (uint32_t)(hires_any ? 2 * w : w);
+    {
+        float a = eng_picture_aspect();
+        memcpy(&d[PB_ASPECT], &a, 4);
+    }
     /* the draw lists the layers name */
     p->list_words = 0;
     for (i = 0; i < 4; i++) {
@@ -1043,6 +1047,16 @@ static void build(eng_packet *p)
     p->width = hires_any ? 2 * w : w;
     p->height = screen.interlace ? 2 * h : h;
     p->keep = screen.interlace != 0;
+}
+
+/* the shape the screen is shown at: the game's, else the original's pixels,
+   7:6 wide, which make 256 x 224 4:3 */
+float eng_picture_aspect(void)
+{
+    const int w = screen.width > 0 ? screen.width : 256, h = screen.height > 0 ? screen.height : 224;
+    if (screen.aspect != 0.0f)
+        return screen.aspect;
+    return (float)w * 7.0f / ((float)h * 6.0f);
 }
 
 void eng_picture_size(int *w, int *h)

@@ -30,6 +30,7 @@ void eng_input_zone(int z, float *x, float *y, float *r);
 
 /* the screen last drawn (picture.c) */
 void eng_picture_size(int *w, int *h);
+float eng_picture_aspect(void);
 
 /* saves (files.c) */
 void eng_files_start(void);

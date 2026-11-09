@@ -79,7 +79,8 @@ typedef struct nshvc_screen {
     uint8_t overscan;           /* 239 lines in place of 224, as the SNES's setting */
     uint8_t interlace;          /* fields woven */
     uint8_t brightness;         /* 0-15, the SNES's */
-    uint8_t blank;              /* the screen black */
+    uint8_t blank;
+    float   aspect;             /* shown shape, width over height: 0 the original's pixels (256 x 224 is 4:3), 8.0f / 7.0f etc; NSHVC_ASPECT_FILL fills the window */              /* the screen black */
 } nshvc_screen;
 void nshvc_screen_set(const nshvc_screen *s);
 

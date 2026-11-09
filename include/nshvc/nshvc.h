@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 1
+#define NSHVC_VERSION_MINOR 2
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -176,7 +176,11 @@ typedef struct nshvc_screen {
     uint8_t overscan, interlace;
     uint8_t brightness;         /* 0-15 */
     uint8_t blank;
+    float   aspect;             /* the shape the screen is shown at, width over height, whatever the window's:
+                                   0 the original's pixels (256 x 224 is 4:3; a wider screen is wider),
+                                   8.0f / 7.0f square pixels and so on; NSHVC_ASPECT_FILL fills the window */
 } nshvc_screen;
+#define NSHVC_ASPECT_FILL (-1.0f)
 void nshvc_screen_set(const nshvc_screen *s);
 
 typedef struct nshvc_limits {

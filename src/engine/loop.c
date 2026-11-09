@@ -477,7 +477,7 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
     eng_inspect_start(inspect_path);
     eng_input_start(input_path);
     eng_files_start();
-    if (!headless && !host_window_open(256, 224, game.title ? game.title : game.id)) {
+    if (!headless && !host_window_open(296, 222, game.title ? game.title : game.id)) {
         host_message_box("The window could not be opened.", game.title ? game.title : game.id);
         return 1;
     }

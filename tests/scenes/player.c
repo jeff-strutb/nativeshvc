@@ -123,6 +123,8 @@ static void draw(float between)
         if (!strcmp(cmd, "screen")) {
             nshvc_screen s;
             memset(&s, 0, sizeof s);
+            if (getenv("SCENE_ASPECT"))
+                s.aspect = (float)atof(getenv("SCENE_ASPECT"));
             s.brightness = (uint8_t)v[0];
             s.interlace = (uint8_t)v[1];
             nshvc_screen_set(&s);

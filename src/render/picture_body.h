@@ -33,14 +33,17 @@
 #define PB_PW 11         /* the picture's width: W, or twice W with a hires lineno */
 #define PB_STEPU 12      /* one window pixel, in 1/1024 of a picture pixel across (of a console pixel) */
 #define PB_STEPV 13
-#define PB_WW 14         /* the window's pixels */
+#define PB_WW 14         /* the picture's pixels in the window */
 #define PB_WH 15
 #define PB_DU 16         /* the supersample offsets: 4, then 8, then 16 (rr_samples) */
 #define PB_DV (16 + 28)
 #define PB_OVERLAYS (16 + 56)
 #define PB_OVCOUNT (17 + 56)
 #define PB_FIELD (18 + 56) /* 0 not interlaced; 1, 2: the field drawn, rows 0, 2.. or 1, 3.. of a picture twice as tall */
-#define PB_HEADER (19 + 56)
+#define PB_VX (19 + 56)   /* where the picture sits in the window; PB_WW, PB_WH its size there */
+#define PB_VY (20 + 56)
+#define PB_ASPECT (21 + 56) /* the shape it is shown at, as float bits; negative: the whole window */
+#define PB_HEADER (22 + 56)
 
 #define PB_RGB 0x1000000u
 
@@ -784,8 +787,9 @@ PB_FN I32 pb_scale1024(U32 a, U32 d)
 
 /* the window's pixel (X, Y): sharp bilinear over the picture, whole texels
    blended across the one window pixel an edge falls in */
-PB_FN U32 pb_window(U32 X, U32 Y)
+PB_FN U32 pb_window(U32 XW, U32 YW)
 {
+    U32 X = XW - D_(PB_VX), Y = YW - D_(PB_VY);
     U32 pw = D_(PB_PW), ph = D_(PB_H) << (D_(PB_FIELD) != 0u ? 1u : 0u), ww = D_(PB_WW), wh = D_(PB_WH), cpp = pw == D_(PB_W) ? 1u : 2u;
     F32 dx = F_(pw) / F_(ww), dy = F_(ph) / F_(wh);
     F32 px = (F_(X) + 0.5) * dx - 0.5, py = (F_(Y) + 0.5) * dy - 0.5;
@@ -794,6 +798,8 @@ PB_FN U32 pb_window(U32 X, U32 Y)
     I32 u = pb_scale1024((2u * X + 1u) * pw, 2u * ww * cpp) - 512 - 1024 * I_(D_(PB_OX));
     I32 v = pb_scale1024((2u * Y + 1u) * ph, 2u * wh) - 512;
     U32 top = 0u;
+    if (XW < D_(PB_VX) || YW < D_(PB_VY) || X >= ww || Y >= wh)
+        return pb_overlays(0xFF000000u, XW, YW);
     pb_wx = I_(X);
     pb_wy = I_(Y);
     fx = fx < 0.0 ? 0.0 : fx > 1.0 ? 1.0 : fx;
@@ -808,5 +814,5 @@ PB_FN U32 pb_window(U32 X, U32 Y)
         }
         top = j != 0 ? pb_mix(top, cur, fy) : cur;
     }
-    return pb_overlays(top, X, Y);
+    return pb_overlays(top, XW, YW);
 }
