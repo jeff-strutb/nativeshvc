@@ -17,7 +17,7 @@ or run.** The evidence it rests on is in appendix A.
 
 For anyone picking this up on another machine:
 
-- **Stages 0 and 1 are done.** The tag `exact-console-3.0` (on `main` at `1c66ebb`) was made locally and has not been pushed.
+- **Stages 0 and 1 are done.** The tag `exact-console-3.0` (on `main` at `1c66ebb`) is pushed.
   The baseline and the 30 us target are in stage 0. The API is `docs/api.md`, and its open points are settled.
 - **Next is stage 2:** loop, time and threads. It is the first stage that writes engine code and deletes old code.
 - **Four edits wait for the maintainer:** the status line above, principle 8, and the "Done when" of stages 7 and 14.
