@@ -1,6 +1,6 @@
 # The native engine: architecture and plan
 
-**Status: proposed, 2026-11-08, awaiting the maintainer's approval and the decisions in section 9. Nothing here is built
+**Status: proposed, 2026-11-08, awaiting the maintainer's approval and decisions A to J in section 9. Nothing here is built
 or run.** The evidence it rests on is in appendix A.
 
 ## 1. What nativeshvc is
@@ -39,23 +39,24 @@ for every platform it supports.
 6. **No console speed.** Time is real time and the game's chosen update rate.
 7. **No modes.** The SNES's limits are settings a game chooses.
 8. **Threads by design.** Work passes between threads as finished results and messages, with no shared clock. The same input
-   gives the same game state.
+   always gives the same game state. This is how the engine always works, not a mode.
 9. **The GPU makes every pixel.**
 
 ## 4. What the engine provides
 
 | Area | Provides | Replaces today's |
 |---|---|---|
-| **Loop and time** | Calls the game's update at the rate it chooses, and draws pictures as often as the display allows, with interpolation between updates | Coroutines, interrupts, waits, the master clock, the cost profile |
+| **Loop and time** | Calls the game's update at the rate it chooses. Calls the game's draw once per picture, as often as the display allows, telling it how far it is between two updates, so the game says where things are. The engine interpolates nothing itself, because only the game knows what moved | Coroutines, interrupts, waits, the master clock, the cost profile |
 | **Threads** | System, game, render and audio threads, and a job pool for the game's own work, joined in a fixed order | One thread |
 | **Picture** | Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, interlace, direct colour, offset-per-tile; any screen size; more layer and sprite space; high-resolution art; the SNES's limits as settings | PPU registers, VRAM ports, the line record, the extensions |
 | **Per-line changes** | A table of values by line, with an optional split at a column | HDMA, raster interrupts, mid-line writes |
 | **Drawing pipeline** | The way a game's chip work reaches the screen: polygons, lines and images, drawn on the GPU at the resolution the game chooses, with an exact-span fill for original-looking polygons. Composed with the rest of the picture like a layer | The chip connector, the lent GPU device, GPU canvases and handles |
 | **Effects** | Engine features such as water, sky and haze, if decision B stands | Games' own shaders |
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
-| **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings | The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
+| **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
 | **Input** | The game declares its controls. The engine maps every keyboard, controller, mouse and touch screen to them, adds on-screen controls where needed, and names each control as it is labelled. Joypad, mouse, multitap and light gun as native inputs | Ports, latches, bit protocols, each game's touch code |
-| **Saves and states** | Named data blocks in the system's save folder, written off the game's thread; save states as ordinary data | Battery RAM mapping, `fork` and replay states |
+| **Saves and states** | Named data blocks in the system's save folder, written off the game's thread. Save states as ordinary data: the engine's state, the game's declared blocks, and the music code's declared state, taken from the audio thread at a point where it is whole. An import and export hook for a game that converts its saves to and from the original's format (decision J) | Battery RAM mapping, `fork` and replay states |
+| **Game data** | Loads the game's art, samples and data from its package on every platform, including inside app bundles, in the form decision G sets | `rom`, `rom_pages` and `rom_read` |
 | **Hosts** | Every supported platform. A game never sees which | |
 | **Build** | One command naming a platform builds and packages a game, with its icon and resources | Each game's build and packaging scripts |
 | **Integration kit** | A conversion guide, a hardware-touch finder, a checking setup against bsnes, and a complete example (section 6) | The single-prompt integration |
@@ -115,8 +116,9 @@ stages 10 and 11, and nothing else.
 ### 0. Set up
 
 Tag `exact-console-3.0` and cut the branch. Measure today's release-build frame costs for comparison (a run, on approval).
+Set the speed targets in decision H from that baseline.
 
-**Done when:** the branch exists and the baseline is recorded here.
+**Done when:** the branch exists, the baseline is recorded here, and the targets are set.
 
 ### 1. The API
 
@@ -127,7 +129,8 @@ the maintainer has reviewed it.
 
 ### 2. Loop, time and threads
 
-**Build:** the loop, the two rates, interpolation, the threads and job pool, and the deterministic mode.
+**Build:** the loop, the two rates (the game's update and its draw, as section 4 defines them), interpolation (the draw
+told how far it is between updates), the threads and job pool, and the deterministic mode, which is always on (principle 8).
 
 **Delete:** `bus.c`, `dma.c`, `dispatch.c`, `coro.c` and its assembly, `jump.h`, `wide.h`, `snes.h`, `snes_internal.h`,
 `machine.h`, `spc.h`, `cart.h`, `hw.h`, the cost profile and `tools/nshvc-profile`.
@@ -178,9 +181,14 @@ thread at its chosen rate with no platform code; and the audio thread never wait
 
 **Done when:** a game with no platform or device code plays with every device on every host.
 
-### 7. Saves and states
+### 7. Saves, states and game data
 
-**Done when:** saves and states restore identical game state on every host.
+**Build:** everything in section 4's saves and game data rows.
+
+**Delete:** battery RAM mapping, `fork` and replay states, and the ROM reading in `nshvc_cart`.
+
+**Done when:** saves and states restore identical game state on every host, with the music resuming exactly where it was,
+and a test game loads its data on every platform in the form decision G sets.
 
 ### 8. Hosts
 
@@ -210,7 +218,8 @@ Each check is shown able to fail first.
 
 ### 11. Integration kit
 
-**Build:** the conversion guide, mapping every SNES hardware use to its engine call with examples; the hardware-touch finder; a
+**Build:** the conversion guide, mapping every SNES hardware use to its engine call with examples, and setting out the audio
+thread's rules for music code; the hardware-touch finder; a
 reusable checking setup against bsnes for any game; and a complete example game in `examples/`, using every part and replacing
 `hello`.
 
@@ -229,7 +238,8 @@ standard becomes: the assembly and proven C are the record, and the native game 
 
 Measure release-build speed per thread on each platform. Audit `src` against principles 1 to 9.
 
-**Done when:** the audit is clean, the numbers are recorded, and the maintainer approves the merge.
+**Done when:** the audit is clean, the numbers meet decision H's targets on every reference machine, and the maintainer approves
+the merge.
 
 ## 9. Decisions needed
 
@@ -241,6 +251,10 @@ Measure release-build speed per thread on each platform. Audit `src` against pri
 | D | OpenGL 3.3 has no compute shaders. Does it stay? | Keep it if stages 3 and 4 fit in fragment passes; otherwise bring the cost to the maintainer |
 | E | Must the game's internal register style go in the same conversion as its hardware-facing code? | Yes, as the zero-emulation rule says, area by area |
 | F | Where does a native game's code live? SRFX's rule 20 says fixes go into the decomp's C, with no separate copy, but conversion changes every file. | The decomp's C stays untouched as the record, and the native game is a new tree in the same repository, checked against it |
+| G | Where does a game's data come from? Today a build carries no ROM code, and its data comes from the ROM or the player's own copy. | As today: the game ships no ROM code or data, and its build step extracts the data it declares from the player's own ROM into its package |
+| H | What speed must the engine reach, and on which machines? | Name a reference machine per platform, among the slowest each supports. Set a time budget per frame for the engine's own work on each thread, from stage 0's baseline, before stage 2 |
+| I | nativeshvc is AGPL-3.0, so every game linking it must publish its full source under the AGPL. Is that right for an engine meant for every decomp? | The maintainer's call: keep AGPL; add a linking exception; or choose a licence that allows any licence for a game |
+| J | Native saves are typed data, so they no longer match the original's `.srm`. Must saves move between a native build and an emulator? | The engine provides an import and export hook. Each game decides whether to write a converter, because only it knows its data's layout |
 
 ## 10. After the engine: SRFX
 
@@ -364,7 +378,7 @@ Static reading, nothing run:
 | Sound timing | Three places rely on it: a word store's tear during reload, fixed settle delays after uploads, and overwriting a port with no acknowledgement. All are load or queue plumbing |
 | DSP read-back | ENVX, OUTX and ENDX never read. One read of EDL |
 | Plotted pixels | Reach the screen by DMA. Other reads of them: none found, not fully enumerated |
-| Pacing | The race loop never waits, so race speed is how long the work took. This is the one real time dependence, and it needs a counter, not a hardware model |
+| Pacing | The race loop never waits, so race speed is how long the work took. This is the one real time dependence. Under principle 6 the engine has no console speed, so the game fixes this in its own code |
 
 This is one game. Other games may need more, which the per-line table's column split allows for (section 4).
 
