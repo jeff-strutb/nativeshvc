@@ -13,6 +13,24 @@ maintainer's approval. Until they are applied, the text below contradicts sectio
    tools work on every platform. Nothing here is built
 or run.** The evidence it rests on is in appendix A.
 
+## Where the work stands (2026-11-08)
+
+For anyone picking this up on another machine:
+
+- **Stages 0 and 1 are done.** The tag `exact-console-3.0` (on `main` at `1c66ebb`) was made locally and has not been pushed.
+  The baseline and the 30 us target are in stage 0. The API is `docs/api.md`, and its open points are settled.
+- **Next is stage 2:** loop, time and threads. It is the first stage that writes engine code and deletes old code.
+- **Four edits wait for the maintainer:** the status line above, principle 8, and the "Done when" of stages 7 and 14.
+  The note at the top lists the wording for three of them. The status line should say the decisions are settled and the
+  plan awaits approval.
+- **An edit-review hook on the maintainer's machine** refuses changes it reads as weakening a stated standard, and it cannot
+  see approvals given in chat. Expect it to block stage 2's deletions. Stop and ask the maintainer each time; never work
+  around it.
+- **The rules stand as on the maintainer's machine:** no test run, push or network access without the maintainer's typed
+  approval for that one action, with its length stated first; no trial and error; no attribution in commits.
+- **Build on Windows:** MSYS2 UCRT64 with GCC, CMake and Ninja, configured with
+  `cmake -S . -B build/win-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DNSHVC_HOST=null -DNSHVC_RENDER=none -DNSHVC_TESTS=ON`.
+
 ## 1. What nativeshvc is
 
 > nativeshvc is a native engine for decompiled SNES games. It provides what the SNES provided, natively, with zero
