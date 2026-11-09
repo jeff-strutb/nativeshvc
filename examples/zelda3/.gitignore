@@ -1,0 +1,10 @@
+# The game's data comes from your own ROM and stays out of the repository.
+*.sfc
+*.smc
+*.dat
+/build/
+/assets/*
+!/assets/*.py
+!/assets/palette_usage.bin
+!/assets/sprites/
+!/assets/.gitignore

@@ -88,7 +88,7 @@ tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom 
 
 ## 8. Worked example: zelda3
 
-[zelda3](https://github.com/snesrev/zelda3) is a decompilation of about 80,000 lines of C, and was converted to the engine as its first full test. Its code stays in its own project; you supply your own ROM, from which that project extracts its game data. These pictures are the engine's own output:
+[zelda3](https://github.com/snesrev/zelda3) is a decompilation of about 80,000 lines of C, and was converted to the engine as its first full test. The converted game is in [`examples/zelda3`](../examples/zelda3), with credit to its authors and the steps to build it; you supply your own ROM, from which it extracts its game data. These pictures are the engine's own output:
 
 | Title screen | A text box | Play |
 |---|---|---|
