@@ -1,5 +1,12 @@
 # nativeshvc: a native Super Famicom / Super Nintendo implementation
 
+nativeshvc is a native game engine for decompiled SNES games, doing for them what Unity does for its games. It provides
+everything the SNES provided (its picture, sound, input and saves) using the SNES's own rules for how things look and
+sound, but built natively: drawing on the GPU, logic on the CPU, true multithreading, native audio, input and storage, and
+no emulated hardware or faked timing. A decompiled game uses it once its C is converted into ordinary native code that
+calls the engine. In return, it runs on every platform the engine supports with just a new compile, and gets every
+improvement the engine makes. Games that aren't converted can still be played from their original ROM in an emulator.
+
 **nativeshvc is not an emulator.**
 
 It is a behaviour-exact native implementation of the Super Famicom / Super Nintendo itself:

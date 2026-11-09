@@ -9,7 +9,7 @@ maintainer's approval. Until they are applied, the text below contradicts sectio
    responsibility, and identical results across platforms are not promised, as in Unity or Unreal.
 2. Stage 7's "Done when": a test game's saves write and read back natively on every host, and its packaged data loads on
    every platform. Save states are removed.
-3. Stage 13's "Done when": the engine's overhead meets decision F's targets on every minimum-spec machine, and the profiling
+3. Stage 14's "Done when": the engine's overhead meets decision F's targets on every minimum-spec machine, and the profiling
    tools work on every platform. Nothing here is built
 or run.** The evidence it rests on is in appendix A.
 
@@ -51,6 +51,9 @@ for every platform it supports.
 8. **Threads by design.** Work passes between threads as finished results and messages, with no shared clock. The same input
    always gives the same game state. This is how the engine always works, not a mode.
 9. **The GPU makes every pixel.**
+10. **Any platform with a programmable GPU can be added cleanly,** through one host interface and one renderer interface.
+11. **Low specs first.** The engine runs correctly on one core, using more when present. Its core picture and sound need no
+    compute shaders and little memory, and higher demands come only from features a game chooses (decision F).
 
 ## 4. What the engine provides
 
@@ -61,7 +64,7 @@ for every platform it supports.
 | **Picture** | Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, interlace, direct colour, offset-per-tile; any screen size; more layer and sprite space; high-resolution art; the SNES's limits as settings | PPU registers, VRAM ports, the line record, the extensions |
 | **Per-line changes** | A table of values by line, with an optional split at a column | HDMA, raster interrupts, mid-line writes |
 | **Drawing pipeline** | The way a game's chip work reaches the screen: polygons, lines and images, drawn on the GPU at the resolution the game chooses, with an exact-span fill for original-looking polygons. Composed with the rest of the picture like a layer | The chip connector, the lent GPU device, GPU canvases and handles |
-| **Effects** | Engine features such as water, sky and haze, if decision B stands | Games' own shaders |
+| **Effects and shaders** | Engine effects such as water, sky and haze, and, if decision B is yes, games' own shaders in one engine shading language, compiled by the engine for every backend | Games' own per-platform shaders |
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
 | **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
 | **Input** | The game declares its controls. The engine maps every keyboard, controller, mouse and touch screen to them, adds on-screen controls where needed, and names each control as it is labelled. Joypad, mouse, multitap and light gun as native inputs | Ports, latches, bit protocols, each game's touch code |
@@ -135,8 +138,11 @@ Set the minimum specs and overhead targets in decision F from that baseline.
 
 Write every call in section 4 as the contract, from the current feature lists and SRFX's measured use (appendix A). No register name or address appears in it.
 
-**Done when:** every current console and extension feature maps to a call, or is listed here as retired with the reason, and
-the maintainer has reviewed it.
+Write the API's stability rules with it: version numbers, what a minor release may add, and that only a major release may
+change or remove anything a game relies on (approved by the maintainer, 2026-11-08).
+
+**Done when:** every current console and extension feature maps to a call, or is listed here as retired with the reason; the
+stability rules are written; and the maintainer has reviewed both.
 
 ### 2. Loop, time and threads
 
@@ -165,7 +171,8 @@ matches bsnes's picture on all three backends.
 
 ### 4. Drawing pipeline and effects
 
-**Build:** the drawing pipeline in section 4, and the effects if decision B stands. Lists are built with jobs and drawn on the
+**Build:** the drawing pipeline in section 4, the engine's effects, and, if decision B is yes, the shading language and its
+compilers for every backend. Lists are built with jobs and drawn on the
 GPU on every backend.
 
 **Delete:** the lent GPU device, GPU canvases, and overlay handles.
@@ -203,7 +210,8 @@ and a test game loads its data on every platform in the form decision G sets.
 
 ### 8. Hosts
 
-Every platform in decision C, on the new core, including a new windowed Linux host.
+Windows, macOS and Linux, including a new windowed Linux host, and headless, on the new core, behind one host interface
+and one renderer interface that a new platform implements and nothing else (decision C).
 
 **Done when:** the same test game runs unchanged on each, and has been seen to on each.
 
@@ -245,9 +253,18 @@ standard becomes: the assembly and proven C are the record, and the native game 
 
 **Done when:** the documents describe only what exists.
 
-### 13. Finish
+### 13. Debugging tools
 
-Measure release-build speed per thread on each platform. Audit `src` against principles 1 to 9.
+Done last, as the maintainer asked (2026-11-08).
+
+**Build:** tools to inspect a running game: each layer, sprite, palette, per-line table and draw list in a frame, and each
+voice's sample, pitch and envelope, on every platform.
+
+**Done when:** each part in section 4 that a game feeds can be inspected while the game runs.
+
+### 14. Finish
+
+Measure release-build speed per thread on each platform. Audit `src` against principles 1 to 11.
 
 **Done when:** the audit is clean, the numbers meet decision H's targets on every reference machine, and the maintainer approves
 the merge.
@@ -256,13 +273,13 @@ the merge.
 
 | # | Question | Recommendation |
 |---|---|---|
-| A | Does the engine own the loop, as Unity does? The maintainer has said nativeshvc is an engine like Unity, and principle 3 assumes yes, but a direct yes is still pending. | Yes |
-| B | May games write GPU programs? No keeps weaker GPUs possible, but every effect has to be an engine feature. | No |
-| C | Which platforms count for "complete"? | Windows, macOS, iOS, Linux, headless |
-| D | OpenGL 3.3 has no compute shaders. Does it stay? | Keep it if stages 3 and 4 fit in fragment passes; otherwise bring the cost to the maintainer |
-| E | Must the game's internal register style go in the same conversion as its hardware-facing code? | Yes, as the zero-emulation rule says, area by area |
-| F | What are the engine's minimum specs and overhead targets? As in Unity and Unreal, the engine does not promise a game's speed: the game keeps to its own budget, with the engine's profiler. | Publish a minimum-spec machine per platform, and a time budget per frame for the engine's own work on each thread, set from stage 0's baseline before stage 2 |
-| G | nativeshvc is AGPL-3.0, so every game linking it must publish its full source under the AGPL. Unity, Unreal and Godot all let a game choose its own licence. | The maintainer's call. The engine-style answer is a licence or linking exception that lets each game choose |
+| A | Does the engine own the loop? Unity (`Update`, `FixedUpdate`), Unreal (`Tick`) and Godot (`_process`, `_physics_process`) all own the main loop and call the game. | Yes, as they do. Awaiting the maintainer's yes |
+| B | May games write GPU programs? Unity, Unreal and Godot all let games write shaders, but only in the engine's own shading language or material system, which the engine compiles for each platform's GPU. A game never writes per-platform GPU code. | Yes, the same way: one engine shading language, compiled by the engine for every backend. The SNES picture and effects such as water stay engine features as well. Awaiting the maintainer's yes |
+| C | Which platforms? | **Settled by the maintainer, 2026-11-08:** Windows, macOS and Linux first, plus headless for checks. Any platform with a programmable GPU must be cleanly addable, including Xbox, PlayStation and Switch, through one host and renderer interface. Console SDKs are under NDA, so their backends cannot live in this AGPL repository; Godot's console ports are kept privately for the same reason. Whether the existing iOS host stays in the first set is still open |
+| D | Does OpenGL need to stay? Vulkan covers Windows, Linux and Android, and Metal covers Apple. Unreal has dropped desktop OpenGL. Godot 4 keeps an OpenGL "Compatibility" renderer for low-end hardware beside its Vulkan one. | Not for the first platforms: build Vulkan and Metal, and remove OpenGL. Because of decision F, the core picture must not need compute shaders, so a low-end renderer can be added later through the same interface, as Godot's is. Awaiting the maintainer's yes |
+| E | Must a game drop its internal register style in the same conversion as its hardware-facing code? This is code the engine never sees, so it is the game's decision, not the engine's. | Out of the engine's scope. The integration kit recommends the same pass: it touches each area once, it is what the zero-emulation rule asks, and shared register state such as `cpu` blocks a game's own use of threads. Awaiting the maintainer's yes |
+| F | What are the minimum specs? | **Settled by the maintainer, 2026-11-08:** very low for SNES games, roughly the power of a Windows 98-era computer with a programmable GPU, with higher specs only for features a game adds. So the engine must run correctly on one core, using more cores when present; its core picture and sound must fit low-end memory and need no compute shaders; and its own overhead must be small at the original resolution. Exact targets are set at stage 0, with the engine's profiler for games' own budgets |
+| G | Licence | **Settled by the maintainer, 2026-11-08:** AGPL-3.0 stays |
 
 Settled, 2026-11-08: saves are the game's own native files, with no `.srm` compatibility. Where a game's code and data live
 is the game's concern, not the engine's.
