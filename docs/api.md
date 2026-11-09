@@ -1,7 +1,8 @@
 # The native engine's API, version 4.0 (draft)
 
-**Status: stage 1 draft, 2026-11-08, for the maintainer's review. Nothing here is built.** The plan is in
-`native-engine-plan.md`. Call names and fields are proposals until reviewed.
+**Status: stage 1, 2026-11-08. The maintainer accepted the recommendations on its open points (section 13). Nothing here is
+built.** The plan is in `native-engine-plan.md`. Names and fields may still be refined during building, under section 11's
+rules once 4.0 is released.
 
 ## 0. Conventions
 
@@ -208,8 +209,8 @@ void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);   /* smooth, or an e
 
 ```c
 nshvc_effect nshvc_effect_create(nshvc_effect_kind kind, const void *settings);   /* engine effects: water, sky, haze */
-nshvc_shader nshvc_shader_load(const char *source);   /* the engine's shading language (proposed: a fragment-only subset of
-                                                         GLSL 4.5, compiled by the engine to SPIR-V and Metal) */
+nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine's shading language, a fragment-only subset
+                                                         of GLSL 4.5, compiled at build time to SPIR-V and Metal (section 13) */
 ```
 
 A material names a texture or palette, an optional effect or shader, and its inputs. The core picture needs no shader from
@@ -387,10 +388,10 @@ back from the GPU, for checks and screenshots.
 | Script `save` and `load`, `fork` states | No save states |
 | `NSHVC_SCALE`, `NSHVC_STATES`, `NSHVC_SCRIPT_NOFORK`, `NSHVC_SPCLOG` | Options for retired parts |
 
-## 13. Open for review
+## 13. Settled on review (the maintainer, 2026-11-08)
 
-1. The shading language: a fragment-only subset of GLSL 4.5, compiled with the engine's tools to SPIR-V and Metal Shading
-   Language, is proposed. It needs the maintainer's choice.
-2. Whether `draw` sets the whole picture each time, as drafted, or keeps state between pictures and only takes changes.
-   Whole each time is simpler and suits threads. Keeping state is less work per picture for a game.
-3. The mouse's speed setting and the guns' extra buttons are carried as the SNES had them. They could be simplified.
+1. **The shading language** is a fragment-only subset of GLSL 4.5. The engine's tools compile it to SPIR-V for Vulkan and
+   Metal Shading Language for Metal, at build time.
+2. **`draw` sets the whole picture each time.** The settings of sections 3.1 and 3.3 to 3.7 apply to the picture being
+   drawn and nothing carries over. Tile sets, maps, palettes, images and samples are objects that persist until changed.
+3. **The mouse's speed setting and the guns' extra buttons stay,** as the SNES had them, because games read them.
