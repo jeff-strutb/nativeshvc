@@ -1,0 +1,16 @@
+# zelda3 on the engine: see README.md. ZELDA3_DIR names a patched zelda3 checkout.
+cmake_minimum_required(VERSION 3.20)
+project(zelda3_bridge C)
+set(ZELDA3_DIR "$ENV{ZELDA3_DIR}" CACHE PATH "a zelda3 checkout with zelda3.patch applied")
+if(NOT EXISTS "${ZELDA3_DIR}/src/zelda_rtl.c")
+  message(FATAL_ERROR "set ZELDA3_DIR to a zelda3 checkout")
+endif()
+add_subdirectory(${NSHVC_ROOT} nshvc)
+include(${NSHVC_ROOT}/cmake/NshvcGame.cmake)
+file(GLOB game_sources ${ZELDA3_DIR}/src/*.c ${ZELDA3_DIR}/snes/*.c)
+list(FILTER game_sources EXCLUDE REGEX "/(main|opengl|glsl_shader|tracing)\\.c$")
+# the game's config header includes SDL's key names; nothing else of SDL is used
+find_path(SDL_KEYCODE_DIR SDL_keycode.h PATH_SUFFIXES SDL2 REQUIRED)
+nshvc_game(zelda3 SOURCES bridge.c ${game_sources} ASSETS data TITLE "zelda3 on nativeshvc")
+target_include_directories(zelda3 PRIVATE ${ZELDA3_DIR} ${ZELDA3_DIR}/src ${SDL_KEYCODE_DIR})
+target_compile_options(zelda3 PRIVATE -w)

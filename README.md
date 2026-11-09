@@ -36,7 +36,7 @@ The engine is at API 4.2. `docs/native-engine-plan.md` opens with what has and h
 
 Read [docs/api.md](docs/api.md) for the contract and [docs/conversion-guide.md](docs/conversion-guide.md) to bring a game to
 the engine, with zelda3 as a worked example. [examples/comet](examples/comet) is a complete small game that uses each part of
-the engine.
+the engine. [examples/zelda3](examples/zelda3) runs the zelda3 decompilation on the engine as a test case.
 
 | Tool | What it does |
 |---|---|

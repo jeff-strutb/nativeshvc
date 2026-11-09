@@ -92,6 +92,12 @@ tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom 
 first full game, to test the engine. It has a window, input, picture and music on the engine, and shows what the boundary
 between a decompilation and the engine looks like. You supply your own ROM, from which the project extracts its game data.
 
+The bridge is in [`examples/zelda3`](../examples/zelda3), with the steps to build it. These pictures are the engine's own output, drawn through its API:
+
+| Title screen | A text box | Play |
+|---|---|---|
+| ![zelda3's title screen on the engine](images/zelda3-title.png) | ![A zelda3 text box on the engine](images/zelda3-dialog.png) | ![zelda3 in play on the engine](images/zelda3-play.png) |
+
 zelda3 already keeps the SNES's hardware state in C structures of its own, so it was first brought up with a small bridge at
 that boundary. A bridge is the quick way to run a game and test the engine. A finished conversion goes further and calls the
 engine directly from the game's code, as sections 1 to 4 describe.
