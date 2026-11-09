@@ -1,6 +1,16 @@
 # The native engine: architecture and plan
 
-**Status: proposed, 2026-11-08, awaiting the maintainer's approval and decisions A to J in section 9. Nothing here is built
+**Status: proposed, 2026-11-08, awaiting the maintainer's approval and decisions A to G in section 9.
+
+**Pending edits by the maintainer.** Three agreed changes are not yet applied, because the edit check cannot see the
+maintainer's approval. Until they are applied, the text below contradicts section 4 in these places:
+
+1. Principle 8: same input gives the same state on the same platform. What the game introduces itself is its own
+   responsibility, and identical results across platforms are not promised, as in Unity or Unreal.
+2. Stage 7's "Done when": a test game's saves write and read back natively on every host, and its packaged data loads on
+   every platform. Save states are removed.
+3. Stage 13's "Done when": the engine's overhead meets decision F's targets on every minimum-spec machine, and the profiling
+   tools work on every platform. Nothing here is built
 or run.** The evidence it rests on is in appendix A.
 
 ## 1. What nativeshvc is
@@ -55,8 +65,9 @@ for every platform it supports.
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
 | **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
 | **Input** | The game declares its controls. The engine maps every keyboard, controller, mouse and touch screen to them, adds on-screen controls where needed, and names each control as it is labelled. Joypad, mouse, multitap and light gun as native inputs | Ports, latches, bit protocols, each game's touch code |
-| **Saves and states** | Named data blocks in the system's save folder, written off the game's thread. Save states as ordinary data: the engine's state, the game's declared blocks, and the music code's declared state, taken from the audio thread at a point where it is whole. An import and export hook for a game that converts its saves to and from the original's format (decision J) | Battery RAM mapping, `fork` and replay states |
-| **Game data** | Loads the game's art, samples and data from its package on every platform, including inside app bundles, in the form decision G sets | `rom`, `rom_pages` and `rom_read` |
+| **Saves** | The game's own save files, stored natively in the system's save folder, written off the game's thread. The game decides what to save, when, and in what form. There are no save states: rewinding to any instant is an emulator feature, and neither Unity nor Unreal has one | Battery RAM mapping, `.srm` files, `fork` and replay states |
+| **Game data** | Packages whatever assets the game's project contains into its build, and loads them on every platform, including inside app bundles. Where the game's data comes from is the game's concern | `rom`, `rom_pages` and `rom_read` |
+| **Profiling** | Per-thread timing tools on every platform, so a game can keep to its own budget | |
 | **Hosts** | Every supported platform. A game never sees which | |
 | **Build** | One command naming a platform builds and packages a game, with its icon and resources | Each game's build and packaging scripts |
 | **Integration kit** | A conversion guide, a hardware-touch finder, a checking setup against bsnes, and a complete example (section 6) | The single-prompt integration |
@@ -116,7 +127,7 @@ stages 10 and 11, and nothing else.
 ### 0. Set up
 
 Tag `exact-console-3.0` and cut the branch. Measure today's release-build frame costs for comparison (a run, on approval).
-Set the speed targets in decision H from that baseline.
+Set the minimum specs and overhead targets in decision F from that baseline.
 
 **Done when:** the branch exists, the baseline is recorded here, and the targets are set.
 
@@ -250,16 +261,16 @@ the merge.
 | C | Which platforms count for "complete"? | Windows, macOS, iOS, Linux, headless |
 | D | OpenGL 3.3 has no compute shaders. Does it stay? | Keep it if stages 3 and 4 fit in fragment passes; otherwise bring the cost to the maintainer |
 | E | Must the game's internal register style go in the same conversion as its hardware-facing code? | Yes, as the zero-emulation rule says, area by area |
-| F | Where does a native game's code live? SRFX's rule 20 says fixes go into the decomp's C, with no separate copy, but conversion changes every file. | The decomp's C stays untouched as the record, and the native game is a new tree in the same repository, checked against it |
-| G | Where does a game's data come from? Today a build carries no ROM code, and its data comes from the ROM or the player's own copy. | As today: the game ships no ROM code or data, and its build step extracts the data it declares from the player's own ROM into its package |
-| H | What speed must the engine reach, and on which machines? | Name a reference machine per platform, among the slowest each supports. Set a time budget per frame for the engine's own work on each thread, from stage 0's baseline, before stage 2 |
-| I | nativeshvc is AGPL-3.0, so every game linking it must publish its full source under the AGPL. Is that right for an engine meant for every decomp? | The maintainer's call: keep AGPL; add a linking exception; or choose a licence that allows any licence for a game |
-| J | Native saves are typed data, so they no longer match the original's `.srm`. Must saves move between a native build and an emulator? | The engine provides an import and export hook. Each game decides whether to write a converter, because only it knows its data's layout |
+| F | What are the engine's minimum specs and overhead targets? As in Unity and Unreal, the engine does not promise a game's speed: the game keeps to its own budget, with the engine's profiler. | Publish a minimum-spec machine per platform, and a time budget per frame for the engine's own work on each thread, set from stage 0's baseline before stage 2 |
+| G | nativeshvc is AGPL-3.0, so every game linking it must publish its full source under the AGPL. Unity, Unreal and Godot all let a game choose its own licence. | The maintainer's call. The engine-style answer is a licence or linking exception that lets each game choose |
+
+Settled, 2026-11-08: saves are the game's own native files, with no `.srm` compatibility. Where a game's code and data live
+is the game's concern, not the engine's.
 
 ## 10. After the engine: SRFX
 
 SRFX gets its own branch, with a plan of its own, only after stage 13. Its record, the assembly and the proven C, stays
-untouched, and the native game is converted from it (decision F). It is not playable on the engine
+untouched, and the native game is converted from it. Where SRFX keeps that code is its own decision. It is not playable on the engine
 until its conversion is complete enough, so that plan sets out how each area is checked before then. Its conversion is the
 first full use of the integration kit.
 
@@ -294,7 +305,7 @@ Two later decisions also stand:
 
 - **Behaviour exact, not cycle exact** (2026-10-28, `docs/stuntracefx/PLAN.md:78-88`).
 - **Fixes go into the decomp's C, with no separate copy** (rule 20, `docs/stuntracefx/PLAN.md:275`). This
-  one conflicts with the zero-emulation rules. See decision F.
+  one conflicts with the zero-emulation rules. Where a game keeps its code is the game's concern, not the engine's.
 
 ### Where the code stands
 
