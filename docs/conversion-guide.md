@@ -94,6 +94,10 @@ tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom 
 |---|---|---|
 | ![zelda3's title screen on the engine](images/zelda3-title.png) | ![A zelda3 text box on the engine](images/zelda3-dialog.png) | ![zelda3 in play on the engine](images/zelda3-play.png) |
 
+| The Mode 7 world map | 16:9 |
+|---|---|
+| ![zelda3's world map on the engine](images/zelda3-world-map.png) | ![zelda3 at 16:9 on the engine](images/zelda3-widescreen.png) |
+
 The conversion removed the game's imitation PPU, DMA, DSP and APU, its SDL front end, its OpenGL code and its snapshot and comparison code. `tools/nshvc-find-hardware` finds nothing left in it. The game logic did not change.
 
 **The game's entry.** One small file replaces the front end:
