@@ -4,10 +4,13 @@
 
 ## Where the work stands (2026-11-09)
 
+API 4.2. Merged to `main`.
+
 Every stage is built. What has and has not been run:
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
+- **Since the last full run:** the picture's shape in the window (API 4.2) was run on Metal and Vulkan and compiled for the others. D3D12, Android, iOS and Linux have not been rerun since.
 - **Feature scenes:** 39 match bsnes byte for byte on Metal, on Vulkan through MoltenVK, on Mesa's software Vulkan in a Linux VM (36 on a full rerun, plus the 3 sprite-screen scenes), and on D3D12 headless under Wine with vkd3d-proton. `tests/scenes/scenes.py` is shown able to fail.
 - **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
 - **A complete decompiled game on the engine:** picture, input and music run through the API with a bridge kept outside this repository. 284 sampled frames, 240 of them in 200 seconds of scripted play, match the game's own renderer within rounding. Music follows that game's own sound chip in loudness and shape, not sample for sample; its frame timing differs from the ROM's, so it was not compared to bsnes frame by frame.

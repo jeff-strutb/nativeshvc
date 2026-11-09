@@ -341,8 +341,8 @@ spc_call(abi, ret), spc_ret, spc_jump_original.
 
 Each routine: a readable C function with arguments and return values, plus
 an `abi_Name` wrapper mapping registers to and from it. The wrapper is the
-entry contract in code. nativeshvc later supplies rd8/wr8 natively; the C
-never changes for it.
+entry contract in code. A later conversion replaces these with plain C calling
+the engine (section 17).
 
 Example of the house style (an illustrative routine):
 
@@ -872,8 +872,7 @@ was never the standard wanted. Decide this on day one:
 | C | the companion effort: behaviour exact, each routine's inputs to outputs exactly the original's | A5 + A7 (sections 4.5, 4.6) |
 | Enhanced | the C brought to a modern standard (speed independent, wider, smoother) | its own checks; Original stays the record |
 
-This is nativeshvc's preservation standard (README, "The preservation
-standard").
+This is nativeshvc's preservation standard (docs/nativeshvc.md).
 
 **Cycle exact is not a decompilation standard.** Stating how long the
 original's instructions took (`cyc(n)` after each access, coprocessor
@@ -911,100 +910,39 @@ original (guessed branch pairings, wrong code tables), fixed at the cause.
 that moves everything a fixed amount however long it took) runs at a speed
 set by how long its processors took. Untimed, such a game ran 29-41% fast;
 with no time at all its loop never advances. Check this for any game before
-removing timing: which loops wait on hardware, and which just run. On
-nativeshvc this is the game's Original and Enhanced modes (README,
-"Enhancement support").
+removing timing: which loops wait on hardware, and which just run. The engine
+has no console speed: a game whose speed came from how long its work took
+sets that speed in its own code when it is converted. The assembly and proven
+C remain the record of how the original behaved.
 
-**Waits at synchronisation points.** Every place the original polled
-hardware (vblank, hblank, its own interrupt flags, a coprocessor done, the
-APU ports, DMA) becomes an explicit console wait (`nshvc_wait_until`,
-`nshvc_wait_vblank`). Counters the original ticked inside a wait loop must
-come out with the original's values.
+**Waits become returns.** Every place the original polled hardware (vblank,
+hblank, its own interrupt flags, a coprocessor done, the APU ports, DMA)
+is a point where the converted game returns to the engine or does its work in
+`update` or `draw`. Counters the original ticked inside a wait loop must come
+out with the original's values.
 
-**Chips charge costs, not instructions.** Each chip charges for the work the
-game hands it, measured from the original, declared once by the cartridge
-(nativeshvc's cost profile, docs/cost-profile.md):
+## 17. Running the C natively: conversion to the engine
 
-- **S-CPU:** each access its real bus time plus a weight per kind of access
-  (read/write x work RAM/ROM/cartridge RAM/I/O) for the work around it the C
-  does not make. Fit the weights on frame totals. A per-kind fit was tried
-  and dropped: each weight is an average over all code, so access-dense code
-  (a colour blend) was overcharged ~2.5x and frames doubled. The C makes
-  fewer accesses than the asm (work-RAM reads 0.70x, writes 0.60x, I/O reads
-  0.14x in one game), so expect a residual (~5% fast there). Bus time alone
-  was 76% short.
-- **A coprocessor** (the Super FX here): a program runs to its STOP the
-  moment it is started; its duration is a per-program model, a fixed part
-  plus weights times the operations it was observed to do (RAM loads and
-  stores, pixel-cache flushes, pixel reads). The main programs came out
-  within ~3% per job. The chip keeps only data effects (pixel caches, ROM
-  buffer, code-cache bytes).
-- **SPC700:** an untimed sound CPU is wrong. A driver's upload loop read a
-  port in a 6-clock gap the hardware never exposed; ~31% of uploaded music
-  bytes landed wrong and the effect reader looped on bad data. With a bus
-  cost per access kind the upload went exact (0 bytes wrong).
-- **The profile is a standard, not a hand setting:** a tool measures the
-  original on the reference emulator and fits fixed weights by a fixed
-  method (non-negative least squares) to a fixed report. Frame rate is
-  never a fit input, only a check. Profiles are the game's, declared at
-  power-on; a chip-wide allowance ran one game ~15% fast.
-
-The result is behaviour exact on average, not frame for frame: a frame the
-original only just made or missed can land a TV frame differently. Plays of
-the C against recordings of the original are a gut check here, never
-pass/fail.
-
-## 17. Running the C natively: cartridge and console
-
-**No port copy.** The companion C is the game's native form. A separate
-port tree drifts, duplicates every fix, and has to be folded back in. The C runs on nativeshvc
-(PPU, DSP, DMA/HDMA, timers, interrupts, the multiplier/divider and the
-memory map in C, running no processor instructions) under its contract
-(docs/contract.md). The game is the cartridge: its own coprocessor plugs in
-through the console's chip connector (`cart.h`). Only cartridge glue lives
-outside the decomp (front end, chip, cost profile, art).
+**No port copy.** The companion C is the game's native form, converted once to
+call the engine. A separate port tree drifts and duplicates every fix.
+docs/conversion-guide.md is the method, with a worked example.
 
 **What counts as emulation.** Interpreting or simulating the original's
-processor or instructions, in any form, for any reason, timing included. Not
-emulation: the C making bus accesses (`rd8`/`wr8`/`rd16`/`wr16`/`rd24`), a
-register calling convention at by-address entries, `call_routine` by
-address, interrupts taken between the C's operations, a chip connector. The
-console implements documented hardware behaviour natively (BRR is a codec,
-Gaussian interpolation a resampler, ADSR an envelope).
+processor or instructions, or modelling a console timeline, in any form. The
+engine implements the SNES's documented rules natively: the picture on the GPU,
+and BRR, Gaussian interpolation and envelopes as codecs and filters.
 
 **The reference emulator is the oracle.** bsnes checks the companion C
-(sections 4.5, 4.6) and nativeshvc's hardware (pixels, DSP samples, frame
-pacing, state). The game never ports or cites its code.
+(sections 4.5, 4.6) and the engine (pixels and DSP samples). `tools/nshvc-check`
+compares a converted game with its ROM. The game never ports or cites its code.
 
-**The cartridge meets the console's standard.** The console does not bend
-for the game: it refuses cartridge-RAM pokes, injected calls, unit starts
-and an SPC hook, since no real SNES runs a game that way. So:
+**The engine does not bend for one game.** A difference is the conversion's
+or the engine's: find which, from evidence. A fix in the engine is made for
+every game, and gets a check of its own.
 
-- **Verify only by input:** wait, press, hold, shot, dump, save, load,
-  controller and peripheral input. Code no input play reaches is reported
-  unverified, not proven by injection. The unit calls of section 9 belong
-  to the decomp's harness, not to the native build.
-- Fixes go in the game's C, never as a request for a console deviation.
-- Game features the hardware lacks (widescreen, 60 Hz, touch, a canvas)
-  are opt-in console extensions, hardware-shaped and game neutral, exact
-  when off. The game's engine implements the feature; the console only
-  provides the API. Work that is the console's (hosts, display refresh,
-  presenting frames) goes to nativeshvc's maintainers.
-
-**Traps met moving the C onto the console:**
-
-- **RAM interrupt stubs need C.** The console runs no machine code, so the
-  game's WRAM vectors (an RTI, a JSL to a raster handler) become C with the
-  real pushes and pulls.
-- **Read-modify-writes are their own operation** (`rd8_rmw`, `wr16_rmw`):
-  found by shape (read, write to the same address); a 16-bit RMW writes the
-  high byte first. Check every site dynamically on a play that reaches it.
-- **Timing fitted on one platform does not move to another.** Cycle values
-  fitted on the harness (whose charging differed, e.g. an untimed RMW high
-  byte) did not land at the hardware's times on the console; another
-  reason not to carry them (section 15).
-- **Run headless and in a window from the same build;** keep the player's
-  save away from headless runs.
+**Game features the hardware lacks** (widescreen, 60 Hz, touch, shaders) are the
+game's, using the engine's API: any screen size, `nshvc_screen.aspect`, draw
+lists and game shaders.
 
 ## 18. Plain typed C
 
@@ -1079,18 +1017,11 @@ original (a steady rotation at the same rate), keep it. Expect what was tied
 to load to change: a sequence counted in steps the original ran slow comes
 out shorter.
 
-**Free only the work that is the enhancement's.** Take the processors' costs
-off (`nshvc_set_cpu_costs(0)`) for the enhanced work only; boot, menus, sound
-uploads and raster interrupts keep the original's timing.
+**Free only the work that is the enhancement's.** Pace the enhanced work in the game's own code; boot, menus, sound
+uploads and raster interrupts keep the original's behaviour.
 
-**More pictures than vblank can upload.** At 60 Hz a full-screen picture
-the game draws itself can overrun vblank, and VRAM then drops writes. The
-fix is nativeshvc's canvas (`nshvc_ext_canvas_chars`): each buffer is handed
-keyed by the VRAM characters it stands for, at its flip, and the console
-places it by its own rules at the window's resolution. Overlapping buffer
-layouts must narrow the canvas before the last VRAM-path copy when switching
-back, or one frame tears. Verify the canvas against a decode of the VRAM it
-replaces, keyed by line, tile and index.
+**Pictures the game draws itself.** Use an `nshvc_draw_list` or a layer from an
+`nshvc_image`: each is drawn on the GPU and has no vblank budget.
 
 **Order:** speed independence and widescreen before high-resolution
 graphics; the renderer must draw both the original exactly and high

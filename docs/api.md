@@ -1,7 +1,6 @@
-# The native engine's API, version 4.0 (draft)
+# The native engine's API, version 4.2
 
-**Status: built, 2026-11-08. The maintainer accepted the recommendations on its open points (section 13).** The plan is in `native-engine-plan.md`. Names and fields may still be refined during building, under section 11's
-rules once 4.0 is released.
+**Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
 ## 0. Conventions
 
@@ -333,7 +332,7 @@ back from the GPU, for checks and screenshots.
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This draft is 4.0.
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.2. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 added `aspect` to `nshvc_screen`.
 - **Major (5.0):** the only release that may change or remove anything a game uses.
 - **Minor (4.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 4.0 game
   builds and plays the same.
