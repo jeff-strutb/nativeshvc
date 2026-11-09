@@ -4,17 +4,14 @@
 
 ## Where the work stands (2026-11-09)
 
-API 4.2. Merged to `main`.
-
-Every stage is built. What has and has not been run:
+API 4.4, on `main`. Every stage is built.
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
-- **Since the last full run:** the picture's shape in the window (API 4.2) was run on Metal and Vulkan and compiled for the others. D3D12, Android, iOS and Linux have not been rerun since.
-- **Feature scenes:** 39 match bsnes byte for byte on Metal, on Vulkan through MoltenVK, on Mesa's software Vulkan in a Linux VM (36 on a full rerun, plus the 3 sprite-screen scenes), and on D3D12 headless under Wine with vkd3d-proton. `tests/scenes/scenes.py` is shown able to fail.
+- **Feature scenes:** 39 match bsnes byte for byte on Metal and on Vulkan through MoltenVK. On D3D12 headless under Wine with vkd3d-proton and on Mesa's software Vulkan in a Linux VM they last ran before API 4.3's shader change.
 - **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
-- **A complete decompiled game on the engine:** picture, input and music run through the API with a bridge kept outside this repository. 284 sampled frames, 240 of them in 200 seconds of scripted play, match the game's own renderer within rounding. Music follows that game's own sound chip in loudness and shape, not sample for sample; its frame timing differs from the ROM's, so it was not compared to bsnes frame by frame.
-- **Sound:** matches the old mixer, itself held to bsnes, on 1.9 million samples across six seeds, once both start from a known state. The earlier 161-sample difference was voices that had never played reading the old mixer's RAM, which the engine does not have.
+- **A full game, zelda3, converted to the API** with no imitation hardware left. See the conversion guide. Attract frames that line up match the ROM in bsnes byte for byte; dungeons, the world map, game over, boss scenes and the credits match its previous renderer apart from the timing of its 3D polygons. One scene, save and quit, ended differently from that reference, in the game's logic, and was not explained. A run gives the same picture on macOS, Linux, D3D12 headless and the Windows host under Wine, and in real time on macOS, Linux, Android and iOS.
+- **Sound:** the voices match the old mixer, itself held to bsnes, on 1.28 million samples with echo writes switching, and on 1.9 million before that. zelda3's music is not aligned with the ROM's, so it is compared only in loudness.
 - **Speed:** at most 7.9 us of engine work a picture on an Apple M4 Pro, against the 30 us target, which was set on another machine.
 - **Example and kit:** `examples/comet` builds with one command for every platform; on Linux that needs the shader tools installed. `tools/nshvc-check` compares a converted game with its ROM in bsnes.
 - **`dxc`:** Homebrew has none. `tools/nshvc-shaders` and `src/render/d3d12/build.sh` use `dxc` on the PATH, else `build/tools/dxc/bin/dxc` (not in git; build it from DirectXShaderCompiler source and place it there with its `lib/libdxcompiler`).

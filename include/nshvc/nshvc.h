@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 3
+#define NSHVC_VERSION_MINOR 4
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -125,6 +125,8 @@ void nshvc_sound_volume(int8_t left, int8_t right);
 void nshvc_sound_noise_rate(uint8_t rate);
 void nshvc_echo(uint8_t delay_16ms, int8_t feedback, int8_t left, int8_t right, const int8_t fir[8]);
 void nshvc_sound_mute(int on);
+/* whether the echo's sum is written back to its buffer; on until turned off */
+void nshvc_echo_writes(int on);
 uint32_t nshvc_music_receive(void *buffer, uint32_t max);
 
 /* ---- profiling and pictures ---------------------------------------------------------- */

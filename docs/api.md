@@ -1,4 +1,4 @@
-# The native engine's API, version 4.2
+# The native engine's API, version 4.4
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -26,6 +26,7 @@ typedef struct nshvc_game {
     void (*draw)(float between);                /* game thread, once per picture */
     void (*shutdown)(void);                     /* once, at exit */
     nshvc_music music;          /* the game's music code (section 6); zeroed if none */
+    float window_aspect;        /* the window's shape when it opens, width over height; 0: 4:3 */
 } nshvc_game;
 
 int nshvc_run(const nshvc_game *game, int argc, char **argv);   /* returns at exit */
@@ -79,6 +80,7 @@ typedef struct nshvc_screen {
     uint8_t interlace;          /* fields woven */
     uint8_t brightness;         /* 0-15, the SNES's */
     uint8_t blank;
+    int32_t show_left, show_right, show_top, show_bottom;   /* the part shown, the rest black; right, bottom 0: to the edge */
     float   aspect;             /* shown shape, width over height: 0 the original's pixels (256 x 224 is 4:3), 8.0f / 7.0f etc; NSHVC_ASPECT_FILL fills the window */              /* the screen black */
 } nshvc_screen;
 void nshvc_screen_set(const nshvc_screen *s);
@@ -271,6 +273,7 @@ nshvc_voice_state nshvc_voice_read(uint32_t v);               /* envelope level,
 ```c
 void nshvc_sound_volume(int8_t left, int8_t right);
 void nshvc_sound_noise_rate(uint8_t rate);
+void nshvc_echo_writes(int on);                 /* whether the echo is written back to its buffer; on until turned off */
 void nshvc_echo(uint8_t delay_16ms, int8_t feedback, int8_t left, int8_t right, const int8_t fir[8]);
 void nshvc_sound_mute(int on);
 uint32_t nshvc_music_receive(void *buffer, uint32_t max);    /* the next message from the game, or 0 */
@@ -332,7 +335,7 @@ back from the GPU, for checks and screenshots.
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.2. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 added `aspect` to `nshvc_screen`.
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.4. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`.
 - **Major (5.0):** the only release that may change or remove anything a game uses.
 - **Minor (4.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 4.0 game
   builds and plays the same.

@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 4.2. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 4.4. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 
@@ -23,7 +23,8 @@ The engine is at API 4.2. `docs/native-engine-plan.md` opens with what has and h
   colour and offset-per-tile by the SNES's rules, at any screen size. Per-line changes come from a table of values. Mode 7 is
   sampled and anti-aliased at the window's resolution. Backends: Vulkan, Metal and Direct3D 12.
 - **The picture's shape in the window.** 4:3 by default, centred with black margins. A game can name another shape, such as
-  8:7, or fill the window. A wider screen keeps the original's pixel shape.
+  8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
+  say which part of it is shown.
 - **A drawing pipeline.** Triangles, lines and images on the GPU, composed as a layer, with game shaders compiled for every
   backend at build time.
 - **Sound.** Voices, envelopes, noise, pitch modulation and echo by the SNES's rules at 32,040 Hz, with the game's music code
@@ -35,8 +36,8 @@ The engine is at API 4.2. `docs/native-engine-plan.md` opens with what has and h
 ## Using it
 
 Read [docs/api.md](docs/api.md) for the contract and [docs/conversion-guide.md](docs/conversion-guide.md) to bring a game to
-the engine, with zelda3 as a worked example. [examples/comet](examples/comet) is a complete small game that uses each part of
-the engine. [examples/zelda3](examples/zelda3) runs the zelda3 decompilation on the engine as a test case.
+the engine, with a full game, zelda3, as a worked example. [examples/comet](examples/comet) is a complete small game that uses each part of
+the engine.
 
 | Tool | What it does |
 |---|---|

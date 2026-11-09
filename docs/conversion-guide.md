@@ -1,7 +1,7 @@
 # Bringing a decompiled game to the engine
 
-The steps are in order. `docs/api.md` is the full contract, `examples/comet` a complete small game on it, and section 8 walks
-through zelda3.
+The steps are in order. `docs/api.md` is the full contract, `examples/comet` a complete small game on it, and section 8 is a
+full game's conversion.
 
 ## 1. Find every hardware touch
 
@@ -88,63 +88,38 @@ tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom 
 
 ## 8. Worked example: zelda3
 
-[zelda3](https://github.com/snesrev/zelda3) is a decompilation of about 80,000 lines of C. It has been run on the engine as its
-first full game, to test the engine. It has a window, input, picture and music on the engine, and shows what the boundary
-between a decompilation and the engine looks like. You supply your own ROM, from which the project extracts its game data.
-
-The bridge is in [`examples/zelda3`](../examples/zelda3), with the steps to build it. These pictures are the engine's own output, drawn through its API:
+[zelda3](https://github.com/snesrev/zelda3) is a decompilation of about 80,000 lines of C, and was converted to the engine as its first full test. Its code stays in its own project; you supply your own ROM, from which that project extracts its game data. These pictures are the engine's own output:
 
 | Title screen | A text box | Play |
 |---|---|---|
 | ![zelda3's title screen on the engine](images/zelda3-title.png) | ![A zelda3 text box on the engine](images/zelda3-dialog.png) | ![zelda3 in play on the engine](images/zelda3-play.png) |
 
-zelda3 already keeps the SNES's hardware state in C structures of its own, so it was first brought up with a small bridge at
-that boundary. A bridge is the quick way to run a game and test the engine. A finished conversion goes further and calls the
-engine directly from the game's code, as sections 1 to 4 describe.
+The conversion removed the game's imitation PPU, DMA, DSP and APU, its SDL front end, its OpenGL code and its snapshot and comparison code. `tools/nshvc-find-hardware` finds nothing left in it. The game logic did not change.
 
-**The game's entry.** The game's frame function and its setup replace the front end it came with:
+**The game's entry.** One small file replaces the front end:
 
-| zelda3 | On the engine |
+| What zelda3 had | On the engine |
 |---|---|
-| `main`, its SDL window and loop | `nshvc_game` and `nshvc_run` |
-| Loading `zelda3_assets.dat` and setting the language | `init`. The dialogue data is set here too, or the text boxes are empty |
-| `ZeldaRunFrameInternal(input, 3)` | `update`, at 60 a second |
-| `ZeldaDrawPpuFrame` | `draw`, in place of the game's line renderer |
+| `main`, an SDL window and loop | `nshvc_game` and `nshvc_run` |
+| The frame function | `update`, at 60 a second |
+| Drawing line by line | `draw` |
 | Its joypad word, B in bit 0 | The bits of `nshvc_input.pad[0]`, reversed |
+| Files on disk | `nshvc_asset_open` for data, `nshvc_save_write` and `nshvc_save_read` for saves |
 
-**The picture.** In `draw`, the game's state becomes engine calls once per picture:
+**Graphics.** A small video module replaces video memory. Tile sets and maps are engine objects, and the game writes to them when its graphics change, in `update`. Most writes name what they are, such as background or sprite tiles. The game's data tables name some destinations by number, and one function turns those into the right object. Mode 7's tiles and map are the game's own arrays, sent when they change.
 
-| zelda3's state | On the engine |
-|---|---|
-| `vram` at each layer's tile address | `nshvc_tiles_write` with `NSHVC_TILES_PLANAR`, 2 bpp for BG3 and 4 for the others |
-| `vram` at each tilemap address, one to four 32 x 32 screens | `nshvc_map_write_snes` into a map of that size |
-| The sprite tile addresses, two tables of 256 | One tile set of 512 |
-| `vram`'s low and high bytes in Mode 7 | A Mode 7 map and `NSHVC_TILES_MODE7` tiles |
-| `oam` and its high table | `nshvc_sprites_set`, with 9-bit X and Y above 223 made negative |
-| `screenEnabled` | `enabled_main`, `enabled_sub`, and `nshvc_sprites_show` |
-| `windowsel`, `screenWindowed` | `nshvc_windows_set`. The SNES's bits are in a different order from `NSHVC_WIN1` and its neighbours |
-| `clipMode`, `preventMathMode`, `halfColor` and the rest | `nshvc_blend_set`; `use_fixed` is the opposite of `addSubscreen` |
-| `cgram` | `nshvc_palette_write` |
+**The picture.** `draw` describes the picture directly from the game's own settings: which layers are on, the scrolls, windows, blending and the palette. Sprites come from the game's own table.
 
-**Changes during the picture.** The game's HDMA tables and its line interrupt change state between lines. Step through them
-line by line, set the picture from the state at the first line, and for each later line send what changed with `nshvc_line`:
-scrolls, windows, the fixed colour, brightness, Mode 7's matrix, layers on and off, and blending. A state change after line
-`i` applies to picture line `i`.
+**Changes during the picture.** The game's per-line effects are arrays with one value a line, such as window edges for the spotlight or Mode 7's zoom for the world map. A few are short runs of lines. `draw` sends each change with `nshvc_line`.
 
-**Music.** zelda3's sound driver is already C, so it becomes the game's music code:
+**Music.** zelda3's sound driver is already C, so it became the game's music code:
 
-- `nshvc_music.tick` runs one step of the driver, 500 times a second, the rate the driver's timer ran at.
-- Each write the driver makes to a DSP register becomes a voice call: volume, pitch, ADSR or gain, key on and off, noise, echo
-  and pitch modulation.
-- Samples are loaded on the game thread with `nshvc_sample_load` whenever the game uploads a sound bank, by reading the sample
-  directory. Key on then picks from that table.
-- The audio thread must never wait. While the game thread changes the driver's memory it sets a flag, the tick returns at once,
-  and only the game thread waits.
+- `nshvc_music.tick` runs at 32,040 Hz and counts samples: one driver step every 64 samples, the rate of the driver's timer.
+- The driver sets voices with `nshvc_voice_*` directly.
+- The game thread loads a sound bank's samples with `nshvc_sample_load`, then sends a message saying the bank is ready. Commands reach the driver through the same queue. The audio thread never waits.
 
-**What it showed.** 284 frames sampled across the intro, menus and 200 seconds of play match the game's own renderer within
-rounding. The run also found what the feature scenes had not: the engine drew sprites on the sub-screen when the game had not
-asked for it. The fix went into the engine, with new scenes, because the engine must be right for every game. Do the same when
-your game shows a difference: find out whether the game's conversion or the engine is wrong, and fix it where it belongs.
+**Widescreen.** The game sets a wider screen in `nshvc_screen`, moves sprites and windows into it, and uses `show_left` and `show_right` to black out what a room doesn't have. The status bar stays in the original columns through `layer_clip`. How to use the extra width is the game's decision.
 
-Its music follows the game's own sound chip in loudness and shape, not sample for sample. Its frame timing differs from the
-ROM's, because the C does not model the original's slow frames, so frames were compared with its own renderer rather than bsnes.
+**How it was checked.** The attract sequence matches the ROM in bsnes byte for byte on the frames that line up. Dungeons, the world map, the item screen, game over, boss scenes and the credits match the game's previous renderer, apart from the timing of its 3D polygons. The same run gives identical pictures on macOS, Linux and D3D12 headless, and on macOS, Linux, Android and iOS in real time. Its frame timing differs from the ROM's, because the C does not model the original's slow frames, so its sound is the same music but not aligned sample for sample.
+
+The test found a real engine gap, sprites drawn on the sub-screen when the game had not asked. When your game shows a difference, find out whether the conversion or the engine is wrong, and fix it where it belongs. The engine is never changed for one game.

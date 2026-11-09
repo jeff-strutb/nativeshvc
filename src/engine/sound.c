@@ -58,6 +58,7 @@ static int echo_hist[8][2], echo_at, echo_index, echo_length, echo_ptr, echo_len
 static uint8_t echo_mem[ECHO_BYTES];
 static int8_t mvol_l, mvol_r, evol_l, evol_r, efb, fir[8];
 static int muted;
+static int echo_writes_off;
 
 /* the music code */
 static nshvc_music music;
@@ -328,8 +329,10 @@ static int rd16(int at) { return echo_mem[at] | echo_mem[at + 1] << 8; }
 
 static void echo_write(int ch)
 {
-    echo_mem[echo_ptr + ch * 2] = (uint8_t)echo_sum[ch];
-    echo_mem[echo_ptr + ch * 2 + 1] = (uint8_t)(echo_sum[ch] >> 8);
+    if (!echo_writes_off) {
+        echo_mem[echo_ptr + ch * 2] = (uint8_t)echo_sum[ch];
+        echo_mem[echo_ptr + ch * 2 + 1] = (uint8_t)(echo_sum[ch] >> 8);
+    }
     echo_sum[ch] = 0;
 }
 
@@ -649,6 +652,7 @@ nshvc_voice_state nshvc_voice_read(uint32_t v)
 
 void nshvc_sound_volume(int8_t l, int8_t r) { if (eng_on("nshvc_sound_volume", ENG_AUDIO)) { mvol_l = l; mvol_r = r; } }
 void nshvc_sound_noise_rate(uint8_t rate) { if (eng_on("nshvc_sound_noise_rate", ENG_AUDIO)) noise_rate = rate & 31; }
+void nshvc_echo_writes(int on) { if (eng_on("nshvc_echo_writes", ENG_AUDIO)) echo_writes_off = !on; }
 void nshvc_sound_mute(int on) { if (eng_on("nshvc_sound_mute", ENG_AUDIO)) muted = on != 0; }
 
 void nshvc_echo(uint8_t delay, int8_t feedback, int8_t l, int8_t r, const int8_t f[8])
