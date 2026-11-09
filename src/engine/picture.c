@@ -1010,6 +1010,10 @@ static void build(eng_packet *p)
     }
     d[PB_LINES] = (uint32_t)lines;
     d[PB_PW] = (uint32_t)(hires_any ? 2 * w : w);
+    d[PB_SHOW_L] = (uint32_t)(screen.show_left > 0 ? screen.show_left : 0);
+    d[PB_SHOW_R] = (uint32_t)(screen.show_right > 0 && screen.show_right < w ? screen.show_right : w);
+    d[PB_SHOW_T] = (uint32_t)(screen.show_top > 0 ? screen.show_top : 0);
+    d[PB_SHOW_B] = (uint32_t)(screen.show_bottom > 0 && screen.show_bottom < h ? screen.show_bottom : h);
     {
         float a = eng_picture_aspect();
         memcpy(&d[PB_ASPECT], &a, 4);

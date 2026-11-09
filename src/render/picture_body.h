@@ -43,7 +43,11 @@
 #define PB_VX (19 + 56)   /* where the picture sits in the window; PB_WW, PB_WH its size there */
 #define PB_VY (20 + 56)
 #define PB_ASPECT (21 + 56) /* the shape it is shown at, as float bits; negative: the whole window */
-#define PB_HEADER (22 + 56)
+#define PB_SHOW_L (22 + 56) /* the columns and rows shown; others black */
+#define PB_SHOW_R (23 + 56)
+#define PB_SHOW_T (24 + 56)
+#define PB_SHOW_B (25 + 56)
+#define PB_HEADER (26 + 56)
 
 #define PB_RGB 0x1000000u
 
@@ -578,6 +582,8 @@ PB_FN void pb_state(U32 X, U32 R)
 PB_FN U32 pb_compose(U32 X, U32 R, U32 pix)
 {
     U32 ri = D_(PB_ROWS) + 4u * R, scale = D_(PB_PW) == D_(PB_W) ? 1u : 2u, x = X >> (scale - 1u), ms;
+    if (x < D_(PB_SHOW_L) || x >= D_(PB_SHOW_R) || R < D_(PB_SHOW_T) || R >= D_(PB_SHOW_B))
+        return 0xFF000000u;
     pb_state(X, R);
     ms = S_(PB_S_MODE);
     if (((ms >> 12) & 1u) != 0u)

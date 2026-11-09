@@ -9,7 +9,7 @@
 #   NSHVC_RENDER    none (no picture; the default with the null host) | metal | vulkan | d3d12
 #   NSHVC_EXAMPLES  build the examples (examples/)
 cmake_minimum_required(VERSION 3.16)
-project(nativeshvc VERSION 4.2.0 LANGUAGES C)
+project(nativeshvc VERSION 4.3.0 LANGUAGES C)
 
 if(APPLE)
   enable_language(OBJC)

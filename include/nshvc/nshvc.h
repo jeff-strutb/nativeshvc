@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 2
+#define NSHVC_VERSION_MINOR 3
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -80,6 +80,7 @@ typedef struct nshvc_game {
     void (*draw)(float between);                /* game thread, once per picture */
     void (*shutdown)(void);                     /* once, at exit */
     nshvc_music music;          /* the game's music code; zeroed if none */
+    float window_aspect;        /* the window's shape when it opens, width over height; 0: 4:3 */
 } nshvc_game;
 
 /* Runs the game; returns at exit with the process's status.
@@ -179,6 +180,9 @@ typedef struct nshvc_screen {
     float   aspect;             /* the shape the screen is shown at, width over height, whatever the window's:
                                    0 the original's pixels (256 x 224 is 4:3; a wider screen is wider),
                                    8.0f / 7.0f square pixels and so on; NSHVC_ASPECT_FILL fills the window */
+    int32_t show_left, show_right, show_top, show_bottom;
+                                /* the part of the screen shown, in its columns and rows, the rest black;
+                                   right 0 means the whole width, bottom 0 the whole height */
 } nshvc_screen;
 #define NSHVC_ASPECT_FILL (-1.0f)
 void nshvc_screen_set(const nshvc_screen *s);
