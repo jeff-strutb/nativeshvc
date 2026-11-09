@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 0
+#define NSHVC_VERSION_MINOR 1
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -231,6 +231,8 @@ typedef struct nshvc_sprite {
     uint8_t palette, priority, hflip, vflip;
 } nshvc_sprite;
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
+/* whether the sprites are on the main and the sub screen; until set, main only */
+void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen);
 
 typedef struct nshvc_window { int32_t left, right; } nshvc_window;
 
@@ -294,6 +296,7 @@ typedef enum {
     NSHVC_LINE_WIN_USE = 72,        /* + BG1-4, sprites, colour */
     NSHVC_LINE_MASK_MAIN = 80,      /* + BG1-4, sprites */
     NSHVC_LINE_MASK_SUB = 88,       /* + BG1-4, sprites */
+    NSHVC_LINE_SPRITES_MAIN = 96, NSHVC_LINE_SPRITES_SUB = 97,
     NSHVC_LINE_PALETTE = 256
 } nshvc_line_field;
 void nshvc_line(uint32_t line, nshvc_line_field field, int32_t value);

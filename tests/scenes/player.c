@@ -181,6 +181,8 @@ static void draw(float between)
             s->tiles = tiles[v[4]];
             s->tile = (uint16_t)v[5];
             s->palette = (uint8_t)v[6]; s->priority = (uint8_t)v[7]; s->hflip = (uint8_t)v[8]; s->vflip = (uint8_t)v[9];
+        } else if (!strcmp(cmd, "spriteshow")) {
+            nshvc_sprites_show((uint8_t)v[0], (uint8_t)v[1]);
         } else if (!strcmp(cmd, "limits")) {
             nshvc_limits lim;
             memset(&lim, 0, sizeof lim);

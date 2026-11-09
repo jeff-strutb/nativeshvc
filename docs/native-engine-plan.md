@@ -2,21 +2,18 @@
 
 **Status: decisions A to G settled; approved and under way (the maintainer, 2026-11-08).** The evidence the plan rests on is in appendix A.
 
-## Where the work stands (2026-11-08)
+## Where the work stands (2026-11-09)
 
-The engine is built for every platform named in decision C. What has and has not been run:
+Every stage is built. What has and has not been run:
 
-- **Run and passing on Metal (macOS):** 36 feature scenes matching bsnes byte for byte, and shown able to fail (`tests/scenes/scenes.py`);
-  the window pass at 1x and 3x; draw lists, the exact fill, a game shader, overlays, saves, input replay and jobs
-  (`tests/scenes/feature.c`); update rate and identical state in headless, real-time and windowed runs; a macOS window.
-- **Sound** matches the old mixer, itself held to bsnes, on 320,400 samples of random voice calls with mixed samples. With
-  looping samples only, 161 samples differ, not fully explained. The comparison was a one-off, because that mixer is removed.
+- **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
+- **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
+- **Feature scenes:** 39 match bsnes byte for byte on Metal, on Vulkan through MoltenVK, on Mesa's software Vulkan in a Linux VM (36 on a full rerun, plus the 3 sprite-screen scenes), and on D3D12 headless under Wine with vkd3d-proton. `tests/scenes/scenes.py` is shown able to fail.
+- **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
+- **A complete decompiled game on the engine:** picture, input and music run through the API with a bridge kept outside this repository. 284 sampled frames, 240 of them in 200 seconds of scripted play, match the game's own renderer within rounding. Music follows that game's own sound chip in loudness and shape, not sample for sample; its frame timing differs from the ROM's, so it was not compared to bsnes frame by frame.
+- **Sound:** matches the old mixer, itself held to bsnes, on 1.9 million samples across six seeds, once both start from a known state. The earlier 161-sample difference was voices that had never played reading the old mixer's RAM, which the engine does not have.
 - **Speed:** at most 7.9 us of engine work a picture on an Apple M4 Pro, against the 30 us target, which was set on another machine.
-- **Run and passing on Vulkan:** the 36 scenes and the feature game through MoltenVK on macOS, and on Mesa's software driver in a Linux VM,
-  with the X11 host running a window there.
-- **Run and passing on Android (2026-11-09):** the feature game as a signed APK from `tools/nshvc-build android`, in Google's Android
-  Emulator (API 35, arm64, Vulkan through the host GPU), drawing, reading its picture back, for 4 and 600 updates, and ending cleanly. No real device.
-- **Compiled, not run:** D3D12 past device creation (Wine's own D3D12 cannot read DXIL), including its windowed picture read; the Windows host; input from real devices and touch.
+- **Example and kit:** `examples/comet` builds with one command for every platform; on Linux that needs the shader tools installed. `tools/nshvc-check` compares a converted game with its ROM in bsnes.
 - **`dxc`:** Homebrew has none. `tools/nshvc-shaders` and `src/render/d3d12/build.sh` use `dxc` on the PATH, else `build/tools/dxc/bin/dxc` (not in git; build it from DirectXShaderCompiler source and place it there with its `lib/libdxcompiler`).
 - **Rules:** see the maintainer's standing instructions.
 - **Build on Windows:** MSYS2 UCRT64 with GCC, CMake and Ninja; `tools/nshvc-build windows path/to/game`.

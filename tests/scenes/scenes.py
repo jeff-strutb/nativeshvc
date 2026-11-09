@@ -74,7 +74,7 @@ class Scene:
         self.f.append(f"layer {n} {tid} {mid} {int(main)} {int(sub)} {16 if big else 8} {scroll[0]} {scroll[1]} {mosaic} 1 {int(direct)} -1")
         return tid, mid
 
-    def sprites(self, count, large=False, sub=False, limit=False):
+    def sprites(self, count, large=False, sub=False, limit=False, main=True):
         data = self.r.randbytes(32 * 256)
         tid = self.id()
         self.t.vram(0, data)
@@ -93,8 +93,9 @@ class Scene:
             else:
                 oam += bytes([0, 0xE0, 0, 0])
         self.t.oam(bytes(oam) + bytes(hi))
-        self.tm |= 0x10
+        self.tm |= (1 if main else 0) << 4
         self.ts |= (1 if sub else 0) << 4
+        self.f.append(f"spriteshow {int(main)} {int(sub)}")
         self.f.append("limits 32 34 1")
 
     def sprites_band(self):
@@ -228,6 +229,9 @@ def scenes():
     s = Scene("mosaic"); s.mode(1); s.bg(0, mosaic=4); s.bg(1, mosaic=4); yield s
     s = Scene("window"); s.mode(1); s.bg(0); s.bg(1); s.sprites(32); s.window(40, 200, 90, 160, [2, 8, 10, 0, 2, 0], 0, 3, 0); yield s
     s = Scene("window-and"); s.mode(1); s.bg(0); s.bg(1); s.window(40, 200, 90, 160, [10, 3, 0, 0, 0, 0], 1, 3, 0); yield s
+    s = Scene("sprites-blend-main"); s.mode(1); s.bg(0); s.bg(1, main=False, sub=True); s.sprites(64); s.blend(); yield s
+    s = Scene("sprites-blend-both"); s.mode(1); s.bg(0); s.sprites(64, sub=True); s.blend(half=True); yield s
+    s = Scene("sprites-sub-only"); s.mode(1); s.bg(0); s.sprites(64, main=False, sub=True); s.blend(); yield s
     s = Scene("add-sub"); s.mode(1); s.bg(0); s.bg(1, main=False, sub=True); s.blend(); yield s
     s = Scene("sub-half"); s.mode(1); s.bg(0); s.bg(1, main=False, sub=True); s.blend(sub=True, half=True); yield s
     s = Scene("add-fixed"); s.mode(1); s.bg(0); s.blend(fixed=True); yield s

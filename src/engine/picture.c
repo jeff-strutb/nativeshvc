@@ -310,6 +310,15 @@ void nshvc_layer_set(uint8_t n, const nshvc_layer *l)
     layers[n] = *l;
 }
 
+static int show_main = 1, show_sub;
+void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen)
+{
+    if (IN_DRAW("nshvc_sprites_show")) {
+        show_main = main_screen != 0;
+        show_sub = sub_screen != 0;
+    }
+}
+
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first)
 {
     static const char call[] = "nshvc_sprites_set";
@@ -628,7 +637,7 @@ static void layer_words(uint32_t *l, int n, const nshvc_layer *a, int m)
 
 /* the state as it stands */
 typedef struct {
-    int m, b3, hires, bright, blank;
+    int m, b3, hires, bright, blank, sprites_main, sprites_sub;
     nshvc_layer l[4];
     nshvc_mode7 m7;
     nshvc_windows w;
@@ -641,7 +650,8 @@ static void state_words(uint32_t *s, const Now *n, uint32_t pal_at)
     int i;
     uint32_t mm = 0, ms = 0;
     memset(s, 0, PB_ST * 4);
-    s[PB_S_MODE] = (uint32_t)n->m | (uint32_t)n->b3 << 3 | (uint32_t)n->hires << 4 | (uint32_t)n->bright << 8 | (uint32_t)n->blank << 12;
+    s[PB_S_MODE] = (uint32_t)n->m | (uint32_t)n->b3 << 3 | (uint32_t)n->hires << 4 | (uint32_t)n->bright << 8 | (uint32_t)n->blank << 12 |
+                  (uint32_t)(n->sprites_main != 0) << 13 | (uint32_t)(n->sprites_sub != 0) << 14;
     s[PB_S_BLEND] = (uint32_t)n->b.fixed_bgr15 | (uint32_t)(n->b.subtract != 0) << 16 | (uint32_t)(n->b.half != 0) << 17 |
                     (uint32_t)(n->b.use_fixed != 0) << 18 | (uint32_t)(n->b.layers & 63) << 20 |
                     (uint32_t)(n->b.clip & 3) << 26 | (uint32_t)(n->b.prevent & 3) << 28;
@@ -698,6 +708,8 @@ static void apply(Now *n, uint32_t *pal, int field, int32_t v, uint32_t line, in
     case NSHVC_LINE_FIXED: n->b.fixed_bgr15 = (uint16_t)v; break;
     case NSHVC_LINE_BRIGHTNESS: n->bright = v & 15; break;
     case NSHVC_LINE_MODE: n->m = v & 7; break;
+    case NSHVC_LINE_SPRITES_MAIN: n->sprites_main = v != 0; break;
+    case NSHVC_LINE_SPRITES_SUB: n->sprites_sub = v != 0; break;
     case NSHVC_LINE_M7_A: n->m7.a = (int16_t)v; break;
     case NSHVC_LINE_M7_B: n->m7.b = (int16_t)v; break;
     case NSHVC_LINE_M7_C: n->m7.c = (int16_t)v; break;
@@ -781,6 +793,8 @@ static void build(eng_packet *p)
 
     memset(&n, 0, sizeof n);
     n.m = mode;
+    n.sprites_main = show_main;
+    n.sprites_sub = show_sub;
     n.b3 = bg3;
     n.hires = mode_hires;
     n.bright = screen_set ? screen.brightness : 15;

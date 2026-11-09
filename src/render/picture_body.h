@@ -45,7 +45,7 @@
 #define PB_RGB 0x1000000u
 
 /* a state's words */
-#define PB_S_MODE 0      /* mode | bg3 priority << 3 | hires << 4 | brightness << 8 | blank << 12 */
+#define PB_S_MODE 0      /* mode | bg3 priority << 3 | hires << 4 | brightness << 8 | blank << 12 | sprites on main << 13, on sub << 14 */
 #define PB_S_BLEND 1     /* fixed | subtract << 16 | half << 17 | use_fixed << 18 | layers << 20
                             | clip << 26 | prevent << 28 */
 #define PB_S_W 2         /* window 1's left, right, window 2's left, right (signed) */
@@ -464,12 +464,12 @@ PB_FN void pb_screens(U32 sprites_at, U32 sprites, U32 x, I32 r, U32 pix)
     o = pb_obj(sprites_at, sprites, x, r);
     if ((o & 8u) != 0u) {
         U32 z = pb_zobj(mode, o & 3u), layer = (o & 4u) != 0u ? 4u : 6u, c = pb_c;
-        if (z > pb_mz && pb_off(4u, 0u, x, r) == 0u) {
+        if (((ms >> 13) & 1u) != 0u && z > pb_mz && pb_off(4u, 0u, x, r) == 0u) {
             pb_main = c;
             pb_mz = z;
             pb_ml = layer;
         }
-        if (z > pb_sz && pb_off(4u, 1u, x, r) == 0u) {
+        if (((ms >> 14) & 1u) != 0u && z > pb_sz && pb_off(4u, 1u, x, r) == 0u) {
             pb_sub = c;
             pb_sz = z;
             pb_sl = layer;

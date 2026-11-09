@@ -154,6 +154,7 @@ typedef struct nshvc_sprite {
     nshvc_tiles tiles; uint16_t tile;
     uint8_t palette, priority, hflip, vflip;
 } nshvc_sprite;
+void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen);   /* which screens the sprites are on; until set, main only */
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
                                     /* in order; first_priority is the SNES's priority rotation */
 ```
