@@ -152,7 +152,7 @@ an Intel Core i7-1280P under Windows 11. Best of 5 batches of 200 frames, per fr
 measures idle first, so a start-up effect is one possibility, but that is not established. Drawing and a sound driver are
 not included.
 
-**Proposed targets, awaiting the maintainer (decision F):** the engine's own CPU work per frame at the original resolution,
+**Target, approved by the maintainer 2026-11-08 (decision F):** the engine's own CPU work per frame at the original resolution,
 on the game's thread, at most half of today's display figure on this machine (30 us), so that on a machine roughly 30 to 50
 times slower per core, about the power decision F names, it stays well under 2 ms of a 16.7 ms frame. That speed ratio is an
 estimate, not a measurement.
