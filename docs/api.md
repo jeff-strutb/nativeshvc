@@ -210,7 +210,7 @@ void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);   /* smooth, or an e
 ```c
 nshvc_effect nshvc_effect_create(nshvc_effect_kind kind, const void *settings);   /* engine effects: water, sky, haze */
 nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine's shading language, a fragment-only subset
-                                                         of GLSL 4.5, compiled at build time to SPIR-V and Metal (section 13) */
+                                                         of GLSL 4.5, compiled at build time for every backend (section 13) */
 ```
 
 A material names a texture or palette, an optional effect or shader, and its inputs. The core picture needs no shader from
@@ -390,8 +390,8 @@ back from the GPU, for checks and screenshots.
 
 ## 13. Settled on review (the maintainer, 2026-11-08)
 
-1. **The shading language** is a fragment-only subset of GLSL 4.5. The engine's tools compile it to SPIR-V for Vulkan and
-   Metal Shading Language for Metal, at build time.
+1. **The shading language** is a fragment-only subset of GLSL 4.5. The engine's tools compile it at build time to SPIR-V for
+   Vulkan, Metal Shading Language for Metal, and DXIL for D3D12.
 2. **`draw` sets the whole picture each time.** The settings of sections 3.1 and 3.3 to 3.7 apply to the picture being
    drawn and nothing carries over. Tile sets, maps, palettes, images and samples are objects that persist until changed.
 3. **The mouse's speed setting and the guns' extra buttons stay,** as the SNES had them, because games read them.

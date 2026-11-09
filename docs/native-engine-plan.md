@@ -186,12 +186,14 @@ faster is decided here, by measuring.
 
 **Keep and adapt:** `compose_body.h`'s rules, the backends, sharp bilinear and Mode 7 anti-aliasing.
 
+**Build also:** a D3D12 backend beside Vulkan and Metal (decision D).
+
 **Delete:** the OpenGL backend (`src/render/gl`, decision D); `ppu.c`'s registers, ports, line record, STAT77 and
 `cgram_target`; `rr_image`, `rr_mode7`, `host_present`;
 `rr_m7_plane` and `rr_m7_tables`.
 
 **Done when:** no code in `src` makes a picture pixel on the CPU, the display cannot hold up the game, and every feature scene
-matches bsnes's picture on every backend (Vulkan and Metal).
+matches bsnes's picture on every backend (Vulkan, Metal and D3D12).
 
 ### 4. Drawing pipeline and effects
 
@@ -201,7 +203,7 @@ GPU on every backend.
 
 **Delete:** the lent GPU device, GPU canvases, and overlay handles.
 
-**Done when:** test scenes match their definition on every backend (Vulkan and Metal) with no CPU pixel, and a recorded SRFX frame's
+**Done when:** test scenes match their definition on every backend (Vulkan, Metal and D3D12) with no CPU pixel, and a recorded SRFX frame's
 polygons (stage 10) fill identically to the original's bitmap.
 
 ### 5. Sound
@@ -257,7 +259,7 @@ deleted above.
 
 Each check is shown able to fail first.
 
-**Done when:** every check passes, on approved runs, on every backend (Vulkan and Metal).
+**Done when:** every check passes, on approved runs, on every backend (Vulkan, Metal and D3D12).
 
 ### 11. Integration kit
 
@@ -300,7 +302,8 @@ the merge.
 | A | Does the engine own the loop? Unity (`Update`, `FixedUpdate`), Unreal (`Tick`) and Godot (`_process`, `_physics_process`) all own the main loop and call the game. | **Settled, 2026-11-08:** yes, as they do |
 | B | May games write GPU programs? Unity, Unreal and Godot all let games write shaders, but only in the engine's own shading language or material system, which the engine compiles for each platform's GPU. A game never writes per-platform GPU code. | **Settled, 2026-11-08:** yes, the same way: one engine shading language, compiled by the engine for every backend. The SNES picture and effects such as water stay engine features as well |
 | C | Which platforms? | **Settled by the maintainer, 2026-11-08:** Windows, macOS, Linux, iOS and Android first, plus headless for checks. Any platform with a programmable GPU must be cleanly addable, including Xbox, PlayStation and Switch, through one host and renderer interface. This is an architectural requirement; console SDKs being under NDA, with their backends kept privately as Godot's are, is accepted |
-| D | Does OpenGL need to stay? Vulkan covers Windows, Linux and Android, and Metal covers Apple. Unreal has dropped desktop OpenGL. Godot 4 keeps an OpenGL "Compatibility" renderer for low-end hardware beside its Vulkan one. | **Settled, 2026-11-08:** OpenGL is dropped. The backends are Vulkan (Windows, Linux, Android) and Metal (macOS, iOS). Because of decision F, the core picture must not need compute shaders, so a low-end renderer can be added later through the same interface, as Godot's is |
+| D | Does OpenGL need to stay? Vulkan covers Windows, Linux and Android, and Metal covers Apple. Unreal has dropped desktop OpenGL. Godot 4 keeps an OpenGL "Compatibility" renderer for low-end hardware beside its Vulkan one. | **Settled, 2026-11-08:** OpenGL is dropped. The backends are Vulkan (Windows, Linux, Android), Metal (macOS, iOS) and
+D3D12 (Windows, and the path to Xbox), which the maintainer added the same day. Because of decision F, the core picture must not need compute shaders, so a low-end renderer can be added later through the same interface, as Godot's is |
 | E | Must a game drop its internal register style in the same conversion as its hardware-facing code? This is code the engine never sees, so it is the game's decision, not the engine's. | Out of the engine's scope. The integration kit recommends the same pass: it touches each area once, it is what the zero-emulation rule asks, and shared register state such as `cpu` blocks a game's own use of threads. **Settled, 2026-11-08** |
 | F | What are the minimum specs? | **Settled by the maintainer, 2026-11-08:** very low for SNES games, roughly the power of a Windows 98-era computer with a programmable GPU, with higher specs only for features a game adds. So the engine must run correctly on one core, using more cores when present; its core picture and sound must fit low-end memory and need no compute shaders; and its own overhead must be small at the original resolution. Exact targets are set at stage 0, with the engine's profiler for games' own budgets |
 | G | Licence | **Settled by the maintainer, 2026-11-08:** AGPL-3.0 stays |
