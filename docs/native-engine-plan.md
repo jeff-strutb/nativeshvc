@@ -134,6 +134,29 @@ Set the minimum specs and overhead targets in decision F from that baseline.
 
 **Done when:** the branch exists, the baseline is recorded here, and the targets are set.
 
+**Baseline, 2026-11-08.** `tests/scaling_check`, one approved run, on the register-level console at `9237dd7` (tag
+`exact-console-3.0` plus documents only): Release build, GCC 16.2 (MSYS2 UCRT64), headless, no renderer, sound silent, on
+an Intel Core i7-1280P under Windows 11. Best of 5 batches of 200 frames, per frame:
+
+| Scene | Time |
+|---|---|
+| Idle | 83.1 us |
+| Display | 59.0 us |
+| NMI and joypads | 59.3 us |
+| IRQ masked | 59.6 us |
+| IRQ | 56.4 us |
+| An HDMA byte each line | 82.6 us (0.119 us a line over the display's) |
+| A frame alone, and among 100 | 55.9 us, 57.2 us |
+
+0 checks failed. Idle measured slower than display, which runs more. The cause is not known from this run: the check
+measures idle first, so a start-up effect is one possibility, but that is not established. Drawing and a sound driver are
+not included.
+
+**Proposed targets, awaiting the maintainer (decision F):** the engine's own CPU work per frame at the original resolution,
+on the game's thread, at most half of today's display figure on this machine (30 us), so that on a machine roughly 30 to 50
+times slower per core, about the power decision F names, it stays well under 2 ms of a 16.7 ms frame. That speed ratio is an
+estimate, not a measurement.
+
 ### 1. The API
 
 Write every call in section 4 as the contract, from the current feature lists and SRFX's measured use (appendix A). No register name or address appears in it.
