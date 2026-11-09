@@ -1,0 +1,28 @@
+#!/bin/sh
+# nshvc-build PLATFORM GAME_DIR: builds and packages a game for a platform.
+# PLATFORM: headless | macos | ios | windows | windows-d3d12 | linux
+# GAME_DIR holds the game's CMakeLists.txt, which calls nshvc_game().
+set -e
+[ $# -eq 2 ] || { echo "usage: nshvc-build PLATFORM GAME_DIR" >&2; exit 2; }
+platform=$1
+game=$(cd "$2" && pwd)
+root=$(cd "$(dirname "$0")/.." && pwd)
+out=$game/build/$platform
+extra=
+case $platform in
+  headless) host=null; render=none ;;
+  macos) host=macos; render=metal ;;
+  ios) host=ios; render=metal; extra="-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY" ;;
+  windows|windows-d3d12)
+    host=windows
+    render=vulkan
+    [ "$platform" = windows-d3d12 ] && render=d3d12
+    if [ "$(uname -s)" != "MINGW64_NT" ] && ! uname -s | grep -qi 'mingw\|msys'; then
+      extra="-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres"
+    fi ;;
+  linux) host=linux; render=vulkan ;;
+  *) echo "nshvc-build: no platform $platform" >&2; exit 2 ;;
+esac
+cmake -S "$game" -B "$out" -G Ninja -DCMAKE_BUILD_TYPE=Release -DNSHVC_ROOT="$root" -DNSHVC_HOST=$host -DNSHVC_RENDER=$render $extra
+cmake --build "$out"
+echo "built in $out"

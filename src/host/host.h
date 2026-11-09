@@ -36,6 +36,26 @@ void     host_thread_interactive(void);
    program runs (front/console.c's watchdog; it may end the program) */
 void     host_every(uint32_t ms, void (*fn)(void));
 
+/* ---- threads ---------------------------------------------------------------- */
+typedef struct host_thread host_thread;
+typedef struct host_mutex host_mutex;
+typedef struct host_cond host_cond;
+#define HOST_WAIT_FOREVER UINT64_MAX
+
+/* the threads this machine can run at once (at least 1) */
+uint32_t     host_cores(void);
+/* fn(arg) on a new thread; failure to make one ends the program */
+host_thread *host_thread_start(void (*fn)(void *), void *arg, const char *name);
+void         host_thread_join(host_thread *t);
+host_mutex  *host_mutex_new(void);
+void         host_mutex_lock(host_mutex *m);
+void         host_mutex_unlock(host_mutex *m);
+host_cond   *host_cond_new(void);
+void         host_cond_broadcast(host_cond *c);
+/* m held; released while waiting, for at most timeout_ns (HOST_WAIT_FOREVER:
+   no limit). May wake early, so callers re-check what they wait for. */
+void         host_cond_wait(host_cond *c, host_mutex *m, uint64_t timeout_ns);
+
 /* ---- files ------------------------------------------------------------------ */
 int         host_mkdir(const char *path);
 /* where the player's saves and settings go (made by host_init) */

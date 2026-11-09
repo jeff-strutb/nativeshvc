@@ -1,0 +1,26 @@
+#define PB_FN
+#define PB_VAR static
+#define U32 uint
+#define I32 int
+#define F32 float
+#define U_(x) uint(x)
+#define I_(x) int(x)
+#define F_(x) float(x)
+#define F_B(x) asfloat(x)
+#define D_(i) pb_db[i]
+#define T_(i) pb_tb[i]
+#define P_(x, y) pb_img.Load(int3(int(x), int(y), 0))
+StructuredBuffer<uint> pb_db : register(t0);
+StructuredBuffer<uint> pb_tb : register(t1);
+Texture2D<uint> pb_img : register(t2);
+Texture2D<uint> pb_l0 : register(t3);
+Texture2D<uint> pb_l1 : register(t4);
+Texture2D<uint> pb_l2 : register(t5);
+Texture2D<uint> pb_l3 : register(t6);
+uint pb_list_read(uint n, uint x, uint y) {
+  int3 p = int3(int(x), int(y), 0);
+  if (n == 0u) return pb_l0.Load(p);
+  if (n == 1u) return pb_l1.Load(p);
+  if (n == 2u) return pb_l2.Load(p);
+  return pb_l3.Load(p); }
+#define L_(n, x, y) pb_list_read(n, x, y)

@@ -1,7 +1,6 @@
 # The native engine's API, version 4.0 (draft)
 
-**Status: stage 1, 2026-11-08. The maintainer accepted the recommendations on its open points (section 13). Nothing here is
-built.** The plan is in `native-engine-plan.md`. Names and fields may still be refined during building, under section 11's
+**Status: built, 2026-11-08. The maintainer accepted the recommendations on its open points (section 13).** The plan is in `native-engine-plan.md`. Names and fields may still be refined during building, under section 11's
 rules once 4.0 is released.
 
 ## 0. Conventions
@@ -40,8 +39,11 @@ int nshvc_run(const nshvc_game *game, int argc, char **argv);   /* returns at ex
   game uses it to place what moved, and the engine never interpolates on its own.
 - **`draw` sets the whole picture** (sections 3 to 5). The engine takes what `draw` set when it returns, and the render
   thread draws it while the game goes on.
+- A machine too slow for `update_hz` catches up on at most 0.25 s of real time, and older time is dropped: the game runs
+  slower instead of falling further behind. Game state depends only on the updates run and their input.
 - `nshvc_updates()` returns the number of updates since `init`, and `nshvc_seconds()` returns real time, for a game that
   wants them. Using real time in game logic makes it non-deterministic, which is the game's own choice (principle 8).
+- `nshvc_quit()` ends the run once the current call to the game returns.
 
 ## 2. Threads and jobs
 
@@ -187,7 +189,7 @@ void nshvc_lines(uint32_t first, uint32_t count, nshvc_line_field field, const i
 Any field of sections 3.1 to 3.6 can change from a line on: scroll, palette entries, the fixed colour, window edges,
 brightness, layer enables, mode and the Mode 7 matrix. This replaces HDMA and raster interrupts.
 
-## 4. Images, the drawing pipeline, effects and shaders
+## 4. Images, the drawing pipeline and shaders
 
 ```c
 nshvc_image nshvc_image_create(uint32_t w, uint32_t h, nshvc_image_format f);  /* indexed or full colour */
@@ -208,12 +210,11 @@ void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);   /* smooth, or an e
 - Jobs may fill separate lists in parallel.
 
 ```c
-nshvc_effect nshvc_effect_create(nshvc_effect_kind kind, const void *settings);   /* engine effects: water, sky, haze */
 nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine's shading language, a fragment-only subset
                                                          of GLSL 4.5, compiled at build time for every backend (section 13) */
 ```
 
-A material names a texture or palette, an optional effect or shader, and its inputs. The core picture needs no shader from
+A material names a texture or palette, an optional shader, and its inputs. The core picture needs no shader from
 the game, and nothing in the core needs compute (principle 11).
 
 ## 5. Display and the window
@@ -222,6 +223,7 @@ the game, and nothing in the core needs compute (principle 11).
 nshvc_display nshvc_display_info(void);   /* window pixels, safe area, refresh rate, keyboard present */
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha);   /* the game's UI over the picture */
 void nshvc_text_input(int on);             /* the system's on-screen keyboard where there is no keyboard */
+uint32_t nshvc_text_read(char *buffer, uint32_t max);   /* what has been typed since the last read */
 void nshvc_pause(int on);                  /* the engine stops calling update; draw goes on */
 ```
 

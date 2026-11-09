@@ -1,3 +1,2 @@
-add_executable(hello hello/hello.c)
-target_link_libraries(hello PRIVATE nshvc)
-set_target_properties(hello PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples)
+include(${CMAKE_SOURCE_DIR}/cmake/NshvcGame.cmake)
+nshvc_game(hello SOURCES hello/hello.c TITLE "Hello")

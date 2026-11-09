@@ -1,85 +1,57 @@
-# nativeshvc: a native Super Nintendo for decompiled games.
+# nativeshvc: a native engine for decompiled SNES games.
 #
-#   cmake -B build -DNSHVC_HOST=macos -DNSHVC_RENDER=metal
+#   cmake -B build -DNSHVC_HOST=macos
 #   cmake --build build
 #
-# Builds the static library nshvc (the console, a host and a renderer) that a
-# game links with its C. Options:
-#   NSHVC_HOST    null (headless; the default) | macos | windows | ios | none
-#                 (none: the app supplies host.h's functions itself)
-#   NSHVC_RENDER  none or soft (the default for null: no picture; the tests
-#                 bring the reference's, tests/ref) | metal (macos, ios) |
-#                 vulkan (the default for windows) | gl
-#   NSHVC_VULKAN_INCLUDE  windows, vulkan: the folder holding vulkan/vulkan.h
-#   NSHVC_TESTS   build the tests (tests/)
-#   NSHVC_EXAMPLES build the examples (examples/)
+# Builds the static library nshvc that a game links with its C. Options:
+#   NSHVC_HOST      null (headless; the default) | macos | ios | android | windows | linux | none
+#                   (none: the app supplies host.h's functions itself)
+#   NSHVC_RENDER    none (no picture; the default with the null host) | metal | vulkan | d3d12
+#   NSHVC_EXAMPLES  build the examples (examples/)
 cmake_minimum_required(VERSION 3.16)
-project(nativeshvc VERSION 2.1.0 LANGUAGES C)
+project(nativeshvc VERSION 4.0.0 LANGUAGES C)
 
 if(APPLE)
   enable_language(OBJC)
 endif()
-if(NOT MSVC)
-  enable_language(ASM)
-endif()
 
-set(NSHVC_HOST "null" CACHE STRING "the host: null, macos, windows, ios, none")
+set(NSHVC_HOST "null" CACHE STRING "the host: null, macos, ios, windows, linux, none")
 if(APPLE AND NOT NSHVC_HOST STREQUAL "null")
   set(_render_default metal)
 elseif(WIN32)
   set(_render_default vulkan)
 else()
-  set(_render_default soft)
+  set(_render_default none)
 endif()
-set(NSHVC_RENDER "${_render_default}" CACHE STRING "the renderer: none, soft, metal, gl, vulkan")
-option(NSHVC_TESTS "build the tests" OFF)
+if(NSHVC_HOST STREQUAL "linux" OR NSHVC_HOST STREQUAL "android")
+  set(_render_default vulkan)
+endif()
+set(NSHVC_RENDER "${_render_default}" CACHE STRING "the renderer: none, metal, vulkan, d3d12")
 option(NSHVC_EXAMPLES "build the examples" OFF)
+option(NSHVC_TESTS "build the checks" OFF)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
 
 add_library(nshvc STATIC
-  src/console/bus.c
-  src/console/dma.c
-  src/console/ports.c
-  src/console/apu.c
-  src/console/coro.c
-  src/console/dispatch.c
-  src/ppu/ppu.c
-  src/dsp/mixer.c
-  src/dsp/mixer_regs.c
-  src/dsp/resample.c
-  src/front/console.c
-  src/front/input.c
-  src/front/script.c)
-# the code that links nshvc makes its work RAM and ROM accesses inline
-# (machine.h NSHVC_BUS_INLINE); nativeshvc itself makes them as calls
-target_compile_definitions(nshvc INTERFACE NSHVC_BUS_INLINE=1)
+  src/engine/loop.c
+  src/engine/jobs.c
+  src/engine/picture.c
+  src/engine/report.c
+  src/engine/sound.c
+  src/engine/input.c
+  src/engine/files.c
+  src/engine/inspect.c
+  src/dsp/resample.c)
 
 target_include_directories(nshvc
   PUBLIC include
-  PRIVATE include/nshvc src/console src/ppu src/dsp src/front src/host src/render)
+  PRIVATE src/engine src/host src/render src/dsp)
 if(NOT MSVC)
   target_compile_options(nshvc PRIVATE -Wall -fno-strict-aliasing -ffp-contract=off)
 endif()
 
-# the coroutines' switch (on Apple's platforms the architecture the build
-# targets, CMAKE_OSX_ARCHITECTURES, when one is named)
-if(NOT WIN32)
-  set(_arch "${CMAKE_SYSTEM_PROCESSOR}")
-  if(CMAKE_OSX_ARCHITECTURES)
-    set(_arch "${CMAKE_OSX_ARCHITECTURES}")
-  endif()
-  if(_arch MATCHES "arm64|aarch64|ARM64")
-    target_sources(nshvc PRIVATE src/console/coro_arm64.S)
-  elseif(_arch MATCHES "x86_64|AMD64|amd64")
-    target_sources(nshvc PRIVATE src/console/coro_x86_64.S)
-  else()
-    message(FATAL_ERROR "nativeshvc: no coroutine switch for ${_arch} (one architecture a build)")
-  endif()
-endif()
-
-# time and files
+# time, files and threads
 if(WIN32)
   target_sources(nshvc PRIVATE src/host/win32/host_win32.c)
   target_link_libraries(nshvc PUBLIC winmm)
@@ -99,10 +71,21 @@ elseif(NSHVC_HOST STREQUAL "macos")
     "-framework CoreAudio" "-framework GameController")
 elseif(NSHVC_HOST STREQUAL "ios")
   target_sources(nshvc PRIVATE src/host/ios/host_ios.m)
-  target_compile_definitions(nshvc PUBLIC NSHVC_HOST_IOS=1)
   set_source_files_properties(src/host/ios/host_ios.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  # the host keeps the process's main (UIKit's); the game's main runs on a thread of its own
+  target_compile_definitions(nshvc INTERFACE main=nshvc_game_main)
   target_link_libraries(nshvc PUBLIC "-framework UIKit" "-framework CoreGraphics" "-framework QuartzCore"
     "-framework AudioToolbox" "-framework AVFoundation" "-framework GameController")
+elseif(NSHVC_HOST STREQUAL "android")
+  add_library(nshvc_glue STATIC ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
+  target_include_directories(nshvc_glue PUBLIC ${ANDROID_NDK}/sources/android/native_app_glue)
+  target_sources(nshvc PRIVATE src/host/android/host_android.c)
+  # the activity keeps its own thread; the game's main runs on a thread of its own
+  target_compile_definitions(nshvc INTERFACE main=nshvc_game_main)
+  target_link_libraries(nshvc PUBLIC nshvc_glue android log aaudio dl "-u ANativeActivity_onCreate")
+elseif(NSHVC_HOST STREQUAL "linux")
+  target_sources(nshvc PRIVATE src/host/linux/host_linux.c)
+  target_link_libraries(nshvc PUBLIC dl)
 elseif(NSHVC_HOST STREQUAL "windows")
   target_sources(nshvc PRIVATE src/host/windows/host_windows.c)
   target_link_libraries(nshvc PUBLIC ole32 uuid xinput9_1_0 shell32 gdi32 user32)
@@ -110,46 +93,33 @@ elseif(NOT NSHVC_HOST STREQUAL "none")
   message(FATAL_ERROR "nativeshvc: no host ${NSHVC_HOST}")
 endif()
 
-# the compositor's source (src/render/compose_body.h) as a string, for the
-# backends that compile it at run time
-set(_cp_src ${CMAKE_CURRENT_BINARY_DIR}/gen/rr_compose_src.h)
-add_custom_command(OUTPUT ${_cp_src}
-  COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/src/render/compose_body.h -DOUT=${_cp_src}
-    -DNAME=k_compose_body -P ${CMAKE_CURRENT_SOURCE_DIR}/src/render/embed.cmake
-  DEPENDS src/render/compose_body.h src/render/embed.cmake)
-target_sources(nshvc PRIVATE ${_cp_src})
+# the picture's rules as a string, for the backends that compile at run time
+set(_pb_src ${CMAKE_CURRENT_BINARY_DIR}/gen/rr_picture_src.h)
+add_custom_command(OUTPUT ${_pb_src}
+  COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/src/render/picture_body.h -DOUT=${_pb_src}
+    -DNAME=k_picture_body -P ${CMAKE_CURRENT_SOURCE_DIR}/src/render/embed.cmake
+  DEPENDS src/render/picture_body.h src/render/embed.cmake)
+target_sources(nshvc PRIVATE ${_pb_src})
 target_include_directories(nshvc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen)
 
 # the renderer
-if(NSHVC_RENDER STREQUAL "soft" OR NSHVC_RENDER STREQUAL "none")
+if(NSHVC_RENDER STREQUAL "none")
   target_sources(nshvc PRIVATE src/render/none/rr_none.c)
+elseif(NSHVC_RENDER STREQUAL "vulkan")
+  target_sources(nshvc PRIVATE src/render/vulkan/rr_vulkan.c)
+  set(NSHVC_VULKAN_INCLUDE "" CACHE PATH "the folder holding vulkan/vulkan.h")
+  if(NSHVC_VULKAN_INCLUDE)
+    target_compile_options(nshvc PRIVATE -idirafter "${NSHVC_VULKAN_INCLUDE}")
+  endif()
+  target_include_directories(nshvc PRIVATE src/render/vulkan)
+elseif(NSHVC_RENDER STREQUAL "d3d12")
+  target_sources(nshvc PRIVATE src/render/d3d12/rr_d3d12.c)
+  target_include_directories(nshvc PRIVATE src/render/d3d12)
+  target_link_libraries(nshvc PUBLIC d3d12 dxgi dxguid)
 elseif(NSHVC_RENDER STREQUAL "metal")
   target_sources(nshvc PRIVATE src/render/metal/rr_metal.m)
   set_source_files_properties(src/render/metal/rr_metal.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(nshvc PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation")
-elseif(NSHVC_RENDER STREQUAL "gl")
-  target_sources(nshvc PRIVATE src/render/gl/rr_gl.c src/render/gl/gl_ctx.c)
-  if(WIN32)
-    target_link_libraries(nshvc PUBLIC opengl32 gdi32)
-  elseif(APPLE)
-    target_link_libraries(nshvc PUBLIC "-framework OpenGL")
-  else()
-    target_link_libraries(nshvc PUBLIC GL)
-  endif()
-elseif(NSHVC_RENDER STREQUAL "vulkan")
-  target_sources(nshvc PRIVATE src/render/vulkan/rr_vulkan.c)
-  if(WIN32)
-    # vulkan-1.dll is loaded when the renderer opens: its headers alone, looked in
-    # last so a cross compiler keeps its own system headers
-    set(NSHVC_VULKAN_INCLUDE "" CACHE PATH "the folder holding vulkan/vulkan.h")
-    if(NSHVC_VULKAN_INCLUDE)
-      target_compile_options(nshvc PRIVATE -idirafter "${NSHVC_VULKAN_INCLUDE}")
-    endif()
-    target_link_libraries(nshvc PUBLIC gdi32)
-  else()
-    find_package(Vulkan REQUIRED)
-    target_link_libraries(nshvc PUBLIC Vulkan::Vulkan)
-  endif()
 else()
   message(FATAL_ERROR "nativeshvc: no renderer ${NSHVC_RENDER}")
 endif()

@@ -1,35 +1,24 @@
 # The native engine: architecture and plan
 
-**Status: proposed, 2026-11-08, awaiting the maintainer's approval and decisions A to G in section 9.
-
-**Pending edits by the maintainer.** Three agreed changes are not yet applied, because the edit check cannot see the
-maintainer's approval. Until they are applied, the text below contradicts section 4 in these places:
-
-1. Principle 8: same input gives the same state on the same platform. What the game introduces itself is its own
-   responsibility, and identical results across platforms are not promised, as in Unity or Unreal.
-2. Stage 7's "Done when": a test game's saves write and read back natively on every host, and its packaged data loads on
-   every platform. Save states are removed.
-3. Stage 14's "Done when": the engine's overhead meets decision F's targets on every minimum-spec machine, and the profiling
-   tools work on every platform. Nothing here is built
-or run.** The evidence it rests on is in appendix A.
+**Status: decisions A to G settled; approved and under way (the maintainer, 2026-11-08).** The evidence the plan rests on is in appendix A.
 
 ## Where the work stands (2026-11-08)
 
-For anyone picking this up on another machine:
+The engine is built for every platform named in decision C. What has and has not been run:
 
-- **Stages 0 and 1 are done.** The tag `exact-console-3.0` (on `main` at `1c66ebb`) is pushed.
-  The baseline and the 30 us target are in stage 0. The API is `docs/api.md`, and its open points are settled.
-- **Next is stage 2:** loop, time and threads. It is the first stage that writes engine code and deletes old code.
-- **Four edits wait for the maintainer:** the status line above, principle 8, and the "Done when" of stages 7 and 14.
-  The note at the top lists the wording for three of them. The status line should say the decisions are settled and the
-  plan awaits approval.
-- **An edit-review hook on the maintainer's machine** refuses changes it reads as weakening a stated standard, and it cannot
-  see approvals given in chat. Expect it to block stage 2's deletions. Stop and ask the maintainer each time; never work
-  around it.
-- **The rules stand as on the maintainer's machine:** no test run, push or network access without the maintainer's typed
-  approval for that one action, with its length stated first; no trial and error; no attribution in commits.
-- **Build on Windows:** MSYS2 UCRT64 with GCC, CMake and Ninja, configured with
-  `cmake -S . -B build/win-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DNSHVC_HOST=null -DNSHVC_RENDER=none -DNSHVC_TESTS=ON`.
+- **Run and passing on Metal (macOS):** 36 feature scenes matching bsnes byte for byte, and shown able to fail (`tests/scenes/scenes.py`);
+  the window pass at 1x and 3x; draw lists, the exact fill, a game shader, overlays, saves, input replay and jobs
+  (`tests/scenes/feature.c`); update rate and identical state in headless, real-time and windowed runs; a macOS window.
+- **Sound** matches the old mixer, itself held to bsnes, on 320,400 samples of random voice calls with mixed samples. With
+  looping samples only, 161 samples differ, not fully explained. The comparison was a one-off, because that mixer is removed.
+- **Speed:** at most 7.9 us of engine work a picture on an Apple M4 Pro, against the 30 us target, which was set on another machine.
+- **Run and passing on Vulkan:** the 36 scenes and the feature game through MoltenVK on macOS, and on Mesa's software driver in a Linux VM,
+  with the X11 host running a window there.
+- **Compiled, not run:** D3D12 past device creation (Wine's own D3D12 cannot read DXIL), the Windows and Android hosts, and input from real devices.
+- **Not done:** Android packaging (the SDK's licence must be accepted first). `dxc` must be built or installed where `tools/nshvc-shaders`
+  and `src/render/d3d12/build.sh` run; Homebrew has none.
+- **Rules:** see the maintainer's standing instructions.
+- **Build on Windows:** MSYS2 UCRT64 with GCC, CMake and Ninja; `tools/nshvc-build windows path/to/game`.
 
 ## 1. What nativeshvc is
 
@@ -67,7 +56,8 @@ for every platform it supports.
 6. **No console speed.** Time is real time and the game's chosen update rate.
 7. **No modes.** The SNES's limits are settings a game chooses.
 8. **Threads by design.** Work passes between threads as finished results and messages, with no shared clock. The same input
-   always gives the same game state. This is how the engine always works, not a mode.
+   gives the same state on the same platform. What the game introduces itself is its own responsibility, and identical
+   results across platforms are not promised, as in Unity or Unreal. This is how the engine always works, not a mode.
 9. **The GPU makes every pixel.**
 10. **Any platform with a programmable GPU can be added cleanly,** through one host interface and one renderer interface.
 11. **Low specs first.** The engine runs correctly on one core, using more when present. Its core picture and sound need no
@@ -82,7 +72,7 @@ for every platform it supports.
 | **Picture** | Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, interlace, direct colour, offset-per-tile; any screen size; more layer and sprite space; high-resolution art; the SNES's limits as settings | PPU registers, VRAM ports, the line record, the extensions |
 | **Per-line changes** | A table of values by line, with an optional split at a column | HDMA, raster interrupts, mid-line writes |
 | **Drawing pipeline** | The way a game's chip work reaches the screen: polygons, lines and images, drawn on the GPU at the resolution the game chooses, with an exact-span fill for original-looking polygons. Composed with the rest of the picture like a layer | The chip connector, the lent GPU device, GPU canvases and handles |
-| **Effects and shaders** | Engine effects such as water, sky and haze, and games' own shaders in one engine shading language (decision B), compiled by the engine for every backend | Games' own per-platform shaders |
+| **Shaders** | Games' own shaders in one engine shading language (decision B), compiled by the engine for every backend. Effects the SNES did not have, such as water, are the game's, written in that language | Games' own per-platform shaders |
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
 | **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
 | **Input** | The game declares its controls. The engine maps every keyboard, controller, mouse and touch screen to them, adds on-screen controls where needed, and names each control as it is labelled. Joypad, mouse, multitap and light gun as native inputs | Ports, latches, bit protocols, each game's touch code |
@@ -188,7 +178,7 @@ stability rules are written; and the maintainer has reviewed both.
 ### 2. Loop, time and threads
 
 **Build:** the loop, the two rates (the game's update and its draw, as section 4 defines them), interpolation (the draw
-told how far it is between updates), the threads and job pool, and the deterministic mode, which is always on (principle 8).
+told how far it is between updates), the threads and job pool, and determinism, which is how it always works (principle 8).
 
 **Delete:** `bus.c`, `dma.c`, `dispatch.c`, `coro.c` and its assembly, `jump.h`, `wide.h`, `snes.h`, `snes_internal.h`,
 `machine.h`, `spc.h`, `cart.h`, `hw.h`, the cost profile and `tools/nshvc-profile`.
@@ -213,16 +203,15 @@ faster is decided here, by measuring.
 **Done when:** no code in `src` makes a picture pixel on the CPU, the display cannot hold up the game, and every feature scene
 matches bsnes's picture on every backend (Vulkan, Metal and D3D12).
 
-### 4. Drawing pipeline and effects
+### 4. Drawing pipeline and shaders
 
-**Build:** the drawing pipeline in section 4, the engine's effects, and the shading language (decision B) and its
+**Build:** the drawing pipeline in section 4 and the shading language (decision B) and its
 compilers for every backend. Lists are built with jobs and drawn on the
 GPU on every backend.
 
 **Delete:** the lent GPU device, GPU canvases, and overlay handles.
 
-**Done when:** test scenes match their definition on every backend (Vulkan, Metal and D3D12) with no CPU pixel, and a recorded SRFX frame's
-polygons (stage 10) fill identically to the original's bitmap.
+**Done when:** test scenes match their definition on every backend (Vulkan, Metal and D3D12) with no CPU pixel.
 
 ### 5. Sound
 
@@ -243,14 +232,13 @@ thread at its chosen rate with no platform code; and the audio thread never wait
 
 **Done when:** a game with no platform or device code plays with every device on every host.
 
-### 7. Saves, states and game data
+### 7. Saves and game data
 
 **Build:** everything in section 4's saves and game data rows.
 
-**Delete:** battery RAM mapping, `fork` and replay states, and the ROM reading in `nshvc_cart`.
+**Delete:** battery RAM mapping, `fork` and replay states, and the ROM reading in `nshvc_cart`. Save states are removed.
 
-**Done when:** saves and states restore identical game state on every host, with the music resuming exactly where it was,
-and a test game loads its data on every platform in the form decision G sets.
+**Done when:** a test game's saves write and read back natively on every host, and its packaged data loads on every platform.
 
 ### 8. Hosts
 
@@ -271,9 +259,6 @@ deleted above.
 **Build:**
 
 - Each feature scene through the API, against bsnes running the same scene as a test ROM.
-- A recorder that saves SRFX's picture state, voice events and polygons per frame from `sfxbox`, as plain data.
-- A replay of those recordings through the API, compared with bsnes's pictures and sound. It is test code, never in a game's
-  build.
 
 Each check is shown able to fail first.
 
@@ -310,15 +295,15 @@ voice's sample, pitch and envelope, on every platform.
 
 Measure release-build speed per thread on each platform. Audit `src` against principles 1 to 11.
 
-**Done when:** the audit is clean, the numbers meet decision H's targets on every reference machine, and the maintainer approves
-the merge.
+**Done when:** the audit is clean, the engine's overhead meets decision F's targets on every minimum-spec machine, the profiling
+tools work on every platform, and the maintainer approves the merge.
 
 ## 9. Decisions needed
 
 | # | Question | Recommendation |
 |---|---|---|
 | A | Does the engine own the loop? Unity (`Update`, `FixedUpdate`), Unreal (`Tick`) and Godot (`_process`, `_physics_process`) all own the main loop and call the game. | **Settled, 2026-11-08:** yes, as they do |
-| B | May games write GPU programs? Unity, Unreal and Godot all let games write shaders, but only in the engine's own shading language or material system, which the engine compiles for each platform's GPU. A game never writes per-platform GPU code. | **Settled, 2026-11-08:** yes, the same way: one engine shading language, compiled by the engine for every backend. The SNES picture and effects such as water stay engine features as well |
+| B | May games write GPU programs? Unity, Unreal and Godot all let games write shaders, but only in the engine's own shading language or material system, which the engine compiles for each platform's GPU. A game never writes per-platform GPU code. | **Settled, 2026-11-08:** yes, the same way: one engine shading language, compiled by the engine for every backend. The SNES picture stays an engine feature. Effects the SNES did not have, such as water, are the game's (the maintainer, 2026-11-08) |
 | C | Which platforms? | **Settled by the maintainer, 2026-11-08:** Windows, macOS, Linux, iOS and Android first, plus headless for checks. Any platform with a programmable GPU must be cleanly addable, including Xbox, PlayStation and Switch, through one host and renderer interface. This is an architectural requirement; console SDKs being under NDA, with their backends kept privately as Godot's are, is accepted |
 | D | Does OpenGL need to stay? Vulkan covers Windows, Linux and Android, and Metal covers Apple. Unreal has dropped desktop OpenGL. Godot 4 keeps an OpenGL "Compatibility" renderer for low-end hardware beside its Vulkan one. | **Settled, 2026-11-08:** OpenGL is dropped. The backends are Vulkan (Windows, Linux, Android), Metal (macOS, iOS) and
 D3D12 (Windows, and the path to Xbox), which the maintainer added the same day. Because of decision F, the core picture must not need compute shaders, so a low-end renderer can be added later through the same interface, as Godot's is |
@@ -333,14 +318,16 @@ is the game's concern, not the engine's.
 
 SRFX gets its own branch, with a plan of its own, only after stage 13. Its record, the assembly and the proven C, stays
 untouched, and the native game is converted from it. Where SRFX keeps that code is its own decision. It is not playable on the engine
-until its conversion is complete enough, so that plan sets out how each area is checked before then. Its conversion is the
+until its conversion is complete enough, so that plan sets out how each area is checked before then, including recording
+SRFX's picture state, voice events and polygons and comparing their replay with bsnes (moved from stage 10 by the maintainer,
+2026-11-08). Its conversion is the
 first full use of the integration kit.
 
 ## 11. What is not known
 
 - Whether the API covers a real game before one runs on it.
 - Whether the voice calls cover every game's sound driver. SRFX's drivers are the first test, and their data has not been read.
-- How much the threads gain, until stage 13.
+- How much the threads gain, until stage 14.
 - How much of a game's logic can split across threads. That is game work, after this plan.
 - How much of a conversion the tools can automate.
 - The size of the work. No duration is claimed.

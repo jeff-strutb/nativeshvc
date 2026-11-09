@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""nshvc-find-hardware [DIR ...]: lists every hardware touch in a decompiled
+game's C: register and bus access, DMA, interrupts, waits, sound ports and the
+register-style state, with the engine call that replaces each."""
+import os, re, sys
+
+PATTERNS = [
+    (r'\b(rd8|rd16|rd24|wr8|wr16)\s*\(', 'bus access', 'plain data; a register address maps by docs/conversion-guide.md'),
+    (r'\b(INIDISP|OBSEL|BGMODE|MOSAIC|BG[1-4]SC|BG[1-4][HV]OFS|M7[A-DXY]|M7SEL|TM|TS|TMW|TSW|CGWSEL|CGADSUB|COLDATA|SETINI|W[1-4]2?SEL|WH[0-3])\b', 'picture register', 'nshvc_layer_set, nshvc_mode7_set, nshvc_windows_set, nshvc_blend_set'),
+    (r'\b(VMADD[LH]?|VMDAT[LH]?|VMAIN|CGADD|CGDATA|OAMADD[LH]?|OAMDATA)\b', 'video memory port', 'nshvc_tiles_write, nshvc_map_write, nshvc_palette_write, nshvc_sprites_set'),
+    (r'\b(MDMAEN|HDMAEN|DMAP\d|BBAD\d|A1T\d|A1B\d|DAS\d|DMA_|HDMA_)', 'DMA or HDMA', 'an object write, or nshvc_lines for a table by line'),
+    (r'\b(NMITIMEN|RDNMI|TIMEUP|HTIME[LH]?|VTIME[LH]?|cpu_wai|nshvc_wait_\w+)\b', 'interrupt or wait', 'work in update or draw; a raster effect is nshvc_line_from'),
+    (r'\b(JOY[1-4][LH]|JOYSER[01]|HVBJOY)\b', 'joypad', 'the nshvc_input given to update'),
+    (r'\b(APUIO[0-3]|spc_rd|spc_wr|spc_wait_\w+)\b', 'sound port', 'nshvc_music_send to the game\'s music code'),
+    (r'\bcpu\.[a-zA-Z_]\w*', 'register file', 'ordinary C locals and arguments'),
+    (r'\babi_\w+\s*\(', 'register-convention routine', 'a C function with plain arguments'),
+    (r'\bop_\w+\s*\(', 'instruction helper', 'ordinary C'),
+    (r'\b(call_routine|jump_routine|nshvc_cart|nshvc_chip)\b', 'console connector', 'nshvc_game; chip work feeds a draw list'),
+]
+RX = [(re.compile(p), kind, to) for p, kind, to in PATTERNS]
+
+def main():
+    roots = sys.argv[1:] or ['.']
+    totals = {}
+    for root in roots:
+        for d, _, names in os.walk(root):
+            for n in sorted(names):
+                if not n.endswith(('.c', '.h', '.cc', '.cpp')):
+                    continue
+                path = os.path.join(d, n)
+                with open(path, errors='replace') as f:
+                    for no, line in enumerate(f, 1):
+                        for rx, kind, to in RX:
+                            if rx.search(line):
+                                totals[kind] = totals.get(kind, 0) + 1
+                                print(f'{path}:{no}: {kind}: {line.strip()[:100]}  -> {to}')
+    print('\ntotals:')
+    for kind, count in sorted(totals.items(), key=lambda kv: -kv[1]):
+        print(f'  {count:8d}  {kind}')
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

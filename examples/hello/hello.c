@@ -1,70 +1,55 @@
 /*
- * hello.c: the smallest cartridge for nativeshvc, as a decompilation would
- * describe one: its code as C against the machine model (machine.h), its
- * routines by address, its ROM, and nshvc_main. It shows a colour, and B
- * held on controller 1 changes it: everything through the console's
- * registers, as a game's code reaches them.
+ * hello.c: the smallest game on the engine. Its state advances by a job for
+ * each cell, once per update, and its final state is printed at exit: the same
+ * number of updates gives the same state however the threads ran.
  *
- *   hello                    a window
- *   hello --headless --frames 60 --script SCRIPT --out DIR
+ *   hello                          real time, until the window closes
+ *   hello --headless --updates N   N updates as fast as they run
  */
+#include <inttypes.h>
+#include <stdio.h>
+
 #include "nshvc/nshvc.h"
-#include "nshvc/machine.h"
-#include "nshvc/hw.h"
 
-/* The NMI: each frame, the backdrop's colour from the buttons the joypads'
-   automatic read took (B held: red, else blue). */
-static void abi_nmi(void)
+#define CELLS 256
+static uint32_t cells[CELLS];
+static uint64_t pictures;
+
+static void step_cell(void *context, uint32_t index)
 {
-    uint8_t hi;
-    rd8(0x004210);                   /* the NMI flag read, as a handler does */
-    hi = rd8(JOY1L + 1);             /* $4219: B Y SELECT START up down left right */
-    wr8(CGADD, 0);
-    if (hi & 0x80) {                 /* B */
-        wr8(CGDATA, 0x1F);
-        wr8(CGDATA, 0x00);
-    } else {
-        wr8(CGDATA, 0x00);
-        wr8(CGDATA, 0x7C);
-    }
+    (void)context;
+    cells[index] = cells[index] * 2654435761u + index + 1u;
 }
 
-/* The reset: the screen on, the NMI and the joypads' automatic read on,
-   then the CPU waits for interrupts for ever. */
-static void abi_reset(void)
+static void update(const nshvc_input *input)
 {
-    cpu.e = 0;
-    wr8(INIDISP, 0x80);
-    wr8(CGADD, 0);
-    wr8(CGDATA, 0x00);
-    wr8(CGDATA, 0x7C);
-    wr8(TM, 0x00);
-    wr8(INIDISP, 0x0F);
-    wr8(0x004200, 0x81);             /* NMITIMEN: the NMI, the joypads' read */
-    for (;;)
-        cpu_wai(0x008010);
+    (void)input;
+    nshvc_jobs(step_cell, NULL, CELLS);
 }
 
-/* The ROM: only its vectors (the code is the C). Native NMI at $FFEA,
-   reset at $FFFC. */
-static uint8_t rom[0x8000];
-static const nshvc_routine routines[] = {
-    { 0x008000, abi_reset, "Reset", 0 },
-    { 0x008020, abi_nmi, "Nmi", 0 },
-};
-
-NSHVC_MAIN(argc, argv)
+static void draw(float between)
 {
-    static nshvc_cart cart;
-    rom[0x7FFC] = 0x00;
-    rom[0x7FFD] = 0x80;
-    rom[0x7FEA] = 0x20;
-    rom[0x7FEB] = 0x80;
-    cart.title = "Hello";
-    cart.map = NSHVC_LOROM;
-    cart.rom = rom;
-    cart.rom_size = sizeof rom;
-    cart.routines = routines;
-    cart.routine_count = 2;
-    return nshvc_main(&cart, argc, argv);
+    (void)between;
+    pictures++;                 /* not game state: it depends on the display */
+}
+
+static void shutdown(void)
+{
+    uint64_t hash = 14695981039346656037ull;
+    uint32_t i;
+    for (i = 0; i < CELLS; i++)
+        hash = (hash ^ cells[i]) * 1099511628211ull;
+    printf("updates %" PRIu64 " pictures %" PRIu64 " state %016" PRIx64 "\n", nshvc_updates(), pictures, hash);
+}
+
+int main(int argc, char **argv)
+{
+    static nshvc_game game;
+    game.title = "Hello";
+    game.id = "hello";
+    game.update_hz = 60;
+    game.update = update;
+    game.draw = draw;
+    game.shutdown = shutdown;
+    return nshvc_run(&game, argc, argv);
 }

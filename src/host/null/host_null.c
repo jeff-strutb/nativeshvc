@@ -40,6 +40,28 @@ void host_init(int argc, char **argv)
 
 void host_shutdown(void) {}
 
+#ifndef _WIN32
+#include <dlfcn.h>
+/* Vulkan with no window: the system's loader, or MoltenVK directly on macOS */
+void *host_vulkan_loader(void)
+{
+    static const char *const names[] = { "libvulkan.so.1", "libvulkan.1.dylib", "libMoltenVK.dylib", "/opt/homebrew/lib/libMoltenVK.dylib" };
+    size_t i;
+    for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+        void *h = dlopen(names[i], RTLD_NOW);
+        void *f = h ? dlsym(h, "vkGetInstanceProcAddr") : NULL;
+        if (f)
+            return f;
+    }
+    return NULL;
+}
+#else
+void *host_vulkan_loader(void) { return NULL; }
+#endif
+
+/* no window, so no display (rr_vulkan.c's surface on Linux) */
+void *host_x11_display(void) { return NULL; }
+
 const char *host_resource_dir(void)
 {
     const char *e = getenv("PORT_RESDIR");
