@@ -4,9 +4,8 @@
  *
  * The game keeps its own loop on the main thread, so this host never runs a
  * message loop of its own: host_poll_event drains the real queue. Frames
- * are drawn on the window by the renderer (render/gl or render/vulkan,
- * host_window_handle), or arrive as ARGB pixels through host_present (the
- * software renderer), shown scaled with StretchDIBits.
+ * are drawn on the window by the renderer (render/vulkan or render/d3d12,
+ * host_window_handle).
  *
  *   keys      a key message's virtual key; Alt+Enter and F11 switch the
  *             window between full screen and a window (the game never
@@ -400,47 +399,6 @@ void host_window_pixels(int *w, int *h)
         *w = r.right - r.left;
         *h = r.bottom - r.top;
     }
-}
-
-void host_present(const uint32_t *argb, int w, int h, float aspect)
-{
-    BITMAPINFO bi;
-    RECT r;
-    HDC dc;
-    int dw, dh, ox, oy;
-    if (!s_win || !argb)
-        return;
-    if (aspect <= 0)
-        aspect = (float)w / (float)h;
-    memset(&bi, 0, sizeof bi);
-    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;        /* top row first */
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    GetClientRect(s_win, &r);
-    /* letterboxed at the picture's shape */
-    dw = r.right;
-    dh = (int)(r.right / aspect + 0.5f);
-    if (dh > r.bottom) {
-        dh = r.bottom;
-        dw = (int)(r.bottom * aspect + 0.5f);
-    }
-    ox = (r.right - dw) / 2;
-    oy = (r.bottom - dh) / 2;
-    dc = GetDC(s_win);
-    if (ox > 0) {
-        PatBlt(dc, 0, 0, ox, r.bottom, BLACKNESS);
-        PatBlt(dc, ox + dw, 0, r.right - ox - dw, r.bottom, BLACKNESS);
-    }
-    if (oy > 0) {
-        PatBlt(dc, 0, 0, r.right, oy, BLACKNESS);
-        PatBlt(dc, 0, oy + dh, r.right, r.bottom - oy - dh, BLACKNESS);
-    }
-    SetStretchBltMode(dc, COLORONCOLOR);
-    StretchDIBits(dc, ox, oy, dw, dh, 0, 0, w, h, argb, &bi, DIB_RGB_COLORS, SRCCOPY);
-    ReleaseDC(s_win, dc);
 }
 
 /* a close waiting in the queue (render/gl's wait while its shaders are made) */

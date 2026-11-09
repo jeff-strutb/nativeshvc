@@ -12,8 +12,7 @@
  * background.
  *
  * Frames are drawn by the renderer (render/metal) into the view's
- * CAMetalLayer (host_metal_layer), one drawable pixel per screen pixel, or
- * arrive as ARGB pixels through host_present (the software renderer).
+ * CAMetalLayer (host_metal_layer), one drawable pixel per screen pixel.
  *
  *   touch     every touch, as it lands, moves and lifts (HOST_EV_TOUCH):
  *             what it means is the game's; the view's safe area
@@ -361,7 +360,6 @@ void host_safe_area(float *l, float *t, float *r, float *b)
 static PortView *s_view;
 static PortTouch *s_controls;
 static CAMetalLayer *s_layer;
-static CALayer *s_pic;
 static _Atomic int s_pw, s_ph;        /* the drawable's size in pixels */
 static _Atomic float s_ptw, s_pth;    /* the view's in points */
 
@@ -616,43 +614,6 @@ void host_window_points(float *w, float *h)
 /* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the view, at
    the shape `aspect` (width over height), centred in the largest
    rectangle of that shape the view holds */
-void host_present(const uint32_t *argb, int w, int h, float aspect)
-{
-    NSData *d;
-    if (!s_view || !argb)
-        return;
-    if (aspect <= 0)
-        aspect = (float)w / (float)h;
-    d = [NSData dataWithBytes:argb length:(NSUInteger)w * (NSUInteger)h * 4];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
-        CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
-        CGImageRef img = CGImageCreate((size_t)w, (size_t)h, 8, 32, (size_t)w * 4, rgb,
-                                       kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst, dp, NULL, false,
-                                       kCGRenderingIntentDefault);
-        CGRect b = s_view.bounds;
-        CGFloat fw = b.size.width, fh = b.size.height;
-        if (fh > 0 && fw / fh > aspect)
-            fw = floor(fh * aspect + 0.5);
-        else
-            fh = floor(fw / aspect + 0.5);
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        if (!s_pic) {
-            s_pic = [CALayer layer];
-            s_pic.magnificationFilter = kCAFilterNearest;
-            s_pic.contentsGravity = kCAGravityResize;
-            [s_view.layer insertSublayer:s_pic atIndex:0];
-        }
-        s_pic.frame = CGRectMake(floor((b.size.width - fw) / 2), floor((b.size.height - fh) / 2), fw, fh);
-        s_pic.contents = (__bridge id)img;
-        [CATransaction commit];
-        CGImageRelease(img);
-        CGDataProviderRelease(dp);
-        CGColorSpaceRelease(rgb);
-    });
-}
-
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {
     uint64_t until = host_ticks_ns() + (uint64_t)wait_ms * 1000000ull;

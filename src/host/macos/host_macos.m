@@ -5,8 +5,7 @@
  * [NSApp run]: each host_poll_event drains Cocoa's queue itself. Frames
  * are drawn by the renderer (render/metal or render/vulkan) into the
  * view's CAMetalLayer (host_metal_layer), one drawable pixel per
- * window pixel; or arrive as ARGB pixels through host_present (the software
- * renderer) and are shown as the view's layer contents.
+ * window pixel.
  *
  * PORT_SAVEDIR names the save folder (default ~/Library/Application
  * Support/<app>); PORT_NOACTIVATE=1 opens the window without taking the
@@ -369,48 +368,6 @@ void host_window_points(float *w, float *h)
    the shape `aspect` (width over height): drawn into the largest rectangle
    of that shape the view holds, centred; the window takes any shape the
    player gives it, the rest black */
-static CALayer *s_pic;
-
-void host_present(const uint32_t *argb, int w, int h, float aspect)
-{
-    @autoreleasepool {
-        CGDataProviderRef dp;
-        CGImageRef img;
-        NSData *d;
-        NSRect b;
-        CGFloat fw, fh;
-        if (!s_view || !argb)
-            return;
-        if (aspect <= 0)
-            aspect = (float)w / (float)h;
-        d = [NSData dataWithBytes:argb length:(NSUInteger)w * (NSUInteger)h * 4];
-        dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)d);
-        img = CGImageCreate((size_t)w, (size_t)h, 8, 32, (size_t)w * 4, s_rgb,
-                            kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst,
-                            dp, NULL, false, kCGRenderingIntentDefault);
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        if (!s_pic) {
-            s_pic = [CALayer layer];
-            [s_pic setMagnificationFilter:kCAFilterNearest];
-            [s_pic setContentsGravity:kCAGravityResize];
-            [[s_view layer] addSublayer:s_pic];
-        }
-        b = [s_view bounds];
-        fw = b.size.width;
-        fh = b.size.height;
-        if (fh > 0 && fw / fh > aspect)
-            fw = floor(fh * aspect + 0.5);
-        else
-            fh = floor(fw / aspect + 0.5);
-        [s_pic setFrame:CGRectMake(floor((b.size.width - fw) / 2), floor((b.size.height - fh) / 2), fw, fh)];
-        [s_pic setContentsScale:[s_win backingScaleFactor]];
-        [s_pic setContents:(__bridge id)img];
-        [CATransaction commit];
-        CGImageRelease(img);
-        CGDataProviderRelease(dp);
-    }
-}
 
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {

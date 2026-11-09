@@ -88,14 +88,6 @@ void host_window_points(float *w, float *h) { *w = *h = 0; }
 void *host_win32_instance(void) { return NULL; }
 #endif
 
-void host_present(const uint32_t *argb, int w, int h, float aspect)
-{
-    (void)argb;
-    (void)w;
-    (void)h;
-    (void)aspect;
-}
-
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {
     (void)ev;

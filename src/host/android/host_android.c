@@ -293,7 +293,6 @@ void host_window_points(float *w, float *h)
     *h = (float)b;
 }
 
-void host_present(const uint32_t *a, int w, int h, float s) { (void)a; (void)w; (void)h; (void)s; }
 void host_message_box(const char *text, const char *caption) { __android_log_print(ANDROID_LOG_ERROR, "nativeshvc", "%s: %s", caption ? caption : "", text ? text : ""); }
 void host_safe_area(float *l, float *t, float *r, float *b) { *l = *t = *r = *b = 0; }
 void host_text_input(int on)

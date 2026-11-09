@@ -1,9 +1,9 @@
 # NshvcGame.cmake: one call turns a game's sources into a package for the
 # platform being built.
 #
-#   nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data ICON icon.png TITLE "My Game")
+#   nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data SHADERS shaders ICON icon.png TITLE "My Game")
 function(nshvc_game target)
-  cmake_parse_arguments(G "" "ASSETS;ICON;TITLE" "SOURCES" ${ARGN})
+  cmake_parse_arguments(G "" "ASSETS;SHADERS;ICON;TITLE" "SOURCES" ${ARGN})
   if(NOT G_TITLE)
     set(G_TITLE ${target})
   endif()
@@ -62,5 +62,9 @@ function(nshvc_game target)
   if(G_ASSETS)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/${G_ASSETS} ${_where})
+  endif()
+  if(G_SHADERS)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/nshvc-shaders ${CMAKE_CURRENT_SOURCE_DIR}/${G_SHADERS} ${_where}/shaders)
   endif()
 endfunction()

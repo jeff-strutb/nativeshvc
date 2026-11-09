@@ -153,7 +153,6 @@ void *host_window_handle(void) { return (void *)win; }
 void *host_x11_display(void) { return dpy; }
 void host_window_pixels(int *w, int *h) { *w = win_w; *h = win_h; }
 void host_window_points(float *w, float *h) { *w = (float)win_w; *h = (float)win_h; }
-void host_present(const uint32_t *a, int w, int h, float s) { (void)a; (void)w; (void)h; (void)s; }
 void host_message_box(const char *text, const char *caption) { fprintf(stderr, "%s: %s\n", caption ? caption : "message", text ? text : ""); }
 void host_safe_area(float *l, float *t, float *r, float *b) { *l = *t = *r = *b = 0; }
 void host_text_input(int on) { (void)on; }

@@ -23,6 +23,7 @@ case $platform in
     [ "$platform" = windows-d3d12 ] && render=d3d12
     if [ "$(uname -s)" != "MINGW64_NT" ] && ! uname -s | grep -qi 'mingw\|msys'; then
       extra="-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres"
+      command -v brew >/dev/null && extra="$extra -DNSHVC_VULKAN_INCLUDE=$(brew --prefix)/include"
     fi ;;
   linux) host=linux; render=vulkan ;;
   android)

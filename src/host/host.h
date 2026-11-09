@@ -1,7 +1,6 @@
 /* host.h: what each operating system supplies under a native port.
  *
- * nativeshvc (the console and its front end) is written once, for every
- * OS, against this small interface. Each OS implements only this:
+ * The engine is written once, for every OS, against this small interface. Each OS implements only this:
  *
  *   host/posix    time, files (macOS, Linux, iOS)
  *   host/win32    the same on Windows
@@ -32,9 +31,6 @@ void     host_sleep_ms(uint32_t ms);
 /* the calling thread keeps time for the game (paces frames): ask the OS to
    wake it on time (no timer coalescing) */
 void     host_thread_interactive(void);
-/* fn called every ms milliseconds, on a thread of its own, for as long as the
-   program runs (front/console.c's watchdog; it may end the program) */
-void     host_every(uint32_t ms, void (*fn)(void));
 
 /* ---- threads ---------------------------------------------------------------- */
 typedef struct host_thread host_thread;
@@ -89,7 +85,7 @@ int  host_window_open(int width, int height, const char *title);
 void host_window_close(void);
 /* 1 while any of the window can be seen (not minimised, hidden or covered) */
 int  host_window_visible(void);
-/* the window for a renderer that draws on it itself (ports/common/render):
+/* the window the renderer draws on:
    the OS's handle (a CAMetalLayer on macOS and iOS, an HWND on Windows; NULL
    without a window) and its drawable size in pixels */
 void *host_window_handle(void);
@@ -100,10 +96,6 @@ void host_window_points(float *w, float *h);
 /* the next event, waiting up to wait_ms for one; 1 if *ev was filled */
 int  host_poll_event(host_event *ev, uint32_t wait_ms);
 void host_message_box(const char *text, const char *caption);
-/* a finished picture of ARGB pixels (0xAARRGGBB), top row first, shown
-   scaled to the window; aspect is the shape it is shown at (width over
-   height: 4/3 for a television's picture) */
-void host_present(const uint32_t *argb, int w, int h, float aspect);
 
 /* ---- audio out ------------------------------------------------------------------ */
 /* the callback fills frames of interleaved stereo float, from the host's

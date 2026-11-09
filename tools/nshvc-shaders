@@ -63,7 +63,8 @@ def main():
                 sys.exit('nshvc-shaders: dxc is not installed: the D3D12 shaders cannot be built')
             hlsl = os.path.join(tmp, name + '.hlsl')
             with open(hlsl, 'w') as f:
-                f.write(run('spirv-cross', spv, '--hlsl', '--shader-model', '60'))
+                # the engine's vertex stage outputs the position first: the pixel stage's inputs must line up with it
+                f.write(run('spirv-cross', spv, '--hlsl', '--shader-model', '60').replace('struct SPIRV_Cross_Input\n{\n', 'struct SPIRV_Cross_Input\n{\n    float4 nshvc_position : SV_Position;\n', 1))
             run(dxc, '-T', 'ps_6_0', '-E', 'main', '-Fo', os.path.join(out, name + '.dxil'), hlsl)
 
 if __name__ == '__main__':

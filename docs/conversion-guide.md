@@ -57,8 +57,10 @@ cmake_minimum_required(VERSION 3.20)
 project(mygame C)
 add_subdirectory(${NSHVC_ROOT} nshvc)
 include(${NSHVC_ROOT}/cmake/NshvcGame.cmake)
-nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data TITLE "My Game")
+nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data SHADERS shaders TITLE "My Game")
 ```
+
+Building a game with shaders needs `glslangValidator`, `spirv-cross` and `dxc` on the build machine.
 
 Then run this, or name `ios`, `android`, `windows`, `windows-d3d12` or `linux` instead:
 
@@ -75,3 +77,9 @@ game --headless --updates 600 --input inputs.txt --sound out.raw
 ```
 
 `inputs.txt` has one line per change: the update number, then each pad's buttons in hex.
+
+`tools/nshvc-check` does the comparison: it plays the ROM in bsnes and the game headless with the same `inputs.txt`, and compares chosen frames pixel by pixel and, with `--sound`, the sound sample by sample:
+
+```bash
+tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom game.sfc --game "build/game" --input inputs.txt --at 60,600,1800 --sound
+```

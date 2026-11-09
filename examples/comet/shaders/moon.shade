@@ -1,0 +1,4 @@
+vec4 shade(vec2 uv) {
+    vec4 c = nshvc_image(ivec2(uv));
+    return vec4(c.rgb * nshvc_input(0), c.a);
+}

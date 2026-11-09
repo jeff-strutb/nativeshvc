@@ -33,28 +33,6 @@ void host_thread_interactive(void)
 #endif
 }
 
-static uint32_t s_every_ms;
-static void (*s_every)(void);
-
-static void *every_thread(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        host_sleep_ms(s_every_ms);
-        s_every();
-    }
-    return NULL;
-}
-
-void host_every(uint32_t ms, void (*fn)(void))
-{
-    pthread_t t;
-    s_every_ms = ms;
-    s_every = fn;
-    if (pthread_create(&t, NULL, every_thread, NULL) == 0)
-        pthread_detach(t);
-}
-
 int host_mkdir(const char *path) { return mkdir(path, 0755) == 0 || errno == EEXIST; }
 
 /* ---- threads ---- */

@@ -402,6 +402,8 @@ int rr_draw(eng_packet *p)
             Code ps = { p->shaders[k].code, p->shaders[k].size };
             game_pso[p->shaders[k].id][0] = pso_v(CODE(k_list_vs), ps, DXGI_FORMAT_R32_UINT, 1, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
             game_pso[p->shaders[k].id][1] = pso_v(CODE(k_list_vs), ps, DXGI_FORMAT_R32_UINT, 1, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
+            if (!game_pso[p->shaders[k].id][0] || !game_pso[p->shaders[k].id][1])
+                fprintf(stderr, "rr: d3d12: shader %u could not be made\n", p->shaders[k].id);
         }
     }
     if (store.size < sb) {
