@@ -2,7 +2,9 @@
 
 A complete game running natively on the engine: a converted copy of [zelda3](https://github.com/snesrev/zelda3), a decompilation of The Legend of Zelda: A Link to the Past in about 80,000 lines of C. It is here as a proven example of what a game looks like on nativeshvc, and how it uses the API.
 
-![The title screen](../../docs/images/zelda3-title.png)
+| Original 4:3 | Widescreen 16:9 |
+|---|---|
+| ![The title screen](../../docs/images/zelda3-title.png) | ![The game outdoors at 16:9](../../docs/images/zelda3-widescreen.png) |
 
 ## Credit
 
