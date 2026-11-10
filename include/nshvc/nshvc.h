@@ -198,9 +198,11 @@ typedef enum {
 typedef enum { NSHVC_IMAGE_INDEXED, NSHVC_IMAGE_RGBA } nshvc_image_format;
 
 typedef struct nshvc_screen {
-    int32_t width, height;      /* any size; 0: the original's 256 x 224 */
+    int32_t width, height;      /* any size, the game's to set; 0: the original's 256 x 224 */
     int32_t origin_x, origin_y; /* where the original's 256 x 224 sits in it */
-    uint8_t overscan;
+    uint8_t overscan;           /* lets the console's 239 lines be shown: what the original's limits and a layer
+                                   kept to its size cover; it does not change `height`, which a game that shows
+                                   239 lines sets to 239 */
     uint8_t interlace;          /* fields woven: each picture draws one field's half-rows and keeps the other's
                                    from the picture before; modes 5 and 6 show their layers' rows twice as fine */
     uint8_t brightness;         /* 0-15 */

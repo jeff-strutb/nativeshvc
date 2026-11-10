@@ -6,6 +6,7 @@ layout(location = 1) in vec2 v_p;
 layout(location = 0) out vec4 o;
 void main()
 {
+    vec2 hh = nshvc_half(v_p);    /* before anything discards */
     int prow = row_palette(v_p), kind = u.i[6].x, bpp = u.i[3].x;
     uint c = v_e.x, pal = v_e.y;
     vec3 col;
@@ -19,5 +20,5 @@ void main()
         col = palette(pal * 16u + c, prow);
     else
         col = palette(uint(u.i[3].y) + pal * 4u + c, prow);
-    o = nshvc_maths(col, u.f[3].x, v_p);
+    o = nshvc_maths(col, u.f[3].x, v_p, hh);
 }

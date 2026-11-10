@@ -34,7 +34,7 @@ void main()
         float hx = float(c * 8 + 4) - sc.x * float(sx);
         int col = int(floor((hx + float(fine)) / float(optw)));
         if (col > 0) {
-            int w3 = u.i[4].x, h3 = u.i[4].y, x3 = u.i[4].z, y3 = u.i[4].w, bit = u.i[5].x, nsx = sx, nsy = sy;
+            int w3 = u.i[4].x, h3 = u.i[4].y, x3 = u.i[4].z, y3 = u.i[4].w, bit = u.i[5].x, nsy = sy, look = -1;
             int bx = imod(((col - 1) * 8 + (x3 & ~7)) >> 3, w3);
             uint hv = texelFetch(ti2, ivec2(bx, imod(y3 >> 3, h3)), 0).r;
             if (u.i[3].w == 2) {
@@ -42,16 +42,21 @@ void main()
                     if (((hv >> 21) & 1u) != 0u)
                         nsy = int(hv & 0x3FFu);
                     else
-                        nsx = (sx & 7) | int(hv & 0x3F8u);
+                        look = int(hv & 0x3F8u);
                 }
             } else {
                 uint vv = texelFetch(ti2, ivec2(bx, imod((y3 + 8) >> 3, h3)), 0).r;
                 if (((hv >> bit) & 1u) != 0u)
-                    nsx = (sx & 7) | int(hv & 0x3F8u);
+                    look = int(hv & 0x3F8u);
                 if (((vv >> bit) & 1u) != 0u)
                     nsy = int(vv & 0x3FFu);
             }
-            cc = c + (nsx - sx) * int(sc.x) / 8;
+            /* the looked-up offset replaces the scroll's whole characters, as the console takes it
+               (fetchNameTable: hoffset = pixel + (lookup & ~7) + (scroll & 7)): the lookup in the layer's
+               own pixels (a hires layer's, not doubled), the scroll doubled where the layer is hires,
+               so a character's shift is their difference in eights of a pixel; the scroll's fine part stays */
+            if (look >= 0)
+                cc = c + (look - ((sx * int(sc.x)) & ~7)) / 8;
             offy += float(nsy - sy);
         }
     }

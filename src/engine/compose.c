@@ -208,7 +208,8 @@ static float depth_of(int z) { return (float)(16 - z) / 16.0f; }
 static int hires_of(const eng_state *s) { return s->hires || s->m == 5 || s->m == 6; }
 static int maths_of(const eng_state *s) { return (s->b.layers & 63) != 0; }
 static int need_sub(const eng_state *s) { return !s->blank && maths_of(s) && !s->b.use_fixed; }
-static int need_aux(const eng_state *s) { return need_sub(s) && hires_of(s); }
+/* the main screen alone is read on a hires row for the even half-columns' partners and flags, so also with the fixed colour */
+static int need_aux(const eng_state *s) { return !s->blank && maths_of(s) && hires_of(s); }
 
 static void colour_of(uint32_t bgra, float *c)
 {
@@ -224,7 +225,7 @@ enum {
     V_MAIN,     /* the main screen, into the frame (odd half-columns on a hires row) */
     V_SUBM,     /* the sub screen, into the frame's even half-columns on a hires row */
     V_SUB,      /* the sub screen, into extra target 0, for the colour maths */
-    V_AUX       /* the main screen, into extra target 1, for a hires row's even half-columns' colour maths */
+    V_AUX       /* the main screen, into extra target 1: on a hires row an even half-column's partner and flag (alpha: whether its layer takes part in the maths) */
 };
 
 typedef struct { int view, n; } Ctx;
@@ -246,11 +247,13 @@ static int view_on(int v, const eng_state *s)
 
 static int enabled(const nshvc_layer *l, int v) { return sub_screen(v) ? l->enabled_sub != 0 : l->enabled_main != 0; }
 
-/* the alpha a layer (0-3 BG, 4 sprites, 5 backdrop) writes: in the frame,
-   1 if it takes part in the colour maths; elsewhere 1, that a layer is there */
+/* the alpha a layer (0-3 BG, 4 sprites, 5 backdrop) writes: in the frame and
+   in the aux target, 1 if it takes part in the colour maths (the aux's is read
+   for a hires row's even half-columns); in the sub screen's, 1, that a layer
+   is there */
 static float flag_of(int v, const eng_state *s, int bit)
 {
-    if (!in_frame(v))
+    if (v == V_SUB)
         return 1.0f;
     return (s->b.layers >> bit) & 1 ? 1.0f : 0.0f;
 }
@@ -275,7 +278,7 @@ static int32_t colour_word(int v, const eng_state *s)
     if (!in_frame(v) || s->blank)
         return 0;
     return 1 | (maths && b->subtract) << 1 | (maths && b->half) << 2 | (maths && b->use_fixed) << 3 | maths << 4 | (b->clip & 3) << 5 |
-           (maths ? (b->prevent & 3) : 0) << 7 | (15 - (s->bright & 15)) << 9 | (v == V_SUBM) << 13 | uses_cwin(s) << 14;
+           (maths ? (b->prevent & 3) : 0) << 7 | (15 - (s->bright & 15)) << 9 | (v == V_SUBM) << 13 | uses_cwin(s) << 14 | (hires_of(s) != 0) << 15;
 }
 
 /* the fixed colour a draw's maths reads, 15-bit BGR */
@@ -296,11 +299,11 @@ static void colour_set(rr_uniform *u, rr_cmd *d, int v, const eng_state *s)
 {
     u->f[1][2] = (float)colour_word(v, s);     /* small whole numbers, exact as floats */
     u->f[1][3] = (float)colour_fixed(v, s);
-    if (in_frame(v) && !s->blank && maths_of(s) && !s->b.use_fixed) {
+    if (in_frame(v) && !s->blank && maths_of(s)) {
         if (v == V_SUBM)
-            d->tex[10] = RR_TEX_EXTRA1;
-        else
-            d->tex[9] = RR_TEX_EXTRA0;
+            d->tex[10] = RR_TEX_EXTRA1;     /* the previous dot's main pixel and flag */
+        if (!s->b.use_fixed)
+            d->tex[9] = RR_TEX_EXTRA0;      /* the sub screen: the partner, or the previous dot's transparency */
     }
 }
 
@@ -619,7 +622,9 @@ static void emit_stripes(const Ctx *c, const eng_state *s, int x0, int y0, int x
 /* ---- the backdrop ---- */
 static uint32_t backdrop_colour(int v, const eng_state *s)
 {
-    if (in_frame(v))
+    /* the main screen's backdrop is palette colour 0 (the aux target holds the main screen: the partner a hires row's
+       even half-column takes is its colour, backdrop included); the sub screen's is the fixed colour */
+    if (in_frame(v) || v == V_AUX)
         return pal0(s);
     {
         uint32_t f = s->b.fixed_bgr15, r = f & 31, g = (f >> 5) & 31, b = (f >> 10) & 31;
@@ -647,7 +652,7 @@ static void emit_backdrop(const Ctx *c, const eng_state *s, int x0, int y0, int 
         return;
     d = fill((float)x0, (float)y0, (float)x1, (float)y1, &u);
     colour_of(backdrop_colour(v, s), u->f[3]);
-    u->f[3][3] = in_frame(v) ? flag_of(v, s, 5) : 0.0f;
+    u->f[3][3] = v == V_SUB ? 0.0f : flag_of(v, s, 5);     /* the sub screen's backdrop is no layer */
     u->f[4][0] = depth_of(0);
     colour_set(u, d, v, s);
     d->depth = RR_DEPTH_LEQUAL;
@@ -1412,7 +1417,7 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         d = draw(P_SPRITES, &u);
         rect_of(u, box[0], box[1], box[2], box[3]);
         u->f[3][0] = flag_of(v, s, 4);
-        u->f[3][1] = in_frame(v) ? 0.0f : 1.0f;
+        u->f[3][1] = v == V_SUB ? 1.0f : 0.0f;
         for (p = 0; p < 4; p++)
             u->f[4][p] = depth_of(zobj(s->m, p));
         u->i[0][0] = (int32_t)(pieces_at + runs[k].first * 8);

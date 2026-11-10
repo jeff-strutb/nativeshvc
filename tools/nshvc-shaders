@@ -57,11 +57,12 @@ float nshvc_input(int i) { return nshvc_u.f[4 + i / 4][i % 4]; }
 '''
 POST = '''
 void main() {
+    vec2 hh = nshvc_half(nshvc_p);     /* before anything discards */
     vec4 c = shade(nshvc_uv);
     int n = int(clamp(c.a, 0.0, 1.0) * nshvc_u.f[0].z + 0.5);
     if (n <= 0) discard;
     gl_SampleMask[0] = n >= 31 ? -1 : int((1u << uint(n)) - 1u);
-    nshvc_out = nshvc_maths(clamp(c.rgb, 0.0, 1.0), nshvc_u.f[3].x, nshvc_p);
+    nshvc_out = nshvc_maths(clamp(c.rgb, 0.0, 1.0), nshvc_u.f[3].x, nshvc_p, hh);
 }
 '''
 

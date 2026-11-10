@@ -119,6 +119,7 @@ static void draw(float between)
         char *sp = strchr(lines_of[i], ' ');
         int v[512];
         char cmd[16];
+        memset(v, 0, sizeof v);
         size_t l = (size_t)(sp - lines_of[i]);
         memcpy(cmd, lines_of[i], l);
         cmd[l] = 0;
@@ -130,6 +131,10 @@ static void draw(float between)
                 s.aspect = (float)atof(getenv("SCENE_ASPECT"));
             s.brightness = (uint8_t)v[0];
             s.interlace = (uint8_t)v[1];
+            s.blank = (uint8_t)v[2];
+            s.overscan = (uint8_t)v[3];
+            if (s.overscan)
+                s.height = 239;         /* the height is the game's to set: overscan lets the console's 239 lines be shown */
             nshvc_screen_set(&s);
         } else if (!strcmp(cmd, "mode")) {
             nshvc_mode_set((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2]);

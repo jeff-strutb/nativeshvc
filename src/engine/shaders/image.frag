@@ -6,6 +6,7 @@ layout(location = 1) in vec2 v_p;
 layout(location = 0) out vec4 o;
 void main()
 {
+    vec2 hh = nshvc_half(v_p);    /* before anything discards */
     ivec2 k, last = u.i[0].xy - 1;
     vec2 w;
     vec4 acc = vec4(0.0);
@@ -30,5 +31,5 @@ void main()
     if (m == 0)
         discard;
     gl_SampleMask[0] = m;
-    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p);
+    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p, hh);
 }

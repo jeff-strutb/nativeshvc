@@ -95,9 +95,11 @@ the screen.
 
 ```c
 typedef struct nshvc_screen {
-    int32_t width, height;      /* any size; 256 x 224 the original's */
+    int32_t width, height;      /* any size, the game's to set; 0: the original's 256 x 224 */
     int32_t origin_x, origin_y; /* where the original's 256 x 224 sits in it, for layers that wrap */
-    uint8_t overscan;           /* 239 lines in place of 224, as the SNES's setting */
+    uint8_t overscan;           /* lets the console's 239 lines be shown, as the SNES's setting: what the original's
+                                   limits and a layer kept to its size cover; it does not change `height`, which a game
+                                   that shows 239 lines sets to 239 */
     uint8_t interlace;          /* fields woven: each picture draws one field's half-rows, keeping the other's */
     uint8_t brightness;         /* 0-15, the SNES's */
     uint8_t blank;              /* the screen black */

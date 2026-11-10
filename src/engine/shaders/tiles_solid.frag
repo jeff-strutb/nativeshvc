@@ -12,6 +12,7 @@ layout(location = 0) out vec4 o;
 
 void main()
 {
+    vec2 hh = nshvc_half(v_p);    /* before anything discards */
     int s = 8 * u.i[2].x, cols = u.i[2].y, prow = row_palette(v_p);
     ivec2 k;
     vec2 w;
@@ -26,5 +27,5 @@ void main()
             uint c = tile_texel(v_e.x, q.x, q.y, s, cols);
             acc += vec4(colour(c, v_e.y, prow) * wt, wt);
         }
-    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p);
+    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p, hh);
 }

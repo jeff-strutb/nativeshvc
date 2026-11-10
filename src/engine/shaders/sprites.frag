@@ -7,6 +7,7 @@ layout(location = 2) in vec2 v_p;
 layout(location = 0) out vec4 o;
 void main()
 {
+    vec2 hh = nshvc_half(v_p);    /* before anything discards */
     int tpp = u.i[0].z, s = 8 * tpp, cols = u.i[0].y, prow = row_palette(v_p);
     uint n = v_s.x, tile = n & 0xFFFFu, pal = (n >> 16) & 7u;
     ivec2 last = ivec2(int(v_s.y & 0xFFFFu), int(v_s.y >> 16)) * s - 1;
@@ -30,5 +31,5 @@ void main()
     if (m == 0)
         discard;
     gl_SampleMask[0] = m;
-    o = nshvc_maths(acc.rgb / acc.a, pal >= 4u ? u.f[3].x : u.f[3].y, v_p);
+    o = nshvc_maths(acc.rgb / acc.a, pal >= 4u ? u.f[3].x : u.f[3].y, v_p, hh);
 }

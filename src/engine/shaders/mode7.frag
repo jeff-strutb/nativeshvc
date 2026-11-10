@@ -57,6 +57,7 @@ vec4 filtered(vec2 t, vec2 dx, vec2 dy)
 
 void main()
 {
+    vec2 hh = nshvc_half(v_p);    /* before anything discards */
     ivec2 k;
     /* the footprint: across, from this row's matrix; down, by the true step between rows */
     vec2 w, extra = row_step(v_p) - vec2(u.f[4].y, u.f[5].y);
@@ -90,5 +91,5 @@ void main()
     if (m == 0)
         discard;
     gl_SampleMask[0] = m;
-    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p);
+    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p, hh);
 }

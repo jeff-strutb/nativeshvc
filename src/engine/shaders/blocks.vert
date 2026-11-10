@@ -35,7 +35,7 @@ void main()
             int optw = hires != 0 ? 16 : 8, fine = hires != 0 ? ((sx << 1) & 7) : (sx & 7);
             int col = fdiv(lx - sxs * sx + fine, optw);
             if (col > 0) {
-                int w3 = u.i[4].x, h3 = u.i[4].y, x3 = u.i[4].z, y3 = u.i[4].w, bit = u.i[5].x, nsx = sx, nsy = sy;
+                int w3 = u.i[4].x, h3 = u.i[4].y, x3 = u.i[4].z, y3 = u.i[4].w, bit = u.i[5].x, nsy = sy, look = -1;
                 int obx = imod(((col - 1) * 8 + (x3 & ~7)) >> 3, w3);
                 uint hv = texelFetch(ti2, ivec2(obx, imod(y3 >> 3, h3)), 0).r;
                 if (u.i[3].w == 2) {
@@ -43,16 +43,17 @@ void main()
                         if (((hv >> 21) & 1u) != 0u)
                             nsy = int(hv & 0x3FFu);
                         else
-                            nsx = (sx & 7) | int(hv & 0x3F8u);
+                            look = int(hv & 0x3F8u);
                     }
                 } else {
                     uint vv = texelFetch(ti2, ivec2(obx, imod((y3 + 8) >> 3, h3)), 0).r;
                     if (((hv >> bit) & 1u) != 0u)
-                        nsx = (sx & 7) | int(hv & 0x3F8u);
+                        look = int(hv & 0x3F8u);
                     if (((vv >> bit) & 1u) != 0u)
                         nsy = int(vv & 0x3FFu);
                 }
-                lx += sxs * (nsx - sx);
+                if (look >= 0)
+                    lx += look - ((sx * sxs) & ~7);     /* as tiles.vert: the lookup replaces the scroll's whole characters */
                 ly += nsy - sy;
             }
         }

@@ -12,6 +12,7 @@ layout(location = 0) out vec4 o;
 
 void main()
 {
+    vec2 hh = nshvc_half(v_p);    /* before anything discards */
     int s = 8 * u.i[2].x, cols = u.i[2].y, prow = row_palette(v_p);
     ivec2 k;
     vec2 w;
@@ -31,5 +32,5 @@ void main()
     if (m == 0)
         discard;
     gl_SampleMask[0] = m;
-    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p);
+    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p, hh);
 }
