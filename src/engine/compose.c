@@ -36,6 +36,7 @@
 #include <string.h>
 
 #include "engine.h"
+#include "host.h"
 #include "picture.h"
 #include "shaders/programs.h"
 
@@ -917,8 +918,7 @@ static void m7_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int kind)
     d->depth = RR_DEPTH_LEQUAL;
 }
 
-static int tint_textures(const eng_state *s, int kind, uint32_t *plane, uint32_t *tile0, int32_t *corr);
-static uint32_t cov_plane, cov_tile0;
+static int m7_filtered(const eng_state *s, int kind, rr_cmd *d);
 
 static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
 {
@@ -955,23 +955,14 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
         for (k = n ? 2 : 1; k <= (n ? 3 : 1); k++) {
             rr_uniform *u;
             rr_cmd *d = draw(P_MODE7, &u);
-            uint32_t plane, tile0;
-            int32_t corr;
+            int layer;
             m7_affine(u, s, y0);
             m7_steps(u, s, x0, y0, y1);
             m7_fields(u, d, s, k);
-            u->i[7][1] = -1;
-            if (tint_textures(s, k, &plane, &tile0, &corr)) {
-                /* where it is drawn smaller than its texels: the plane in colour, filtered, with this row's corrections */
-                u->i[7][0] = 1;
-                u->i[7][1] = corr;
-                d->tex[1] = (int32_t)plane;
-                d->tex[2] = (int32_t)tile0;
-                if (corr >= 0) {
-                    d->tex[6] = (int32_t)cov_plane;
-                    d->tex[7] = (int32_t)cov_tile0;
-                }
-            }
+            /* where it is drawn smaller than its texels: the plane in colour, filtered */
+            layer = m7_filtered(s, k, d);
+            u->i[7][0] = layer > -2;
+            u->i[7][1] = layer > -2 ? layer : -1;
             rect_of(u, (float)a, (float)b, (float)e, (float)f);
             u->f[3][0] = flag_of(v, s, n);
             u->f[3][1] = depth_of(n ? 1 : 3);
@@ -1469,33 +1460,45 @@ static void plane_pass(void)
     pass_end();
 }
 
-/* Where Mode 7's plane is drawn smaller than its texels, it is filtered along
-   each pixel's footprint between its levels. Levels finer than M7_STORED are
-   worked out from the plane itself in the row's own palette where they are
-   drawn; from M7_STORED down they are kept. For each of BG1 (kind 1) and
-   BG2's two priorities (2, 3), the plane in colour (and its tile 0, for the
-   outside) is kept from that level down, in the palette most of the rows
-   drawing it have, made again only when the plane, its tiles or that palette
-   change. A row whose palette differs adds its differences: for each plane
-   value whose colour differs, the difference times how much of the footprint
-   has that value, read from coverage layers filtered the same way, so the
-   result is exact. Coverage depends on the plane alone, so it is made once
-   for each plane value that needs it until the plane changes: at most 255
-   values, four a layer, however the palettes change.
+/* Where Mode 7's plane is drawn smaller than its texels, the GPU filters it
+   along each pixel's footprint (anisotropic, linear between texels and
+   levels): one read of the plane in colour, full size with every smaller
+   level. For each of BG1 (kind 1) and BG2's two priorities (2, 3) the base is
+   the plane, and its tile 0 for the outside, in the palette most of the rows
+   drawing it have. A row whose palette gives a plane value another colour
+   reads the plane in its own palette instead. The four such palettes whose
+   rows are nearest (the fewest texels a window pixel, of those drawn smaller
+   than their texels) have it full size, so they are exact. Past those, each
+   has the plane in its palette at a quarter's side (256 x 256), and the row
+   reads the base plus that minus the base at the same size: exact wherever a
+   pixel spans four texels or more, and nearer only the difference's finest
+   detail is lost. Tile 0 (8 x 8) is kept whole in every palette. Each plane
+   is kept by what it shows, made again only when the plane, its tiles or
+   that palette change.
 
-   Memory, whatever the palettes do: the plane (1024 x 1024, a byte a texel:
-   1 MB); the three planes in colour, 256 x 256 BGRA with their smaller levels
-   (about 349 KB each); the coverage, at most 64 such layers (about 22.4 MB);
-   tile 0's are 2 x 2. At most about 24.5 MB in all. */
-#define M7_KEPT (1024 >> M7_STORED)     /* the kept plane's side */
-#define M7_KEPT0 (8 >> M7_STORED)       /* the kept tile 0's */
-typedef struct { uint32_t key[6], plane, tile0; int32_t colours[256]; int made; } Base;
-static Base bases[3];
-static int base_pal[3];             /* by kind: the palette version the base was made with this frame, or -1 */
-static uint32_t cov_key[3];
-static int cov_layers, cov_n, cov_slot[256], cov_value[256], cov_dirty[64];
-static int32_t *corr_at;            /* by palette version and kind: its corrections' first word, or -1 */
-static size_t cap_corr_at;
+   Memory: the plane (1024 x 1024, a byte a texel: 1 MB); the three bases and
+   the four full-size planes (1024 x 1024 BGRA with smaller levels, about
+   5.6 MB each: 16.8 MB and 22.4 MB); the quarter-size planes in arrays of at
+   most 64 layers (about 349 KB each, the first three of each array the
+   bases at that size), 22.4 MB for the first 61 such palettes in a picture,
+   an array more for each 61 past those. Tile 0's are 8 x 8. */
+#define M7_FULL 4           /* full-size planes for palettes other than the bases' */
+#define M7_SMALL 256        /* the side of the planes past those */
+#define M7_LAYERS 64        /* an array's layers at most: the bases at that size, then palettes */
+
+/* what a plane in colour shows: kind, direct colour, the plane's version,
+   its tiles and their writes; then each plane value's colour */
+typedef struct { uint32_t key[5]; int32_t colours[256]; } Look;
+typedef struct { Look look; uint32_t plane, tile0; uint8_t made, ok, claimed; } Full;
+typedef struct { uint32_t plane, tile0; int layers; Look look[M7_LAYERS]; uint8_t ok[M7_LAYERS], claimed[M7_LAYERS]; } Small;
+typedef struct { const eng_state *s; int kind; double rank; int32_t place; Look look; } Want;
+static Full bases[3], fulls[M7_FULL];
+static Small **smalls;
+static size_t nsmalls, cap_smalls;
+static int base_on[3];              /* by kind: whether its base was drawn this frame */
+static int32_t *m7_use;             /* by palette version and kind: 0 the base, 1 + n full plane n, else M7_SMALLS + array * M7_LAYERS + layer */
+static size_t cap_use;
+#define M7_SMALLS (1 + M7_FULL)
 
 /* plane value t's colour in kind's palette, as 0xRRGGBB, or -1 where see-through */
 static int32_t m7_colour(const eng_state *s, int kind, int t)
@@ -1516,14 +1519,104 @@ static int32_t m7_colour(const eng_state *s, int kind, int t)
     return (int32_t)(pal[t & 0x7F] & 0xFFFFFFu);
 }
 
-/* whether two states give every plane value the same colour in kind */
-static int m7_same(const eng_state *a, const eng_state *b, int kind)
+static void look_of(Look *l, const eng_state *s, int kind)
 {
     int t;
+    l->key[0] = (uint32_t)kind;
+    l->key[1] = (uint32_t)(kind == 1 && s->l[0].direct_colour);
+    l->key[2] = plane_version;
+    l->key[3] = s->m7.tiles.id;
+    l->key[4] = eng_tiles_of[s->m7.tiles.id].gen;
     for (t = 0; t < 256; t++)
-        if (m7_colour(a, kind, t) != m7_colour(b, kind, t))
-            return 0;
-    return 1;
+        l->colours[t] = m7_colour(s, kind, t);
+}
+
+static int look_eq(const Look *a, const Look *b) { return !memcmp(a, b, sizeof *a); }
+
+/* the plane (source 0) or its tile 0 (1) in s's palette for kind, into tex
+   (its layer `layer` if an array, else -1), size texels a side */
+static void tint_pass(uint32_t tex, int size, int source, int layer, const eng_state *s, int kind)
+{
+    const eng_tiles *t = &eng_tiles_of[s->m7.tiles.id];
+    rr_uniform *u;
+    rr_cmd *d;
+    pass_begin(RR_TARGET_TEXTURE, tex);
+    if (layer >= 0)
+        F->passes[F->npasses - 1].layer = (uint32_t)layer;
+    F->passes[F->npasses - 1].mips = 1;
+    d = draw(P_TINT, &u);
+    u->f[1][0] = (float)size;
+    u->f[1][1] = (float)size;
+    u->i[0][0] = source;
+    u->i[0][1] = (int32_t)t->tpp;
+    u->i[0][2] = source ? 1 : 1024 / size;  /* each texel the mean of these a side of the plane's */
+    u->i[2][3] = s->pal;
+    u->i[3][2] = kind == 1 && s->l[0].direct_colour;
+    u->i[6][0] = kind;
+    d->tex[0] = (int32_t)P->palette_tex;
+    d->tex[3] = (int32_t)plane_tex;
+    d->tex[4] = (int32_t)t->tex;
+    d->space = RR_SPACE_TARGET;
+    pass_end();
+}
+
+/* a full-size plane and its tile 0 made to show l, s's palette for kind */
+static void full_make(Full *f, const eng_state *s, int kind, const Look *l)
+{
+    if (!f->made) {
+        f->plane = eng_texture_id();
+        f->tile0 = eng_texture_id();
+        eng_texture_create(F, f->plane, 1024, 1024, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
+        eng_texture_create(F, f->tile0, 8, 8, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
+        f->made = 1;
+    }
+    f->look = *l;
+    f->ok = 1;
+    tint_pass(f->plane, 1024, 0, -1, s, kind);
+    tint_pass(f->tile0, 8, 1, -1, s, kind);
+}
+
+/* array a (re)made with `layers` layers: what its layers showed is gone */
+static void small_size(Small *a, int layers)
+{
+    if (!a->plane) {
+        a->plane = eng_texture_id();
+        a->tile0 = eng_texture_id();
+    }
+    eng_texture_array(F, a->plane, M7_SMALL, M7_SMALL, (uint32_t)layers, RR_TEX_TARGET | RR_TEX_MIPS);
+    eng_texture_array(F, a->tile0, 8, 8, (uint32_t)layers, RR_TEX_TARGET | RR_TEX_MIPS);
+    a->layers = layers;
+    memset(a->ok, 0, sizeof a->ok);
+}
+
+static int m7_drawn(const eng_state *s, int kind)
+{
+    if (!uses_m7(s) || s->l[0].mosaic > 1)
+        return 0;
+    return kind == 1 ? s->l[0].enabled_main || s->l[0].enabled_sub : s->m7.extbg && (s->l[1].enabled_main || s->l[1].enabled_sub);
+}
+
+/* the most texels a window pixel spans at row r, columns x0-x1, for state s:
+   across, by its matrix; down, to the next row by that row's matrix; sx, sy
+   window pixels a picture pixel */
+static double m7_reach(const eng_state *s, int r, int x0, int x1, double sx, double sy)
+{
+    double t[6], n[6], x = (x0 + x1) * 0.5, ax, ay, dx, dy;
+    const eng_state *o = r + 1 < P->h ? state_at(r + 1, (int)x) : NULL;
+    m7_coeffs(s, r, t);
+    ax = t[0];
+    ay = t[3];
+    if (o && o->m == 7 && !o->blank && m7_valid(o)) {
+        m7_coeffs(o, r + 1, n);
+        dx = n[0] * x + n[1] * (r + 1.5) + n[2] - (t[0] * x + t[1] * (r + 0.5) + t[2]);
+        dy = n[3] * x + n[4] * (r + 1.5) + n[5] - (t[3] * x + t[4] * (r + 0.5) + t[5]);
+    } else {
+        dx = t[1];
+        dy = t[4];
+    }
+    ax = sqrt(ax * ax + ay * ay) / sx;
+    dx = sqrt(dx * dx + dy * dy) / sy;
+    return ax > dx ? ax : dx;
 }
 
 static uint32_t m7_hash(const eng_state *s, int kind)
@@ -1535,125 +1628,102 @@ static uint32_t m7_hash(const eng_state *s, int kind)
     return h;
 }
 
-static void tint_pass(uint32_t tex, int size, int source, const eng_state *s, int kind)
+/* whether two states give every plane value the same colour in kind */
+static int m7_same(const eng_state *a, const eng_state *b, int kind)
 {
-    const eng_tiles *t = &eng_tiles_of[s->m7.tiles.id];
-    rr_uniform *u;
-    rr_cmd *d;
-    pass_begin(RR_TARGET_TEXTURE, tex);
-    F->passes[F->npasses - 1].mips = 1;
-    d = draw(P_TINT, &u);
-    u->f[1][0] = (float)size;
-    u->f[1][1] = (float)size;
-    u->i[0][0] = source;
-    u->i[0][1] = (int32_t)t->tpp;
-    u->i[0][2] = 1 << M7_STORED;            /* each texel the mean of these a side of the plane's */
-    u->i[2][3] = s->pal;
-    u->i[3][2] = kind == 1 && s->l[0].direct_colour;
-    u->i[6][0] = kind;
-    d->tex[0] = (int32_t)P->palette_tex;
-    d->tex[3] = (int32_t)plane_tex;
-    d->tex[4] = (int32_t)t->tex;
-    d->space = RR_SPACE_TARGET;
-    pass_end();
-}
-
-static void cover_pass(uint32_t tex, int size, int source, int layer, const eng_state *s)
-{
-    rr_uniform *u;
-    rr_cmd *d;
-    int k;
-    pass_begin(RR_TARGET_TEXTURE, tex);
-    F->passes[F->npasses - 1].layer = (uint32_t)layer;
-    F->passes[F->npasses - 1].mips = 1;
-    d = draw(P_COVER, &u);
-    u->f[1][0] = (float)size;
-    u->f[1][1] = (float)size;
-    u->i[0][0] = source;
-    u->i[0][1] = (int32_t)eng_tiles_of[s->m7.tiles.id].tpp;
-    u->i[0][2] = 1 << M7_STORED;
-    for (k = 0; k < 4; k++)
-        u->i[1][k] = layer * 4 + k < cov_n ? cov_value[layer * 4 + k] : -1;
-    d->tex[3] = (int32_t)plane_tex;
-    d->tex[4] = (int32_t)eng_tiles_of[s->m7.tiles.id].tex;
-    d->space = RR_SPACE_TARGET;
-    pass_end();
-}
-
-/* a coverage slot for plane value t: 0 when there is none left */
-static int cover_need(int t)
-{
-    int layer;
-    if (cov_slot[t] >= 0)
-        return 1;
-    if (cov_n == 256)
-        return 0;
-    layer = cov_n / 4;
-    if (layer >= cov_layers) {
-        /* more layers: the arrays made again, every layer to be drawn again */
-        int k;
-        cov_layers = cov_layers ? cov_layers * 2 : 4;
-        if (!cov_plane) {
-            cov_plane = eng_texture_id();
-            cov_tile0 = eng_texture_id();
-        }
-        eng_texture_array(F, cov_plane, M7_KEPT, M7_KEPT, (uint32_t)cov_layers, RR_TEX_TARGET | RR_TEX_MIPS);
-        eng_texture_array(F, cov_tile0, M7_KEPT0, M7_KEPT0, (uint32_t)cov_layers, RR_TEX_TARGET | RR_TEX_MIPS);
-        for (k = 0; k < cov_layers && k < 64; k++)
-            cov_dirty[k] = k * 4 < cov_n;
-    }
-    cov_slot[t] = cov_n;
-    cov_value[cov_n] = t;
-    cov_n++;
-    cov_dirty[layer] = 1;
+    int t;
+    for (t = 0; t < 256; t++)
+        if (m7_colour(a, kind, t) != m7_colour(b, kind, t))
+            return 0;
     return 1;
 }
 
-static int cmp_slot(const void *a, const void *b) { return cov_slot[*(const int *)a] - cov_slot[*(const int *)b]; }
-
-static int m7_drawn(const eng_state *s, int kind)
+static int cmp_want(const void *a, const void *b)
 {
-    if (!uses_m7(s) || s->l[0].mosaic > 1)
-        return 0;
-    return kind == 1 ? s->l[0].enabled_main || s->l[0].enabled_sub : s->m7.extbg && (s->l[1].enabled_main || s->l[1].enabled_sub);
+    const Want *p = (const Want *)a, *q = (const Want *)b;
+    if (p->rank != q->rank)
+        return p->rank < q->rank ? -1 : 1;
+    return p->kind != q->kind ? p->kind - q->kind : p->s->pal - q->s->pal;
 }
 
 static void tint_passes(void)
 {
-    static int *rows_of;
+    static int32_t *want_of;
+    static double *near_of;
     static uint32_t *hash_of;
+    static int *rows_of;
     static const eng_state **rep;
-    static size_t cap_rows_of, cap_hash_of, cap_rep;
-    size_t nv = (size_t)P->npalettes, v;
-    int r, kind, k, any = 0;
-    const eng_state *any_s = NULL;
-    rows_of = (int *)grow(rows_of, &cap_rows_of, nv, sizeof *rows_of);
+    static Want *wants;
+    static int32_t *order;
+    static size_t cap_want_of, cap_near_of, cap_hash_of, cap_rows_of, cap_rep, cap_wants, cap_order;
+    size_t nv = (size_t)P->npalettes, v, nw = 0, k, c;
+    int r, kind, pw = 0, ph = 0;
+    double sx, sy;
+    Look base_look[3];
+    const eng_state *base_of[3] = {NULL, NULL, NULL};
+    base_on[0] = base_on[1] = base_on[2] = 0;
+    if (!nv)
+        return;
+    /* window pixels a picture pixel, across and down */
+    host_window_pixels(&pw, &ph);
+    if (pw <= 0 || ph <= 0) {
+        pw = F->width;
+        ph = F->height;
+    }
+    if (F->aspect > 0.0f) {
+        double h = (double)ph < pw / (double)F->aspect ? (double)ph : pw / (double)F->aspect;
+        sx = h * F->aspect / P->w;
+        sy = h / P->h;
+    } else {
+        sx = (double)pw / P->w;
+        sy = (double)ph / P->h;
+    }
+    if (!(sx > 0.0) || !(sy > 0.0))
+        sx = sy = 1.0;
+    want_of = (int32_t *)grow(want_of, &cap_want_of, nv * 3, sizeof *want_of);
+    near_of = (double *)grow(near_of, &cap_near_of, nv, sizeof *near_of);
     hash_of = (uint32_t *)grow(hash_of, &cap_hash_of, nv, sizeof *hash_of);
-    corr_at = (int32_t *)grow(corr_at, &cap_corr_at, nv * 3, sizeof *corr_at);
-    for (v = 0; v < nv * 3; v++)
-        corr_at[v] = -1;
+    rows_of = (int *)grow(rows_of, &cap_rows_of, nv, sizeof *rows_of);
     rep = (const eng_state **)grow((void *)rep, &cap_rep, nv, sizeof *rep);
+    m7_use = (int32_t *)grow(m7_use, &cap_use, nv * 3, sizeof *m7_use);
+    for (v = 0; v < nv * 3; v++) {
+        want_of[v] = -1;
+        m7_use[v] = 0;
+    }
     for (kind = 1; kind <= 3; kind++) {
         const eng_state *base_s = NULL;
         int best = -1;
-        base_pal[kind - 1] = -1;
-        /* the rows of each palette version drawing this kind; the most-used palette by its colours */
+        Full *b = &bases[kind - 1];
         memset(rows_of, 0, nv * sizeof *rows_of);
         memset(rep, 0, nv * sizeof *rep);
+        /* each palette version's rows drawing this kind, and its rank: those
+           drawn smaller than their texels first, the nearest of them (the
+           fewest texels a window pixel) first; then the rest, the nearest to
+           that first */
         for (r = 0; r < P->h; r++) {
+            const eng_row *row = &P->rows[r];
             uint32_t i;
-            for (i = 0; i < P->rows[r].count; i++) {
-                const eng_state *s = &P->states[P->parts[P->rows[r].first + i].state];
+            for (i = 0; i < row->count; i++) {
+                const eng_state *s = &P->states[P->parts[row->first + i].state];
+                int x0 = P->parts[row->first + i].x0, x1 = i + 1 < row->count ? P->parts[row->first + i + 1].x0 : P->w;
+                double rank;
                 if (!m7_drawn(s, kind))
                     continue;
-                rows_of[s->pal]++;
-                if (!rep[s->pal])
+                rank = m7_reach(s, r, x0, x1, sx, sy);
+                rank = rank > 1.0 ? rank : 2e9 - rank;
+                if (!rep[s->pal]) {
                     rep[s->pal] = s;
+                    near_of[s->pal] = rank;
+                } else if (rank < near_of[s->pal]) {
+                    near_of[s->pal] = rank;
+                }
+                rows_of[s->pal]++;
             }
         }
         for (v = 0; v < nv; v++)
             if (rep[v])
                 hash_of[v] = m7_hash(rep[v], kind);
+        /* the base: the palette (by its colours) with the most rows */
         for (v = 0; v < nv; v++) {
             int total = 0;
             size_t w;
@@ -1669,110 +1739,161 @@ static void tint_passes(void)
         }
         if (!base_s)
             continue;
-        any = 1;
-        any_s = base_s;
-        base_pal[kind - 1] = base_s->pal;
-        {
-            Base *b = &bases[kind - 1];
-            const eng_tiles *t = &eng_tiles_of[base_s->m7.tiles.id];
-            uint32_t key[6];
-            key[0] = (uint32_t)kind;
-            key[1] = (uint32_t)base_s->l[0].direct_colour;
-            key[2] = m7_hash(base_s, kind);
-            key[3] = plane_version;
-            key[4] = base_s->m7.tiles.id;
-            key[5] = t->gen;
-            if (!b->made) {
-                b->plane = eng_texture_id();
-                b->tile0 = eng_texture_id();
-                eng_texture_create(F, b->plane, M7_KEPT, M7_KEPT, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
-                eng_texture_create(F, b->tile0, M7_KEPT0, M7_KEPT0, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
-                b->made = 1;
-                memset(b->key, 0, sizeof b->key);
-            }
-            {
-                int t, same = !memcmp(b->key, key, sizeof key);
-                for (t = 0; t < 256; t++) {
-                    int32_t c = m7_colour(base_s, kind, t);
-                    same &= b->colours[t] == c;
-                    b->colours[t] = c;
-                }
-                if (same)
-                    goto based;
-                memcpy(b->key, key, sizeof key);
-                tint_pass(b->plane, M7_KEPT, 0, base_s, kind);
-                tint_pass(b->tile0, M7_KEPT0, 1, base_s, kind);
-            }
-        based:;
-        }
-        /* each other palette's differences from the base's, as corrections */
+        base_on[kind - 1] = 1;
+        base_of[kind - 1] = base_s;
+        look_of(&base_look[kind - 1], base_s, kind);
+        if (!b->ok || !look_eq(&b->look, &base_look[kind - 1]))
+            full_make(b, base_s, kind, &base_look[kind - 1]);
+        /* the palettes other than the base's, by their colours, each ranked by its nearest rows */
         for (v = 0; v < nv; v++) {
-            int diff[256], nd = 0, t;
-            uint32_t at;
-            if (!rep[v] || corr_at[v * 3 + (size_t)(kind - 1)] >= 0 || (hash_of[v] == hash_of[base_s->pal] && m7_same(rep[v], base_s, kind)))
+            size_t w;
+            if (!rep[v] || (hash_of[v] == hash_of[base_s->pal] && m7_same(rep[v], base_s, kind)))
                 continue;
-            if (!any_s)
-                any_s = rep[v];
-            /* coverage first made for this plane? */
-            {
-                const eng_tiles *tt = &eng_tiles_of[rep[v]->m7.tiles.id];
-                if (cov_key[0] != plane_version || cov_key[1] != rep[v]->m7.tiles.id || cov_key[2] != tt->gen) {
-                    cov_key[0] = plane_version;
-                    cov_key[1] = rep[v]->m7.tiles.id;
-                    cov_key[2] = tt->gen;
-                    for (t = 0; t < 256; t++)
-                        cov_slot[t] = -1;
-                    cov_n = 0;
-                    memset(cov_dirty, 0, sizeof cov_dirty);
-                }
+            for (w = 0; w < v; w++)
+                if (want_of[w * 3 + (size_t)(kind - 1)] >= 0 && hash_of[w] == hash_of[v] && m7_same(rep[w], rep[v], kind))
+                    break;
+            if (w < v) {
+                Want *o = &wants[want_of[w * 3 + (size_t)(kind - 1)]];
+                want_of[v * 3 + (size_t)(kind - 1)] = want_of[w * 3 + (size_t)(kind - 1)];
+                if (near_of[v] < o->rank)
+                    o->rank = near_of[v];
+                continue;
             }
-            for (t = 0; t < 256; t++) {
-                int32_t a = m7_colour(base_s, kind, t), c = m7_colour(rep[v], kind, t);
-                if (a != c && cover_need(t))
-                    diff[nd++] = t;
+            wants = (Want *)grow(wants, &cap_wants, nw + 1, sizeof *wants);
+            wants[nw].s = rep[v];
+            wants[nw].kind = kind;
+            wants[nw].rank = near_of[v];
+            look_of(&wants[nw].look, rep[v], kind);
+            want_of[v * 3 + (size_t)(kind - 1)] = (int32_t)nw;
+            nw++;
+        }
+    }
+    if (!nw)
+        return;
+    /* nearest first; each palette version kept pointing at its want */
+    order = (int32_t *)grow(order, &cap_order, nw, sizeof *order);
+    for (k = 0; k < nw; k++)
+        wants[k].place = (int32_t)k;
+    qsort(wants, nw, sizeof *wants, cmp_want);
+    for (k = 0; k < nw; k++)
+        order[wants[k].place] = (int32_t)k;
+    for (v = 0; v < nv * 3; v++)
+        if (want_of[v] >= 0)
+            want_of[v] = order[want_of[v]];
+    /* the first M7_FULL full size: those already showing what they want kept, the rest made */
+    for (c = 0; c < M7_FULL; c++)
+        fulls[c].claimed = 0;
+    for (k = 0; k < nw && k < M7_FULL; k++) {
+        wants[k].place = -1;
+        for (c = 0; c < M7_FULL; c++)
+            if (!fulls[c].claimed && fulls[c].ok && look_eq(&fulls[c].look, &wants[k].look)) {
+                fulls[c].claimed = 1;
+                wants[k].place = (int32_t)(1 + c);
+                break;
             }
-            qsort(diff, (size_t)nd, sizeof *diff, cmp_slot);
-            at = words(1 + (size_t)nd * 4);
-            F->data[at] = (uint32_t)nd;
-            for (k = 0; k < nd; k++) {
-                int32_t a = m7_colour(base_s, kind, diff[k]), c = m7_colour(rep[v], kind, diff[k]), j;
-                uint32_t o = at + 1 + (uint32_t)k * 4;
-                F->data[o] = (uint32_t)(cov_slot[diff[k]] / 4) | (uint32_t)(cov_slot[diff[k]] % 4) << 8;
-                for (j = 0; j < 3; j++) {
-                    int sh = 16 - 8 * j;
-                    wordf(o + 1 + (uint32_t)j, (float)(((c >> sh) & 255) - ((a >> sh) & 255)) / 255.0f);
-                }
+    }
+    for (k = 0; k < nw && k < M7_FULL; k++) {
+        if (wants[k].place >= 0)
+            continue;
+        for (c = 0; fulls[c].claimed; c++)
+            ;
+        fulls[c].claimed = 1;
+        full_make(&fulls[c], wants[k].s, wants[k].kind, &wants[k].look);
+        wants[k].place = (int32_t)(1 + c);
+    }
+    /* the rest a quarter's side, in the arrays' layers past the bases' */
+    if (nw > M7_FULL) {
+        size_t need = nw - M7_FULL, room;
+        int l;
+        /* room for them: the last array doubled up to M7_LAYERS layers, then another */
+        for (;;) {
+            room = 0;
+            for (c = 0; c < nsmalls; c++)
+                room += (size_t)(smalls[c]->layers - 3);
+            if (room >= need)
+                break;
+            if (nsmalls && smalls[nsmalls - 1]->layers < M7_LAYERS) {
+                small_size(smalls[nsmalls - 1], smalls[nsmalls - 1]->layers * 2);
+                continue;
             }
-            corr_at[v * 3 + (size_t)(kind - 1)] = (int32_t)at;
-            /* palette versions with the same colours share these */
-            {
-                size_t w;
-                for (w = 0; w < nv; w++)
-                    if (w != v && rep[w] && hash_of[w] == hash_of[v] && m7_same(rep[w], rep[v], kind))
-                        corr_at[w * 3 + (size_t)(kind - 1)] = (int32_t)at;
+            smalls = (Small **)grow((void *)smalls, &cap_smalls, nsmalls + 1, sizeof *smalls);
+            if (!(smalls[nsmalls] = (Small *)calloc(1, sizeof **smalls))) {
+                eng_report("nativeshvc", "no memory for Mode 7's planes");
+                exit(70);
+            }
+            small_size(smalls[nsmalls++], 8);
+        }
+        for (c = 0; c < nsmalls; c++)
+            memset(smalls[c]->claimed, 0, sizeof smalls[c]->claimed);
+        for (k = M7_FULL; k < nw; k++) {
+            wants[k].place = -1;
+            for (c = 0; c < nsmalls && wants[k].place < 0; c++)
+                for (l = 3; l < smalls[c]->layers; l++)
+                    if (!smalls[c]->claimed[l] && smalls[c]->ok[l] && look_eq(&smalls[c]->look[l], &wants[k].look)) {
+                        smalls[c]->claimed[l] = 1;
+                        wants[k].place = (int32_t)(M7_SMALLS + c * M7_LAYERS + (size_t)l);
+                        break;
+                    }
+        }
+        for (k = M7_FULL; k < nw; k++) {
+            Small *a = NULL;
+            if (wants[k].place >= 0)
+                continue;
+            /* a layer no one keeps: there is room for every want */
+            for (c = 0; c < nsmalls && !a; c++)
+                for (l = 3; l < smalls[c]->layers; l++)
+                    if (!smalls[c]->claimed[l]) {
+                        a = smalls[c];
+                        break;
+                    }
+            c--;
+            a->claimed[l] = 1;
+            a->look[l] = wants[k].look;
+            a->ok[l] = 1;
+            tint_pass(a->plane, M7_SMALL, 0, l, wants[k].s, wants[k].kind);
+            tint_pass(a->tile0, 8, 1, l, wants[k].s, wants[k].kind);
+            wants[k].place = (int32_t)(M7_SMALLS + c * M7_LAYERS + (size_t)l);
+        }
+        /* each array a palette of a kind is in: that kind's base at its size, in layer kind - 1 */
+        for (c = 0; c < nsmalls; c++) {
+            Small *a = smalls[c];
+            int kinds = 0;
+            for (l = 3; l < a->layers; l++)
+                if (a->claimed[l])
+                    kinds |= 1 << a->look[l].key[0];
+            for (kind = 1; kind <= 3; kind++) {
+                if (!(kinds & 1 << kind) || (a->ok[kind - 1] && look_eq(&a->look[kind - 1], &base_look[kind - 1])))
+                    continue;
+                a->look[kind - 1] = base_look[kind - 1];
+                a->ok[kind - 1] = 1;
+                tint_pass(a->plane, M7_SMALL, 0, kind - 1, base_of[kind - 1], kind);
             }
         }
     }
-    /* the coverage layers made since */
-    if (any && any_s && cov_n) {
-        for (k = 0; k < cov_layers && k < 64; k++)
-            if (cov_dirty[k]) {
-                cover_pass(cov_plane, M7_KEPT, 0, k, any_s);
-                cover_pass(cov_tile0, M7_KEPT0, 1, k, any_s);
-                cov_dirty[k] = 0;
-            }
-    }
+    for (v = 0; v < nv * 3; v++)
+        if (want_of[v] >= 0)
+            m7_use[v] = wants[want_of[v]].place;
 }
 
-/* the textures a Mode 7 draw of kind filters with, and its row's corrections */
-static int tint_textures(const eng_state *s, int kind, uint32_t *plane, uint32_t *tile0, int32_t *corr)
+/* a Mode 7 draw of kind where it is drawn smaller than its texels: the plane
+   and tile 0 in its palette (tex[1], tex[2]); or past the full-size ones the
+   base's, with the arrays (tex[6], tex[7]) and its layer there, returned; -1
+   none of those. -2: nothing to filter with */
+static int m7_filtered(const eng_state *s, int kind, rr_cmd *d)
 {
-    if (base_pal[kind - 1] < 0)
-        return 0;
-    *plane = bases[kind - 1].plane;
-    *tile0 = bases[kind - 1].tile0;
-    *corr = corr_at[(size_t)s->pal * 3 + (size_t)(kind - 1)];
-    return 1;
+    int32_t p;
+    const Full *f;
+    if (!base_on[kind - 1])
+        return -2;
+    p = m7_use[(size_t)s->pal * 3 + (size_t)(kind - 1)];
+    f = p >= 1 && p < M7_SMALLS ? &fulls[p - 1] : &bases[kind - 1];
+    d->tex[1] = (int32_t)f->plane;
+    d->tex[2] = (int32_t)f->tile0;
+    if (p < M7_SMALLS)
+        return -1;
+    d->tex[6] = (int32_t)smalls[(p - M7_SMALLS) / M7_LAYERS]->plane;
+    d->tex[7] = (int32_t)smalls[(p - M7_SMALLS) / M7_LAYERS]->tile0;
+    return (p - M7_SMALLS) % M7_LAYERS;
 }
 
 void eng_compose(rr_frame *f, const eng_picture *p)

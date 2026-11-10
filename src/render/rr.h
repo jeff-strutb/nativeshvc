@@ -51,10 +51,10 @@
 #include <stdint.h>
 
 #define RR_SAMPLES 4            /* the frame's and extra targets' samples a pixel */
-#define RR_PROGRAMS 16          /* programs compiled into the backend */
-#define RR_SHOW 13              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise) */
-#define RR_MIPS 14              /* a level made from the one before (binding 2), for a backend that needs it */
-#define RR_MIPS_LAYER 15        /* the same for a layer of an array (binding 2, an array of one layer) */
+#define RR_PROGRAMS 15          /* programs compiled into the backend */
+#define RR_SHOW 12              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise) */
+#define RR_MIPS 13              /* a level made from the one before (binding 2), for a backend that needs it */
+#define RR_MIPS_LAYER 14        /* the same for a layer of an array (binding 2, an array of one layer) */
 #define RR_TEX_SLOTS 8          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9: colour arrays */
 
 /* texture formats */

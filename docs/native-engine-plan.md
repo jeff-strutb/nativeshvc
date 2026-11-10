@@ -205,7 +205,9 @@ an iPhone 15 Pro Max once a draw-list layer existed). It is gone. In its place:
    or the sprites' strips of one state drawn once, kept to them by stencil); colour maths, brightness and blanking as one
    pass that combines the screens already drawn, exactly as the SNES defines them; hires by a stencil bit; interlace by a
    picture that keeps the other field. Mode 7 is filtered through the plane's colours and their smaller levels where it
-   shrinks, in its most-used palette, with other rows' palette differences added through coverage filtered the same way. All at the window's resolution, texels sharp, edges smoothed by 4 samples a pixel.
+   shrinks, by the GPU's own anisotropic filter in one read: the plane in its most-used palette, and in the four other
+   palettes with the nearest rows, full size; past those, a quarter-size plane in the row's palette adds its difference,
+   so only that difference's finest detail is lost. All at the window's resolution, texels sharp, edges smoothed by 4 samples a pixel.
 3. **Custom work through the lower API:** draw lists, materials and game shaders, drawn straight into the frame in their
    layer's place, with depth.
 
