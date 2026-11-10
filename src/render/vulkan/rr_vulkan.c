@@ -1237,7 +1237,8 @@ static void screen_fit(int k, int w, int h)
 }
 
 /* the window-sized targets this frame draws into: made at this size, the
-   extra ones only while passes use them */
+   extra ones only while passes use them; one not drawn into is never another
+   size than the window: it is let go, and reads of it read nothing */
 static void targets_fit(const rr_frame *f, int w, int h)
 {
     int k, used[3] = { 0, 0, 0 };
@@ -1249,7 +1250,8 @@ static void targets_fit(const rr_frame *f, int w, int h)
         if (used[k]) {
             screen_fit(k, w, h);
             screen_used[k] = frame_no;
-        } else if (screen_w[k] && frame_no - screen_used[k] > UNUSED_FRAMES) {
+        } else if (screen_w[k] && (frame_no - screen_used[k] > UNUSED_FRAMES || screen_w[k] != w || screen_h[k] != h)) {
+            /* not drawn into this frame: let go when long unused, or when no longer the window's size */
             screen_free(k);
         }
     }
@@ -1348,6 +1350,10 @@ static void record_texops(const rr_frame *f)
         for (k = first; k < j; k++) {
             const rr_tex_op *o = &f->texops[order[k]];
             VkBufferImageCopy c;
+            if ((uint64_t)o->x + o->w > (uint64_t)t->w || (uint64_t)o->y + o->h > (uint64_t)t->h || !o->w || !o->h) {
+                fprintf(stderr, "rr: vulkan: a write past texture %u's edge left out\n", id);
+                continue;
+            }
             if (!writes++)
                 barrier_levels(t->i, 0, 0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                                VK_ACCESS_TRANSFER_WRITE_BIT, SHADER_STAGES | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);

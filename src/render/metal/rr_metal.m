@@ -189,6 +189,8 @@ static void apply_texops(const rr_frame *f)
             if (!tex_fresh[o->id])
                 exit(70);
             memset(tex_fresh[o->id], 1, layers);
+        } else if (tex[o->id] && ((uint64_t)o->x + o->w > tex[o->id].width || (uint64_t)o->y + o->h > tex[o->id].height || !o->w || !o->h)) {
+            fprintf(stderr, "rr: metal: a write past texture %u's edge left out\n", o->id);
         } else if (tex[o->id]) {
             [tex[o->id] replaceRegion:MTLRegionMake2D(o->x, o->y, o->w, o->h) mipmapLevel:0 withBytes:f->upload + o->at
                           bytesPerRow:(NSUInteger)o->w * (NSUInteger)bytes_of(tex_format[o->id])];
@@ -331,7 +333,8 @@ static id<MTLBuffer> buffer_fit(id<MTLBuffer> b, size_t bytes)
     return [dev newBufferWithLength:bytes * 2 options:MTLResourceStorageModeShared];
 }
 
-/* the window-sized targets this frame draws into: made at this size, the extra ones only while passes use them */
+/* the window-sized targets this frame draws into: made at this size, the extra ones only while passes use
+   them; one not drawn into is never another size than the window: it is let go, and reads of it read nothing */
 static void targets_fit(const rr_frame *f, int w, int h)
 {
     int k, used[3] = { 0, 0, 0 };
@@ -345,7 +348,8 @@ static void targets_fit(const rr_frame *f, int w, int h)
             screen_ds[k] = target(screen_ds[k], DEPTH_FORMAT, w, h, RR_SAMPLES, MTLTextureUsageRenderTarget, 1);
             screen_res[k] = target(screen_res[k], MTLPixelFormatBGRA8Unorm, w, h, 1, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead, 0);
             screen_used[k] = frame_no;
-        } else if (screen_res[k] && frame_no - screen_used[k] > UNUSED_FRAMES) {
+        } else if (screen_res[k] && (frame_no - screen_used[k] > UNUSED_FRAMES || (int)screen_res[k].width != w || (int)screen_res[k].height != h)) {
+            /* not drawn into this frame: let go when long unused, or when no longer the window's size */
             screen_ms[k] = screen_ds[k] = screen_res[k] = nil;
         }
     }

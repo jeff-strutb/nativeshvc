@@ -31,6 +31,8 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define MAX_TEXTURES 16384
 #define MAX_SHADERS 256
 #define RTVS 4096
+#define MAX_TABLES (1000000 / RR_TEX_SLOTS)    /* a shader-visible heap's most descriptors, every binding tier, in tables */
+#define MIN_TABLES 1024
 #define UNUSED_FRAMES 120               /* an extra target unused this many frames is let go */
 #define COLOUR DXGI_FORMAT_B8G8R8A8_UNORM
 #define DEPTH DXGI_FORMAT_D24_UNORM_S8_UINT
@@ -279,25 +281,27 @@ static void swapchain_buffers(void)
     }
 }
 
-/* the shader-visible heap: room for `tables` tables of RR_TEX_SLOTS views */
-static void srv_heap_fit(UINT tables)
+/* the shader-visible heap: room for exactly `tables` tables of RR_TEX_SLOTS
+   views (at most MAX_TABLES), made again when that differs (the GPU idle) */
+static int srv_heap_make(UINT tables)
 {
     D3D12_DESCRIPTOR_HEAP_DESC hd;
-    if (srv_heap && srv_tables >= tables)
-        return;
-    if (srv_heap)
-        ID3D12DescriptorHeap_Release(srv_heap);
-    srv_tables = srv_tables ? srv_tables : 1024;
-    while (srv_tables < tables)
-        srv_tables *= 2;
+    ID3D12DescriptorHeap *h = NULL;
+    if (srv_heap && srv_tables == tables)
+        return 1;
     memset(&hd, 0, sizeof hd);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.NumDescriptors = srv_tables * RR_TEX_SLOTS;
+    hd.NumDescriptors = tables * RR_TEX_SLOTS;
     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&srv_heap))) {
-        fprintf(stderr, "rr: d3d12: a descriptor heap of %u tables could not be made\n", srv_tables);
-        exit(70);
+    if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&h))) {
+        fprintf(stderr, "rr: d3d12: a descriptor heap of %u tables could not be made\n", tables);
+        return 0;
     }
+    if (srv_heap)
+        ID3D12DescriptorHeap_Release(srv_heap);
+    srv_heap = h;
+    srv_tables = tables;
+    return 1;
 }
 
 /* a step of opening failed: whatever was made, let go */
@@ -326,21 +330,27 @@ int rr_open(void)
     if (FAILED(ID3D12Device_CreateCommandList(dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, NULL, &IID_ID3D12GraphicsCommandList, (void **)&list)))
         return open_failed();
     ID3D12GraphicsCommandList_Close(list);
-    ID3D12Device_CreateFence(dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence);
-    fence_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (FAILED(ID3D12Device_CreateFence(dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence)))
+        return open_failed();
+    if (!(fence_event = CreateEventA(NULL, FALSE, FALSE, NULL)))
+        return open_failed();
 
     memset(&hd, 0, sizeof hd);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     hd.NumDescriptors = RTVS;
-    ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&rtv_heap);
+    if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&rtv_heap)))
+        return open_failed();
     rtv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    memset(rtv_taken, 0, sizeof rtv_taken);
     memset(rtv_taken, 1, 5);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     hd.NumDescriptors = 3;
-    ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&dsv_heap);
+    if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&dsv_heap)))
+        return open_failed();
     dsv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     srv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    srv_heap_fit(1024);
+    if (!srv_heap_make(MIN_TABLES))
+        return open_failed();
 
     {
         /* b0 the draw's uniforms, t1 the frame's words, t2-t9 its textures, s2-s9 their samplers:
@@ -531,11 +541,17 @@ static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind)
     return p;
 }
 
-/* ---- descriptor tables: one for each set of textures a frame binds, found by hashing ---- */
-typedef struct { const Tex *t[RR_TEX_SLOTS]; UINT at; int used; } Table;
+/* ---- descriptor tables: one for each different set of textures a frame binds, found by hashing;
+   a slot is this frame's when its gen is, so nothing is cleared from one frame to the next ---- */
+#define NO_TABLE 0xFFFFFFFFu
+typedef struct { const Tex *t[RR_TEX_SLOTS]; UINT at; uint64_t gen; } Table;
 static Table *tables;
-static size_t cap_table_slots;
-static UINT ntables;
+static size_t cap_table_slots, ndistinct;
+static UINT ntables;                    /* tables placed in the heap this frame */
+static uint64_t tables_gen;
+static UINT peak_tables;                /* the most tables a frame has needed lately, and since when */
+static size_t peak_distinct;
+static uint64_t peak_frame;
 
 static const Tex *slot_tex(int32_t t, int slot)
 {
@@ -589,22 +605,120 @@ static uint64_t tables_hash(const Tex *const *t)
     return h;
 }
 
-/* a frame's tables made afresh: room for `most` of them, the heap made larger if need be (the frame before finished) */
-static void tables_reset(UINT most)
+/* the hash at c slots, this frame's tables placed again */
+static void tables_rehash(size_t c)
 {
-    size_t c = cap_table_slots ? cap_table_slots : 256;
-    srv_heap_fit(most);
-    while (c < (size_t)most * 2)
-        c *= 2;
-    if (c != cap_table_slots) {
-        free(tables);
-        tables = (Table *)malloc(c * sizeof *tables);
-        if (!tables)
-            exit(70);
-        cap_table_slots = c;
+    Table *n = (Table *)calloc(c, sizeof *n);
+    size_t k, i;
+    if (!n)
+        exit(70);
+    for (k = 0; k < cap_table_slots; k++)
+        if (tables[k].gen == tables_gen) {
+            for (i = tables_hash(tables[k].t) & (c - 1); n[i].gen == tables_gen; i = (i + 1) & (c - 1))
+                ;
+            n[i] = tables[k];
+        }
+    free(tables);
+    tables = n;
+    cap_table_slots = c;
+}
+
+/* this frame's slot for a set of textures, found or taken */
+static Table *table_slot(const Tex *const *t)
+{
+    size_t i = 0;
+    if (cap_table_slots)
+        for (i = tables_hash(t) & (cap_table_slots - 1); tables[i].gen == tables_gen; i = (i + 1) & (cap_table_slots - 1))
+            if (!memcmp(tables[i].t, t, sizeof tables[i].t))
+                return &tables[i];
+    /* a new set: the hash kept at most half full */
+    if ((ndistinct + 1) * 2 > cap_table_slots) {
+        tables_rehash(cap_table_slots ? cap_table_slots * 2 : 256);
+        for (i = tables_hash(t) & (cap_table_slots - 1); tables[i].gen == tables_gen; i = (i + 1) & (cap_table_slots - 1))
+            ;
     }
-    memset(tables, 0, cap_table_slots * sizeof *tables);
+    memcpy(tables[i].t, t, sizeof tables[i].t);
+    tables[i].gen = tables_gen;
+    tables[i].at = NO_TABLE;
+    ndistinct++;
+    return &tables[i];
+}
+
+static void slot_texes(const int32_t *ids, const Tex **t)
+{
+    int k;
+    for (k = 0; k < RR_TEX_SLOTS; k++)
+        t[k] = slot_tex(ids ? ids[k] : 0, k);
+}
+
+static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, int *th, Tex **to);
+
+/* the frame's tables: each different set of textures its draws bind, once,
+   and room for the levels its mips make; the heap made just large enough
+   (within the device's most), and smaller again when it has long been far
+   larger than frames need. The GPU is idle. */
+static void tables_prepare(const rr_frame *f, int ow, int oh, size_t mip_blocks)
+{
+    size_t p, i, k;
+    UINT need, size;
+    tables_gen++;
+    ndistinct = 0;
     ntables = 0;
+    for (p = 0; p < f->npasses; p++) {
+        const rr_pass *ps = &f->passes[p];
+        Tex *to;
+        int kind, tw, th;
+        if (!pass_target(ps, ow, oh, &kind, &tw, &th, &to))
+            continue;
+        for (i = ps->first; i < ps->first + ps->count; i++) {
+            const Tex *t[RR_TEX_SLOTS];
+            slot_texes(f->cmds[i].tex, t);
+            table_slot(t);
+        }
+    }
+    need = (UINT)(ndistinct + mip_blocks + 1 < MAX_TABLES ? ndistinct + mip_blocks + 1 : MAX_TABLES);
+    if (ndistinct + mip_blocks + 1 > MAX_TABLES)
+        fprintf(stderr, "rr: d3d12: %zu sets of textures in a frame, past the %u a heap holds: the rest left out\n", ndistinct + mip_blocks + 1,
+                (unsigned)MAX_TABLES);
+    /* the heap: grown to what this frame needs, by doubling; shrunk to twice the most a frame has needed
+       in the last UNUSED_FRAMES when it is four times that */
+    if (frame_no - peak_frame > UNUSED_FRAMES) {
+        peak_tables = 0;
+        peak_distinct = 0;
+        peak_frame = frame_no;
+    }
+    if (need > peak_tables)
+        peak_tables = need;
+    if (ndistinct > peak_distinct)
+        peak_distinct = ndistinct;
+    size = srv_tables;
+    if (size < need) {
+        while (size < need)
+            size = size * 2 < MAX_TABLES ? size * 2 : MAX_TABLES;
+    } else if (size > MIN_TABLES && size / 4 > peak_tables) {
+        size = peak_tables * 2 > MIN_TABLES ? peak_tables * 2 : MIN_TABLES;
+    }
+    /* a heap that could not be made larger leaves the sets past its room out (said when made) */
+    srv_heap_make(size);
+    /* the hash, smaller again when it has long been far larger than frames need */
+    if (cap_table_slots > 1024 && cap_table_slots / 8 > peak_distinct + 1) {
+        size_t c = 256;
+        while (c < (peak_distinct + 1) * 4)
+            c *= 2;
+        tables_rehash(c);
+    }
+    /* each set's views, written once */
+    for (k = 0; k < cap_table_slots; k++)
+        if (tables[k].gen == tables_gen) {
+            int j;
+            if (ntables >= srv_tables) {
+                tables[k].at = NO_TABLE;
+                continue;
+            }
+            tables[k].at = ntables++ * RR_TEX_SLOTS;
+            for (j = 0; j < RR_TEX_SLOTS; j++)
+                srv_put(tables[k].at + (UINT)j, tables[k].t[j]);
+        }
 }
 
 static D3D12_GPU_DESCRIPTOR_HANDLE table_at(UINT at)
@@ -615,33 +729,32 @@ static D3D12_GPU_DESCRIPTOR_HANDLE table_at(UINT at)
     return g;
 }
 
-static D3D12_GPU_DESCRIPTOR_HANDLE table_of(const int32_t *ids)
+/* a draw's table, made ready by tables_prepare: 0 when the heap had no room for it */
+static int table_of(const int32_t *ids, D3D12_GPU_DESCRIPTOR_HANDLE *g)
 {
     const Tex *t[RR_TEX_SLOTS];
-    size_t i;
-    int k;
-    for (k = 0; k < RR_TEX_SLOTS; k++)
-        t[k] = slot_tex(ids ? ids[k] : 0, k);
-    for (i = tables_hash(t) & (cap_table_slots - 1); tables[i].used; i = (i + 1) & (cap_table_slots - 1))
-        if (!memcmp(tables[i].t, t, sizeof t))
-            return table_at(tables[i].at);
-    tables[i].used = 1;
-    memcpy(tables[i].t, t, sizeof t);
-    tables[i].at = ntables++ * RR_TEX_SLOTS;
-    for (k = 0; k < RR_TEX_SLOTS; k++)
-        srv_put(tables[i].at + (UINT)k, t[k]);
-    return table_at(tables[i].at);
+    Table *e;
+    slot_texes(ids, t);
+    e = table_slot(t);
+    if (e->at == NO_TABLE)
+        return 0;
+    *g = table_at(e->at);
+    return 1;
 }
 
-/* a table whose first view is level `level` of t alone (of layer `layer` if an array), for making the next */
-static D3D12_GPU_DESCRIPTOR_HANDLE table_level(const Tex *t, int level, int layer)
+/* a table whose first view is level `level` of t alone (of layer `layer` if an array), for making the next: 0 when no room */
+static int table_level(const Tex *t, int level, int layer, D3D12_GPU_DESCRIPTOR_HANDLE *g)
 {
-    UINT at = ntables++ * RR_TEX_SLOTS;
+    UINT at;
     int k;
+    if (ntables >= srv_tables)
+        return 0;
+    at = ntables++ * RR_TEX_SLOTS;
     srv_put_layer(at, t, level, layer);
     for (k = 1; k < RR_TEX_SLOTS; k++)
         srv_put(at + (UINT)k, k >= 6 ? &none_array : k < 3 ? &none_colour : &none_index);
-    return table_at(at);
+    *g = table_at(at);
+    return 1;
 }
 
 /* ---- a frame ---- */
@@ -670,7 +783,8 @@ static void screen_fit(int k, int w, int h)
     screen_res[k].format = RR_BGRA8;
 }
 
-/* the window-sized targets this frame draws into: made at this size, the extra ones only while passes use them */
+/* the window-sized targets this frame draws into: made at this size, the extra ones only while passes use
+   them; one not drawn into is never another size than the window: it is let go, and reads of it read nothing */
 static void targets_fit(const rr_frame *f, int w, int h)
 {
     int k, used[3] = { 0, 0, 0 };
@@ -682,7 +796,8 @@ static void targets_fit(const rr_frame *f, int w, int h)
         if (used[k]) {
             screen_fit(k, w, h);
             screen_used[k] = frame_no;
-        } else if (screen_ms[k].r && frame_no - screen_used[k] > UNUSED_FRAMES) {
+        } else if (screen_ms[k].r && (frame_no - screen_used[k] > UNUSED_FRAMES || screen_ms[k].w != w || screen_ms[k].h != h)) {
+            /* not drawn into this frame: let go when long unused, or when no longer the window's size */
             screen_free(k);
         }
     }
@@ -783,6 +898,10 @@ static void record_texops(const rr_frame *f)
         /* a write before the texture's last making went to the texture it replaced */
         if (tex[o->id].made_frame == frame_no && i < tex[o->id].made_at)
             continue;
+        if ((uint64_t)o->x + o->w > (uint64_t)tex[o->id].w || (uint64_t)o->y + o->h > (uint64_t)tex[o->id].h || !o->w || !o->h) {
+            fprintf(stderr, "rr: d3d12: a write past texture %u's edge left out\n", o->id);
+            continue;
+        }
         t = &tex[o->id];
         row = o->w * (UINT)bytes_of(t->format);
         pitch = (row + 255) / 256 * 256;
@@ -932,8 +1051,8 @@ int rr_draw(rr_frame *f)
             memcpy((char *)ubuf.at + (size_t)f->cmds[i].uniform * 256, &u, sizeof u);
         }
     }
-    /* room for a table for every draw and every level made, however few are different */
-    tables_reset((UINT)(f->ncmds + mip_blocks + 1));
+    /* a table for each different set of textures, and for each level made */
+    tables_prepare(f, ow, oh, mip_blocks);
 
     ID3D12CommandAllocator_Reset(alloc);
     ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
@@ -980,8 +1099,9 @@ int rr_draw(rr_frame *f)
             ID3D12PipelineState *pl = pipe_of(c, kind);
             D3D12_VIEWPORT vp;
             D3D12_RECT sc;
+            D3D12_GPU_DESCRIPTOR_HANDLE table;
             int view = c->space == RR_SPACE_VIEW;
-            if (!pl || !c->vertices || !c->instances)
+            if (!pl || !c->vertices || !c->instances || !table_of(c->tex, &table))
                 continue;
             vp.TopLeftX = view ? (FLOAT)vx : 0.0f;
             vp.TopLeftY = view ? (FLOAT)vy : 0.0f;
@@ -1006,7 +1126,7 @@ int rr_draw(rr_frame *f)
             }
             ID3D12GraphicsCommandList_SetPipelineState(list, pl);
             ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) + (UINT64)c->uniform * 256);
-            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table_of(c->tex));
+            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table);
             ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
             ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
             ID3D12GraphicsCommandList_OMSetStencilRef(list, c->ref);
@@ -1038,7 +1158,10 @@ int rr_draw(rr_frame *f)
                 UINT sub = (UINT)(lv + layer * to->levels);
                 D3D12_VIEWPORT vp;
                 D3D12_RECT sc;
+                D3D12_GPU_DESCRIPTOR_HANDLE table;
                 rr_uniform u;
+                if (!table_level(to, lv - 1, layer, &table))
+                    break;              /* no room in the heap: the smaller levels left as they were */
                 w = w > 1 ? w / 2 : 1;
                 h = h > 1 ? h / 2 : 1;
                 memset(&u, 0, sizeof u);
@@ -1060,7 +1183,7 @@ int rr_draw(rr_frame *f)
                 ID3D12GraphicsCommandList_SetPipelineState(list, pl);
                 ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) +
                                                                                 (UINT64)(f->nuniforms + mip_at) * 256);
-                ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table_level(to, lv - 1, layer));
+                ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table);
                 ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
                 ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
                 ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
