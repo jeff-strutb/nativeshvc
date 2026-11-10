@@ -117,3 +117,16 @@ uint tile_texel(uint t, int x, int y, int s, int cols)
 
 uint word(int k) { return data.w[k]; }
 float wordf(int k) { return uintBitsToFloat(data.w[k]); }
+
+/* the palette version at picture point p, as its row has it: the frame's
+   words from u.i[7].w hold two a row (its first entry's word, its entries),
+   an entry the column the version starts at and the version */
+int row_palette(vec2 p)
+{
+    int r = clamp(int(floor(p.y)), 0, int(u.f[1].y) - 1), k = u.i[7].w + r * 2;
+    int first = int(word(k)), n = int(word(k + 1)), pal = int(word(first + 1));
+    for (int i = 1; i < n; i++)
+        if (p.x >= float(int(word(first + i * 2))))
+            pal = int(word(first + i * 2 + 1));
+    return pal;
+}

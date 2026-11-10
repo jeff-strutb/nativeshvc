@@ -22,7 +22,7 @@ extern uint32_t eng_ntiles, eng_nmaps, eng_nimages;
 /* a draw list: filled by the game or by a job given it */
 typedef struct {
     uint32_t first, count, lines;
-    uint32_t image;             /* RGBA, or 0 */
+    uint32_t image;             /* full colour or indexed (through the row's palette), or 0 */
     uint32_t shader;
     float inputs[8];
 } eng_list_cmd;

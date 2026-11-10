@@ -1,6 +1,7 @@
 /* list_fs.glsl: the fragment stage of a draw list's triangles (list.frag) and lines (lines.frag) */
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_colour;
+layout(location = 2) noperspective in vec2 v_p;
 layout(location = 0) out vec4 o;
 void main()
 {
@@ -21,7 +22,7 @@ void main()
                     continue;
                 if (u.i[1].x != 0) {
                     uint x = texelFetch(ti0, q, 0).r;
-                    t = x != 0u ? vec4(texelFetch(tc1, ivec2(int(x), u.i[1].y), 0).rgb, 1.0) : vec4(0.0);
+                    t = x != 0u ? vec4(texelFetch(tc1, ivec2(int(x), row_palette(v_p)), 0).rgb, 1.0) : vec4(0.0);
                 } else {
                     t = texelFetch(tc0, q, 0);
                 }

@@ -6,7 +6,7 @@
    f[4]: layer pixel = (f[4].x * x + f[4].z, f[4].y * y + f[4].w) for screen pixel (x, y)
    i[0]: the first char column, -, columns, rows
    i[1]: the map's width and height in tiles, a tile's width and height in layer pixels
-   i[2]: texels a pixel, the atlas's tiles a row, wrap, the palette's version
+   i[2]: texels a pixel, the atlas's tiles a row, wrap; the palette's version is the row's (row_palette)
    i[3]: bits a texel, mode 0's palette group, direct colour, offset-per-tile (1 modes 2 and 6, 2 mode 4)
    i[4]: offset-per-tile: its map's width and height, BG3's scroll x and y
    i[5]: offset-per-tile: this layer's bit in an entry, its own scroll x and y, hires
@@ -14,6 +14,7 @@
 #include "common.glsl"
 layout(location = 0) out vec2 v_t;
 layout(location = 1) flat out uvec2 v_e;
+layout(location = 2) out vec2 v_p;
 void main()
 {
     int cols = u.i[0].z;
@@ -81,6 +82,7 @@ void main()
     if (vf)
         t.y = 8.0 - t.y;
     v_t = t * float(u.i[2].x);
+    v_p = p;
     v_e = uvec2((e & 0xFFFFu) + uint(subx) + 16u * uint(suby), (e >> 16) & 7u);
     gl_Position = clip_at(p, ((e >> 19) & 1u) != 0u ? u.f[3].z : u.f[3].y);
 }

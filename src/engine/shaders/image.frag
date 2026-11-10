@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 layout(location = 0) in vec2 v_t;
+layout(location = 1) in vec2 v_p;
 layout(location = 0) out vec4 o;
 void main()
 {
@@ -22,7 +23,7 @@ void main()
             } else {
                 uint c = texelFetch(ti0, q, 0).r;
                 if (c != 0u)
-                    acc += vec4(palette(c, u.i[0].w) * wt, wt);
+                    acc += vec4(palette(c, row_palette(v_p)) * wt, wt);
             }
         }
     int m = cover_mask(acc.a);

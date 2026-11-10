@@ -2,12 +2,27 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 layout(location = 0) in vec2 v_t;
+layout(location = 1) in vec2 v_p;
 layout(location = 0) out vec4 o;
+
+/* the texel step from one screen row to the next at p: the mean of the steps
+   from the row above and to the row below, each by its row's own matrix */
+vec2 row_step(vec2 p)
+{
+    vec2 b = vec2(u.f[4].y, u.f[5].y);
+    float r = floor(p.y);
+    vec2 up = r > float(u.i[7].z) ? b : u.f[6].xy + u.f[6].zw * p.x;
+    vec2 down = r < float(u.i[6].w) - 1.0 ? b : u.f[7].xy + u.f[7].zw * p.x;
+    return (up + down) * 0.5;
+}
+
 void main()
 {
     int kind = u.i[6].x, prow = u.i[2].w;
     ivec2 k;
-    vec2 w, dx = dFdx(v_t), dy = dFdy(v_t);
+    /* the footprint: across, from this row's matrix; down, by the true step between rows */
+    vec2 w, extra = row_step(v_p) - vec2(u.f[4].y, u.f[5].y);
+    vec2 dx = dFdx(v_t) + extra * dFdx(v_p.y), dy = dFdy(v_t) + extra * dFdy(v_p.y);
     vec4 acc = vec4(0.0);
     sharp(v_t, k, w);
     if (u.i[7].x != 0 && max(length(dx), length(dy)) > 1.0) {

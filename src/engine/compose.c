@@ -41,6 +41,7 @@
 
 static rr_frame *F;
 static const eng_picture *P;
+static uint32_t rows_at;        /* each row's palette versions in the frame's words (common.glsl row_palette) */
 
 static void *grow(void *p, size_t *cap, size_t want, size_t size)
 {
@@ -88,6 +89,7 @@ static rr_cmd *draw(int program, rr_uniform **u)
     memset(*u, 0, sizeof **u);
     (*u)->f[1][0] = (float)P->w;
     (*u)->f[1][1] = (float)P->h;
+    (*u)->i[7][3] = (int32_t)rows_at;
     return c;
 }
 
@@ -587,8 +589,7 @@ static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
     if (k != kind_of(b, n) || a->m != b->m || a->b3 != b->b3 || hires_of(a) != hires_of(b) || flag_of(v, a, n) != flag_of(v, b, n) ||
         masked(a, n, v) != masked(b, n, v))
         return 0;
-    if (a->pal != b->pal)
-        return 0;
+    /* the palette's version is read by row (row_palette), so it splits nothing */
     if (k == K_LIST)
         return p->draw_list.id == q->draw_list.id;
     if (k == K_IMAGE)
@@ -624,7 +625,6 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
     u->i[2][0] = (int32_t)t->tpp;
     u->i[2][1] = (int32_t)t->cols;
     u->i[2][2] = a->wrap != 0;
-    u->i[2][3] = s->pal;
     u->i[3][0] = bpp;
     u->i[3][1] = s->m == 0 ? n * 32 : 0;
     u->i[3][2] = bpp == 8 && a->direct_colour;
@@ -706,7 +706,6 @@ static void emit_image(int v, const eng_state *s, int n, int x0, int y0, int x1,
     u->i[0][0] = (int32_t)im->w;
     u->i[0][1] = (int32_t)im->h;
     u->i[0][2] = rgba;
-    u->i[0][3] = s->pal;
     d->tex[0] = (int32_t)P->palette_tex;
     d->tex[rgba ? 1 : 3] = (int32_t)im->tex;
     d->depth = RR_DEPTH_LEQUAL;
@@ -762,7 +761,6 @@ static void emit_list(const Ctx *c, const eng_state *s, const float *box)
                 d->tex[0] = (int32_t)im->tex;
             } else {
                 u->i[1][0] = 1;
-                u->i[1][1] = s->pal;
                 d->tex[1] = (int32_t)P->palette_tex;
                 d->tex[3] = (int32_t)im->tex;
             }
@@ -818,10 +816,9 @@ static int eq_m7(const Ctx *c, const eng_state *a, const eng_state *b)
            masked(a, 1, v) == masked(b, 1, v) && hires_of(a) == hires_of(b);
 }
 
-/* the plane's texel at screen point (x, y), as the console's sum from row y0
-   on: f[4], f[5], in texels; the console's own pixel (x, y) shows the texel
-   at the point (x, y), its top left corner */
-static void m7_affine(rr_uniform *u, const eng_state *s, int y0)
+/* the plane's texel at screen point (x, y) for state s, as the console's sum
+   from row y0 on: t[0] x + t[1] y + t[2], t[3] x + t[4] y + t[5] */
+static void m7_coeffs(const eng_state *s, int y0, double *t)
 {
     const nshvc_mode7 *m = &s->m7;
     int a = m->a, b = m->b, c = m->c, d = m->d, cx = m->centre_x, cy = m->centre_y;
@@ -839,12 +836,71 @@ static void m7_affine(rr_uniform *u, const eng_state *s, int y0)
        shows there; flipped, the same pixels run the other way */
     ux0 = m->flip_x ? 256.0 + P->ox : -(double)P->ox;
     ey0 = m->flip_y ? 1.0 + y0 : -(double)y0;
-    u->f[4][0] = (float)(a * fx / 256.0);
-    u->f[4][1] = (float)(b * fy / 256.0);
-    u->f[4][2] = (float)((ox + a * ux0 + b * ey0) / 256.0);
-    u->f[5][0] = (float)(c * fx / 256.0);
-    u->f[5][1] = (float)(d * fy / 256.0);
-    u->f[5][2] = (float)((oy + c * ux0 + d * ey0) / 256.0);
+    t[0] = a * fx / 256.0;
+    t[1] = b * fy / 256.0;
+    t[2] = (ox + a * ux0 + b * ey0) / 256.0;
+    t[3] = c * fx / 256.0;
+    t[4] = d * fy / 256.0;
+    t[5] = (oy + c * ux0 + d * ey0) / 256.0;
+}
+
+/* the plane's texel at screen point (x, y), as the console's sum from row y0
+   on: f[4], f[5], in texels; the console's own pixel (x, y) shows the texel
+   at the point (x, y), its top left corner */
+static void m7_affine(rr_uniform *u, const eng_state *s, int y0)
+{
+    double t[6];
+    int k;
+    m7_coeffs(s, y0, t);
+    for (k = 0; k < 3; k++) {
+        u->f[4][k] = (float)t[k];
+        u->f[5][k] = (float)t[3 + k];
+    }
+}
+
+/* the state at row r, column x */
+static const eng_state *state_at(int r, int x)
+{
+    const eng_row *row = &P->rows[r];
+    uint32_t i, k = row->first;
+    for (i = 1; i < row->count; i++)
+        if (P->parts[row->first + i].x0 <= x)
+            k = row->first + i;
+    return &P->states[P->parts[k].state];
+}
+
+/* The true texel step from row to row at the strip's edges, where the next
+   row is drawn by another matrix (the perspective of a matrix by line): from
+   the row above (ra) to the first (y0) in f[6], from the last to the row
+   below (rb) in f[7], each the step's start and its change by column, from
+   the rows' centres by their own matrices. Within the strip the step is the
+   strip's own. */
+static void m7_steps(rr_uniform *u, const eng_state *s, int x0, int y0, int y1)
+{
+    double t[6], n[6];
+    int e, k;
+    m7_coeffs(s, y0, t);
+    u->i[7][2] = y0;
+    u->i[6][3] = y1;
+    for (e = 0; e < 2; e++) {
+        int r = e ? y1 : y0 - 1, mine = e ? y1 - 1 : y0;
+        const eng_state *o = r >= 0 && r < P->h ? state_at(r, x0) : NULL;
+        float *f = u->f[6 + e];
+        if (!o || o->m != 7 || o->blank || !m7_valid(o)) {
+            f[0] = (float)t[1];
+            f[1] = (float)t[4];
+            f[2] = f[3] = 0.0f;
+            continue;
+        }
+        m7_coeffs(o, r, n);
+        for (k = 0; k < 2; k++) {
+            const double *lo = e ? t : n, *hi = e ? n : t;
+            double ylo = (e ? mine : r) + 0.5, yhi = (e ? r : mine) + 0.5;
+            /* this row's texel minus the row above's: (hi - lo) */
+            f[k] = (float)(hi[k * 3 + 1] * yhi + hi[k * 3 + 2] - lo[k * 3 + 1] * ylo - lo[k * 3 + 2]);
+            f[2 + k] = (float)(hi[k * 3] - lo[k * 3]);
+        }
+    }
 }
 
 static void m7_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int kind)
@@ -902,6 +958,7 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
             uint32_t plane, tile0;
             int32_t corr;
             m7_affine(u, s, y0);
+            m7_steps(u, s, x0, y0, y1);
             m7_fields(u, d, s, k);
             u->i[7][1] = -1;
             if (tint_textures(s, k, &plane, &tile0, &corr)) {
@@ -1105,7 +1162,7 @@ static int eq_spr(const Ctx *c, const eng_state *a, const eng_state *b)
         return 0;
     if (!on)
         return 1;
-    return a->m == b->m && a->pal == b->pal && flag_of(v, a, 4) == flag_of(v, b, 4) && masked(a, 4, v) == masked(b, 4, v) &&
+    return a->m == b->m && flag_of(v, a, 4) == flag_of(v, b, 4) && masked(a, 4, v) == masked(b, 4, v) &&
            hires_of(a) == hires_of(b);
 }
 
@@ -1135,7 +1192,6 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         u->i[0][0] = (int32_t)(pieces_at + runs[k].first * 8);
         u->i[0][1] = (int32_t)t->cols;
         u->i[0][2] = (int32_t)t->tpp;
-        u->i[0][3] = s->pal;
         d->tex[0] = (int32_t)P->palette_tex;
         d->tex[3] = (int32_t)t->tex;
         d->instances = runs[k].count;
@@ -1424,7 +1480,7 @@ static void plane_pass(void)
    exact. Coverage depends on the plane alone, so it is made once for each
    plane value that needs it until the plane changes: at most 255 values,
    four a layer, however the palettes change. */
-typedef struct { uint32_t key[6], plane, tile0; int made; } Base;
+typedef struct { uint32_t key[6], plane, tile0; int32_t colours[256]; int made; } Base;
 static Base bases[3];
 static int base_pal[3];             /* by kind: the palette version the base was made with this frame, or -1 */
 static uint32_t cov_key[3];
@@ -1449,6 +1505,16 @@ static int32_t m7_colour(const eng_state *s, int kind, int t)
     if (!(t & 0x7F) || (t >> 7) != kind - 2)
         return -1;
     return (int32_t)(pal[t & 0x7F] & 0xFFFFFFu);
+}
+
+/* whether two states give every plane value the same colour in kind */
+static int m7_same(const eng_state *a, const eng_state *b, int kind)
+{
+    int t;
+    for (t = 0; t < 256; t++)
+        if (m7_colour(a, kind, t) != m7_colour(b, kind, t))
+            return 0;
+    return 1;
 }
 
 static uint32_t m7_hash(const eng_state *s, int kind)
@@ -1545,9 +1611,9 @@ static void tint_passes(void)
 {
     static int *rows_of;
     static uint32_t *hash_of;
-    static size_t cap_rows_of, cap_hash_of;
+    static const eng_state **rep;
+    static size_t cap_rows_of, cap_hash_of, cap_rep;
     size_t nv = (size_t)P->npalettes, v;
-    const eng_state **rep;
     int r, kind, k, any = 0;
     const eng_state *any_s = NULL;
     rows_of = (int *)grow(rows_of, &cap_rows_of, nv, sizeof *rows_of);
@@ -1555,9 +1621,7 @@ static void tint_passes(void)
     corr_at = (int32_t *)grow(corr_at, &cap_corr_at, nv * 3, sizeof *corr_at);
     for (v = 0; v < nv * 3; v++)
         corr_at[v] = -1;
-    rep = (const eng_state **)calloc(nv, sizeof *rep);
-    if (!rep)
-        exit(70);
+    rep = (const eng_state **)grow((void *)rep, &cap_rep, nv, sizeof *rep);
     for (kind = 1; kind <= 3; kind++) {
         const eng_state *base_s = NULL;
         int best = -1;
@@ -1585,7 +1649,7 @@ static void tint_passes(void)
             if (!rep[v])
                 continue;
             for (w = 0; w < nv; w++)
-                if (rep[w] && hash_of[w] == hash_of[v])
+                if (rep[w] && hash_of[w] == hash_of[v] && m7_same(rep[w], rep[v], kind))
                     total += rows_of[w];
             if (total > best) {
                 best = total;
@@ -1615,17 +1679,26 @@ static void tint_passes(void)
                 b->made = 1;
                 memset(b->key, 0, sizeof b->key);
             }
-            if (memcmp(b->key, key, sizeof key)) {
+            {
+                int t, same = !memcmp(b->key, key, sizeof key);
+                for (t = 0; t < 256; t++) {
+                    int32_t c = m7_colour(base_s, kind, t);
+                    same &= b->colours[t] == c;
+                    b->colours[t] = c;
+                }
+                if (same)
+                    goto based;
                 memcpy(b->key, key, sizeof key);
                 tint_pass(b->plane, 1024, 0, base_s, kind);
                 tint_pass(b->tile0, 8, 1, base_s, kind);
             }
+        based:;
         }
         /* each other palette's differences from the base's, as corrections */
         for (v = 0; v < nv; v++) {
             int diff[256], nd = 0, t;
             uint32_t at;
-            if (!rep[v] || hash_of[v] == hash_of[base_s->pal])
+            if (!rep[v] || corr_at[v * 3 + (size_t)(kind - 1)] >= 0 || (hash_of[v] == hash_of[base_s->pal] && m7_same(rep[v], base_s, kind)))
                 continue;
             if (!any_s)
                 any_s = rep[v];
@@ -1664,7 +1737,7 @@ static void tint_passes(void)
             {
                 size_t w;
                 for (w = 0; w < nv; w++)
-                    if (w != v && rep[w] && hash_of[w] == hash_of[v])
+                    if (w != v && rep[w] && hash_of[w] == hash_of[v] && m7_same(rep[w], rep[v], kind))
                         corr_at[w * 3 + (size_t)(kind - 1)] = (int32_t)at;
             }
         }
@@ -1678,7 +1751,6 @@ static void tint_passes(void)
                 cov_dirty[k] = 0;
             }
     }
-    free(rep);
 }
 
 /* the textures a Mode 7 draw of kind filters with, and its row's corrections */
@@ -1700,6 +1772,33 @@ void eng_compose(rr_frame *f, const eng_picture *p)
     int k;
     F = f;
     P = p;
+    rows_at = 0;
+    {
+        /* each row's palette versions, by the column each starts at: what the
+           layers, sprites and lists read their colours through */
+        int r;
+        uint32_t at = words((size_t)p->h * 2);
+        rows_at = at;
+        for (r = 0; r < p->h; r++) {
+            const eng_row *row = &p->rows[r];
+            uint32_t i, first = (uint32_t)F->data_words, n = 0;
+            int last = -1;
+            for (i = 0; i < row->count; i++) {
+                const eng_part *pt = &p->parts[row->first + i];
+                int pal = p->states[pt->state].pal;
+                uint32_t e;
+                if (pal == last)
+                    continue;
+                e = words(2);
+                F->data[e] = (uint32_t)(n ? pt->x0 : 0);
+                F->data[e + 1] = (uint32_t)pal;
+                last = pal;
+                n++;
+            }
+            F->data[at + (uint32_t)r * 2] = first;
+            F->data[at + (uint32_t)r * 2 + 1] = n;
+        }
+    }
     memset(list_put, 0, sizeof list_put);
     sprite_pieces();
     plane_pass();

@@ -3,10 +3,11 @@
 #include "common.glsl"
 layout(location = 0) in vec2 v_t;
 layout(location = 1) flat in uvec2 v_s;
+layout(location = 2) in vec2 v_p;
 layout(location = 0) out vec4 o;
 void main()
 {
-    int tpp = u.i[0].z, s = 8 * tpp, cols = u.i[0].y, prow = u.i[0].w;
+    int tpp = u.i[0].z, s = 8 * tpp, cols = u.i[0].y, prow = row_palette(v_p);
     uint n = v_s.x, tile = n & 0xFFFFu, pal = (n >> 16) & 7u;
     ivec2 last = ivec2(int(v_s.y & 0xFFFFu), int(v_s.y >> 16)) * s - 1;
     ivec2 k;

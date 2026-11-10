@@ -3,6 +3,7 @@
 #include "common.glsl"
 layout(location = 0) in vec2 v_t;
 layout(location = 1) flat in uvec2 v_e;
+layout(location = 2) in vec2 v_p;
 layout(location = 0) out vec4 o;
 
 vec3 colour(uint c, uint pal, int prow)
@@ -17,7 +18,7 @@ vec3 colour(uint c, uint pal, int prow)
 
 void main()
 {
-    int s = 8 * u.i[2].x, cols = u.i[2].y, prow = u.i[2].w;
+    int s = 8 * u.i[2].x, cols = u.i[2].y, prow = row_palette(v_p);
     ivec2 k;
     vec2 w;
     vec4 acc = vec4(0.0);

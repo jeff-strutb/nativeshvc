@@ -6,6 +6,7 @@
 #include "common.glsl"
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_colour;
+layout(location = 2) noperspective out vec2 v_p;
 void main()
 {
     int line = gl_VertexIndex / 6;
@@ -20,7 +21,8 @@ void main()
     along = dot(d, d) > 0.0 ? normalize(d) : vec2(1.0, 0.0);
     across = vec2(-along.y, along.x);
     p = (k.x < 0.5 ? pa - along * 0.5 : pb + along * 0.5) + across * (k.y - 0.5);
-    gl_Position = clip_at(p * u.f[6].xy, mix(u.f[6].z, u.f[6].w, wordf(e + 2))) * w;
+    v_p = p * u.f[6].xy;
+    gl_Position = clip_at(v_p, mix(u.f[6].z, u.f[6].w, wordf(e + 2))) * w;
     v_uv = vec2(wordf(e + 4), wordf(e + 5));
     v_colour = vec4(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u), float(c >> 24)) / 255.0;
 }

@@ -21,13 +21,23 @@ layout(binding = 3) uniform sampler2D nshvc_palette;
 layout(binding = 5) uniform usampler2D nshvc_index;
 layout(location = 0) in vec2 nshvc_uv;
 layout(location = 1) in vec4 nshvc_colour;
+layout(location = 2) noperspective in vec2 nshvc_p;
+layout(std430, binding = 1) readonly buffer W { uint w[]; } nshvc_data;
 layout(location = 0) out vec4 nshvc_out;
+int nshvc_row_palette() {
+    int r = clamp(int(floor(nshvc_p.y)), 0, int(nshvc_u.f[1].y) - 1), k = nshvc_u.i[7].w + r * 2;
+    int first = int(nshvc_data.w[k]), n = int(nshvc_data.w[k + 1]), pal = int(nshvc_data.w[first + 1]);
+    for (int i = 1; i < n; i++)
+        if (nshvc_p.x >= float(int(nshvc_data.w[first + i * 2])))
+            pal = int(nshvc_data.w[first + i * 2 + 1]);
+    return pal;
+}
 vec4 nshvc_image(ivec2 p) {
     if (nshvc_u.i[0].w == 0) return nshvc_colour;
     p = clamp(p, ivec2(0), nshvc_u.i[0].yz - 1);
     if (nshvc_u.i[1].x != 0) {
         uint x = texelFetch(nshvc_index, p, 0).r;
-        return x != 0u ? vec4(texelFetch(nshvc_palette, ivec2(int(x), nshvc_u.i[1].y), 0).rgb, 1.0) : vec4(0.0);
+        return x != 0u ? vec4(texelFetch(nshvc_palette, ivec2(int(x), nshvc_row_palette()), 0).rgb, 1.0) : vec4(0.0);
     }
     return texelFetch(nshvc_tex, p, 0);
 }
@@ -70,7 +80,7 @@ def main():
                 f.write(PRE + body + POST)
             spv = os.path.join(out, name + '.spv')
             run('glslangValidator', '-V', '-o', spv, frag)
-            # the bindings as the engine's programs have them: buffer 0, textures and samplers 2, 3 and 5
+            # the bindings as the engine's programs have them: buffers 0 and 1, textures and samplers 2, 3 and 5
             with open(os.path.join(out, name + '.metal'), 'w') as f:
                 f.write(run('spirv-cross', spv, '--msl', '--msl-version', '20100', '--msl-decoration-binding'))
             if not dxc:

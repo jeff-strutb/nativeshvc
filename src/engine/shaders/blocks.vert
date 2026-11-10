@@ -10,19 +10,10 @@
          (f[4], f[5] the plane's texel = (f[4].x x + f[4].y y + f[4].z,
          f[5].x x + f[5].y y + f[5].z), ti0 the plane, ti1 its tiles);
          Mode 7's outside, its tiles' texels a pixel
-   i[2].w: the palette's version; i[3].z: direct colour */
+   i[3].z: direct colour; the palette's version is the row's (row_palette), read by the fragment stage */
 #include "common.glsl"
-layout(location = 0) flat out vec3 v_c;
-
-vec3 tile_colour(uint c, uint pal, int prow)
-{
-    int bpp = u.i[3].x;
-    if (bpp == 8)
-        return u.i[3].z != 0 ? direct(c, pal) : palette(c, prow);
-    if (bpp == 4)
-        return palette(pal * 16u + c, prow);
-    return palette(uint(u.i[3].y) + pal * 4u + c, prow);
-}
+layout(location = 0) flat out uvec2 v_e;       /* the texel's value, its tile's palette */
+layout(location = 1) out vec2 v_p;
 
 void main()
 {
@@ -30,7 +21,7 @@ void main()
     float m = u.f[6].x;
     vec2 b0 = u.f[6].yz + vec2(float(bx), float(by)) * m, b1 = b0 + m;
     vec2 q0 = b0, q1 = b1;
-    int prow = u.i[2].w, kind = u.i[6].x;
+    int kind = u.i[6].x;
     bool high = false;
     if (!keep_to(q0, q1, u.f[2])) {
         gl_Position = NOWHERE;
@@ -85,7 +76,7 @@ void main()
             gl_Position = NOWHERE;
             return;
         }
-        v_c = tile_colour(c, (e >> 16) & 7u, prow);
+        v_e = uvec2(c, (e >> 16) & 7u);
         high = ((e >> 19) & 1u) != 0u;
     } else {
         ivec2 t = ivec2(floor(vec2(dot(u.f[4].xyz, vec3(b0, 1.0)), dot(u.f[5].xyz, vec3(b0, 1.0)))));
@@ -95,15 +86,16 @@ void main()
                 gl_Position = NOWHERE;
                 return;
             }
-            v_c = u.i[3].z != 0 ? direct(p, 0u) : palette(p, prow);
+            v_e = uvec2(p, 0u);
         } else {
             if (p == 0x100u || (p & 0x7Fu) == 0u) {
                 gl_Position = NOWHERE;
                 return;
             }
-            v_c = palette(p & 0x7Fu, prow);
+            v_e = uvec2(p & 0x7Fu, 0u);
             high = (p & 0x80u) != 0u;
         }
     }
-    gl_Position = clip_at(mix(q0, q1, corner(gl_VertexIndex)), high ? u.f[3].z : u.f[3].y);
+    v_p = mix(q0, q1, corner(gl_VertexIndex));
+    gl_Position = clip_at(v_p, high ? u.f[3].z : u.f[3].y);
 }

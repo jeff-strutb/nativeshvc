@@ -7,11 +7,12 @@
    f[4], f[5]: the material's eight inputs
    f[6]: screen pixels a list pixel across and down, the depth of z 0 and of z 1
    i[0]: the first vertex's word, the image's width and height, 1 if it has an image
-   i[1]: 1 if the image is indexed (ti0, through the palette tc1), the palette's version
+   i[1].x: 1 if the image is indexed (ti0, through the palette tc1, the version the row's: row_palette at v_p)
    tc0: a full-colour image */
 #include "common.glsl"
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_colour;
+layout(location = 2) noperspective out vec2 v_p;
 void main()
 {
     int k = u.i[0].x + gl_VertexIndex * 7;
@@ -22,5 +23,6 @@ void main()
     vec2 p = vec2(wordf(k), wordf(k + 1)) * u.f[6].xy;
     gl_Position = clip_at(p, mix(u.f[6].z, u.f[6].w, wordf(k + 2))) * w;
     v_uv = vec2(wordf(k + 4), wordf(k + 5));
+    v_p = p;
     v_colour = vec4(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u), float(c >> 24)) / 255.0;
 }

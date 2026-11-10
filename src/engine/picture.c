@@ -520,10 +520,10 @@ static void list_add(eng_list *l, const nshvc_vertex *v, uint32_t count, uint32_
     c->count = count;
     c->lines = lines;
     if (m) {
-        if (m->image.id && m->image.id < eng_nimages && eng_images_of[m->image.id].format == NSHVC_IMAGE_RGBA)
+        if (m->image.id && m->image.id < eng_nimages)
             c->image = m->image.id;
         else if (m->image.id)
-            eng_report("nshvc_draw", "image %u: a list's image is full colour", m->image.id);
+            eng_report("nshvc_draw", "image %u", m->image.id);
         c->shader = m->shader.id;
         memcpy(c->inputs, m->inputs, sizeof c->inputs);
     }
