@@ -86,6 +86,7 @@ void host_window_pixels(int *w, int *h) { *w = *h = 0; }
 void *host_window_take(void) { return NULL; }
 void host_window_give(void *kept) { (void)kept; }
 void host_window_points(float *w, float *h) { *w = *h = 0; }
+void host_window_sizes(int *pw, int *ph, float *tw, float *th) { *pw = *ph = 0; *tw = *th = 0; }
 #ifdef _WIN32
 void *host_win32_instance(void) { return NULL; }
 #endif

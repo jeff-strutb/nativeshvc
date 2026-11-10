@@ -232,8 +232,7 @@ void eng_input_sample(nshvc_input *in, uint64_t n, int headless)
         /* the pointer and touches, from points to window pixels */
         float pw = 0, ph = 0, sx = 1, sy = 1;
         int ww = 0, wh = 0, t;
-        host_window_points(&pw, &ph);
-        host_window_pixels(&ww, &wh);
+        host_window_sizes(&ww, &wh, &pw, &ph);   /* from the same resize */
         if (pw > 0 && ph > 0 && ww > 0 && wh > 0) {
             sx = (float)ww / pw;
             sy = (float)wh / ph;

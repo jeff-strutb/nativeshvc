@@ -164,22 +164,41 @@ static NSWindow *s_win;
 static PortView *s_view;
 static CGColorSpaceRef s_rgb;
 static CAMetalLayer *s_layer;           /* made with the window, on the main thread */
-static _Atomic uint64_t s_px;           /* the drawable's size in pixels (w << 32 | h): set on the main thread, read anywhere */
-static _Atomic uint64_t s_pt;           /* the view's in points, two floats the same way */
-/* a pair of 32-bit values published as one: never read as one new and one old */
-static uint64_t pair_of(uint32_t a, uint32_t b) { return (uint64_t)a << 32 | b; }
-static uint64_t pairf_of(float a, float b)
+/* the drawable's size in pixels and the view's in points, from one resize:
+   written on the main thread under a sequence count (odd while writing), read
+   anywhere again until the same even count is seen before and after */
+static _Atomic uint32_t s_seq;
+static _Atomic int s_pw, s_ph;
+static _Atomic float s_ptw, s_pth;
+
+static void sizes_publish(int pw, int ph, float tw, float th)
 {
-    uint32_t x, y;
-    memcpy(&x, &a, 4);
-    memcpy(&y, &b, 4);
-    return pair_of(x, y);
+    uint32_t q = atomic_load_explicit(&s_seq, memory_order_relaxed);
+    atomic_store_explicit(&s_seq, q + 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&s_pw, pw, memory_order_relaxed);
+    atomic_store_explicit(&s_ph, ph, memory_order_relaxed);
+    atomic_store_explicit(&s_ptw, tw, memory_order_relaxed);
+    atomic_store_explicit(&s_pth, th, memory_order_relaxed);
+    atomic_store_explicit(&s_seq, q + 2, memory_order_release);
 }
-static void pairf_from(uint64_t v, float *a, float *b)
+
+static void sizes_read(int *pw, int *ph, float *tw, float *th)
 {
-    uint32_t x = (uint32_t)(v >> 32), y = (uint32_t)v;
-    memcpy(a, &x, 4);
-    memcpy(b, &y, 4);
+    uint32_t a, b;
+    for (;;) {
+        a = atomic_load_explicit(&s_seq, memory_order_acquire);
+        if (a & 1)
+            continue;
+        *pw = atomic_load_explicit(&s_pw, memory_order_relaxed);
+        *ph = atomic_load_explicit(&s_ph, memory_order_relaxed);
+        *tw = atomic_load_explicit(&s_ptw, memory_order_relaxed);
+        *th = atomic_load_explicit(&s_pth, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        b = atomic_load_explicit(&s_seq, memory_order_relaxed);
+        if (a == b)
+            return;
+    }
 }
 
 /* on the main thread, when the view's size or scale changes: the drawable
@@ -198,8 +217,7 @@ static void layer_publish(void)
         [s_layer setContentsScale:sc];
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize([s_layer drawableSize], want))
         [s_layer setDrawableSize:want];
-    atomic_store(&s_px, pair_of((uint32_t)want.width, (uint32_t)want.height));
-    atomic_store(&s_pt, pairf_of((float)b.width, (float)b.height));
+    sizes_publish((int)want.width, (int)want.height, (float)b.width, (float)b.height);
 }
 
 @implementation PortView
@@ -375,8 +393,7 @@ void host_window_close(void)
 {
     if (s_win) {
         /* nothing more to draw into: the layer itself is kept, the renderer may still hold it */
-        atomic_store(&s_px, 0);
-        atomic_store(&s_pt, pairf_of(0.0f, 0.0f));
+        sizes_publish(0, 0, 0.0f, 0.0f);
         [s_win orderOut:nil];
         s_win = nil;
         s_view = nil;
@@ -396,9 +413,8 @@ CAMetalLayer *host_metal_layer(void) { return s_layer; }
    per window pixel): read from any thread, AppKit touched on none but the main */
 void host_metal_layer_fit(int *w, int *h)
 {
-    uint64_t v = atomic_load(&s_px);
-    *w = (int)(uint32_t)(v >> 32);
-    *h = (int)(uint32_t)v;
+    float tw, th;
+    sizes_read(w, h, &tw, &th);
 }
 
 void *host_window_handle(void) { return (__bridge void *)s_layer; }
@@ -406,9 +422,12 @@ void *host_window_handle(void) { return (__bridge void *)s_layer; }
 void *host_window_take(void) { return (__bridge void *)s_layer; }
 void host_window_give(void *kept) { (void)kept; }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
+void host_window_sizes(int *pw, int *ph, float *tw, float *th) { sizes_read(pw, ph, tw, th); }
+
 void host_window_points(float *w, float *h)
 {
-    pairf_from(atomic_load(&s_pt), w, h);
+    int pw, ph;
+    sizes_read(&pw, &ph, w, h);
 }
 
 /* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the window, at

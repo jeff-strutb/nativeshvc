@@ -206,6 +206,14 @@ void host_window_pixels(int *w, int *h)
     *w = (int)(uint32_t)(v >> 32);
     *h = (int)(uint32_t)v;
 }
+/* points are pixels here: both from one reading */
+void host_window_sizes(int *pw, int *ph, float *tw, float *th)
+{
+    host_window_pixels(pw, ph);
+    *tw = (float)*pw;
+    *th = (float)*ph;
+}
+
 void host_window_points(float *w, float *h)
 {
     int a, b;

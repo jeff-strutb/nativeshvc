@@ -102,6 +102,8 @@ void host_window_pixels(int *w, int *h);
 /* the window's size in points (the OS's units for touches and layout; 0
    without a window) */
 void host_window_points(float *w, float *h);
+/* both at once, from the same resize: for anything that relates the two */
+void host_window_sizes(int *pw, int *ph, float *tw, float *th);
 /* the next event, waiting up to wait_ms for one; 1 if *ev was filled */
 int  host_poll_event(host_event *ev, uint32_t wait_ms);
 void host_message_box(const char *text, const char *caption);

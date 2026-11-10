@@ -394,6 +394,15 @@ void *host_win32_instance(void) { return (void *)GetModuleHandleA(NULL); }
 
 void host_window_pixels(int *w, int *h);
 
+/* both from one reading of the window: points are pixels at its dots per inch over 96 */
+void host_window_sizes(int *pw, int *ph, float *tw, float *th)
+{
+    int dpi = s_win ? window_dpi(s_win) : 96;
+    host_window_pixels(pw, ph);
+    *tw = (float)*pw * 96.0f / (float)dpi;
+    *th = (float)*ph * 96.0f / (float)dpi;
+}
+
 /* points: pixels at the display's dots per inch over 96 */
 void host_window_points(float *w, float *h)
 {

@@ -95,8 +95,7 @@ nshvc_display nshvc_display_info(void)
     memset(&d, 0, sizeof d);
     if (!eng_on("nshvc_display_info", ENG_GAME))
         return d;
-    host_window_pixels(&d.width, &d.height);
-    host_window_points(&pw, &ph);
+    host_window_sizes(&d.width, &d.height, &pw, &ph);   /* from the same resize */
     host_safe_area(&l, &t, &r, &b);
     if (pw > 0 && ph > 0) {
         d.safe_left = l * (float)d.width / pw;
