@@ -366,8 +366,23 @@ void host_safe_area(float *l, float *t, float *r, float *b)
 static PortView *s_view;
 static PortTouch *s_controls;
 static CAMetalLayer *s_layer;
-static _Atomic int s_pw, s_ph;        /* the drawable's size in pixels */
-static _Atomic float s_ptw, s_pth;    /* the view's in points */
+static _Atomic uint64_t s_px;         /* the drawable's size in pixels (w << 32 | h) */
+static _Atomic uint64_t s_pt;         /* the view's in points, two floats the same way */
+/* a pair of 32-bit values published as one: never read as one new and one old */
+static uint64_t pair_of(uint32_t a, uint32_t b) { return (uint64_t)a << 32 | b; }
+static uint64_t pairf_of(float a, float b)
+{
+    uint32_t x, y;
+    memcpy(&x, &a, 4);
+    memcpy(&y, &b, 4);
+    return pair_of(x, y);
+}
+static void pairf_from(uint64_t v, float *a, float *b)
+{
+    uint32_t x = (uint32_t)(v >> 32), y = (uint32_t)v;
+    memcpy(a, &x, 4);
+    memcpy(b, &y, 4);
+}
 
 @implementation PortView
 + (Class)layerClass { return [CAMetalLayer class]; }
@@ -380,10 +395,8 @@ static _Atomic float s_ptw, s_pth;    /* the view's in points */
     self.contentScaleFactor = sc;
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize(s_layer.drawableSize, want))
         s_layer.drawableSize = want;
-    atomic_store(&s_pw, (int)want.width);
-    atomic_store(&s_ph, (int)want.height);
-    atomic_store(&s_ptw, (float)b.width);
-    atomic_store(&s_pth, (float)b.height);
+    atomic_store(&s_px, pair_of((uint32_t)want.width, (uint32_t)want.height));
+    atomic_store(&s_pt, pairf_of((float)b.width, (float)b.height));
 }
 @end
 
@@ -605,16 +618,16 @@ CAMetalLayer *host_metal_layer(void) { return s_layer; }
 
 void host_metal_layer_fit(int *w, int *h)
 {
-    *w = atomic_load(&s_pw);
-    *h = atomic_load(&s_ph);
+    uint64_t v = atomic_load(&s_px);
+    *w = (int)(uint32_t)(v >> 32);
+    *h = (int)(uint32_t)v;
 }
 
 void *host_window_handle(void) { return (__bridge void *)s_layer; }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_points(float *w, float *h)
 {
-    *w = atomic_load(&s_ptw);
-    *h = atomic_load(&s_pth);
+    pairf_from(atomic_load(&s_pt), w, h);
 }
 
 /* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the view, at

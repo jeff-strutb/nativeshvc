@@ -10,6 +10,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,7 +68,8 @@ static int (*pXChangeProperty)(Display *, XWindow, Atom, Atom, int, int, const u
 static Display *dpy;
 static XWindow win;
 static Atom wm_delete;
-static int win_w, win_h;
+static int win_w, win_h;               /* the event thread's own */
+static _Atomic uint64_t win_px;         /* the size published for every thread: w << 32 | h, never half new */
 static char app_dir[128] = "game", app_title[256] = "nativeshvc", save_dir[1024], res_dir[1024];
 
 static int load_x11(void)
@@ -172,6 +175,7 @@ int host_window_open(int width, int height, const char *title)
     s = pXDefaultScreen(dpy);
     win_w = width * 3;
     win_h = height * 3;
+    atomic_store(&win_px, (uint64_t)(uint32_t)win_w << 32 | (uint32_t)win_h);
     win = pXCreateSimpleWindow(dpy, pXRootWindow(dpy, s), 0, 0, (unsigned)win_w, (unsigned)win_h, 0, 0, 0);
     pXSelectInput(dpy, win, X_MASK | (1L << 21) | (1L << 17));
     pXStoreName(dpy, win, title ? title : app_title);
@@ -193,8 +197,19 @@ void host_window_close(void)
 int host_window_visible(void) { return win != 0; }
 void *host_window_handle(void) { return (void *)win; }
 void *host_x11_display(void) { return dpy; }
-void host_window_pixels(int *w, int *h) { *w = win_w; *h = win_h; }
-void host_window_points(float *w, float *h) { *w = (float)win_w; *h = (float)win_h; }
+void host_window_pixels(int *w, int *h)
+{
+    uint64_t v = atomic_load(&win_px);
+    *w = (int)(uint32_t)(v >> 32);
+    *h = (int)(uint32_t)v;
+}
+void host_window_points(float *w, float *h)
+{
+    int a, b;
+    host_window_pixels(&a, &b);
+    *w = (float)a;
+    *h = (float)b;
+}
 void host_message_box(const char *text, const char *caption) { fprintf(stderr, "%s: %s\n", caption ? caption : "message", text ? text : ""); }
 void host_safe_area(float *l, float *t, float *r, float *b) { *l = *t = *r = *b = 0; }
 void host_text_input(int on) { (void)on; }
@@ -344,6 +359,7 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
         case X_ConfigureNotify:
             win_w = e.configure.width;
             win_h = e.configure.height;
+            atomic_store(&win_px, (uint64_t)(uint32_t)win_w << 32 | (uint32_t)win_h);
             return 0;
         case X_ClientMessage:
             if ((Atom)e.client.data.l[0] == wm_delete) {

@@ -164,8 +164,23 @@ static NSWindow *s_win;
 static PortView *s_view;
 static CGColorSpaceRef s_rgb;
 static CAMetalLayer *s_layer;           /* made with the window, on the main thread */
-static _Atomic int s_pw, s_ph;          /* the drawable's size in pixels: set on the main thread, read anywhere */
-static _Atomic float s_ptw, s_pth;      /* the view's in points */
+static _Atomic uint64_t s_px;           /* the drawable's size in pixels (w << 32 | h): set on the main thread, read anywhere */
+static _Atomic uint64_t s_pt;           /* the view's in points, two floats the same way */
+/* a pair of 32-bit values published as one: never read as one new and one old */
+static uint64_t pair_of(uint32_t a, uint32_t b) { return (uint64_t)a << 32 | b; }
+static uint64_t pairf_of(float a, float b)
+{
+    uint32_t x, y;
+    memcpy(&x, &a, 4);
+    memcpy(&y, &b, 4);
+    return pair_of(x, y);
+}
+static void pairf_from(uint64_t v, float *a, float *b)
+{
+    uint32_t x = (uint32_t)(v >> 32), y = (uint32_t)v;
+    memcpy(a, &x, 4);
+    memcpy(b, &y, 4);
+}
 
 /* on the main thread, when the view's size or scale changes: the drawable
    kept at the view's size in pixels (one pixel per window pixel), and the
@@ -183,10 +198,8 @@ static void layer_publish(void)
         [s_layer setContentsScale:sc];
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize([s_layer drawableSize], want))
         [s_layer setDrawableSize:want];
-    atomic_store(&s_pw, (int)want.width);
-    atomic_store(&s_ph, (int)want.height);
-    atomic_store(&s_ptw, (float)b.width);
-    atomic_store(&s_pth, (float)b.height);
+    atomic_store(&s_px, pair_of((uint32_t)want.width, (uint32_t)want.height));
+    atomic_store(&s_pt, pairf_of((float)b.width, (float)b.height));
 }
 
 @implementation PortView
@@ -362,10 +375,8 @@ void host_window_close(void)
 {
     if (s_win) {
         /* nothing more to draw into: the layer itself is kept, the renderer may still hold it */
-        atomic_store(&s_pw, 0);
-        atomic_store(&s_ph, 0);
-        atomic_store(&s_ptw, 0.0f);
-        atomic_store(&s_pth, 0.0f);
+        atomic_store(&s_px, 0);
+        atomic_store(&s_pt, pairf_of(0.0f, 0.0f));
         [s_win orderOut:nil];
         s_win = nil;
         s_view = nil;
@@ -385,16 +396,16 @@ CAMetalLayer *host_metal_layer(void) { return s_layer; }
    per window pixel): read from any thread, AppKit touched on none but the main */
 void host_metal_layer_fit(int *w, int *h)
 {
-    *w = atomic_load(&s_pw);
-    *h = atomic_load(&s_ph);
+    uint64_t v = atomic_load(&s_px);
+    *w = (int)(uint32_t)(v >> 32);
+    *h = (int)(uint32_t)v;
 }
 
 void *host_window_handle(void) { return (__bridge void *)s_layer; }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_points(float *w, float *h)
 {
-    *w = atomic_load(&s_ptw);
-    *h = atomic_load(&s_pth);
+    pairf_from(atomic_load(&s_pt), w, h);
 }
 
 /* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the window, at

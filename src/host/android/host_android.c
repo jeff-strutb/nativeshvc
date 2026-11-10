@@ -360,11 +360,24 @@ void host_window_close(void) {}
 int host_window_visible(void) { return window != NULL; }
 void *host_window_handle(void) { return window; }
 
+/* the window's size, asked of the window itself in two calls: asked again
+   until a width and height are read together with nothing changed between */
 void host_window_pixels(int *w, int *h)
 {
     ANativeWindow *n = window;
-    *w = n ? ANativeWindow_getWidth(n) : 0;
-    *h = n ? ANativeWindow_getHeight(n) : 0;
+    int a, b;
+    *w = *h = 0;
+    if (!n)
+        return;
+    a = ANativeWindow_getWidth(n);
+    for (;;) {
+        b = ANativeWindow_getHeight(n);
+        if (ANativeWindow_getWidth(n) == a)
+            break;
+        a = ANativeWindow_getWidth(n);
+    }
+    *w = a;
+    *h = b;
 }
 
 void host_window_points(float *w, float *h)
