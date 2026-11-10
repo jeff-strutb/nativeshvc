@@ -18,6 +18,11 @@
 #define P_OVERLAY 11    /* an overlay in window pixels */
 #define P_COVER 12      /* how much of Mode 7's plane (or its tile 0) is each of four values, for its smaller levels */
 
+/* Mode 7's plane in colour, and its coverage, are kept from this level of the
+   plane's down (1024 >> M7_STORED texels a side); finer levels are worked out
+   from the plane itself where they are drawn */
+#define M7_STORED 2
+
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */
 #define SB_STRIPE 2     /* a hires row's even half-column: the sub screen's */

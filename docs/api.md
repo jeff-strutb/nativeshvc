@@ -168,11 +168,12 @@ void nshvc_mode7_set(const nshvc_mode7 *m);
 
 Drawn as a plane at the window's resolution, its texture coordinates from the matrix: the console's own pixel shows
 the texel the console shows there, and the window's pixels between show the plane between. Where a pixel covers more than
-a texel, the plane is filtered from its colours and their smaller levels, along the pixel's footprint: made in the
-palette most of its rows have, and a row whose palette differs adds its differences, each weighted by how much of the
-footprint has that value, filtered the same way. The cost does not grow with palette changes: at most three planes in
-colour a picture, made again only when they change, and coverage for at most 255 plane values, made once until the plane
-changes.
+a texel, the plane is filtered from its colours and their smaller levels along the pixel's footprint, the same way on
+every GPU. The levels finer than a quarter of the plane's size are worked out from the plane in the row's own palette.
+The rest are kept, made in the palette most of its rows have, and a row whose palette differs adds its differences, each
+weighted by how much of the footprint has that value, filtered the same way. Neither the cost nor the memory grows with
+palette changes: at most three planes in colour a picture, made again only when they change, and coverage for at most 255
+plane values, made once until the plane changes; about 24.5 MB of GPU memory at most.
 
 ### 3.5 Sprites
 

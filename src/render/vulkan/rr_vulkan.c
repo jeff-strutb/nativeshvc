@@ -52,7 +52,6 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 
 #define MAX_TEXTURES 16384
 #define MAX_SHADERS 256
-#define SC_MAX 8
 #define COLOUR VK_FORMAT_B8G8R8A8_UNORM     /* the renderer's own colour targets */
 #define UNUSED_FRAMES 120                   /* an extra target unused this many frames is let go */
 
@@ -66,7 +65,7 @@ typedef struct {
     VkImageView v, fv, *lv;
     VkFramebuffer f, *lf;
     uint8_t *fresh;
-    int w, h, format, levels, layers, array, target, made;
+    int w, h, format, levels, layers, array, target, made, unready;
 } Image;
 
 /* what a pass draws into: the multisampled screens with depth and stencil, an
@@ -83,13 +82,17 @@ static VkFormat depth_format;
 static VkSurfaceKHR surface;
 static VkSwapchainKHR swapchain;
 static VkFormat sc_format;
-static VkImage sc_img[SC_MAX];
-static VkImageView sc_view[SC_MAX];
-static VkFramebuffer sc_fb[SC_MAX];
-static VkSemaphore sc_done[SC_MAX];     /* each swapchain image's: its frame drawn, for its present */
-static uint32_t sc_n;
-static int sc_w, sc_h;                  /* the window's size the swapchain was made for */
-static int sc_ew, sc_eh;                /* the swapchain's own size */
+/* the swapchain's images, as many as it made; sc_done each one's: its frame drawn, for its present */
+static VkImage *sc_img;
+static VkImageView *sc_view;
+static VkFramebuffer *sc_fb;
+static VkSemaphore *sc_done;
+static uint32_t sc_n, sc_cap;           /* images; semaphores made */
+static int sc_ok;                       /* a swapchain for the window as it is */
+static int sc_w, sc_h;                  /* the window's size the swapchain was made (or tried) for */
+static int sc_ew, sc_eh;                /* the picture's size: the surface's in the app's orientation */
+static int sc_iw, sc_ih;                /* the images', in the display's own orientation */
+static int sc_turns;                    /* quarter turns clockwise the picture is given when shown */
 /* render passes, [load]: cleared, or what it held kept */
 static VkRenderPass rp_screen, rp_colour[2], rp_index[2], rp_index32[2], rp_show;
 static VkDescriptorSetLayout set_layout;
@@ -299,6 +302,7 @@ static void image_make_layers(Image *t, VkFormat f, int w, int h, int samples, i
     t->layers = layers;
     t->array = array;
     t->made = 1;
+    t->unready = (usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0;   /* to be made readable before anything reads it */
 }
 
 static void image_make(Image *t, VkFormat f, int w, int h, int samples, VkImageUsageFlags usage, VkImageAspectFlags aspect)
@@ -774,13 +778,14 @@ static int make_surface(void)
 #endif
 }
 
-/* the surface's format: 8-bit BGRA or RGBA without sRGB encoding where it
-   offers one (the picture's values are shown as they are), else its first */
+/* the surface's format: 8-bit BGRA or RGBA without sRGB encoding, in the
+   sRGB colour space, where it offers one (the picture's values are shown as
+   they are); else such a format in another colour space; else its first */
 static VkSurfaceFormatKHR surface_format(void)
 {
     VkSurfaceFormatKHR fs[64], best;
     uint32_t n = 64, i;
-    int rank = 99;
+    int rank = 1 << 30;
     memset(&best, 0, sizeof best);
     best.format = COLOUR;
     best.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -792,7 +797,9 @@ static VkSurfaceFormatKHR surface_format(void)
     }
     for (i = 0; i < n; i++) {
         int r = fs[i].format == VK_FORMAT_B8G8R8A8_UNORM ? 0 : fs[i].format == VK_FORMAT_R8G8B8A8_UNORM ? 1
-              : fs[i].format == VK_FORMAT_A8B8G8R8_UNORM_PACK32 ? 2 : 3 + (int)i;
+              : fs[i].format == VK_FORMAT_A8B8G8R8_UNORM_PACK32 ? 2 : 100 + (int)i;
+        if (fs[i].colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && r < 100)
+            r += 10;
         if (r < rank) {
             rank = r;
             best = fs[i];
@@ -802,18 +809,21 @@ static VkSurfaceFormatKHR surface_format(void)
 }
 
 /* the swapchain for a window of w x h pixels, at the size the surface allows
-   (its current extent when it has one, else w x h within its limits): 0 when
-   that size is nothing (minimised) */
+   (its current extent when it has one, else w x h within its limits): 0, with
+   nothing waited for or changed, when that size is nothing (minimised). Where
+   the display is turned from its own orientation (the surface's transform),
+   the images are made in the display's orientation and the picture is turned
+   into them when shown */
 static int swapchain_make(int w, int h)
 {
     VkSurfaceCapabilitiesKHR c;
     VkSwapchainCreateInfoKHR ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     VkSwapchainKHR old = swapchain;
     VkSurfaceFormatKHR sf;
+    VkSurfaceTransformFlagBitsKHR tr;
     VkResult e;
-    uint32_t i, n;
-    int ask_w = w, ask_h = h;
-    vkDeviceWaitIdle(dev);
+    uint32_t i, n, made;
+    int iw, ih, turns;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface, &c);
     if (c.currentExtent.width != UINT32_MAX) {
         w = (int)c.currentExtent.width;
@@ -826,11 +836,25 @@ static int swapchain_make(int w, int h)
     }
     if (w < 1 || h < 1)
         return 0;
+    /* the turn the display needs: the picture is turned into the images (a
+       transform with a mirror, which no display here reports, is left to the
+       presentation engine) */
+    tr = c.currentTransform;
+    turns = tr == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 1 : tr == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR ? 2
+          : tr == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR ? 3 : 0;
+    if (!turns && tr != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR && (c.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
+        tr = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    /* the current extent is in the display's turned orientation, the picture's: the images are in its own */
+    iw = turns & 1 ? h : w;
+    ih = turns & 1 ? w : h;
+    if ((uint32_t)iw < c.minImageExtent.width) iw = (int)c.minImageExtent.width;
+    if ((uint32_t)iw > c.maxImageExtent.width) iw = (int)c.maxImageExtent.width;
+    if ((uint32_t)ih < c.minImageExtent.height) ih = (int)c.minImageExtent.height;
+    if ((uint32_t)ih > c.maxImageExtent.height) ih = (int)c.maxImageExtent.height;
+    vkDeviceWaitIdle(dev);
     n = c.minImageCount + 1;
     if (c.maxImageCount && n > c.maxImageCount)
         n = c.maxImageCount;
-    if (n > SC_MAX)
-        n = SC_MAX;
     sf = surface_format();
     if (sf.format != sc_format || !rp_show) {
         /* the window's render pass, and the pipelines drawing into it, for this format */
@@ -844,11 +868,11 @@ static int swapchain_make(int w, int h)
     ci.minImageCount = n;
     ci.imageFormat = sf.format;
     ci.imageColorSpace = sf.colorSpace;
-    ci.imageExtent.width = (uint32_t)w;
-    ci.imageExtent.height = (uint32_t)h;
+    ci.imageExtent.width = (uint32_t)iw;
+    ci.imageExtent.height = (uint32_t)ih;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    ci.preTransform = c.currentTransform;
+    ci.preTransform = tr;
     /* opaque where the surface allows it, else what it takes; the picture's alpha is 1 */
     ci.compositeAlpha = c.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                       : c.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR ? VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR
@@ -865,7 +889,29 @@ static int swapchain_make(int w, int h)
     }
     if (old)
         vkDestroySwapchainKHR(dev, old, NULL);
-    sc_n = SC_MAX;
+    /* as many images as it made, each with its views and its semaphore */
+    made = 0;
+    vkGetSwapchainImagesKHR(dev, swapchain, &made, NULL);
+    if (made > sc_cap) {
+        VkSemaphoreCreateInfo se = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        VkSemaphore *ns = (VkSemaphore *)realloc(sc_done, made * sizeof *ns);
+        if (!ns)
+            exit(70);
+        sc_done = ns;
+        for (i = sc_cap; i < made; i++)
+            if ((e = vkCreateSemaphore(dev, &se, NULL, &sc_done[i])) != VK_SUCCESS)
+                fail("vkCreateSemaphore", e);
+        sc_cap = made;
+    }
+    free(sc_img);
+    free(sc_view);
+    free(sc_fb);
+    sc_img = (VkImage *)calloc(made ? made : 1, sizeof *sc_img);
+    sc_view = (VkImageView *)calloc(made ? made : 1, sizeof *sc_view);
+    sc_fb = (VkFramebuffer *)calloc(made ? made : 1, sizeof *sc_fb);
+    if (!sc_img || !sc_view || !sc_fb)
+        exit(70);
+    sc_n = made;
     vkGetSwapchainImagesKHR(dev, swapchain, &sc_n, sc_img);
     for (i = 0; i < sc_n; i++) {
         VkImageViewCreateInfo vi = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -876,12 +922,13 @@ static int swapchain_make(int w, int h)
         vi.subresourceRange.levelCount = vi.subresourceRange.layerCount = 1;
         if ((e = vkCreateImageView(dev, &vi, NULL, &sc_view[i])) != VK_SUCCESS)
             fail("vkCreateImageView (the window's)", e);
-        sc_fb[i] = framebuffer(rp_show, &sc_view[i], 1, w, h);
+        sc_fb[i] = framebuffer(rp_show, &sc_view[i], 1, iw, ih);
     }
-    sc_w = ask_w;
-    sc_h = ask_h;
-    sc_ew = w;
-    sc_eh = h;
+    sc_ew = turns & 1 ? ih : iw;
+    sc_eh = turns & 1 ? iw : ih;
+    sc_iw = iw;
+    sc_ih = ih;
+    sc_turns = turns;
     return 1;
 }
 
@@ -893,6 +940,13 @@ static int depth_ok(VkFormat f)
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(phys, f, &p);
     return (p.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+}
+
+/* a step of opening failed: whatever was made, let go */
+static int open_failed(void)
+{
+    rr_close();
+    return 0;
 }
 
 int rr_open(void)
@@ -929,9 +983,9 @@ int rr_open(void)
     VK_FUNCS(X)
 #undef X
     if (windowed && !make_surface())
-        return 0;
+        return open_failed();
     if (vkEnumeratePhysicalDevices(inst, &n, devs) < 0 || !n)
-        return 0;
+        return open_failed();
     phys = VK_NULL_HANDLE;
     for (d = 0; d < n && !phys; d++) {
         VkQueueFamilyProperties q[16];
@@ -949,12 +1003,12 @@ int rr_open(void)
         }
     }
     if (!phys)
-        return 0;
+        return open_failed();
     depth_format = depth_ok(VK_FORMAT_D24_UNORM_S8_UINT) ? VK_FORMAT_D24_UNORM_S8_UINT
                  : depth_ok(VK_FORMAT_D32_SFLOAT_S8_UINT) ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_UNDEFINED;
     if (depth_format == VK_FORMAT_UNDEFINED) {
         fprintf(stderr, "rr: vulkan: no depth and stencil format\n");
-        return 0;
+        return open_failed();
     }
     {
         /* anisotropic filtering where the GPU has it */
@@ -972,7 +1026,7 @@ int rr_open(void)
     di.enabledExtensionCount = surface ? 1 : 0;
     di.ppEnabledExtensionNames = &dext;
     if (vkCreateDevice(phys, &di, NULL, &dev) != VK_SUCCESS)
-        return 0;
+        return open_failed();
     vkGetDeviceQueue(dev, family, 0, &queue);
 
     rp_screen = render_pass(COLOUR, RR_SAMPLES, 1, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -999,15 +1053,15 @@ int rr_open(void)
         li.bindingCount = 2 + RR_TEX_SLOTS;
         li.pBindings = b;
         if (vkCreateDescriptorSetLayout(dev, &li, NULL, &set_layout) != VK_SUCCESS)
-            return 0;
+            return open_failed();
         pi.setLayoutCount = 1;
         pi.pSetLayouts = &set_layout;
         if (vkCreatePipelineLayout(dev, &pi, NULL, &layout) != VK_SUCCESS)
-            return 0;
+            return open_failed();
         si.magFilter = si.minFilter = VK_FILTER_NEAREST;
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         if (vkCreateSampler(dev, &si, NULL, &sampler) != VK_SUCCESS)
-            return 0;
+            return open_failed();
         {
             VkPhysicalDeviceProperties pp;
             vkGetPhysicalDeviceProperties(phys, &pp);
@@ -1020,14 +1074,14 @@ int rr_open(void)
             if (!si.anisotropyEnable)
                 si.maxAnisotropy = 1;
             if (vkCreateSampler(dev, &si, NULL, &filtered) != VK_SUCCESS)
-                return 0;
+                return open_failed();
         }
     }
     for (k = 0; k < RR_PROGRAMS; k++) {
         vert_mod[k] = shader(programs[k].vs, programs[k].vs_size);
         frag_mod[k] = shader(programs[k].fs, programs[k].fs_size);
         if (!vert_mod[k] || !frag_mod[k])
-            return 0;
+            return open_failed();
     }
     {
         VkCommandPoolCreateInfo ci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
@@ -1037,17 +1091,15 @@ int rr_open(void)
         ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         ci.queueFamilyIndex = family;
         if (vkCreateCommandPool(dev, &ci, NULL, &cmd_pool) != VK_SUCCESS)
-            return 0;
+            return open_failed();
         ai.commandPool = cmd_pool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS)
-            return 0;
+            return open_failed();
         fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         vkCreateFence(dev, &fi, NULL, &fence);
         vkCreateSemaphore(dev, &se, NULL, &sem_acquire);
-        for (k = 0; k < SC_MAX; k++)
-            vkCreateSemaphore(dev, &se, NULL, &sc_done[k]);
     }
     image_make(&none_colour, COLOUR, 1, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     image_make(&none_index, VK_FORMAT_R8_UINT, 1, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1071,7 +1123,7 @@ void rr_close(void)
     size_t i;
     int k;
     if (!dev)
-        return;
+        goto instance;
     vkDeviceWaitIdle(dev);
     for (i = 0; i < cap_pipes; i++)
         if (pipes[i].used && pipes[i].p)
@@ -1115,9 +1167,18 @@ void rr_close(void)
     }
     if (swapchain)
         vkDestroySwapchainKHR(dev, swapchain, NULL);
-    for (k = 0; k < SC_MAX; k++)
-        if (sc_done[k])
-            vkDestroySemaphore(dev, sc_done[k], NULL);
+    for (i = 0; i < sc_cap; i++)
+        vkDestroySemaphore(dev, sc_done[i], NULL);
+    free(sc_done);
+    free(sc_img);
+    free(sc_view);
+    free(sc_fb);
+    sc_done = NULL;
+    sc_img = NULL;
+    sc_view = NULL;
+    sc_fb = NULL;
+    sc_n = sc_cap = 0;
+    swapchain = VK_NULL_HANDLE;
     if (sem_acquire)
         vkDestroySemaphore(dev, sem_acquire, NULL);
     if (fence)
@@ -1138,9 +1199,13 @@ void rr_close(void)
     vkDestroyDescriptorSetLayout(dev, set_layout, NULL);
     vkDestroyDevice(dev, NULL);
     dev = VK_NULL_HANDLE;
+instance:
     if (surface)
         vkDestroySurfaceKHR(inst, surface, NULL);
-    vkDestroyInstance(inst, NULL);
+    surface = VK_NULL_HANDLE;
+    if (inst)
+        vkDestroyInstance(inst, NULL);
+    inst = VK_NULL_HANDLE;
 }
 
 const char *rr_name(void) { return "vulkan"; }
@@ -1237,23 +1302,55 @@ static void make_textures(const rr_frame *f)
     }
 }
 
+/* the frame's texture operations by texture, each texture's in their order */
+static const rr_tex_op *sort_ops;
+static int cmp_op(const void *a, const void *b)
+{
+    size_t x = *(const size_t *)a, y = *(const size_t *)b;
+    if (sort_ops[x].id != sort_ops[y].id)
+        return sort_ops[x].id < sort_ops[y].id ? -1 : 1;
+    return x < y ? -1 : x > y;
+}
+
+/* each texture made this frame readable from the start (unwritten texels are
+   what they are); then each texture's writes since it was last made, together:
+   one transition of the level and layer written into, every copy, one back */
 static void record_texops(const rr_frame *f)
 {
-    size_t i;
-    for (i = 0; i < f->ntexops; i++) {
-        const rr_tex_op *o = &f->texops[i];
-        Image *t;
-        if (o->id >= MAX_TEXTURES)
-            continue;
-        t = &tex[o->id];
-        if (!t->i)
-            continue;
-        if (o->op == RR_TEX_CREATE) {
-            /* readable from the first: unwritten texels are what they are */
+    static size_t *order;
+    static size_t cap_order;
+    size_t i, j, n = 0;
+    if (cap_order < f->ntexops) {
+        free(order);
+        cap_order = f->ntexops * 2;
+        order = (size_t *)malloc(cap_order * sizeof *order);
+        if (!order)
+            exit(70);
+    }
+    for (i = 0; i < f->ntexops; i++)
+        if (f->texops[i].id < MAX_TEXTURES && tex[f->texops[i].id].i)
+            order[n++] = i;
+    sort_ops = f->texops;
+    qsort(order, n, sizeof *order, cmp_op);
+    for (i = 0; i < n; i = j) {
+        uint32_t id = f->texops[order[i]].id;
+        Image *t = &tex[id];
+        size_t first = i, k;
+        int writes = 0;
+        for (j = i; j < n && f->texops[order[j]].id == id; j++)
+            if (f->texops[order[j]].op == RR_TEX_CREATE)
+                first = j;          /* writes before the last making went to the texture it replaced */
+        if (f->texops[order[first]].op == RR_TEX_CREATE) {
             barrier(t->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
-        } else {
+            first++;
+        }
+        for (k = first; k < j; k++) {
+            const rr_tex_op *o = &f->texops[order[k]];
             VkBufferImageCopy c;
+            if (!writes++)
+                barrier_levels(t->i, 0, 0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                               VK_ACCESS_TRANSFER_WRITE_BIT, SHADER_STAGES | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             memset(&c, 0, sizeof c);
             c.bufferOffset = o->at;
             c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1263,12 +1360,11 @@ static void record_texops(const rr_frame *f)
             c.imageExtent.width = o->w;
             c.imageExtent.height = o->h;
             c.imageExtent.depth = 1;
-            barrier(t->i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
-                    VK_ACCESS_TRANSFER_WRITE_BIT, SHADER_STAGES | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             vkCmdCopyBufferToImage(cmd, staging.b, t->i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
-            barrier(t->i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, SHADER_STAGES);
         }
+        if (writes)
+            barrier_levels(t->i, 0, 0, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, SHADER_STAGES);
     }
 }
 
@@ -1334,12 +1430,15 @@ int rr_draw(rr_frame *f)
 
     if (surface) {
         int ww = 0, wh = 0;
-        int made = 1;
         host_window_pixels(&ww, &wh);
-        /* made again for a new size; until a swapchain of some size can be made, nothing is shown */
-        if (ww >= 1 && wh >= 1 && (ww != sc_w || wh != sc_h))
-            made = swapchain_make(ww, wh);
-        if (ww >= 1 && wh >= 1 && made && swapchain) {
+        /* made again for a new size or when it no longer fits; until it can be made, nothing is shown */
+        if (ww >= 1 && wh >= 1 && (!sc_ok || ww != sc_w || wh != sc_h)) {
+            /* until the surface has a size again (minimised), only its size is asked */
+            sc_w = ww;
+            sc_h = wh;
+            sc_ok = swapchain_make(ww, wh);
+        }
+        if (ww >= 1 && wh >= 1 && sc_ok) {
             ow = sc_ew;
             oh = sc_eh;
             show = 1;
@@ -1385,11 +1484,12 @@ int rr_draw(rr_frame *f)
         }
     }
     {
-        /* the show pass's block, past the frame's */
+        /* the show pass's block, past the frame's: the window's images, the picture turned into them */
         rr_uniform u;
         memset(&u, 0, sizeof u);
-        u.f[0][0] = (float)ow;
-        u.f[0][1] = (float)oh;
+        u.f[0][0] = (float)sc_iw;
+        u.f[0][1] = (float)sc_ih;
+        u.i[0][0] = sc_turns;
         u.f[0][2] = 1.0f;
         u.f[0][3] = 1.0f;
         memcpy((char *)ubuf.at + f->nuniforms * 256, &u, sizeof u);
@@ -1397,8 +1497,9 @@ int rr_draw(rr_frame *f)
 
     if (show) {
         VkResult r = vkAcquireNextImageKHR(dev, swapchain, UINT64_MAX, sem_acquire, VK_NULL_HANDLE, &image);
-        if (r == VK_ERROR_OUT_OF_DATE_KHR || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) || image >= sc_n) {
-            sc_w = 0;
+        /* an index is always one of the images made (as many as there are) */
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+            sc_ok = 0;
             show = 0;
         } else {
             paced = 1;
@@ -1408,13 +1509,15 @@ int rr_draw(rr_frame *f)
     vkResetFences(dev, 1, &fence);
     vkResetCommandBuffer(cmd, 0);
     vkBeginCommandBuffer(cmd, &begin);
-    if (!ever) {
-        barrier(none_colour.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
-        barrier(none_index.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
-        barrier(none_array.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
+    {
+        /* the renderer's own textures made since the last frame, readable from the start (the frame's are below) */
+        Image *own[8] = { &none_colour, &none_index, &none_array, &picture, &output, &screen_res[0], &screen_res[1], &screen_res[2] };
+        for (k = 0; k < 8; k++)
+            if (own[k]->i && own[k]->unready)
+                barrier(own[k]->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
+                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
+        for (k = 0; k < 8; k++)
+            own[k]->unready = 0;
     }
     record_texops(f);
     for (p = 0; p < f->npasses; p++) {
@@ -1429,8 +1532,9 @@ int rr_draw(rr_frame *f)
                 fprintf(stderr, "rr: vulkan: a pass into no target (%u, texture %u, layer %u) left out\n", ps->target, ps->texture, ps->layer);
             continue;
         }
-        /* the view: the frame's units shown at its aspect, centred in this target */
-        rr_view(aspect, tw, th, &vx, &vy, &vw, &vh);
+        /* the view: the frame's units shown at their aspect, centred in this target; a
+           window-sized target with no window and no RR_SIZE is the units themselves, filled */
+        rr_view(ps->target == RR_TARGET_TEXTURE ? f->aspect : aspect, tw, th, &vx, &vy, &vw, &vh);
         memset(clr, 0, sizeof clr);
         memcpy(clr[0].color.float32, ps->clear, sizeof ps->clear);
         if (kind == KIND_SCREEN) {
@@ -1538,8 +1642,8 @@ int rr_draw(rr_frame *f)
         /* the output, shown */
         VkRenderPassBeginInfo bi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         VkPipeline pl = pipe_of(RR_SHOW, 0, RR_BLEND_REPLACE, 0, 0, KIND_SHOW);
-        VkViewport vp = { 0, 0, (float)ow, (float)oh, 0, 1 };
-        VkRect2D sc = { { 0, 0 }, { (uint32_t)ow, (uint32_t)oh } };
+        VkViewport vp = { 0, 0, (float)sc_iw, (float)sc_ih, 0, 1 };
+        VkRect2D sc = { { 0, 0 }, { (uint32_t)sc_iw, (uint32_t)sc_ih } };
         uint32_t off = (uint32_t)f->nuniforms * 256;
         bi.renderPass = rp_show;
         bi.framebuffer = sc_fb[image];
@@ -1580,7 +1684,7 @@ int rr_draw(rr_frame *f)
         pi.pImageIndices = &image;
         r = vkQueuePresentKHR(queue, &pi);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
-            sc_w = 0;
+            sc_ok = 0;
     }
     ever = 1;
     last_w = ow;
@@ -1616,6 +1720,16 @@ int rr_read(uint32_t *argb, int *w, int *h)
         barrier(output.i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
                 VK_ACCESS_TRANSFER_READ_BIT, ALL_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
         vkCmdCopyImageToBuffer(cmd, output.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.b, 1, &c);
+        {
+            /* the copy made visible to the CPU's reads */
+            VkBufferMemoryBarrier hb = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+            hb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            hb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            hb.srcQueueFamilyIndex = hb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            hb.buffer = readback.b;
+            hb.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+        }
         barrier(output.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
                 VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, ALL_STAGES);
         vkEndCommandBuffer(cmd);

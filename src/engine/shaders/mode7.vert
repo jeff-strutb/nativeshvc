@@ -6,10 +6,11 @@
    f[2]: the rectangle; f[3]: alpha written, depth at priority 0, at 1
    i[6]: 1 BG1, 2 BG2's texels of priority 0, 3 those of 1; outside; the tiles' texels a pixel
    i[2].w: the palette's version; i[3].z: direct colour
-   i[7].x: 1 if the plane in colour is given, with its smaller levels (tc1), and tile 0 (tc2), in
-         the palette most of Mode 7's rows have; i[7].y: where this row's palette differs, the
+   i[7].x: 1 if the plane in colour is given, from level M7_STORED down (tc1), and tile 0 (tc2),
+         in the palette most of Mode 7's rows have; finer levels are worked out from the plane in
+         this row's palette; i[7].y: where this row's palette differs, the
          first word of its corrections, else -1: a count, then four words each: a layer of the
-         coverage arrays (ta0 the plane's, ta1 tile 0's) | its channel << 8, and the colour that
+         coverage arrays (ta0 the plane's, ta1 tile 0's, from level M7_STORED down) | its channel << 8, and the colour that
          the plane value there gains (red, green, blue, floats)
    f[6], f[7]: the texel step from the row above the strip's first row (i[7].z) to it, and from
          its last row (before i[6].w) to the row below, each by those rows' own matrices: the

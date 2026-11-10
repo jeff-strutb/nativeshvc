@@ -16,6 +16,7 @@
 #import <Metal/Metal.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <GameController/GameController.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 
 #include "host.h"
@@ -162,10 +163,45 @@ static void key_event(uint16_t mac, int down)
 static NSWindow *s_win;
 static PortView *s_view;
 static CGColorSpaceRef s_rgb;
+static CAMetalLayer *s_layer;           /* made with the window, on the main thread */
+static _Atomic int s_pw, s_ph;          /* the drawable's size in pixels: set on the main thread, read anywhere */
+static _Atomic float s_ptw, s_pth;      /* the view's in points */
+
+/* on the main thread, when the view's size or scale changes: the drawable
+   kept at the view's size in pixels (one pixel per window pixel), and the
+   sizes published for the other threads */
+static void layer_publish(void)
+{
+    CGFloat sc;
+    CGSize b, want;
+    if (!s_view || !s_layer || !s_win)
+        return;
+    sc = [s_win backingScaleFactor];
+    b = [s_view bounds].size;
+    want = CGSizeMake(floor(b.width * sc + 0.5), floor(b.height * sc + 0.5));
+    if ([s_layer contentsScale] != sc)
+        [s_layer setContentsScale:sc];
+    if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize([s_layer drawableSize], want))
+        [s_layer setDrawableSize:want];
+    atomic_store(&s_pw, (int)want.width);
+    atomic_store(&s_ph, (int)want.height);
+    atomic_store(&s_ptw, (float)b.width);
+    atomic_store(&s_pth, (float)b.height);
+}
 
 @implementation PortView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)wantsUpdateLayer { return YES; }
+- (void)setFrameSize:(NSSize)size
+{
+    [super setFrameSize:size];
+    layer_publish();
+}
+- (void)viewDidChangeBackingProperties
+{
+    [super viewDidChangeBackingProperties];
+    layer_publish();
+}
 - (void)keyDown:(NSEvent *)ev
 {
     if (!([ev modifierFlags] & NSEventModifierFlagCommand))
@@ -299,8 +335,14 @@ int host_window_open(int width, int height, const char *title)
         [s_win setTitle:[NSString stringWithUTF8String:title ? title : s_app_title]];
         [s_win setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
         s_view = [[PortView alloc] initWithFrame:r];
+        /* the view's layer is a Metal layer, for a renderer that draws with Metal or Vulkan (MoltenVK) */
+        s_layer = [CAMetalLayer layer];
+        [s_layer setPixelFormat:MTLPixelFormatBGRA8Unorm];
+        [s_layer setFramebufferOnly:NO];       /* the renderer copies its frame in */
+        [s_layer setMagnificationFilter:kCAFilterNearest];
+        [s_layer setBackgroundColor:CGColorGetConstantColor(kCGColorBlack)];
+        [s_view setLayer:s_layer];
         [s_view setWantsLayer:YES];
-        [[s_view layer] setBackgroundColor:CGColorGetConstantColor(kCGColorBlack)];
         [s_win setContentView:s_view];
         s_delegate = [PortWindowDelegate new];
         [s_win setDelegate:s_delegate];
@@ -311,6 +353,7 @@ int host_window_open(int width, int height, const char *title)
         if (!getenv("PORT_NOACTIVATE"))       /* a test run launched in the background stays there */
             [NSApp activateIgnoringOtherApps:YES];
         s_rgb = CGColorSpaceCreateDeviceRGB();
+        layer_publish();
     }
     return 1;
 }
@@ -318,6 +361,11 @@ int host_window_open(int width, int height, const char *title)
 void host_window_close(void)
 {
     if (s_win) {
+        /* nothing more to draw into: the layer itself is kept, the renderer may still hold it */
+        atomic_store(&s_pw, 0);
+        atomic_store(&s_ph, 0);
+        atomic_store(&s_ptw, 0.0f);
+        atomic_store(&s_pth, 0.0f);
         [s_win orderOut:nil];
         s_win = nil;
         s_view = nil;
@@ -330,54 +378,23 @@ int host_window_visible(void)
 }
 
 /* the window's CAMetalLayer, for a renderer that draws with Metal or
-   Vulkan (MoltenVK): the view's layer becomes a Metal layer */
-CAMetalLayer *host_metal_layer(void)
-{
-    static CAMetalLayer *ml;
-    if (!s_view)
-        return nil;
-    if (!ml) {
-        ml = [CAMetalLayer layer];
-        [ml setPixelFormat:MTLPixelFormatBGRA8Unorm];
-        [ml setFramebufferOnly:NO];            /* the renderer copies its frame in */
-        [ml setMagnificationFilter:kCAFilterNearest];
-        [s_view setLayer:ml];
-        [s_view setWantsLayer:YES];
-        [ml setContentsScale:[s_win backingScaleFactor]];
-        [ml setDrawableSize:CGSizeMake([s_view bounds].size.width * [s_win backingScaleFactor],
-                                       [s_view bounds].size.height * [s_win backingScaleFactor])];
-    }
-    return ml;
-}
+   Vulkan (MoltenVK); made with the window, on the main thread */
+CAMetalLayer *host_metal_layer(void) { return s_layer; }
 
-/* the Metal layer's drawable kept at the view's size in pixels, so the
-   renderer draws one pixel per window pixel; *w x *h is that size */
+/* the drawable's size in pixels, as the main thread last set it (one pixel
+   per window pixel): read from any thread, AppKit touched on none but the main */
 void host_metal_layer_fit(int *w, int *h)
 {
-    CAMetalLayer *ml = host_metal_layer();
-    CGFloat sc;
-    CGSize b, want;
-    *w = *h = 0;
-    if (!ml)
-        return;
-    sc = [s_win backingScaleFactor];
-    b = [s_view bounds].size;
-    want = CGSizeMake(floor(b.width * sc + 0.5), floor(b.height * sc + 0.5));
-    if ([ml contentsScale] != sc)
-        [ml setContentsScale:sc];
-    if (!CGSizeEqualToSize([ml drawableSize], want) && want.width >= 1 && want.height >= 1)
-        [ml setDrawableSize:want];
-    *w = (int)want.width;
-    *h = (int)want.height;
+    *w = atomic_load(&s_pw);
+    *h = atomic_load(&s_ph);
 }
 
-void *host_window_handle(void) { return (__bridge void *)host_metal_layer(); }
+void *host_window_handle(void) { return (__bridge void *)s_layer; }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_points(float *w, float *h)
 {
-    CGSize b = s_view ? [s_view bounds].size : CGSizeZero;
-    *w = (float)b.width;
-    *h = (float)b.height;
+    *w = atomic_load(&s_ptw);
+    *h = atomic_load(&s_pth);
 }
 
 /* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the window, at

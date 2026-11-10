@@ -1469,17 +1469,26 @@ static void plane_pass(void)
     pass_end();
 }
 
-/* Where Mode 7's plane is drawn smaller than its texels, it is filtered from
-   the plane in colour and its smaller levels. For each of BG1 (kind 1) and
-   BG2's two priorities (2, 3), one plane in colour (and its tile 0, for the
-   outside) is made, in the palette most of the rows drawing it have, made
-   again only when the plane, its tiles or that palette change. A row whose
-   palette differs adds its differences: for each plane value whose colour
-   differs, the difference times how much of the pixel's footprint has that
-   value, read from coverage layers filtered the same way, so the result is
-   exact. Coverage depends on the plane alone, so it is made once for each
-   plane value that needs it until the plane changes: at most 255 values,
-   four a layer, however the palettes change. */
+/* Where Mode 7's plane is drawn smaller than its texels, it is filtered along
+   each pixel's footprint between its levels. Levels finer than M7_STORED are
+   worked out from the plane itself in the row's own palette where they are
+   drawn; from M7_STORED down they are kept. For each of BG1 (kind 1) and
+   BG2's two priorities (2, 3), the plane in colour (and its tile 0, for the
+   outside) is kept from that level down, in the palette most of the rows
+   drawing it have, made again only when the plane, its tiles or that palette
+   change. A row whose palette differs adds its differences: for each plane
+   value whose colour differs, the difference times how much of the footprint
+   has that value, read from coverage layers filtered the same way, so the
+   result is exact. Coverage depends on the plane alone, so it is made once
+   for each plane value that needs it until the plane changes: at most 255
+   values, four a layer, however the palettes change.
+
+   Memory, whatever the palettes do: the plane (1024 x 1024, a byte a texel:
+   1 MB); the three planes in colour, 256 x 256 BGRA with their smaller levels
+   (about 349 KB each); the coverage, at most 64 such layers (about 22.4 MB);
+   tile 0's are 2 x 2. At most about 24.5 MB in all. */
+#define M7_KEPT (1024 >> M7_STORED)     /* the kept plane's side */
+#define M7_KEPT0 (8 >> M7_STORED)       /* the kept tile 0's */
 typedef struct { uint32_t key[6], plane, tile0; int32_t colours[256]; int made; } Base;
 static Base bases[3];
 static int base_pal[3];             /* by kind: the palette version the base was made with this frame, or -1 */
@@ -1538,6 +1547,7 @@ static void tint_pass(uint32_t tex, int size, int source, const eng_state *s, in
     u->f[1][1] = (float)size;
     u->i[0][0] = source;
     u->i[0][1] = (int32_t)t->tpp;
+    u->i[0][2] = 1 << M7_STORED;            /* each texel the mean of these a side of the plane's */
     u->i[2][3] = s->pal;
     u->i[3][2] = kind == 1 && s->l[0].direct_colour;
     u->i[6][0] = kind;
@@ -1561,6 +1571,7 @@ static void cover_pass(uint32_t tex, int size, int source, int layer, const eng_
     u->f[1][1] = (float)size;
     u->i[0][0] = source;
     u->i[0][1] = (int32_t)eng_tiles_of[s->m7.tiles.id].tpp;
+    u->i[0][2] = 1 << M7_STORED;
     for (k = 0; k < 4; k++)
         u->i[1][k] = layer * 4 + k < cov_n ? cov_value[layer * 4 + k] : -1;
     d->tex[3] = (int32_t)plane_tex;
@@ -1586,8 +1597,8 @@ static int cover_need(int t)
             cov_plane = eng_texture_id();
             cov_tile0 = eng_texture_id();
         }
-        eng_texture_array(F, cov_plane, 1024, 1024, (uint32_t)cov_layers, RR_TEX_TARGET | RR_TEX_MIPS);
-        eng_texture_array(F, cov_tile0, 8, 8, (uint32_t)cov_layers, RR_TEX_TARGET | RR_TEX_MIPS);
+        eng_texture_array(F, cov_plane, M7_KEPT, M7_KEPT, (uint32_t)cov_layers, RR_TEX_TARGET | RR_TEX_MIPS);
+        eng_texture_array(F, cov_tile0, M7_KEPT0, M7_KEPT0, (uint32_t)cov_layers, RR_TEX_TARGET | RR_TEX_MIPS);
         for (k = 0; k < cov_layers && k < 64; k++)
             cov_dirty[k] = k * 4 < cov_n;
     }
@@ -1674,8 +1685,8 @@ static void tint_passes(void)
             if (!b->made) {
                 b->plane = eng_texture_id();
                 b->tile0 = eng_texture_id();
-                eng_texture_create(F, b->plane, 1024, 1024, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
-                eng_texture_create(F, b->tile0, 8, 8, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
+                eng_texture_create(F, b->plane, M7_KEPT, M7_KEPT, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
+                eng_texture_create(F, b->tile0, M7_KEPT0, M7_KEPT0, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
                 b->made = 1;
                 memset(b->key, 0, sizeof b->key);
             }
@@ -1689,8 +1700,8 @@ static void tint_passes(void)
                 if (same)
                     goto based;
                 memcpy(b->key, key, sizeof key);
-                tint_pass(b->plane, 1024, 0, base_s, kind);
-                tint_pass(b->tile0, 8, 1, base_s, kind);
+                tint_pass(b->plane, M7_KEPT, 0, base_s, kind);
+                tint_pass(b->tile0, M7_KEPT0, 1, base_s, kind);
             }
         based:;
         }
@@ -1746,8 +1757,8 @@ static void tint_passes(void)
     if (any && any_s && cov_n) {
         for (k = 0; k < cov_layers && k < 64; k++)
             if (cov_dirty[k]) {
-                cover_pass(cov_plane, 1024, 0, k, any_s);
-                cover_pass(cov_tile0, 8, 1, k, any_s);
+                cover_pass(cov_plane, M7_KEPT, 0, k, any_s);
+                cover_pass(cov_tile0, M7_KEPT0, 1, k, any_s);
                 cov_dirty[k] = 0;
             }
     }

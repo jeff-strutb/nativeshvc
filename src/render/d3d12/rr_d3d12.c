@@ -49,6 +49,8 @@ typedef struct {
     uint8_t *fresh;
     int w, h, format, rtv, rtvs, levels, layers, array, target;
     D3D12_RESOURCE_STATES state;
+    uint64_t made_frame;        /* the frame it was last made in, and that frame's op that made it */
+    size_t made_at;
 } Tex;
 typedef struct { void *code; size_t size; } Code;
 
@@ -298,6 +300,13 @@ static void srv_heap_fit(UINT tables)
     }
 }
 
+/* a step of opening failed: whatever was made, let go */
+static int open_failed(void)
+{
+    rr_close();
+    return 0;
+}
+
 int rr_open(void)
 {
     D3D12_COMMAND_QUEUE_DESC qd;
@@ -305,17 +314,17 @@ int rr_open(void)
     HWND hwnd;
 
     if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory)))
-        return 0;
+        return open_failed();
     if (FAILED(D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&dev)))
-        return 0;
+        return open_failed();
     memset(&qd, 0, sizeof qd);
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     if (FAILED(ID3D12Device_CreateCommandQueue(dev, &qd, &IID_ID3D12CommandQueue, (void **)&queue)))
-        return 0;
+        return open_failed();
     if (FAILED(ID3D12Device_CreateCommandAllocator(dev, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&alloc)))
-        return 0;
+        return open_failed();
     if (FAILED(ID3D12Device_CreateCommandList(dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, NULL, &IID_ID3D12GraphicsCommandList, (void **)&list)))
-        return 0;
+        return open_failed();
     ID3D12GraphicsCommandList_Close(list);
     ID3D12Device_CreateFence(dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence);
     fence_event = CreateEventA(NULL, FALSE, FALSE, NULL);
@@ -370,12 +379,15 @@ int rr_open(void)
         rs.pParameters = p;
         rs.NumStaticSamplers = RR_TEX_SLOTS;
         rs.pStaticSamplers = s;
-        if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)))
-            return 0;
+        if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) {
+            if (err)
+                ID3D10Blob_Release(err);
+            return open_failed();
+        }
         if (FAILED(ID3D12Device_CreateRootSignature(dev, 0, ID3D10Blob_GetBufferPointer(blob), ID3D10Blob_GetBufferSize(blob),
                                                     &IID_ID3D12RootSignature, (void **)&root))) {
             ID3D10Blob_Release(blob);
-            return 0;
+            return open_failed();
         }
         ID3D10Blob_Release(blob);
     }
@@ -401,7 +413,7 @@ int rr_open(void)
         sd.BufferCount = FRAMES;
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         if (FAILED(IDXGIFactory4_CreateSwapChainForHwnd(factory, (IUnknown *)queue, hwnd, &sd, NULL, NULL, &s1)))
-            return 0;
+            return open_failed();
         IDXGISwapChain1_QueryInterface(s1, &IID_IDXGISwapChain3, (void **)&swapchain);
         IDXGISwapChain1_Release(s1);
         sc_w = (int)sd.Width;
@@ -710,6 +722,8 @@ static void make_textures(const rr_frame *f)
                         o->flags & RR_TEX_TARGET ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
         t->format = o->format;
         t->target = (o->flags & RR_TEX_TARGET) != 0;
+        t->made_frame = frame_no;
+        t->made_at = i;
         if (!t->target || t->rtvs < levels * layers) {
             /* the slots it held given back, unless they are enough for it now */
             rtv_release(t->rtv, t->rtvs);
@@ -765,6 +779,9 @@ static void record_texops(const rr_frame *f)
         D3D12_TEXTURE_COPY_LOCATION to, from;
         UINT row, pitch, y;
         if (o->op != RR_TEX_WRITE || o->id >= MAX_TEXTURES || !tex[o->id].r)
+            continue;
+        /* a write before the texture's last making went to the texture it replaced */
+        if (tex[o->id].made_frame == frame_no && i < tex[o->id].made_at)
             continue;
         t = &tex[o->id];
         row = o->w * (UINT)bytes_of(t->format);
@@ -934,8 +951,9 @@ int rr_draw(rr_frame *f)
                 fprintf(stderr, "rr: d3d12: a pass into no target (%u, texture %u, layer %u) left out\n", ps->target, ps->texture, ps->layer);
             continue;
         }
-        /* the view: the frame's units shown at its aspect, centred in this target */
-        rr_view(aspect, tw, th, &vx, &vy, &vw, &vh);
+        /* the view: the frame's units shown at their aspect, centred in this target; a
+           window-sized target with no window and no RR_SIZE is the units themselves, filled */
+        rr_view(ps->target == RR_TARGET_TEXTURE ? f->aspect : aspect, tw, th, &vx, &vy, &vw, &vh);
         if (kind == KIND_SCREEN) {
             D3D12_CPU_DESCRIPTOR_HANDLE ds = dsv(ps->target);
             rt = rtv(ps->target);
@@ -1123,10 +1141,10 @@ void rr_close(void)
 {
     size_t i;
     int k;
-    if (!queue)
-        return;
-    ID3D12CommandQueue_Signal(queue, fence, ++fence_at);
-    wait_gpu();
+    if (queue && fence) {
+        ID3D12CommandQueue_Signal(queue, fence, ++fence_at);
+        wait_gpu();
+    }
     for (i = 0; i < cap_pipes; i++)
         if (pipes[i].used && pipes[i].p)
             ID3D12PipelineState_Release(pipes[i].p);
@@ -1160,6 +1178,7 @@ void rr_close(void)
         }
     if (swapchain)
         IDXGISwapChain3_Release(swapchain);
+    swapchain = NULL;
     if (srv_heap)
         ID3D12DescriptorHeap_Release(srv_heap);
     if (rtv_heap)
@@ -1176,10 +1195,20 @@ void rr_close(void)
         ID3D12Fence_Release(fence);
     if (fence_event)
         CloseHandle(fence_event);
-    ID3D12CommandQueue_Release(queue);
-    queue = NULL;
+    if (queue)
+        ID3D12CommandQueue_Release(queue);
     if (dev)
         ID3D12Device_Release(dev);
     if (factory)
         IDXGIFactory4_Release(factory);
+    srv_heap = rtv_heap = dsv_heap = NULL;
+    srv_tables = 0;
+    root = NULL;
+    list = NULL;
+    alloc = NULL;
+    fence = NULL;
+    fence_event = NULL;
+    queue = NULL;
+    dev = NULL;
+    factory = NULL;
 }

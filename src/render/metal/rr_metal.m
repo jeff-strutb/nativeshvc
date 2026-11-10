@@ -71,9 +71,13 @@ int rr_open(void)
     @autoreleasepool {
         CAMetalLayer *ml;
         int k;
+        /* first, so that rr_close can let go of whatever is made if a later step fails */
+        inflight = dispatch_semaphore_create(1);
         dev = MTLCreateSystemDefaultDevice();
-        if (!dev)
+        if (!dev) {
+            rr_close();
             return 0;
+        }
         queue = [dev newCommandQueue];
         pipes = [NSMutableDictionary new];
         dss = [NSMutableDictionary new];
@@ -84,8 +88,10 @@ int rr_open(void)
         for (k = 0; k < RR_PROGRAMS; k++) {
             vfn[k] = function_of((const char *)programs[k].vs, "a program's vertex stage");
             ffn[k] = function_of((const char *)programs[k].fs, "a program's fragment stage");
-            if (!vfn[k] || !ffn[k])
+            if (!vfn[k] || !ffn[k]) {
+                rr_close();
                 return 0;
+            }
         }
         {
             MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
@@ -113,7 +119,6 @@ int rr_open(void)
             none_array = [dev newTextureWithDescriptor:td];
             [none_array replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 slice:0 withBytes:&zero bytesPerRow:4 bytesPerImage:4];
         }
-        inflight = dispatch_semaphore_create(1);
         ml = host_metal_layer();
         if (ml) {
             [ml setDevice:dev];
@@ -149,6 +154,7 @@ void rr_close(void)
     dev = nil;
     ever = 0;
     dispatch_semaphore_signal(inflight);
+    inflight = nil;
 }
 
 const char *rr_name(void) { return "metal"; }
@@ -468,8 +474,9 @@ int rr_draw(rr_frame *f)
             }
             tw = (int)to.width;
             th = (int)to.height;
-            /* the view: the frame's units shown at its aspect, centred in this target */
-            rr_view(aspect, tw, th, &vx, &vy, &vw, &vh);
+            /* the view: the frame's units shown at their aspect, centred in this target; a
+               window-sized target with no window and no RR_SIZE is the units themselves, filled */
+            rr_view(ps->target == RR_TARGET_TEXTURE ? f->aspect : aspect, tw, th, &vx, &vy, &vw, &vh);
             if (kind == KIND_SCREEN) {
                 int t = ps->target;
                 rp.colorAttachments[0].texture = screen_ms[t];

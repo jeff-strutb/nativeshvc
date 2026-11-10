@@ -23,7 +23,10 @@
  *
  * Spaces. A draw in RR_SPACE_VIEW is in the frame's own units (width x
  * height), shown at its aspect, centred in the target and as large as fits
- * (rr_view): the viewport. RR_SPACE_TARGET covers the whole target.
+ * (rr_view): the viewport. With no window and no RR_SIZE, the window-sized
+ * targets are the units themselves and are filled; a texture target is
+ * placed the same way with a window or without. RR_SPACE_TARGET covers the
+ * whole target.
  *
  * Programs. A program is a vertex and a fragment stage, compiled into the
  * backend (rr_spv.h, rr_msl.h, rr_dxil.h, from src/render/shaders). It reads
@@ -46,7 +49,7 @@
 
 #define RR_SAMPLES 4            /* the frame's and extra targets' samples a pixel */
 #define RR_PROGRAMS 16          /* programs compiled into the backend */
-#define RR_SHOW 13              /* a texture copied a pixel for a pixel (binding 2, the target's size) */
+#define RR_SHOW 13              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].x quarter turns clockwise) */
 #define RR_MIPS 14              /* a level made from the one before (binding 2), for a backend that needs it */
 #define RR_MIPS_LAYER 15        /* the same for a layer of an array (binding 2, an array of one layer) */
 #define RR_TEX_SLOTS 8          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9: colour arrays */
