@@ -38,7 +38,7 @@ static dispatch_semaphore_t inflight;
 static id<MTLFunction> vfn[RR_PROGRAMS], ffn[RR_PROGRAMS], game_fns[MAX_SHADERS];
 static id<MTLTexture> tex[MAX_TEXTURES];
 static uint8_t tex_format[MAX_TEXTURES], tex_fresh[MAX_TEXTURES];
-static id<MTLTexture> none_colour, none_index;
+static id<MTLTexture> none_colour, none_index, none_array;
 static id<MTLTexture> screen_ms[3], screen_ds[3], screen_res[3], picture, output;
 static int picture_fresh;
 static id<MTLBuffer> ubuf, dbuf, rbuf;
@@ -98,6 +98,11 @@ int rr_open(void)
             td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Uint width:1 height:1 mipmapped:NO];
             none_index = [dev newTextureWithDescriptor:td];
             [none_index replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&zero bytesPerRow:1];
+            td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:1 height:1 mipmapped:NO];
+            td.textureType = MTLTextureType2DArray;
+            td.arrayLength = 1;
+            none_array = [dev newTextureWithDescriptor:td];
+            [none_array replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 slice:0 withBytes:&zero bytesPerRow:4 bytesPerImage:4];
         }
         inflight = dispatch_semaphore_create(1);
         ml = host_metal_layer();
@@ -138,6 +143,10 @@ static void apply_texops(const rr_frame *f)
             td.usage = MTLTextureUsageShaderRead | (o->flags & RR_TEX_TARGET ? MTLTextureUsageRenderTarget : 0);
             if (o->flags & RR_TEX_TARGET)
                 td.storageMode = MTLStorageModePrivate;
+            if (o->flags & RR_TEX_ARRAY) {
+                td.textureType = MTLTextureType2DArray;
+                td.arrayLength = o->layers ? o->layers : 1;
+            }
             tex[o->id] = [dev newTextureWithDescriptor:td];
             tex_format[o->id] = o->format;
             tex_fresh[o->id] = 1;
@@ -267,7 +276,7 @@ static id<MTLTexture> slot_texture(int32_t t, int slot)
         return picture;
     if (t > 0 && t < MAX_TEXTURES && tex[t])
         return tex[t];
-    return slot < 3 ? none_colour : none_index;
+    return slot >= 6 ? none_array : slot < 3 ? none_colour : none_index;
 }
 
 static id<MTLBuffer> buffer_fit(id<MTLBuffer> b, size_t bytes)
@@ -403,6 +412,8 @@ int rr_draw(rr_frame *f)
                 tw = (int)to.width;
                 th = (int)to.height;
                 rp.colorAttachments[0].texture = to;
+                if (to.textureType == MTLTextureType2DArray)
+                    rp.colorAttachments[0].slice = ps->layer;
                 rp.colorAttachments[0].loadAction = ps->load && !fresh ? MTLLoadActionLoad : MTLLoadActionClear;
                 rp.colorAttachments[0].clearColor = MTLClearColorMake(ps->clear[0], ps->clear[1], ps->clear[2], ps->clear[3]);
                 rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -440,16 +451,23 @@ int rr_draw(rr_frame *f)
                     id<MTLTexture> t = slot_texture(c->tex[k], k);
                     [e setVertexTexture:t atIndex:(NSUInteger)(2 + k)];
                     [e setFragmentTexture:t atIndex:(NSUInteger)(2 + k)];
-                    [e setVertexSamplerState:k == 1 || k == 2 ? filtered : sampler atIndex:(NSUInteger)(2 + k)];
-                    [e setFragmentSamplerState:k == 1 || k == 2 ? filtered : sampler atIndex:(NSUInteger)(2 + k)];
+                    id<MTLSamplerState> sm = k == 1 || k == 2 || k >= 6 ? filtered : sampler;
+                    [e setVertexSamplerState:sm atIndex:(NSUInteger)(2 + k)];
+                    [e setFragmentSamplerState:sm atIndex:(NSUInteger)(2 + k)];
                 }
                 [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:c->vertices instanceCount:c->instances];
             }
             [e endEncoding];
             if (ps->target == RR_TARGET_TEXTURE && ps->mips && tex[ps->texture].mipmapLevelCount > 1) {
                 /* its smaller levels, from the first */
-                id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
-                [b generateMipmapsForTexture:tex[ps->texture]];
+                id<MTLTexture> t = tex[ps->texture];
+                id<MTLBlitCommandEncoder> b;
+                if (t.textureType == MTLTextureType2DArray)
+                    /* that layer's alone */
+                    t = [t newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureType2DArray
+                                                  levels:NSMakeRange(0, t.mipmapLevelCount) slices:NSMakeRange(ps->layer, 1)];
+                b = [cb blitCommandEncoder];
+                [b generateMipmapsForTexture:t];
                 [b endEncoding];
             }
         }

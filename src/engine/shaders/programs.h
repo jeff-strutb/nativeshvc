@@ -16,6 +16,7 @@
 #define P_PLANE 9       /* Mode 7's plane drawn from its map and tiles into a texture */
 #define P_TINT 10       /* Mode 7's plane (or its tile 0) in colour, for its smaller levels */
 #define P_OVERLAY 11    /* an overlay in window pixels */
+#define P_COVER 12      /* how much of Mode 7's plane (or its tile 0) is each of four values, for its smaller levels */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */

@@ -38,8 +38,9 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 enum { KIND_SCREEN, KIND_INDEX, KIND_COLOUR, KINDS };
 
 typedef struct { ID3D12Resource *r; void *at; UINT64 size; } Buf;
-/* a texture: rtv its first level's render-target view, the rest after it */
-typedef struct { ID3D12Resource *r; int w, h, format, rtv, levels, fresh; D3D12_RESOURCE_STATES state; } Tex;
+/* a texture: rtv its first level's render-target view, the rest after it
+   (an array's: layer by layer, each layer's levels together) */
+typedef struct { ID3D12Resource *r; int w, h, format, rtv, levels, layers, array, fresh; D3D12_RESOURCE_STATES state; } Tex;
 typedef struct { const void *code; size_t size; } Code;
 
 static ID3D12Device *dev;
@@ -59,7 +60,7 @@ static ID3D12DescriptorHeap *rtv_heap, *dsv_heap, *srv_heap;
 static UINT rtv_step, dsv_step, srv_step;
 static int rtv_next;
 static Tex tex[MAX_TEXTURES];
-static Tex none_colour, none_index;
+static Tex none_colour, none_index, none_array;
 static Tex screen_ms[3], screen_ds[3], screen_res[3], picture, output;
 static Buf ubuf, dbuf, staging, readback;
 static Code game_ps[MAX_SHADERS];
@@ -177,7 +178,8 @@ static int levels_of(int w, int h)
 }
 
 /* a texture of `levels` levels; samples > 1 or flags make it a target: RT (colour), DS (depth) */
-static void tex_make_levels(Tex *t, DXGI_FORMAT f, int w, int h, int samples, int levels, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state)
+static void tex_make_layers(Tex *t, DXGI_FORMAT f, int w, int h, int samples, int levels, int layers, int array, D3D12_RESOURCE_FLAGS flags,
+                            D3D12_RESOURCE_STATES state)
 {
     D3D12_HEAP_PROPERTIES hp;
     D3D12_RESOURCE_DESC d;
@@ -190,7 +192,7 @@ static void tex_make_levels(Tex *t, DXGI_FORMAT f, int w, int h, int samples, in
     d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     d.Width = (UINT64)w;
     d.Height = (UINT)h;
-    d.DepthOrArraySize = 1;
+    d.DepthOrArraySize = (UINT16)layers;
     d.MipLevels = (UINT16)levels;
     d.Format = f;
     d.SampleDesc.Count = (UINT)samples;
@@ -207,8 +209,15 @@ static void tex_make_levels(Tex *t, DXGI_FORMAT f, int w, int h, int samples, in
     t->w = w;
     t->h = h;
     t->levels = levels;
+    t->layers = layers;
+    t->array = array;
     t->fresh = 1;
     t->state = state;
+}
+
+static void tex_make_levels(Tex *t, DXGI_FORMAT f, int w, int h, int samples, int levels, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state)
+{
+    tex_make_layers(t, f, w, h, samples, levels, 1, 0, flags, state);
 }
 
 static void tex_make(Tex *t, DXGI_FORMAT f, int w, int h, int samples, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state)
@@ -289,7 +298,7 @@ int rr_open(void)
         p[2].DescriptorTable.pDescriptorRanges = &r;
         p[0].ShaderVisibility = p[1].ShaderVisibility = p[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         for (k = 0; k < RR_TEX_SLOTS; k++) {
-            int f = k == 1 || k == 2;
+            int f = k == 1 || k == 2 || k >= 6;
             s[k].Filter = f ? D3D12_FILTER_ANISOTROPIC : D3D12_FILTER_MIN_MAG_MIP_POINT;
             s[k].MaxAnisotropy = f ? 16 : 1;
             s[k].AddressU = s[k].AddressV = s[k].AddressW = f ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -309,8 +318,10 @@ int rr_open(void)
     }
     tex_make(&none_colour, COLOUR, 1, 1, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
     tex_make(&none_index, DXGI_FORMAT_R8_UINT, 1, 1, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
+    tex_make_layers(&none_array, COLOUR, 1, 1, 1, 1, 1, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
     none_colour.format = RR_BGRA8;
     none_index.format = RR_R8U;
+    none_array.format = RR_BGRA8;
 
     hwnd = (HWND)host_window_handle();
     if (hwnd) {
@@ -436,11 +447,12 @@ static const Tex *slot_tex(int32_t t, int slot)
         return &picture;
     if (t > 0 && t < MAX_TEXTURES && tex[t].r)
         return &tex[t];
-    return slot < 3 ? &none_colour : &none_index;
+    return slot >= 6 ? &none_array : slot < 3 ? &none_colour : &none_index;
 }
 
-/* t's view at descriptor `at`: every level, or level `only` alone (>= 0) */
-static void srv_put_level(UINT at, const Tex *t, int only)
+/* t's view at descriptor `at`: every level (and layer), or level `only` alone
+   (>= 0), of layer `layer` alone if an array */
+static void srv_put_layer(UINT at, const Tex *t, int only, int layer)
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC sv;
     D3D12_CPU_DESCRIPTOR_HANDLE h;
@@ -448,14 +460,22 @@ static void srv_put_level(UINT at, const Tex *t, int only)
     sv.Format = format_of(t->format);
     sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    sv.Texture2D.MostDetailedMip = only >= 0 ? (UINT)only : 0;
-    sv.Texture2D.MipLevels = only >= 0 ? 1 : (UINT)(t->levels > 0 ? t->levels : 1);
+    if (t->array) {
+        sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        sv.Texture2DArray.MostDetailedMip = only >= 0 ? (UINT)only : 0;
+        sv.Texture2DArray.MipLevels = only >= 0 ? 1 : (UINT)(t->levels > 0 ? t->levels : 1);
+        sv.Texture2DArray.FirstArraySlice = only >= 0 ? (UINT)layer : 0;
+        sv.Texture2DArray.ArraySize = only >= 0 ? 1 : (UINT)(t->layers > 0 ? t->layers : 1);
+    } else {
+        sv.Texture2D.MostDetailedMip = only >= 0 ? (UINT)only : 0;
+        sv.Texture2D.MipLevels = only >= 0 ? 1 : (UINT)(t->levels > 0 ? t->levels : 1);
+    }
     srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(srv_heap, &h);
     h.ptr += (SIZE_T)at * srv_step;
     ID3D12Device_CreateShaderResourceView(dev, t->r, &sv, h);
 }
 
-static void srv_put(UINT at, const Tex *t) { srv_put_level(at, t, -1); }
+static void srv_put(UINT at, const Tex *t) { srv_put_layer(at, t, -1, 0); }
 
 static D3D12_GPU_DESCRIPTOR_HANDLE table_of(const int32_t *ids)
 {
@@ -483,17 +503,17 @@ static D3D12_GPU_DESCRIPTOR_HANDLE table_of(const int32_t *ids)
     return g;
 }
 
-/* a table whose first view is level `level` of t alone, for making the next */
-static D3D12_GPU_DESCRIPTOR_HANDLE table_level(const Tex *t, int level)
+/* a table whose first view is level `level` of t alone (of layer `layer` if an array), for making the next */
+static D3D12_GPU_DESCRIPTOR_HANDLE table_level(const Tex *t, int level, int layer)
 {
     D3D12_GPU_DESCRIPTOR_HANDLE g;
     UINT i = ntables < MAX_TABLES ? ntables++ : MAX_TABLES - 1;
     int k;
     memset(tables[i].t, 0, sizeof tables[i].t);
     tables[i].at = i * RR_TEX_SLOTS;
-    srv_put_level(tables[i].at, t, level);
+    srv_put_layer(tables[i].at, t, level, layer);
     for (k = 1; k < RR_TEX_SLOTS; k++)
-        srv_put(tables[i].at + (UINT)k, k < 3 ? &none_colour : &none_index);
+        srv_put(tables[i].at + (UINT)k, k >= 6 ? &none_array : k < 3 ? &none_colour : &none_index);
     srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(srv_heap, &g);
     g.ptr += (UINT64)tables[i].at * srv_step;
     return g;
@@ -550,30 +570,39 @@ static void apply_texops(const rr_frame *f)
         }
         t = &tex[o->id];
         if (o->op == RR_TEX_CREATE) {
-            int levels = o->flags & RR_TEX_MIPS ? levels_of((int)o->w, (int)o->h) : 1, lv;
-            int rtv0 = t->rtv, had = t->levels;
-            tex_make_levels(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels,
+            int levels = o->flags & RR_TEX_MIPS ? levels_of((int)o->w, (int)o->h) : 1, lv, ly;
+            int array = (o->flags & RR_TEX_ARRAY) != 0, layers = array && o->layers ? (int)o->layers : 1;
+            int rtv0 = t->rtv, had = t->levels * (t->layers > 0 ? t->layers : 1);
+            tex_make_layers(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels, layers, array,
                             o->flags & RR_TEX_TARGET ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
             t->format = o->format;
             if (o->flags & RR_TEX_TARGET) {
-                /* a render-target view for each level: made again in place when there are as many */
-                if (!rtv0 || had < levels) {
-                    if (rtv_next + levels > RTVS) {
+                /* a render-target view for each layer's each level: made again in place when there are as many */
+                if (!rtv0 || had < levels * layers) {
+                    if (rtv_next + levels * layers > RTVS) {
                         fprintf(stderr, "rr: d3d12: more than %d textures' levels drawn into\n", RTVS);
                         exit(70);
                     }
                     rtv0 = rtv_next;
-                    rtv_next += levels;
+                    rtv_next += levels * layers;
                 }
                 t->rtv = rtv0;
-                for (lv = 0; lv < levels; lv++) {
-                    D3D12_RENDER_TARGET_VIEW_DESC rv;
-                    memset(&rv, 0, sizeof rv);
-                    rv.Format = format_of(o->format);
-                    rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-                    rv.Texture2D.MipSlice = (UINT)lv;
-                    ID3D12Device_CreateRenderTargetView(dev, t->r, &rv, rtv(rtv0 + lv));
-                }
+                for (ly = 0; ly < layers; ly++)
+                    for (lv = 0; lv < levels; lv++) {
+                        D3D12_RENDER_TARGET_VIEW_DESC rv;
+                        memset(&rv, 0, sizeof rv);
+                        rv.Format = format_of(o->format);
+                        if (array) {
+                            rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                            rv.Texture2DArray.MipSlice = (UINT)lv;
+                            rv.Texture2DArray.FirstArraySlice = (UINT)ly;
+                            rv.Texture2DArray.ArraySize = 1;
+                        } else {
+                            rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+                            rv.Texture2D.MipSlice = (UINT)lv;
+                        }
+                        ID3D12Device_CreateRenderTargetView(dev, t->r, &rv, rtv(rtv0 + ly * levels + lv));
+                    }
             }
         } else if (t->r) {
             D3D12_TEXTURE_COPY_LOCATION to, from;
@@ -691,7 +720,7 @@ int rr_draw(rr_frame *f)
     for (p = 0; p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
         D3D12_CPU_DESCRIPTOR_HANDLE rt;
-        int kind, tw = ow, th = oh, screen = ps->target <= RR_TARGET_EXTRA1;
+        int kind, tw = ow, th = oh, screen = ps->target <= RR_TARGET_EXTRA1, layer = 0;
         Tex *to = NULL;
         if (screen) {
             kind = KIND_SCREEN;
@@ -704,9 +733,11 @@ int rr_draw(rr_frame *f)
             }
         } else {
             if (ps->target == RR_TARGET_TEXTURE) {
-                if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].r || !tex[ps->texture].rtv)
+                if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].r || !tex[ps->texture].rtv ||
+                    (tex[ps->texture].array && ps->layer >= (uint32_t)tex[ps->texture].layers))
                     continue;
                 to = &tex[ps->texture];
+                layer = to->array ? (int)ps->layer : 0;
             } else {
                 to = ps->target == RR_TARGET_PICTURE ? &picture : &output;
             }
@@ -714,7 +745,7 @@ int rr_draw(rr_frame *f)
             tw = to->w;
             th = to->h;
             transition(to->r, &to->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            rt = rtv(to->rtv);
+            rt = rtv(to->rtv + layer * to->levels);
             ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, NULL);
             /* kept, unless just made: then cleared */
             if (!ps->load || to->fresh)
@@ -780,10 +811,11 @@ int rr_draw(rr_frame *f)
                 ID3D12PipelineState *pl;
                 int lv, w = to->w, h = to->h;
                 memset(&mc, 0, sizeof mc);
-                mc.program = RR_MIPS;
+                mc.program = to->array ? RR_MIPS_LAYER : RR_MIPS;
                 pl = pipe_of(&mc, KIND_COLOUR);
                 for (lv = 1; pl && lv < to->levels; lv++) {
-                    D3D12_CPU_DESCRIPTOR_HANDLE lr = rtv(to->rtv + lv);
+                    D3D12_CPU_DESCRIPTOR_HANDLE lr = rtv(to->rtv + layer * to->levels + lv);
+                    UINT sub = (UINT)(lv + layer * to->levels);
                     D3D12_VIEWPORT vp;
                     D3D12_RECT sc;
                     rr_uniform u;
@@ -803,17 +835,17 @@ int rr_draw(rr_frame *f)
                     sc.left = sc.top = 0;
                     sc.right = w;
                     sc.bottom = h;
-                    transition_level(to->r, (UINT)lv, SHADER_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    transition_level(to->r, sub, SHADER_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
                     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &lr, FALSE, NULL);
                     ID3D12GraphicsCommandList_SetPipelineState(list, pl);
                     ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) +
                                                                                     (UINT64)(f->nuniforms + mip_at) * 256);
-                    ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table_level(to, lv - 1));
+                    ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table_level(to, lv - 1, layer));
                     ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
                     ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
                     ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                     ID3D12GraphicsCommandList_DrawInstanced(list, 6, 1, 0, 0);
-                    transition_level(to->r, (UINT)lv, D3D12_RESOURCE_STATE_RENDER_TARGET, SHADER_READ);
+                    transition_level(to->r, sub, D3D12_RESOURCE_STATE_RENDER_TARGET, SHADER_READ);
                     mip_at++;
                 }
             }

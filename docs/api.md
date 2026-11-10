@@ -168,7 +168,11 @@ void nshvc_mode7_set(const nshvc_mode7 *m);
 
 Drawn as a plane at the window's resolution, its texture coordinates from the matrix: the console's own pixel shows
 the texel the console shows there, and the window's pixels between show the plane between. Where a pixel covers more than
-a texel, the plane is filtered from its colours and their smaller levels, along the pixel's footprint.
+a texel, the plane is filtered from its colours and their smaller levels, along the pixel's footprint: made in the
+palette most of its rows have, and a row whose palette differs adds its differences, each weighted by how much of the
+footprint has that value, filtered the same way. The cost does not grow with palette changes: at most three planes in
+colour a picture, made again only when they change, and coverage for at most 255 plane values, made once until the plane
+changes.
 
 ### 3.5 Sprites
 

@@ -17,7 +17,9 @@
  * textures made with RR_TEX_TARGET. A pass into the picture, the output or
  * a texture clears it to the pass's colour, or keeps what it held (`load`;
  * a target just made is cleared); a texture made with RR_TEX_MIPS has its
- * smaller levels made from the first when a pass into it asks (`mips`).
+ * smaller levels made from the first when a pass into it asks (`mips`). A
+ * texture made with RR_TEX_ARRAY has `layers` layers; a pass draws into one
+ * of them (`layer`), and makes that layer's smaller levels.
  *
  * Spaces. A draw in RR_SPACE_VIEW is in the frame's own units (width x
  * height), shown at its aspect, centred in the target and as large as fits
@@ -26,9 +28,10 @@
  * Programs. A program is a vertex and a fragment stage, compiled into the
  * backend (rr_spv.h, rr_msl.h, rr_dxil.h, from src/render/shaders). It reads
  * the draw's uniform block (binding 0), the frame's words (binding 1) and up
- * to six textures (bindings 2-7): binding 2 sampled at its texels, bindings
+ * to eight textures (bindings 2-9): binding 2 sampled at its texels, bindings
  * 3 and 4 filtered (linear between texels and levels, anisotropic, the
- * texture repeating), bindings 5-7 integer textures read at their texels. It
+ * texture repeating), bindings 5-7 integer textures read at their texels,
+ * bindings 8 and 9 arrays of layers, filtered as 3 and 4 are. It
  * draws `vertices` vertices of each of `instances` instances, with nothing
  * in vertex buffers, as triangles. A game's shader takes the place of a
  * program's fragment stage.
@@ -42,15 +45,17 @@
 #include <stdint.h>
 
 #define RR_SAMPLES 4            /* the frame's and extra targets' samples a pixel */
-#define RR_PROGRAMS 14          /* programs compiled into the backend */
-#define RR_SHOW 12              /* a texture copied a pixel for a pixel (binding 2, the target's size) */
-#define RR_MIPS 13              /* a level made from the one before (binding 2), for a backend that needs it */
-#define RR_TEX_SLOTS 6          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures */
+#define RR_PROGRAMS 16          /* programs compiled into the backend */
+#define RR_SHOW 13              /* a texture copied a pixel for a pixel (binding 2, the target's size) */
+#define RR_MIPS 14              /* a level made from the one before (binding 2), for a backend that needs it */
+#define RR_MIPS_LAYER 15        /* the same for a layer of an array (binding 2, an array of one layer) */
+#define RR_TEX_SLOTS 8          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9: colour arrays */
 
 /* texture formats */
 enum { RR_R8U, RR_R32U, RR_BGRA8 };
 #define RR_TEX_TARGET 1         /* a texture drawn into */
 #define RR_TEX_MIPS 2           /* with every smaller level, down to 1 x 1 */
+#define RR_TEX_ARRAY 4          /* an array of layers (colour only) */
 /* textures that are no texture of the frame's: the targets, resolved */
 #define RR_TEX_EXTRA0 (-1)
 #define RR_TEX_EXTRA1 (-2)
@@ -97,7 +102,7 @@ typedef struct rr_cmd {
 typedef struct rr_pass {
     uint8_t target;
     uint8_t load, mips;         /* keep what the target held; then make a texture's smaller levels */
-    uint32_t texture;           /* RR_TARGET_TEXTURE's */
+    uint32_t texture, layer;    /* RR_TARGET_TEXTURE's, and its layer if an array */
     float clear[4];             /* the colour it is cleared to */
     size_t first, count;        /* its draws */
 } rr_pass;
@@ -109,6 +114,7 @@ typedef struct rr_tex_op {
     uint32_t id;
     uint8_t op, format, flags;
     uint32_t x, y, w, h;        /* a creation's size is w x h */
+    uint32_t layers;            /* an array's, at its creation */
     size_t at;
 } rr_tex_op;
 

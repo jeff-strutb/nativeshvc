@@ -14,14 +14,30 @@ void main()
         /* more than a texel a pixel: the plane in colour, filtered between its
            levels along the pixel's footprint (tc1; tc2 tile 0 outside) */
         bool out_ = any(lessThan(v_t, vec2(0.0))) || any(greaterThanEqual(v_t, vec2(1024.0)));
-        vec4 c;
-        if (out_ && u.i[6].y == 1)
-            c = vec4(0.0);
-        else if (out_ && u.i[6].y == 2)
-            c = textureGrad(tc2, v_t / 8.0, dx / 8.0, dy / 8.0);
-        else
-            c = textureGrad(tc1, v_t / 1024.0, dx / 1024.0, dy / 1024.0);
-        acc = vec4(c.rgb, c.a);
+        vec4 c = vec4(0.0);
+        if (!out_ || u.i[6].y != 1) {
+            /* the plane, or tile 0 outside it, in the base palette; then this row's
+               palette's differences, each weighted by how much of the footprint
+               has that value: filtered the same way, so exact */
+            bool t0 = out_ && u.i[6].y == 2;
+            float scale = t0 ? 8.0 : 1024.0;
+            vec2 p = v_t / scale, gx = dx / scale, gy = dy / scale;
+            c = t0 ? textureGrad(tc2, p, gx, gy) : textureGrad(tc1, p, gx, gy);
+            if (u.i[7].y >= 0) {
+                int at = u.i[7].y, n = int(word(at)), last = -1;
+                vec4 cov = vec4(0.0);
+                for (int e = 0; e < n; e++) {
+                    int k = at + 1 + e * 4, lc = int(word(k)), layer = lc & 255;
+                    if (layer != last) {
+                        cov = t0 ? textureGrad(ta1, vec3(p, float(layer)), gx, gy) : textureGrad(ta0, vec3(p, float(layer)), gx, gy);
+                        last = layer;
+                    }
+                    c.rgb += vec3(wordf(k + 1), wordf(k + 2), wordf(k + 3)) * cov[lc >> 8];
+                }
+                c.rgb = clamp(c.rgb, vec3(0.0), vec3(c.a));
+            }
+        }
+        acc = c;
     } else {
         for (int j = 0; j < 2; j++)
             for (int i = 0; i < 2; i++) {

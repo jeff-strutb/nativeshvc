@@ -54,8 +54,15 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define COLOUR VK_FORMAT_B8G8R8A8_UNORM
 
 typedef struct { VkBuffer b; VkDeviceMemory m; void *at; VkDeviceSize size; } Buf;
-/* an image: v its view of every level, fv of the first (drawn into, through f) */
-typedef struct { VkImage i; VkDeviceMemory m; VkImageView v, fv; VkFramebuffer f; int w, h, format, levels, fresh; } Image;
+/* an image: v its view of every level (and layer), fv of the first level
+   (drawn into, through f); an array's layers' first levels lv, through lf */
+typedef struct {
+    VkImage i;
+    VkDeviceMemory m;
+    VkImageView v, fv, *lv;
+    VkFramebuffer f, *lf;
+    int w, h, format, levels, layers, array, fresh;
+} Image;
 
 /* what a pass draws into: the multisampled screens with depth and stencil,
    an integer texture, the output, the window */
@@ -84,7 +91,7 @@ static VkFence fence;
 static VkSemaphore sem_acquire, sem_done;
 static VkShaderModule vert_mod[RR_PROGRAMS], frag_mod[RR_PROGRAMS], game_mods[MAX_SHADERS];
 static Image tex[MAX_TEXTURES];
-static Image none_colour, none_index;
+static Image none_colour, none_index, none_array;
 static Image screen_ms[3], screen_ds[3], screen_res[3], picture, output;
 static VkFramebuffer screen_fb[3];
 static Buf ubuf, dbuf, staging, readback;
@@ -164,6 +171,15 @@ static VkShaderModule shader(const void *code, size_t bytes)
 
 static void image_free(Image *t)
 {
+    int k;
+    for (k = 0; t->lv && k < t->layers; k++) {
+        if (t->lf && t->lf[k])
+            vkDestroyFramebuffer(dev, t->lf[k], NULL);
+        if (t->lv[k])
+            vkDestroyImageView(dev, t->lv[k], NULL);
+    }
+    free(t->lv);
+    free(t->lf);
     if (t->f)
         vkDestroyFramebuffer(dev, t->f, NULL);
     if (t->fv && t->fv != t->v)
@@ -188,7 +204,8 @@ static int levels_of(int w, int h)
     return n;
 }
 
-static void image_make_levels(Image *t, VkFormat f, int w, int h, int samples, int levels, VkImageUsageFlags usage, VkImageAspectFlags aspect)
+static void image_make_layers(Image *t, VkFormat f, int w, int h, int samples, int levels, int layers, int array, VkImageUsageFlags usage,
+                              VkImageAspectFlags aspect)
 {
     VkImageCreateInfo ci = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     VkImageViewCreateInfo vi = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -202,7 +219,7 @@ static void image_make_levels(Image *t, VkFormat f, int w, int h, int samples, i
     ci.extent.height = (uint32_t)h;
     ci.extent.depth = 1;
     ci.mipLevels = (uint32_t)levels;
-    ci.arrayLayers = 1;
+    ci.arrayLayers = (uint32_t)layers;
     ci.samples = (VkSampleCountFlagBits)samples;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
@@ -215,23 +232,43 @@ static void image_make_levels(Image *t, VkFormat f, int w, int h, int samples, i
         fail("vkAllocateMemory (an image)", e);
     vkBindImageMemory(dev, t->i, t->m, 0);
     vi.image = t->i;
-    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.viewType = array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vi.format = f;
     vi.subresourceRange.aspectMask = aspect;
     vi.subresourceRange.levelCount = (uint32_t)levels;
-    vi.subresourceRange.layerCount = 1;
+    vi.subresourceRange.layerCount = (uint32_t)layers;
     if ((e = vkCreateImageView(dev, &vi, NULL, &t->v)) != VK_SUCCESS)
         fail("vkCreateImageView", e);
     t->fv = t->v;
-    if (levels > 1) {
-        vi.subresourceRange.levelCount = 1;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.layerCount = 1;
+    if (array) {
+        int k;
+        t->lv = (VkImageView *)calloc((size_t)layers, sizeof *t->lv);
+        t->lf = (VkFramebuffer *)calloc((size_t)layers, sizeof *t->lf);
+        if (!t->lv || !t->lf)
+            exit(70);
+        for (k = 0; k < layers; k++) {
+            vi.subresourceRange.baseArrayLayer = (uint32_t)k;
+            if ((e = vkCreateImageView(dev, &vi, NULL, &t->lv[k])) != VK_SUCCESS)
+                fail("vkCreateImageView", e);
+        }
+    } else if (levels > 1) {
         if ((e = vkCreateImageView(dev, &vi, NULL, &t->fv)) != VK_SUCCESS)
             fail("vkCreateImageView", e);
     }
     t->w = w;
     t->h = h;
     t->levels = levels;
+    t->layers = layers;
+    t->array = array;
     t->fresh = 1;
+}
+
+static void image_make_levels(Image *t, VkFormat f, int w, int h, int samples, int levels, VkImageUsageFlags usage, VkImageAspectFlags aspect)
+{
+    image_make_layers(t, f, w, h, samples, levels, 1, 0, usage, aspect);
 }
 
 static void image_make(Image *t, VkFormat f, int w, int h, int samples, VkImageUsageFlags usage, VkImageAspectFlags aspect)
@@ -255,8 +292,8 @@ static VkFramebuffer framebuffer(VkRenderPass rp, const VkImageView *views, uint
     return fb;
 }
 
-static void barrier_levels(VkImage i, uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to, VkAccessFlags src, VkAccessFlags dst,
-                           VkPipelineStageFlags ss, VkPipelineStageFlags ds)
+static void barrier_levels(VkImage i, uint32_t layer, uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to, VkAccessFlags src,
+                           VkAccessFlags dst, VkPipelineStageFlags ss, VkPipelineStageFlags ds)
 {
     VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     b.srcAccessMask = src;
@@ -268,6 +305,7 @@ static void barrier_levels(VkImage i, uint32_t level, uint32_t count, VkImageLay
     b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     b.subresourceRange.baseMipLevel = level;
     b.subresourceRange.levelCount = count;
+    b.subresourceRange.baseArrayLayer = layer;
     b.subresourceRange.layerCount = 1;
     vkCmdPipelineBarrier(cmd, ss, ds, 0, 0, NULL, 0, NULL, 1, &b);
 }
@@ -284,7 +322,7 @@ static void barrier(VkImage i, VkImageLayout from, VkImageLayout to, VkAccessFla
     b.image = i;
     b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-    b.subresourceRange.layerCount = 1;
+    b.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
     vkCmdPipelineBarrier(cmd, ss, ds, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
@@ -732,6 +770,7 @@ int rr_open(void)
     }
     image_make(&none_colour, COLOUR, 1, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     image_make(&none_index, VK_FORMAT_R8_UINT, 1, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    image_make_layers(&none_array, COLOUR, 1, 1, 1, 1, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     return 1;
 }
 
@@ -789,7 +828,7 @@ static VkImageView slot_view(int32_t t, int slot)
         return picture.v;
     if (t > 0 && t < MAX_TEXTURES && tex[t].v)
         return tex[t].v;
-    return slot < 3 ? none_colour.v : none_index.v;
+    return slot >= 6 ? none_array.v : slot < 3 ? none_colour.v : none_index.v;
 }
 
 static VkDescriptorSet set_of(const int32_t *t)
@@ -828,7 +867,7 @@ static VkDescriptorSet set_of(const int32_t *t)
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[1].pBufferInfo = &db;
     for (k = 0; k < RR_TEX_SLOTS; k++) {
-        ii[k].sampler = k == 1 || k == 2 ? filtered : sampler;
+        ii[k].sampler = k == 1 || k == 2 || k >= 6 ? filtered : sampler;
         ii[k].imageView = v[k];
         ii[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         w[2 + k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -887,10 +926,19 @@ static void apply_texops(const rr_frame *f)
                 u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
             if (levels > 1)
                 u |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-            image_make_levels(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels, u, VK_IMAGE_ASPECT_COLOR_BIT);
-            t->format = o->format;
-            if (o->flags & RR_TEX_TARGET)
-                t->f = framebuffer(o->format == RR_R8U ? rp_index[0] : rp_colour[0], &t->fv, 1, (int)o->w, (int)o->h);
+            {
+                int array = (o->flags & RR_TEX_ARRAY) != 0, layers = array && o->layers ? (int)o->layers : 1, k;
+                image_make_layers(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels, layers, array, u, VK_IMAGE_ASPECT_COLOR_BIT);
+                t->format = o->format;
+                if (o->flags & RR_TEX_TARGET) {
+                    VkRenderPass rp = o->format == RR_R8U ? rp_index[0] : rp_colour[0];
+                    if (array)
+                        for (k = 0; k < layers; k++)
+                            t->lf[k] = framebuffer(rp, &t->lv[k], 1, (int)o->w, (int)o->h);
+                    else
+                        t->f = framebuffer(rp, &t->fv, 1, (int)o->w, (int)o->h);
+                }
+            }
             /* readable from the first: unwritten texels are what they are */
             barrier(t->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
@@ -1015,6 +1063,8 @@ int rr_draw(rr_frame *f)
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
         barrier(none_index.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
+        barrier(none_array.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
     }
     apply_texops(f);
     for (p = 0; p < f->npasses; p++) {
@@ -1035,7 +1085,8 @@ int rr_draw(rr_frame *f)
         } else {
             int keep;
             if (ps->target == RR_TARGET_TEXTURE) {
-                if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].f)
+                if (ps->texture >= MAX_TEXTURES || (!tex[ps->texture].f && !tex[ps->texture].lf) ||
+                    (tex[ps->texture].array && ps->layer >= (uint32_t)tex[ps->texture].layers))
                     continue;
                 to = &tex[ps->texture];
             } else {
@@ -1048,7 +1099,7 @@ int rr_draw(rr_frame *f)
             keep = ps->load && !to->fresh;
             to->fresh = 0;
             bi.renderPass = kind == KIND_INDEX ? rp_index[keep] : rp_colour[keep];
-            bi.framebuffer = to->f;
+            bi.framebuffer = to->array ? to->lf[ps->layer] : to->f;
             bi.clearValueCount = 1;
         }
         bi.renderArea.extent.width = (uint32_t)tw;
@@ -1104,7 +1155,8 @@ int rr_draw(rr_frame *f)
         if (to && ps->mips && to->levels > 1) {
             /* its smaller levels, each blitted from the one before */
             int lv, w = to->w, h = to->h;
-            barrier_levels(to->i, 0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            uint32_t layer = to->array ? ps->layer : 0;
+            barrier_levels(to->i, layer, 0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, ALL_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
             for (lv = 1; lv < to->levels; lv++) {
                 VkImageBlit bl;
@@ -1113,6 +1165,7 @@ int rr_draw(rr_frame *f)
                 bl.srcSubresource.aspectMask = bl.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 bl.srcSubresource.mipLevel = (uint32_t)lv - 1;
                 bl.dstSubresource.mipLevel = (uint32_t)lv;
+                bl.srcSubresource.baseArrayLayer = bl.dstSubresource.baseArrayLayer = layer;
                 bl.srcSubresource.layerCount = bl.dstSubresource.layerCount = 1;
                 bl.srcOffsets[1].x = w;
                 bl.srcOffsets[1].y = h;
@@ -1120,17 +1173,17 @@ int rr_draw(rr_frame *f)
                 bl.dstOffsets[1].x = nw;
                 bl.dstOffsets[1].y = nh;
                 bl.dstOffsets[1].z = 1;
-                barrier_levels(to->i, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                barrier_levels(to->i, layer, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
                 vkCmdBlitImage(cmd, to->i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to->i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl,
                                VK_FILTER_LINEAR);
-                barrier_levels(to->i, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                barrier_levels(to->i, layer, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                VK_PIPELINE_STAGE_TRANSFER_BIT);
                 w = nw;
                 h = nh;
             }
-            barrier_levels(to->i, 0, (uint32_t)to->levels, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            barrier_levels(to->i, layer, 0, (uint32_t)to->levels, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, SHADER_STAGES);
         }
     }
@@ -1165,7 +1218,7 @@ int rr_draw(rr_frame *f)
                 w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 w[1].pBufferInfo = &db;
                 for (k = 0; k < RR_TEX_SLOTS; k++) {
-                    ii[k].sampler = k == 1 || k == 2 ? filtered : sampler;
+                    ii[k].sampler = k == 1 || k == 2 || k >= 6 ? filtered : sampler;
                     ii[k].imageView = k == 0 ? output.v : slot_view(t[k], k);
                     ii[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     w[2 + k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

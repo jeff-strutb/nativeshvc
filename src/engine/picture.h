@@ -74,6 +74,8 @@ uint32_t eng_texture_id(void);
 /* records a texture's creation, or a write of its texels (returned: w * h *
    bytes a texel to fill) in the frame being filled */
 void eng_texture_create(rr_frame *f, uint32_t id, uint32_t w, uint32_t h, int format, int flags);
+/* an array of `layers` colour layers */
+void eng_texture_array(rr_frame *f, uint32_t id, uint32_t w, uint32_t h, uint32_t layers, int flags);
 uint8_t *eng_texture_write(rr_frame *f, uint32_t id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, int bytes);
 
 /* the game thread: the frame being filled */

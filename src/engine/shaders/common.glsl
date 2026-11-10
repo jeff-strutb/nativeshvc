@@ -10,6 +10,8 @@ layout(binding = 4) uniform sampler2D tc2;     /* the same */
 layout(binding = 5) uniform usampler2D ti0;
 layout(binding = 6) uniform usampler2D ti1;
 layout(binding = 7) uniform usampler2D ti2;
+layout(binding = 8) uniform sampler2DArray ta0;  /* arrays of layers, filtered as tc1 and tc2 */
+layout(binding = 9) uniform sampler2DArray ta1;
 
 /* u.f[1].xy: the units of the picture's space */
 vec4 clip_at(vec2 p, float depth)

@@ -14,7 +14,7 @@ if [ -z "$DXC" ] && ! command -v dxc >/dev/null && [ -x "$here/../../../build/to
 fi
 DXC=${DXC:-dxc}
 # in rr.h's order: the engine's programs (engine/shaders/programs.h), then the renderer's own
-programs="$engine/fill $engine/tiles $engine/blocks $engine/mode7 $engine/sprites $engine/image $engine/list $engine/lines $engine/combine $engine/plane $engine/tint $engine/overlay $here/show $here/mips"
+programs="$engine/fill $engine/tiles $engine/blocks $engine/mode7 $engine/sprites $engine/image $engine/list $engine/lines $engine/combine $engine/plane $engine/tint $engine/overlay $engine/cover $here/show $here/mips $here/mips_layer"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 spv=$here/../vulkan/rr_spv.h

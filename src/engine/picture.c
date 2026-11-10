@@ -85,6 +85,12 @@ void eng_texture_create(rr_frame *f, uint32_t id, uint32_t w, uint32_t h, int fo
     o->h = h;
 }
 
+void eng_texture_array(rr_frame *f, uint32_t id, uint32_t w, uint32_t h, uint32_t layers, int flags)
+{
+    eng_texture_create(f, id, w, h, RR_BGRA8, flags | RR_TEX_ARRAY);
+    f->texops[f->ntexops - 1].layers = layers;
+}
+
 uint8_t *eng_texture_write(rr_frame *f, uint32_t id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, int bytes)
 {
     rr_tex_op *o;
