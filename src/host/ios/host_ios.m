@@ -485,7 +485,7 @@ static void pairf_from(uint64_t v, float *a, float *b)
 static _Atomic int s_active;
 static pthread_mutex_t s_pm = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_pc = PTHREAD_COND_INITIALIZER;
-static int s_parked, s_started;
+static int s_parked, s_started, s_taken;    /* s_taken: the renderer is drawing a frame with the layer */
 
 static void focus_event(int down)
 {
@@ -533,15 +533,15 @@ static void app_inactive(void)
     focus_event(0);
     pthread_mutex_lock(&s_pm);
     atomic_store(&s_active, 0);
-    /* the game thread parks at its next poll, within a frame; a stuck
-       one is not waited for long */
+    /* the game thread parks at its next poll, within a frame, and a frame
+       the renderer is drawing is finished; a stuck one is not waited for long */
     clock_gettime(CLOCK_REALTIME, &until);
     until.tv_nsec += 500000000L;
     if (until.tv_nsec >= 1000000000L) {
         until.tv_sec++;
         until.tv_nsec -= 1000000000L;
     }
-    while (s_started && !s_parked)
+    while ((s_started && !s_parked) || s_taken)
         if (pthread_cond_timedwait(&s_pc, &s_pm, &until))
             break;
     pthread_mutex_unlock(&s_pm);
@@ -624,6 +624,30 @@ void host_metal_layer_fit(int *w, int *h)
 }
 
 void *host_window_handle(void) { return (__bridge void *)s_layer; }
+
+/* the layer, for the frame being drawn. iOS lets no GPU work run in the
+   background, so while the app is away the renderer waits here, as the game
+   thread does at its poll; going away waits for the frame in hand */
+void *host_window_take(void)
+{
+    void *l;
+    pthread_mutex_lock(&s_pm);
+    while (!atomic_load(&s_active))
+        pthread_cond_wait(&s_pc, &s_pm);
+    l = (__bridge void *)s_layer;
+    s_taken = 1;
+    pthread_mutex_unlock(&s_pm);
+    return l;
+}
+
+void host_window_give(void *kept)
+{
+    (void)kept;                         /* the layer is the view's for good: nothing to let go of it */
+    pthread_mutex_lock(&s_pm);
+    s_taken = 0;
+    pthread_cond_broadcast(&s_pc);
+    pthread_mutex_unlock(&s_pm);
+}
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_points(float *w, float *h)
 {

@@ -402,6 +402,9 @@ void host_metal_layer_fit(int *w, int *h)
 }
 
 void *host_window_handle(void) { return (__bridge void *)s_layer; }
+/* the window lasts until it is closed, after the renderer: nothing to wait for */
+void *host_window_take(void) { return (__bridge void *)s_layer; }
+void host_window_give(void *kept) { (void)kept; }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_points(float *w, float *h)
 {

@@ -1360,4 +1360,28 @@ void rr_close(void)
     queue = NULL;
     dev = NULL;
     factory = NULL;
+    /* everything as before the first rr_open, so another opens soundly */
+    memset(tex, 0, sizeof tex);
+    memset(screen_ms, 0, sizeof screen_ms);
+    memset(screen_ds, 0, sizeof screen_ds);
+    memset(screen_res, 0, sizeof screen_res);
+    memset(&picture, 0, sizeof picture);
+    memset(&output, 0, sizeof output);
+    memset(&none_colour, 0, sizeof none_colour);
+    memset(&none_index, 0, sizeof none_index);
+    memset(&none_array, 0, sizeof none_array);
+    memset(screen_used, 0, sizeof screen_used);
+    memset(rtv_taken, 0, sizeof rtv_taken);
+    memset(sc_img, 0, sizeof sc_img);
+    sc_w = sc_h = 0;
+    targets_w = targets_h = last_w = last_h = ever = 0;
+    fence_at = 0;
+    frame_no = 0;
+    ntables = 0;
+    ndistinct = 0;
+    tables_gen = 0;
+    peak_tables = prev_tables = 0;
+    peak_distinct = prev_distinct = 0;
+    peak_frame = 0;
+    failed_need = 0;
 }

@@ -196,6 +196,9 @@ void host_window_close(void)
 
 int host_window_visible(void) { return win != 0; }
 void *host_window_handle(void) { return (void *)win; }
+/* the window lasts until it is closed, after the renderer: nothing to wait for */
+void *host_window_take(void) { return (void *)win; }
+void host_window_give(void *kept) { (void)kept; }
 void *host_x11_display(void) { return dpy; }
 void host_window_pixels(int *w, int *h)
 {

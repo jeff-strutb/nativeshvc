@@ -1,6 +1,7 @@
 #version 450
-/* show: a texture copied to the target a pixel for a pixel, turned i[0].x quarter turns
-   clockwise (0 none; the target is then the texture turned). f[0].xy: the target's size */
+/* show: a texture copied to the target a pixel for a pixel, mirrored left to right
+   if i[0].y, then turned i[0].x quarter turns clockwise (the target is then the texture
+   turned). f[0].xy: the target's size */
 layout(std140, binding = 0) uniform D { vec4 f[8]; ivec4 i[8]; } u;
 void main()
 {

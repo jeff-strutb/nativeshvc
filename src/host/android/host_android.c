@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "host.h"
@@ -22,7 +23,12 @@
 int nshvc_game_main(int argc, char **argv);
 
 static struct android_app *app;
-static ANativeWindow *volatile window;
+/* the window, set and taken under w_lock: w_taken while the renderer draws a
+   frame with it, w_kept the window the renderer keeps a surface on */
+static ANativeWindow *window, *w_kept;
+static int w_taken;
+static pthread_mutex_t w_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t w_cond = PTHREAD_COND_INITIALIZER;
 static char save_dir[1024];
 static volatile int surface_ready;
 
@@ -278,12 +284,31 @@ static void on_cmd(struct android_app *a, int32_t cmd)
 {
     switch (cmd) {
     case APP_CMD_INIT_WINDOW:
+        pthread_mutex_lock(&w_lock);
         window = a->window;
+        pthread_mutex_unlock(&w_lock);
         surface_ready = 1;
         break;
-    case APP_CMD_TERM_WINDOW:
+    case APP_CMD_TERM_WINDOW: {
+        /* the window goes once this returns: first the renderer finishes the
+           frame it is drawing with it and lets go of its surface. A renderer
+           stuck elsewhere is waited for 2 seconds, within the time Android
+           allows before it calls the app hung. */
+        ANativeWindow *old;
+        struct timespec until;
+        pthread_mutex_lock(&w_lock);
+        old = window;
         window = NULL;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += 2;
+        while (w_taken || (old && w_kept == old))
+            if (pthread_cond_timedwait(&w_cond, &w_lock, &until)) {
+                __android_log_print(ANDROID_LOG_WARN, "nativeshvc", "the renderer did not let go of the window in time");
+                break;
+            }
+        pthread_mutex_unlock(&w_lock);
         break;
+    }
     case APP_CMD_GAINED_FOCUS:
         focus(1);
         break;
@@ -357,25 +382,54 @@ const char *host_save_dir(void) { return save_dir; }
 const char *host_resource_dir(void) { return ""; }
 int host_window_open(int width, int height, const char *title) { (void)width; (void)height; (void)title; return 1; }
 void host_window_close(void) {}
-int host_window_visible(void) { return window != NULL; }
-void *host_window_handle(void) { return window; }
+int host_window_visible(void) { return host_window_handle() != NULL; }
+void *host_window_handle(void)
+{
+    ANativeWindow *n;
+    pthread_mutex_lock(&w_lock);
+    n = window;
+    pthread_mutex_unlock(&w_lock);
+    return n;
+}
 
-/* the window's size, asked of the window itself in two calls: asked again
-   until a width and height are read together with nothing changed between */
+void *host_window_take(void)
+{
+    ANativeWindow *n;
+    pthread_mutex_lock(&w_lock);
+    n = window;
+    w_taken = 1;
+    pthread_mutex_unlock(&w_lock);
+    return n;
+}
+
+void host_window_give(void *kept)
+{
+    pthread_mutex_lock(&w_lock);
+    w_taken = 0;
+    w_kept = (ANativeWindow *)kept;
+    pthread_cond_broadcast(&w_cond);
+    pthread_mutex_unlock(&w_lock);
+}
+
+/* the window's size, asked of the window itself in two calls (under the
+   lock, so the window cannot go meanwhile): asked again until a width and
+   height are read together with nothing changed between */
 void host_window_pixels(int *w, int *h)
 {
-    ANativeWindow *n = window;
-    int a, b;
-    *w = *h = 0;
-    if (!n)
-        return;
-    a = ANativeWindow_getWidth(n);
-    for (;;) {
-        b = ANativeWindow_getHeight(n);
-        if (ANativeWindow_getWidth(n) == a)
-            break;
+    ANativeWindow *n;
+    int a = 0, b = 0;
+    pthread_mutex_lock(&w_lock);
+    n = window;
+    if (n) {
         a = ANativeWindow_getWidth(n);
+        for (;;) {
+            b = ANativeWindow_getHeight(n);
+            if (ANativeWindow_getWidth(n) == a)
+                break;
+            a = ANativeWindow_getWidth(n);
+        }
     }
+    pthread_mutex_unlock(&w_lock);
     *w = a;
     *h = b;
 }

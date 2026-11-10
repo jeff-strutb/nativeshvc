@@ -387,6 +387,9 @@ int host_window_visible(void)
 /* the window for a renderer that draws on it (render/gl, render/vulkan):
    its HWND, its client area in pixels, the module */
 void *host_window_handle(void) { return (void *)s_win; }
+/* the window lasts until it is closed, after the renderer: nothing to wait for */
+void *host_window_take(void) { return (void *)s_win; }
+void host_window_give(void *kept) { (void)kept; }
 void *host_win32_instance(void) { return (void *)GetModuleHandleA(NULL); }
 
 void host_window_pixels(int *w, int *h);

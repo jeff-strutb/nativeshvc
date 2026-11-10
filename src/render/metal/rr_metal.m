@@ -18,6 +18,7 @@
 #include "rr.h"
 #include "rr_window.h"
 #include "rr_msl.h"
+#include "host.h"
 
 CAMetalLayer *host_metal_layer(void);
 void host_metal_layer_fit(int *w, int *h);
@@ -46,6 +47,7 @@ static uint8_t *tex_fresh[MAX_TEXTURES];        /* each layer: not drawn into ye
 static id<MTLTexture> none_colour, none_index, none_array;
 static id<MTLTexture> screen_ms[3], screen_ds[3], screen_res[3], picture, output;
 static int picture_fresh, output_fresh, memoryless;
+static int windowed;                    /* drawn for a window's layer, not headless */
 static uint64_t screen_used[3], frame_no;
 static id<MTLBuffer> ubuf, dbuf, rbuf;
 static id<MTLSamplerState> sampler, filtered;
@@ -120,6 +122,7 @@ int rr_open(void)
             [none_array replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 slice:0 withBytes:&zero bytesPerRow:4 bytesPerImage:4];
         }
         ml = host_metal_layer();
+        windowed = ml != nil;
         if (ml) {
             [ml setDevice:dev];
             [ml setMaximumDrawableCount:3];
@@ -153,6 +156,12 @@ void rr_close(void)
     queue = nil;
     dev = nil;
     ever = 0;
+    /* everything as before the first rr_open, so another opens soundly */
+    memset(tex_format, 0, sizeof tex_format);
+    memset(screen_used, 0, sizeof screen_used);
+    picture_fresh = output_fresh = memoryless = windowed = 0;
+    frame_no = 0;
+    last_w = last_h = 0;
     dispatch_semaphore_signal(inflight);
     inflight = nil;
 }
@@ -402,7 +411,8 @@ int rr_draw(rr_frame *f)
 {
     int paced = 0;
     @autoreleasepool {
-        CAMetalLayer *ml = host_metal_layer();
+        /* the layer, held until the frame is committed (iOS lets none be drawn while the app is away) */
+        CAMetalLayer *ml = windowed ? (__bridge CAMetalLayer *)host_window_take() : nil;
         id<CAMetalDrawable> dr = nil;
         id<MTLCommandBuffer> cb;
         int ow = 0, oh = 0, k;
@@ -432,17 +442,25 @@ int rr_draw(rr_frame *f)
         if (ml)
             host_metal_layer_fit(&ow, &oh);
         if (ow < 1 || oh < 1) {
-            const char *e = getenv("RR_SIZE");
-            ow = f->width;
-            oh = f->height;
-            if (e)
-                sscanf(e, "%dx%d", &ow, &oh);
-            else
-                aspect = 0;
+            if (windowed) {
+                /* no window to show in now: drawn as before, not shown */
+                ow = last_w;
+                oh = last_h;
+            } else {
+                const char *e = getenv("RR_SIZE");
+                ow = f->width;
+                oh = f->height;
+                if (e)
+                    sscanf(e, "%dx%d", &ow, &oh);
+                else
+                    aspect = 0;
+            }
             ml = nil;
         }
         if (ow < 1 || oh < 1) {
             dispatch_semaphore_signal(inflight);
+            if (windowed)
+                host_window_give(NULL);
             return 0;
         }
         targets_fit(f, ow, oh);
@@ -592,6 +610,8 @@ int rr_draw(rr_frame *f)
             paced = 1;
         }
         [cb commit];
+        if (windowed)
+            host_window_give(NULL);     /* the layer is the host's for good: nothing kept on it */
     }
     return paced;
 }

@@ -89,6 +89,11 @@ static VkFramebuffer *sc_fb;
 static VkSemaphore *sc_done;
 static uint32_t sc_n, sc_cap;           /* images; semaphores made */
 static int sc_ok;                       /* a swapchain for the window as it is */
+static int sc_failed;                   /* making one failed: not tried again until the window's size changes */
+static int sc_lost;                     /* the surface was lost: made again from the window */
+static int sc_mirror;                   /* the picture mirrored, before it is turned, when shown */
+static int windowed;                    /* drawn for a window (one may come and go), not headless */
+static void *sc_window;                 /* the window the surface is made on */
 static int sc_w, sc_h;                  /* the window's size the swapchain was made (or tried) for */
 static int sc_ew, sc_eh;                /* the picture's size: the surface's in the app's orientation */
 static int sc_iw, sc_ih;                /* the images', in the display's own orientation */
@@ -753,7 +758,7 @@ static VkDescriptorSet set_of(const int32_t *t)
 }
 
 /* ---- the window ---- */
-static int make_surface(void)
+static int make_surface(void *window)
 {
 #if defined(_WIN32)
     typedef struct { VkStructureType s; const void *n; VkFlags f; void *hinst; void *hwnd; } Si;
@@ -764,7 +769,7 @@ static int make_surface(void)
     memset(&si, 0, sizeof si);
     si.s = (VkStructureType)1000009000; /* VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR */
     si.hinst = host_win32_instance();
-    si.hwnd = host_window_handle();
+    si.hwnd = window;
     return si.hwnd && fn && fn(inst, &si, NULL, &surface) == VK_SUCCESS;
 #elif defined(__ANDROID__)
     typedef struct { VkStructureType s; const void *n; VkFlags f; void *win; } Si;
@@ -773,7 +778,7 @@ static int make_surface(void)
     Si si;
     memset(&si, 0, sizeof si);
     si.s = (VkStructureType)1000008000; /* VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR */
-    si.win = host_window_handle();
+    si.win = window;
     return si.win && fn && fn(inst, &si, NULL, &surface) == VK_SUCCESS;
 #elif defined(__linux__) && !defined(__ANDROID__)
     typedef struct { VkStructureType s; const void *n; VkFlags f; void *dpy; unsigned long win; } Si;
@@ -784,11 +789,60 @@ static int make_surface(void)
     memset(&si, 0, sizeof si);
     si.s = (VkStructureType)1000004000; /* VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR */
     si.dpy = host_x11_display();
-    si.win = (unsigned long)host_window_handle();
+    si.win = (unsigned long)window;
     return si.dpy && si.win && fn && fn(inst, &si, NULL, &surface) == VK_SUCCESS;
 #else
     return 0;
 #endif
+}
+
+/* the swapchain's images' views and framebuffers let go */
+static void swapchain_views_free(void)
+{
+    uint32_t i;
+    for (i = 0; i < sc_n; i++) {
+        vkDestroyFramebuffer(dev, sc_fb[i], NULL);
+        vkDestroyImageView(dev, sc_view[i], NULL);
+    }
+    sc_n = 0;
+}
+
+/* the window let go: its swapchain and surface, once the GPU is done with them */
+static void window_drop(void)
+{
+    if (!surface && !swapchain) {
+        sc_window = NULL;
+        return;
+    }
+    vkDeviceWaitIdle(dev);
+    swapchain_views_free();
+    if (swapchain)
+        vkDestroySwapchainKHR(dev, swapchain, NULL);
+    swapchain = VK_NULL_HANDLE;
+    if (surface)
+        vkDestroySurfaceKHR(inst, surface, NULL);
+    surface = VK_NULL_HANDLE;
+    sc_window = NULL;
+    sc_ok = sc_failed = sc_lost = 0;
+    sc_w = sc_h = 0;
+}
+
+/* a surface on a window come (back): one this device's queue can show to, else none */
+static void window_make(void *window)
+{
+    VkBool32 ok = VK_FALSE;
+    if (!make_surface(window)) {
+        fprintf(stderr, "rr: vulkan: no surface could be made on the window\n");
+        return;
+    }
+    vkGetPhysicalDeviceSurfaceSupportKHR(phys, family, surface, &ok);
+    if (!ok) {
+        fprintf(stderr, "rr: vulkan: the window cannot be shown from this device's queue\n");
+        vkDestroySurfaceKHR(inst, surface, NULL);
+        surface = VK_NULL_HANDLE;
+        return;
+    }
+    sc_window = window;
 }
 
 /* the surface's format: 8-bit BGRA or RGBA without sRGB encoding, in the
@@ -835,8 +889,9 @@ static int swapchain_make(int w, int h)
     VkSurfaceFormatKHR sf;
     VkSurfaceTransformFlagBitsKHR tr;
     VkResult e;
+    VkSwapchainKHR made_sc = VK_NULL_HANDLE;
     uint32_t i, n, made;
-    int iw, ih, turns;
+    int iw, ih, turns, mirror;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface, &c);
     if (c.currentExtent.width != UINT32_MAX) {
         w = (int)c.currentExtent.width;
@@ -849,14 +904,24 @@ static int swapchain_make(int w, int h)
     }
     if (w < 1 || h < 1)
         return 0;
-    /* the turn the display needs: the picture is turned into the images (a
-       transform with a mirror, which no display here reports, is left to the
-       presentation engine) */
+    /* the turn (and mirror) the display needs, given the picture as it goes into
+       the images; a transform that is neither (inherited) is the presentation
+       engine's, the picture given as it is */
     tr = c.currentTransform;
-    turns = tr == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 1 : tr == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR ? 2
-          : tr == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR ? 3 : 0;
-    if (!turns && tr != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR && (c.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
-        tr = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    switch (tr) {
+    case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR: turns = 1; mirror = 0; break;
+    case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR: turns = 2; mirror = 0; break;
+    case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR: turns = 3; mirror = 0; break;
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR: turns = 0; mirror = 1; break;
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR: turns = 1; mirror = 1; break;
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR: turns = 2; mirror = 1; break;
+    case VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR: turns = 3; mirror = 1; break;
+    default:
+        turns = mirror = 0;
+        if (tr != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR && (c.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR))
+            tr = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        break;
+    }
     /* the current extent is in the display's turned orientation, the picture's: the images are in its own */
     iw = turns & 1 ? h : w;
     ih = turns & 1 ? w : h;
@@ -894,14 +959,21 @@ static int swapchain_make(int w, int h)
     ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = old;
-    if ((e = vkCreateSwapchainKHR(dev, &ci, NULL, &swapchain)) != VK_SUCCESS)
-        fail("vkCreateSwapchainKHR", e);
-    for (i = 0; i < sc_n; i++) {
-        vkDestroyFramebuffer(dev, sc_fb[i], NULL);
-        vkDestroyImageView(dev, sc_view[i], NULL);
-    }
+    e = vkCreateSwapchainKHR(dev, &ci, NULL, &made_sc);
+    /* the old one is retired either way */
+    swapchain_views_free();
     if (old)
         vkDestroySwapchainKHR(dev, old, NULL);
+    swapchain = VK_NULL_HANDLE;
+    if (e != VK_SUCCESS) {
+        if (e == VK_ERROR_DEVICE_LOST)
+            fail("vkCreateSwapchainKHR (the GPU was lost)", e);
+        fprintf(stderr, "rr: vulkan: no swapchain for a window of %d x %d (VkResult %d): nothing shown until it changes\n", w, h, (int)e);
+        sc_failed = 1;
+        sc_lost = e == VK_ERROR_SURFACE_LOST_KHR || e == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
+        return 0;
+    }
+    swapchain = made_sc;
     /* as many images as it made, each with its views and its semaphore */
     made = 0;
     vkGetSwapchainImagesKHR(dev, swapchain, &made, NULL);
@@ -942,6 +1014,7 @@ static int swapchain_make(int w, int h)
     sc_iw = iw;
     sc_ih = ih;
     sc_turns = turns;
+    sc_mirror = mirror;
     return 1;
 }
 
@@ -967,7 +1040,8 @@ int rr_open(void)
     VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     VkInstanceCreateInfo ii = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     const char *iext[2] = { "VK_KHR_surface", NULL };
-    int windowed = host_window_handle() != NULL, k;
+    void *window = host_window_handle();
+    int k;
     VkPhysicalDevice devs[16];
     uint32_t n = 16, i, d;
     float prio = 1;
@@ -986,6 +1060,7 @@ int rr_open(void)
 #elif defined(__linux__) && !defined(__ANDROID__)
     iext[1] = "VK_KHR_xlib_surface";
 #endif
+    windowed = window != NULL;
     app.apiVersion = VK_API_VERSION_1_0;
     ii.pApplicationInfo = &app;
     ii.enabledExtensionCount = windowed && iext[1] ? 2 : 0;
@@ -995,8 +1070,15 @@ int rr_open(void)
 #define X(f) f = (PFN_##f)vkGetInstanceProcAddr(inst, #f);
     VK_FUNCS(X)
 #undef X
-    if (windowed && !make_surface())
-        return open_failed();
+    if (windowed) {
+        /* the surface the device is chosen for; the window held while it is made */
+        window = host_window_take();
+        if (window && make_surface(window))
+            sc_window = window;
+        host_window_give(surface ? sc_window : NULL);
+        if (!surface)
+            return open_failed();
+    }
     if (vkEnumeratePhysicalDevices(inst, &n, devs) < 0 || !n)
         return open_failed();
     phys = VK_NULL_HANDLE;
@@ -1138,6 +1220,7 @@ void rr_close(void)
     if (!dev)
         goto instance;
     vkDeviceWaitIdle(dev);
+    window_drop();
     for (i = 0; i < cap_pipes; i++)
         if (pipes[i].used && pipes[i].p)
             vkDestroyPipeline(dev, pipes[i].p, NULL);
@@ -1174,12 +1257,6 @@ void rr_close(void)
     for (k = 0; k < MAX_SHADERS; k++)
         if (game_mods[k])
             vkDestroyShaderModule(dev, game_mods[k], NULL);
-    for (i = 0; i < sc_n; i++) {
-        vkDestroyFramebuffer(dev, sc_fb[i], NULL);
-        vkDestroyImageView(dev, sc_view[i], NULL);
-    }
-    if (swapchain)
-        vkDestroySwapchainKHR(dev, swapchain, NULL);
     for (i = 0; i < sc_cap; i++)
         vkDestroySemaphore(dev, sc_done[i], NULL);
     free(sc_done);
@@ -1216,9 +1293,43 @@ instance:
     if (surface)
         vkDestroySurfaceKHR(inst, surface, NULL);
     surface = VK_NULL_HANDLE;
+    if (windowed)
+        host_window_give(NULL);         /* nothing kept on the window */
     if (inst)
         vkDestroyInstance(inst, NULL);
     inst = VK_NULL_HANDLE;
+    /* everything as before the first rr_open, so another opens soundly */
+    phys = VK_NULL_HANDLE;
+    queue = VK_NULL_HANDLE;
+    family = 0;
+    depth_format = VK_FORMAT_UNDEFINED;
+    sc_format = VK_FORMAT_UNDEFINED;
+    sc_window = NULL;
+    sc_ok = sc_failed = sc_lost = sc_mirror = sc_turns = 0;
+    sc_w = sc_h = sc_ew = sc_eh = sc_iw = sc_ih = 0;
+    windowed = 0;
+    rp_screen = rp_show = VK_NULL_HANDLE;
+    memset(rp_colour, 0, sizeof rp_colour);
+    memset(rp_index, 0, sizeof rp_index);
+    memset(rp_index32, 0, sizeof rp_index32);
+    set_layout = VK_NULL_HANDLE;
+    layout = VK_NULL_HANDLE;
+    sampler = filtered = VK_NULL_HANDLE;
+    cmd_pool = VK_NULL_HANDLE;
+    cmd = VK_NULL_HANDLE;
+    fence = VK_NULL_HANDLE;
+    sem_acquire = VK_NULL_HANDLE;
+    memset(vert_mod, 0, sizeof vert_mod);
+    memset(frag_mod, 0, sizeof frag_mod);
+    memset(game_mods, 0, sizeof game_mods);
+    memset(screen_fb, 0, sizeof screen_fb);
+    memset(screen_used, 0, sizeof screen_used);
+    pool_at = 0;
+    sets_gen = 0;
+    views_gen = 1;
+    targets_w = targets_h = last_w = last_h = 0;
+    ever = 0;
+    frame_no = 0;
 }
 
 const char *rr_name(void) { return "vulkan"; }
@@ -1391,6 +1502,29 @@ static void record_texops(const rr_frame *f)
     }
 }
 
+/* the work sent: a GPU that has been lost is said so, and the end */
+static void submit(const VkSubmitInfo *si)
+{
+    VkResult r = vkQueueSubmit(queue, 1, si, fence);
+    if (r != VK_SUCCESS)
+        fail(r == VK_ERROR_DEVICE_LOST ? "vkQueueSubmit (the GPU was lost)" : "vkQueueSubmit", r);
+}
+
+/* the frame before finished: waited for a second at a time, the GPU found lost
+   (or still not done after 10 seconds) said so, and the end, never a hang */
+static void wait_frame(void)
+{
+    int k;
+    for (k = 0; k < 10; k++) {
+        VkResult r = vkWaitForFences(dev, 1, &fence, VK_TRUE, 1000000000ull);
+        if (r == VK_SUCCESS)
+            return;
+        if (r != VK_TIMEOUT)
+            fail(r == VK_ERROR_DEVICE_LOST ? "vkWaitForFences (the GPU was lost)" : "vkWaitForFences", r);
+    }
+    fail("vkWaitForFences (no frame finished in 10 seconds: the GPU is lost)", VK_TIMEOUT);
+}
+
 /* a pass's target: its kind, size, and whether it can be drawn into */
 static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, int *th, Image **to)
 {
@@ -1429,7 +1563,7 @@ int rr_draw(rr_frame *f)
     VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     VkPipelineStageFlags wait = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
-    vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    wait_frame();
     frame_no++;
     for (i = 0; i < f->nshaders; i++) {
         /* kept: its pipelines are made as they are needed; its code is ours to let go */
@@ -1451,22 +1585,36 @@ int rr_draw(rr_frame *f)
     }
     f->nshaders = 0;
 
-    if (surface) {
+    if (windowed) {
+        /* the window this frame, held until the frame is shown: when it went or is another
+           (Android's, after the app was away), its surface let go, and one made on a new one */
+        void *wnd = host_window_take();
         int ww = 0, wh = 0;
-        host_window_pixels(&ww, &wh);
-        /* made again for a new size or when it no longer fits; until it can be made, nothing is shown */
-        if (ww >= 1 && wh >= 1 && (!sc_ok || ww != sc_w || wh != sc_h)) {
-            /* until the surface has a size again (minimised), only its size is asked */
-            sc_w = ww;
-            sc_h = wh;
-            sc_ok = swapchain_make(ww, wh);
+        if (wnd != sc_window || (sc_lost && wnd)) {
+            window_drop();
+            if (wnd)
+                window_make(wnd);
         }
-        if (ww >= 1 && wh >= 1 && sc_ok) {
+        if (surface) {
+            host_window_pixels(&ww, &wh);
+            /* made again for a new size or when it no longer fits; until it can be made, nothing is
+               shown: a size the surface has none for (minimised) is only asked, a failure not tried
+               again until the size changes */
+            if (ww >= 1 && wh >= 1 && ((!sc_ok && !sc_failed) || ww != sc_w || wh != sc_h)) {
+                sc_w = ww;
+                sc_h = wh;
+                sc_failed = 0;
+                sc_ok = swapchain_make(ww, wh);
+                if (sc_lost)
+                    window_drop();      /* made again from the window next frame */
+            }
+        }
+        if (surface && ww >= 1 && wh >= 1 && sc_ok) {
             ow = sc_ew;
             oh = sc_eh;
             show = 1;
         } else if (targets_w) {
-            /* minimised: drawn as before, not shown */
+            /* no window, or none to show in: drawn as before, not shown */
             ow = targets_w;
             oh = targets_h;
         }
@@ -1513,17 +1661,27 @@ int rr_draw(rr_frame *f)
         u.f[0][0] = (float)sc_iw;
         u.f[0][1] = (float)sc_ih;
         u.i[0][0] = sc_turns;
+        u.i[0][1] = sc_mirror;
         u.f[0][2] = 1.0f;
         u.f[0][3] = 1.0f;
         memcpy((char *)ubuf.at + f->nuniforms * 256, &u, sizeof u);
     }
 
+    if (show && !pipe_of(RR_SHOW, 0, RR_BLEND_REPLACE, 0, 0, KIND_SHOW)) {
+        /* nothing to show the picture with: no image taken, none shown */
+        show = 0;
+    }
     if (show) {
         VkResult r = vkAcquireNextImageKHR(dev, swapchain, UINT64_MAX, sem_acquire, VK_NULL_HANDLE, &image);
         /* an index is always one of the images made (as many as there are) */
+        if (r == VK_ERROR_DEVICE_LOST)
+            fail("vkAcquireNextImageKHR (the GPU was lost)", r);
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
-            sc_ok = 0;
             show = 0;
+            if (r == VK_ERROR_SURFACE_LOST_KHR)
+                window_drop();          /* made again from the window next frame */
+            else
+                sc_ok = 0;
         } else {
             paced = 1;
         }
@@ -1696,7 +1854,7 @@ int rr_draw(rr_frame *f)
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &sc_done[image];
     }
-    vkQueueSubmit(queue, 1, &si, fence);
+    submit(&si);
     if (show) {
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         VkResult r;
@@ -1706,9 +1864,15 @@ int rr_draw(rr_frame *f)
         pi.pSwapchains = &swapchain;
         pi.pImageIndices = &image;
         r = vkQueuePresentKHR(queue, &pi);
-        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
+        if (r == VK_ERROR_DEVICE_LOST)
+            fail("vkQueuePresentKHR (the GPU was lost)", r);
+        if (r == VK_ERROR_SURFACE_LOST_KHR)
+            window_drop();              /* made again from the window next frame */
+        else if (r != VK_SUCCESS)
             sc_ok = 0;
     }
+    if (windowed)
+        host_window_give(sc_window);
     ever = 1;
     last_w = ow;
     last_h = oh;
@@ -1726,7 +1890,7 @@ int rr_read(uint32_t *argb, int *w, int *h)
         VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
         VkBufferImageCopy c;
         VkDeviceSize bytes = (VkDeviceSize)last_w * (VkDeviceSize)last_h * 4;
-        vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+        wait_frame();
         if (readback.size < bytes) {
             buf_free(&readback);
             buf_make(&readback, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -1758,8 +1922,8 @@ int rr_read(uint32_t *argb, int *w, int *h)
         vkEndCommandBuffer(cmd);
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cmd;
-        vkQueueSubmit(queue, 1, &si, fence);
-        vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX);
+        submit(&si);
+        wait_frame();
         /* BGRA bytes are 0xAARRGGBB words */
         memcpy(argb, readback.at, (size_t)bytes);
     }
