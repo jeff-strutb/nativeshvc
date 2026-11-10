@@ -344,8 +344,9 @@ nshvc_profile nshvc_profile_frame(void);   /* each thread's time in the last fra
 ## 10. Testing and headless runs
 
 The same game runs headless with no window or audio device: `--headless --updates N --input FILE --shots DIR --sound
-FILE`. Input is replayed by update number, so a run repeats exactly. `nshvc_picture_read()` returns the last picture, read
-back from the GPU, for checks and screenshots.
+FILE`. Input is replayed by update number, so a run repeats exactly. `nshvc_picture_read()` returns the last finished picture,
+read back from the GPU, for checks and screenshots, or for a game's own use (from `update`, `draw` or shutdown; it
+waits for a picture being drawn to finish, and costs a readback, so a game calls it when it needs one).
 
 ## 11. Stability rules
 

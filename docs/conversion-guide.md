@@ -62,7 +62,7 @@ include(${NSHVC_ROOT}/cmake/NshvcGame.cmake)
 nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data SHADERS shaders TITLE "My Game")
 ```
 
-Building a game with shaders needs `glslangValidator`, `spirv-cross` and `dxc` on the build machine.
+Building a game with shaders needs `glslangValidator` and `spirv-cross` on the build machine, and `dxc` for D3D12; without `dxc` other builds leave the D3D12 shaders out, with a warning.
 
 Then run this, or name `ios`, `android`, `windows`, `windows-d3d12` or `linux` instead:
 

@@ -42,6 +42,7 @@ static uint64_t paused_at, paused_total;
 static host_mutex *hs_lock;
 static host_cond *game_wake, *render_wake;
 static int hs_want, hs_ready, hs_quit;
+static int hs_busy;          /* the render thread is drawing a picture */
 static eng_packet *hs_packet;
 
 static atomic_int quit_asked;
@@ -188,9 +189,14 @@ static void render_thread(void *arg)
             return;
         }
         hs_ready = 0;
+        hs_busy = 1;
         p = hs_packet;
         host_mutex_unlock(hs_lock);
         show(p);
+        host_mutex_lock(hs_lock);
+        hs_busy = 0;
+        host_cond_broadcast(game_wake);
+        host_mutex_unlock(hs_lock);
     }
 }
 
@@ -270,9 +276,12 @@ const uint32_t *nshvc_picture_read(int *width, int *height)
     int w = 0, h = 0;
     if (!eng_on("nshvc_picture_read", ENG_GAME))
         return NULL;
-    /* the render thread has finished: it asks for a picture only then */
+    /* the last finished picture: once a picture being drawn is done. The
+       render thread then waits for the game's next one, which this thread
+       sends, so it stays idle while the picture is read (from update, draw
+       or shutdown alike) */
     host_mutex_lock(hs_lock);
-    while (!hs_want && !hs_quit)
+    while (hs_busy && !hs_quit)
         host_cond_wait(game_wake, hs_lock, HOST_WAIT_FOREVER);
     host_mutex_unlock(hs_lock);
     if (!rr_read(NULL, &w, &h) || !w || !h)

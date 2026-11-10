@@ -173,8 +173,9 @@ void nshvc_profile_begin(const char *zone);
 void nshvc_profile_end(void);
 nshvc_profile nshvc_profile_frame(void);
 
-/* the last picture, 0xFFRRGGBB, top row first, read back from the GPU; NULL
-   when this renderer keeps none */
+/* the last finished picture, 0xFFRRGGBB, top row first, read back from the
+   GPU (a stall: call it when needed); from update, draw or shutdown; NULL
+   when this renderer keeps none. Valid until the next call. */
 const uint32_t *nshvc_picture_read(int *width, int *height);
 
 /* ---- jobs --------------------------------------------------------------------- */

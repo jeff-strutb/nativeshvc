@@ -65,6 +65,6 @@ function(nshvc_game target)
   endif()
   if(G_SHADERS)
     add_custom_command(TARGET ${target} POST_BUILD
-      COMMAND ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/nshvc-shaders ${CMAKE_CURRENT_SOURCE_DIR}/${G_SHADERS} ${_where}/shaders)
+      COMMAND ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/nshvc-shaders ${CMAKE_CURRENT_SOURCE_DIR}/${G_SHADERS} ${_where}/shaders ${NSHVC_RENDER})
   endif()
 endfunction()

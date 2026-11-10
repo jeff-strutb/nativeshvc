@@ -43,7 +43,7 @@ the engine. [examples/zelda3](examples/zelda3) is a full commercial-scale game c
 |---|---|
 | `tools/nshvc-find-hardware` | Lists what a game's C must change |
 | `tools/nshvc-build PLATFORM GAME_DIR` | Builds and packages a game |
-| `tools/nshvc-shaders SRC OUT` | Compiles a game's shaders for every backend (`nshvc_game` runs it) |
+| `tools/nshvc-shaders SRC OUT [RENDER]` | Compiles a game's shaders for every backend (`nshvc_game` runs it) |
 | `tools/nshvc-check` | Compares a converted game with its ROM in bsnes, picture and sound |
 
 ```bash
@@ -53,7 +53,7 @@ tools/nshvc-build macos path/to/game
 Platforms: `headless`, `macos`, `ios`, `android`, `windows`, `windows-d3d12`, `linux`.
 
 Android needs `ANDROID_HOME` and `ANDROID_NDK_HOME` and produces a signed APK. Building a game with shaders needs
-`glslangValidator`, `spirv-cross` and `dxc` on the build machine.
+`glslangValidator` and `spirv-cross` on the build machine, and `dxc` for D3D12 (other builds leave its shaders out).
 
 ## Running
 
