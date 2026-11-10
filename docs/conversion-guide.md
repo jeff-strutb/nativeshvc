@@ -27,7 +27,7 @@ full game's conversion.
 | DMA to CGRAM | `nshvc_palette_write` |
 | OAM buffer | `nshvc_sprites_set` |
 | HDMA tables | `nshvc_lines` |
-| Joypad registers | The `nshvc_input` passed to `update` |
+| Joypad registers | Your own controls, read from the devices in the `nshvc_input` passed to `update` |
 | APU ports | `nshvc_music_send`, read by your music code with `nshvc_music_receive` |
 | Sound driver | Music code in `nshvc_music.tick`, calling `nshvc_voice_*` |
 | Super FX or other chip | C that fills an `nshvc_draw_list` |
@@ -79,15 +79,15 @@ tools/nshvc-build macos path/to/game
 Run the game headless and compare what it shows and plays with the original running in bsnes:
 
 ```bash
-game --headless --updates 600 --input inputs.txt --sound out.raw
+game --headless --updates 600 --input keys.txt --sound out.raw
 ```
 
-`inputs.txt` has one line per change: the update number, then each pad's buttons in hex.
+`keys.txt` gives the devices by update number (`docs/api.md` section 7), such as `120 key=0D` to hold Return from update 120.
 
-`tools/nshvc-check` does the comparison: it plays the ROM in bsnes and the game headless with the same `inputs.txt`, and compares chosen frames pixel by pixel and, with `--sound`, the sound sample by sample:
+`tools/nshvc-check` does the comparison: it plays the ROM in bsnes and the game headless, and compares chosen frames pixel by pixel and, with `--sound`, the sound sample by sample. Its `inputs.txt` gives the original's buttons, one line per change: the update number, then each pad's buttons in hex. `--keys` names the key your controls map to each button, so the game is given those keys:
 
 ```bash
-tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom game.sfc --game "build/game" --input inputs.txt --at 60,600,1800 --sound
+tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom game.sfc --game "build/game" --input inputs.txt --keys B=5A,A=58,START=0D --at 60,600,1800 --sound
 ```
 
 ## 8. Worked example: zelda3
@@ -111,7 +111,7 @@ The conversion removed the game's imitation PPU, DMA, DSP and APU, its SDL front
 | `main`, an SDL window and loop | `nshvc_game` and `nshvc_run` |
 | The frame function | `update`, at 60 a second |
 | Drawing line by line | `draw` |
-| Its joypad word, B in bit 0 | The bits of `nshvc_input.pad[0]`, reversed |
+| Its joypad word, B in bit 0 | Its own controls (`src/controls.c`): keys, controller buttons, the left stick and on-screen touch discs, each turned into the joypad word |
 | Files on disk | `nshvc_asset_open` for data, `nshvc_save_write` and `nshvc_save_read` for saves |
 
 **Graphics.** A small video module replaces video memory. Tile sets and maps are engine objects, and the game writes to them when its graphics change, in `update`. Most writes name what they are, such as background or sprite tiles. The game's data tables name some destinations by number, and one function turns those into the right object. Mode 7's tiles and map are the game's own arrays, sent when they change.

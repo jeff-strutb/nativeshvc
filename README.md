@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 4.7. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 5.0. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 
@@ -30,7 +30,8 @@ The engine is at API 4.7. `docs/native-engine-plan.md` opens with what has and h
   backend at build time.
 - **Sound.** Voices, envelopes, noise, pitch modulation and echo by the SNES's rules at 32,040 Hz, with the game's music code
   on the audio thread.
-- **Input.** Keyboards, controllers, mice and touch screens mapped to the game's controls.
+- **Input.** Every keyboard key, controller button, stick and trigger, the pointer and every finger on a touch screen,
+  each as the device has it. The game decides what each one does.
 - **Saves and game data.** Native files, written off the game's thread, and packaged assets.
 - **Profiling and inspection.** Time per thread and per zone, and each picture's state on request.
 
@@ -63,24 +64,11 @@ Android needs `ANDROID_HOME` and `ANDROID_NDK_HOME` and produces a signed APK. B
 game                                  in a window
 game --headless --updates N           N updates, one picture each, no real time
      --updates N                      end after N updates
-     --input FILE                     input by update number
+     --input FILE                     the devices by update number (docs/api.md section 7)
      --shots DIR                      each picture, as DIR/NNNNNN.ppm
      --sound FILE                     16-bit stereo at 32,040 Hz (headless)
      --inspect FILE                   each picture's state, each time F12 is pressed
 ```
-
-## Default keys
-
-| SNES | Key | SNES | Key |
-|---|---|---|---|
-| D-pad | Arrow keys | Start | Return |
-| B | Z | Select | Shift |
-| A | X | L | Q |
-| Y | A | R | W |
-| X | S | | |
-
-Game controllers work without setup. A game can rebind any key with `nshvc_control_bind`, and any controller button with
-`nshvc_control_bind_controller`.
 
 ## The SNES's limits
 

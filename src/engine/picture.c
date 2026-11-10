@@ -60,10 +60,8 @@ static List lists[MAX_LISTS];
 static uint32_t nlists = 1;
 
 typedef struct { uint32_t image; float corners[6]; float alpha; } Overlay;
-#define TOUCH_ZONES 12
-static Overlay overlays[NSHVC_OVERLAYS + TOUCH_ZONES];   /* kept between pictures; the last the on-screen controls */
+static Overlay overlays[NSHVC_OVERLAYS];   /* kept between pictures */
 static int last_screen_w = 256, last_screen_h = 224;
-static uint32_t touch_image;
 
 static void reserve(uint32_t **p, size_t *cap, size_t want)
 {
@@ -972,9 +970,9 @@ static void build(eng_packet *p)
     /* the overlays: each window pixel's texel from the inverse of its corners */
     {
         uint32_t ov_at = (uint32_t)at, count = 0;
-        reserve(&p->desc, &p->desc_cap, at + (NSHVC_OVERLAYS + TOUCH_ZONES) * PB_OV);
+        reserve(&p->desc, &p->desc_cap, at + NSHVC_OVERLAYS * PB_OV);
         d = p->desc;
-        for (si = 0; si < NSHVC_OVERLAYS + TOUCH_ZONES; si++) {
+        for (si = 0; si < NSHVC_OVERLAYS; si++) {
             const Overlay *o = &overlays[si];
             if (o->image && o->alpha > 0) {
                 const float *q = o->corners;
@@ -1101,47 +1099,6 @@ void eng_picture_begin(void)
     nchanges = 0;
 }
 
-/* on a touch screen, the on-screen controls: a soft disc for each */
-static void touch_overlays(void)
-{
-    int z, n = eng_input_zones(), w = 0, h = 0;
-    enum { D = 64 };
-    if (!eng_input_touch_host() || n > TOUCH_ZONES)
-        return;
-    host_window_pixels(&w, &h);
-    if (w <= 0 || h <= 0)
-        return;
-    if (!touch_image) {
-        static uint32_t disc[D * D];
-        nshvc_image im = nshvc_image_create(D, D, NSHVC_IMAGE_RGBA);
-        int x, y;
-        for (y = 0; y < D; y++)
-            for (x = 0; x < D; x++) {
-                int dx = 2 * x + 1 - D, dy = 2 * y + 1 - D, r2 = dx * dx + dy * dy;
-                int edge = D * D, inner = (D - 8) * (D - 8);
-                disc[y * D + x] = r2 > edge ? 0u : r2 > inner ? 0xB0FFFFFFu : 0x40FFFFFFu;
-            }
-        nshvc_image_write(im, disc);
-        touch_image = im.id;
-    }
-    for (z = 0; z < n; z++) {
-        float cx, cy, r;
-        Overlay *o = &overlays[NSHVC_OVERLAYS + z];
-        eng_input_zone(z, &cx, &cy, &r);
-        cx *= (float)w;
-        cy *= (float)h;
-        r *= (float)h;
-        o->image = touch_image;
-        o->corners[0] = cx - r;
-        o->corners[1] = cy - r;
-        o->corners[2] = cx + r;
-        o->corners[3] = cy - r;
-        o->corners[4] = cx - r;
-        o->corners[5] = cy + r;
-        o->alpha = 1;
-    }
-}
-
 static void inspect(FILE *f)
 {
     int i;
@@ -1177,7 +1134,6 @@ eng_packet *eng_picture_end(void)
 {
     eng_packet *done = &packets[cur];
     FILE *f;
-    touch_overlays();
     if ((f = eng_inspect_take()))
         inspect(f);
     build(done);

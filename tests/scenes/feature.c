@@ -2,7 +2,9 @@
  * values worked out by hand: draw lists, the exact fill, game shaders, images,
  * overlays, saves, input replay, jobs and pause. Prints FAIL and exits 1 on any
  * difference. Run with --headless --updates 4 --input FILE and PORT_RESDIR set
- * to the folder holding shaders/tint.<backend>. */
+ * to the folder holding shaders/tint.<backend>, FILE holding the two lines
+ *   1 key=5A controller=0,1
+ *   3 key=27 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +65,8 @@ static void update(const nshvc_input *in)
 {
     uint64_t n = nshvc_updates();
     if (n < 4)
-        pads[n] = in->pad[0];
+        pads[n] = (uint16_t)(NSHVC_KEY_HELD(in, 'Z') | NSHVC_KEY_PRESSED(in, 'Z') << 1 | NSHVC_KEY_RELEASED(in, 'Z') << 2 |
+                             NSHVC_KEY_HELD(in, 0x27) << 3 | (in->controller[0].on && (in->controller[0].buttons & NSHVC_CTL_SOUTH)) << 4);
 }
 
 static void draw(float between)
@@ -109,7 +112,7 @@ static void shutdown(void)
     int w = 0, h = 0;
     const uint32_t *p = nshvc_picture_read(&w, &h);
 #define AT(x, y) (p[(y) * w + (x)] & 0xFFFFFFu)
-    CHECK(pads[0] == 0x0000 && pads[1] == 0x8000 && pads[2] == 0x8000 && pads[3] == 0x0100, "input %x %x %x %x", pads[0], pads[1], pads[2], pads[3]);
+    CHECK(pads[0] == 0x00 && pads[1] == 0x13 && pads[2] == 0x11 && pads[3] == 0x0C, "input %x %x %x %x", pads[0], pads[1], pads[2], pads[3]);
     if (!p) {
         CHECK(0, "no picture");
     } else {

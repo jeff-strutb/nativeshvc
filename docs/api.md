@@ -1,4 +1,4 @@
-# The native engine's API, version 4.7
+# The native engine's API, version 5.0
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -293,45 +293,40 @@ uint32_t nshvc_music_receive(void *buffer, uint32_t max);    /* the next message
 ## 7. Input
 
 ```c
-typedef enum { NSHVC_PAD, NSHVC_MOUSE, NSHVC_SUPERSCOPE, NSHVC_JUSTIFIER } nshvc_device;
-void nshvc_players(uint32_t count, const nshvc_device *devices);   /* what each player uses; a multitap is just more players */
-
 typedef struct nshvc_input {
-    uint16_t pad[8];            /* the SNES's buttons, B Y Select Start Up Down Left Right A X L R, as bits */
-    struct { int16_t dx, dy; uint8_t buttons, speed; } mouse[2];
-    struct { int32_t x, y; uint8_t trigger, cursor, turbo, pause, start; uint8_t on_screen; } gun[2];
-    /* the devices themselves, as the host reports them */
     uint32_t keys[8], keys_pressed[8], keys_released[8];   /* every key, one bit each, by nshvc_key */
-    struct { float x, y, wheel_x, wheel_y; uint8_t buttons, inside; } pointer;   /* window pixels; wheel in lines */
+    struct { float x, y, dx, dy, wheel_x, wheel_y; uint8_t buttons, inside; } pointer;   /* window pixels; wheel in lines */
     struct { int32_t id; float x, y; } touch[10];          /* every finger, in window pixels */
     uint8_t touches;
     struct { uint8_t on, style; uint16_t buttons; float lx, ly, rx, ry, lt, rt; } controller[8];
 } nshvc_input;
 
-const char *nshvc_control_name(uint32_t player, uint32_t button);   /* what is bound, as the player's device labels it */
-nshvc_source nshvc_control_source(uint32_t player);                 /* keyboard, controller and family, mouse, touch */
-void nshvc_control_bind(uint32_t player, uint32_t button, nshvc_key key);
-void nshvc_control_bind_controller(uint32_t player, uint32_t button, uint32_t ctl);   /* an NSHVC_CTL_* bit; 0 none */
-void nshvc_control_defaults(uint32_t player);                       /* the engine's bindings back */
+const char *nshvc_key_name(nshvc_key key);                        /* "Z", "Return", "F1"... */
+const char *nshvc_controller_name(uint32_t c);                    /* the controller's product name */
+const char *nshvc_controller_label(uint32_t c, uint32_t ctl);     /* an NSHVC_CTL_* bit as that controller shows it */
+int nshvc_window_to_picture(float x, float y, int32_t *picture_x, int32_t *picture_y);   /* 0 outside the picture */
 ```
 
-- The engine maps every keyboard, controller, mouse and touch screen to these automatically, with on-screen controls on a
-  touch screen. A light gun's aim is simply where the pointer or touch is, in screen pixels.
-- Beside the SNES's controls, every device is the game's as itself: every key by its `nshvc_key` (a Windows virtual key
-  code on every host), held, gone down and gone up since the last update (`NSHVC_KEY_HELD`, `_PRESSED`, `_RELEASED`); the
-  pointer in window pixels with its buttons and wheel; every finger on a touch screen; and each controller's buttons
-  (`NSHVC_CTL_*`, by their place), both sticks and both triggers. A game's own interface, and a "press the key you
-  want" for `nshvc_control_bind`, read these.
-- A player's controls are rebound by key (`nshvc_control_bind`, player 0) and by controller button
-  (`nshvc_control_bind_controller`, one `NSHVC_CTL_*` bit, for that player's controller). Either takes the key or button
-  from whichever SNES button had it; 0 leaves the SNES button with none. A controller's left stick always steers.
-  `nshvc_control_name` names what is bound, a controller's button in its family's terms (A, Cross...), "" when nothing
-  is. Bindings last until changed; `nshvc_control_defaults` puts the engine's back. A "press the button you want" reads
-  `controller[].buttons`, and the game keeps the bindings in its own save.
-- While `nshvc_text_input(1)` is on, keys that type ('A'-'Z', digits, space, Backspace) go to the text alone and press
-  no SNES button; Enter still presses its button.
-- `update` receives the input sampled for that update, so a recorded run replays exactly. A recorded run holds the SNES
-  controls; the devices themselves read as idle in it.
+- The engine reports each device as the device has it, and maps nothing to a game's controls. There are no SNES
+  buttons, bindings or on-screen controls in the engine: the game decides what every key, button, stick, pointer and
+  finger does, as a Unity or Godot game does.
+- Every key is reported by its `nshvc_key` (a Windows virtual key code on every host): held, gone down and gone up since
+  the last update (`NSHVC_KEY_HELD`, `_PRESSED`, `_RELEASED`). The pointer is in window pixels, with how far the mouse
+  moved since the last update, its buttons and its wheel. Every finger on a touch screen has an id that lasts while it is
+  down. Each controller gives its buttons (`NSHVC_CTL_*`, by their place, south being the bottom face button on every
+  family), both sticks and both triggers.
+- `nshvc_key_name` and `nshvc_controller_label` name a key or button as the player sees it (a controller's in its
+  family's terms: A, Cross...), so a game's prompts and its "press the button you want" match the device in hand. A
+  game that offers rebinding keeps the bindings in its own save.
+- On a touch screen the game draws its own controls, with `nshvc_overlay_set`, and reads the fingers itself.
+  `nshvc_window_to_picture` gives the picture's pixel under a window pixel, for a light gun's aim or a tap on the
+  picture.
+- While `nshvc_text_input(1)` is on, a touch screen with no keyboard shows the system's keyboard, and what is typed
+  reads with `nshvc_text_read`. The keys are still reported; the game decides what they do meanwhile.
+- `update` receives the input sampled for that update, so a recorded run replays exactly. A headless `--input FILE`
+  gives the devices by update number: each line is the update, then what is held from it on, until the next line.
+  `key=VK` (hex), `controller=N,BUTTONS` (hex), `stick=N,LX,LY,RX,RY`, `trigger=N,LT,RT`, `pointer=X,Y[,BUTTONS]` and
+  `touch=ID,X,Y`; `#` begins a comment. A key held on one line and not the next reads as gone up.
 
 ## 8. Saves and game data
 
@@ -358,17 +353,17 @@ nshvc_profile nshvc_profile_frame(void);   /* each thread's time in the last fra
 ## 10. Testing and headless runs
 
 The same game runs headless with no window or audio device: `--headless --updates N --input FILE --shots DIR --sound
-FILE`. Input is replayed by update number, so a run repeats exactly. `nshvc_picture_read()` returns the last finished picture,
+FILE`. The devices are replayed by update number (section 7), so a run repeats exactly. `nshvc_picture_read()` returns the last finished picture,
 read back from the GPU, for checks and screenshots, or for a game's own use (from `update`, `draw` or shutdown; it
 waits for a picture being drawn to finish, and costs a readback, so a game calls it when it needs one).
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.7. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input` (keys, pointer, touches, controllers), and keys that type kept off the SNES controls while text is taken; 4.6 `nshvc_control_bind_controller` and `nshvc_control_defaults`; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
-- **Major (5.0):** the only release that may change or remove anything a game uses.
-- **Minor (4.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 4.0 game
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 5.0. 5.0 reports each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
+- **Major (6.0):** the only release that may change or remove anything a game uses.
+- **Minor (5.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 5.0 game
   builds and plays the same.
-- **Patch (4.0.1):** fixes where the engine differs from the SNES's rules, checked against bsnes.
+- **Patch (5.0.1):** fixes where the engine differs from the SNES's rules, checked against bsnes.
 - Every struct a game fills is zeroed to mean "the default". Every default is the SNES's own look and sound, with no limits.
 
 ## 12. Every current feature, mapped
@@ -392,9 +387,9 @@ waits for a picture being drawn to finish, and costs a readback, so a game calls
 | `nshvc_ext_canvas_screen`, `_screen32` | A layer from an `nshvc_image` |
 | `nshvc_overlay_image`, `_place`, `_update` | `nshvc_overlay_set` |
 | `nshvc_ext_pause`, `_paused` | `nshvc_pause` |
-| `nshvc_ext_key_for`, `_key_bind`, `_key_name`, `nshvc_player_label`, `nshvc_player_source` | Section 7 |
+| `nshvc_ext_key_for`, `_key_bind`, `_key_name`, `nshvc_player_label`, `nshvc_player_source` | The game's own controls, with `nshvc_key_name` and `nshvc_controller_label` (section 7) |
 | `nshvc_ext_text_input`, `nshvc_keyboard_attached`, `nshvc_safe_area`, `nshvc_window_size` | `nshvc_text_input`, `nshvc_display_info` |
-| `nshvc_plug`, `nshvc_plugged`, the seven `NSHVC_PORT_*` devices | `nshvc_players`. A multitap is more players, and an empty port is a player with no device |
+| `nshvc_plug`, `nshvc_plugged`, the seven `NSHVC_PORT_*` devices | The game's own: it reads the devices in `nshvc_input` as its players' joypads, mice, guns or multitap |
 | `nshvc_set_joypad`, `_mouse`, `_gun`, `nshvc_game_buttons` | `nshvc_input`, and headless replay |
 | `nshvc_save_dir`, battery saves | Section 8 |
 | `nshvc_audio_take`, `nshvc_audio_queued` | The engine's audio output; headless `--sound` |

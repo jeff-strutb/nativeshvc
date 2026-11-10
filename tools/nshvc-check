@@ -6,11 +6,17 @@ and the converted game runs headless, both given the same buttons. Chosen frames
 are compared pixel by pixel and, with --sound, the sound sample by sample.
 
   nshvc-check --oracle ORACLE --core BSNES_LIBRETRO --rom ROM --game "GAME ARGS"
-              --at 60,120,600 [--input INPUTS] [--offset N] [--sound]
-              [--sound-offset N] [--out DIR]
+              --at 60,120,600 [--input INPUTS] [--keys MAP] [--offset N]
+              [--sound] [--sound-offset N] [--out DIR]
 
-INPUTS is the game's --input file: one line per change, the update number, then
-each pad's buttons in hex. --at names frames of the original, counted from 1.
+INPUTS gives the original's buttons: one line per change, the update number,
+then each pad's buttons in hex (B 8000, Y 4000, Select 2000, Start 1000, Up
+0800, Down 0400, Left 0200, Right 0100, A 0080, X 0040, L 0020, R 0010). The
+converted game reads devices, not buttons, so it is given the keys its own
+controls map to each button: MAP is BUTTON=VK pairs, VK a key's Windows
+virtual key code in hex, the second pad's buttons as 2.BUTTON (default: the
+zelda3 example's keyboard, B=5A,Y=41,SELECT=10,START=0D,UP=26,DOWN=28,
+LEFT=25,RIGHT=27,A=58,X=53,L=51,R=57). --at names frames of the original, counted from 1.
 --offset says how the two line up: the game's picture for frame F is picture
 F + N, counted from 0 (default -1). --sound-offset N skips N samples of the
 game's sound, or of the original's when negative.
@@ -32,6 +38,27 @@ def read_inputs(path):
                 if w:
                     changes[int(w[0])] = (int(w[1], 16) if len(w) > 1 else 0, int(w[2], 16) if len(w) > 2 else 0)
     return changes
+
+
+DEFAULT_KEYS = 'B=5A,Y=41,SELECT=10,START=0D,UP=26,DOWN=28,LEFT=25,RIGHT=27,A=58,X=53,L=51,R=57'
+
+
+def write_keys(path, changes, keymap):
+    """the converted game's --input: each change's buttons as the keys MAP gives"""
+    keys = {}
+    for pair in keymap.split(','):
+        name, _, vk = pair.partition('=')
+        keys[name.strip().upper()] = int(vk, 16)
+    with open(path, 'w') as f:
+        for u in sorted(changes):
+            held = []
+            for pad, prefix in ((changes[u][0], ''), (changes[u][1], '2.')):
+                for bit, name in NAMES:
+                    if pad & bit:
+                        if prefix + name not in keys:
+                            sys.exit(f'nshvc-check: --keys gives no key for {prefix + name}')
+                        held.append(f'key={keys[prefix + name]:02X}')
+            f.write(' '.join([str(u)] + held) + '\n')
 
 
 def buttons(p0, p1):
@@ -90,6 +117,7 @@ def main():
     ap.add_argument('--game', required=True)
     ap.add_argument('--at', required=True)
     ap.add_argument('--input', default='')
+    ap.add_argument('--keys', default=DEFAULT_KEYS)
     ap.add_argument('--offset', type=int, default=-1)
     ap.add_argument('--sound', action='store_true')
     ap.add_argument('--sound-offset', type=int, default=0)
@@ -102,12 +130,15 @@ def main():
     os.makedirs(converted, exist_ok=True)
     shots = sorted(int(f) for f in a.at.split(','))
     script = os.path.join(out, 'script.txt')
-    write_script(script, read_inputs(a.input), shots)
+    changes = read_inputs(a.input)
+    write_script(script, changes, shots)
 
     cmd = [a.oracle, '--core', a.core, '--rom', a.rom, '--script', script, '--out', original]
     game = shlex.split(a.game) + ['--headless', '--updates', str(max(max(shots) + a.offset + 1, 1)), '--shots', converted]
     if a.input:
-        game += ['--input', a.input]
+        keys = os.path.join(out, 'keys.txt')
+        write_keys(keys, changes, a.keys)
+        game += ['--input', keys]
     if a.sound:
         cmd += ['--sound', os.path.join(out, 'original.raw')]
         game += ['--sound', os.path.join(out, 'game.raw')]

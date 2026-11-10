@@ -29,6 +29,9 @@
 #define MISSES 3
 
 enum { TITLE, PLAY, OVER };
+/* the game's controls, from the devices (controls()) */
+enum { GO_LEFT = 1, GO_RIGHT = 2, START = 4, PAUSE = 8 };
+enum { BY_KEYBOARD, BY_CONTROLLER, BY_TOUCH };
 enum { SND_CATCH = 1, SND_MISS = 2, SND_OVER = 3 };
 
 /* ---- the game's state: changed only in update ------------------------------ */
@@ -42,6 +45,7 @@ static struct {
     uint32_t score, seed, ticks, spawn_in, wave;
     int32_t ship_x, last_ship_x;
     uint16_t last_pad;
+    int by, by_controller;          /* what last pressed a control, for the title's prompt */
     Comet comet[COMETS];
     Save save;
 } g;
@@ -281,10 +285,8 @@ static void make_palette(void)
 
 static void init(void)
 {
-    static const nshvc_device one = NSHVC_PAD;
     g.seed = 0x1234567u;
     g.ship_x = g.last_ship_x = (SCREEN_W / 2 - 8) << 8;
-    nshvc_players(1, &one);
     load_game_data();
     make_font();
     make_stars();
@@ -363,9 +365,9 @@ static void play(uint16_t pad)
 {
     int i;
     g.last_ship_x = g.ship_x;
-    if (pad & NSHVC_LEFT)
+    if (pad & GO_LEFT)
         g.ship_x -= 3 << 8;
-    if (pad & NSHVC_RIGHT)
+    if (pad & GO_RIGHT)
         g.ship_x += 3 << 8;
     if (g.ship_x < 0)
         g.ship_x = 0;
@@ -393,25 +395,70 @@ static void play(uint16_t pad)
     }
 }
 
+/* the devices as the game's controls: arrows or a controller's d-pad and
+   left stick steer, Return or Menu starts, Shift, Tab or View pauses; on a
+   touch screen a finger on the window's left or right third steers and a new
+   finger starts */
+static uint16_t controls(const nshvc_input *in)
+{
+    static int had_touch;
+    uint16_t pad = 0;
+    int c, t;
+    if (NSHVC_KEY_HELD(in, 0x25)) pad |= GO_LEFT;
+    if (NSHVC_KEY_HELD(in, 0x27)) pad |= GO_RIGHT;
+    if (NSHVC_KEY_HELD(in, 0x0D)) pad |= START;
+    if (NSHVC_KEY_HELD(in, 0x10) || NSHVC_KEY_HELD(in, 0x09)) pad |= PAUSE;
+    if (pad)
+        g.by = BY_KEYBOARD;
+    for (c = 0; c < 8; c++) {
+        uint16_t b = in->controller[c].buttons, p = 0;
+        if (!in->controller[c].on)
+            continue;
+        if ((b & NSHVC_CTL_LEFT) || in->controller[c].lx < -0.5f) p |= GO_LEFT;
+        if ((b & NSHVC_CTL_RIGHT) || in->controller[c].lx > 0.5f) p |= GO_RIGHT;
+        if (b & NSHVC_CTL_MENU) p |= START;
+        if (b & NSHVC_CTL_BACK) p |= PAUSE;
+        if (p) {
+            g.by = BY_CONTROLLER;
+            g.by_controller = c;
+        }
+        pad |= p;
+    }
+    if (in->touches) {
+        float w = (float)nshvc_display_info().width;
+        for (t = 0; t < in->touches; t++) {
+            if (in->touch[t].x < w / 3)
+                pad |= GO_LEFT;
+            else if (in->touch[t].x >= w * 2 / 3)
+                pad |= GO_RIGHT;
+        }
+        if (in->touches > had_touch)
+            pad |= START;
+        g.by = BY_TOUCH;
+    }
+    had_touch = in->touches;
+    return pad;
+}
+
 static void update(const nshvc_input *in)
 {
-    uint16_t pad = in->pad[0], pressed = (uint16_t)(pad & ~g.last_pad);
+    uint16_t pad = controls(in), pressed = (uint16_t)(pad & ~g.last_pad);
     nshvc_profile_begin("update");
     g.last_pad = pad;
     g.ticks++;
-    if (g.mode == PLAY && (pressed & NSHVC_SELECT)) {
+    if (g.mode == PLAY && (pressed & PAUSE)) {
         /* the engine stops calling update while paused; draw shows the panel */
         g.paused = 1;
         nshvc_pause(1);
     }
     if (g.mode == TITLE) {
-        if (pressed & NSHVC_START)
+        if (pressed & START)
             start_run();
     } else if (g.mode == PLAY) {
         play(pad);
     } else if (g.entering) {
         enter_initials();
-    } else if (pressed & NSHVC_START) {
+    } else if (pressed & START) {
         g.mode = TITLE;
     }
     nshvc_profile_end();
@@ -440,7 +487,8 @@ static void draw_hud(void)
     snprintf(text, sizeof text, "BEST %u %s", g.save.best, g.save.initials);
     put_text(top, 17, text);
     if (g.mode == TITLE) {
-        snprintf(text, sizeof text, "COMET CATCH  %.10s TO START", nshvc_control_name(0, NSHVC_START));
+        const char *start = g.by == BY_TOUCH ? "TAP" : g.by == BY_CONTROLLER ? nshvc_controller_label((uint32_t)g.by_controller, NSHVC_CTL_MENU) : "";
+        snprintf(text, sizeof text, "COMET CATCH  %.10s TO START", *start ? start : nshvc_key_name(0x0D));
         put_text(middle, 2, text);
     } else if (g.entering) {
         put_text(middle, 4, "NEW BEST  TYPE INITIALS");

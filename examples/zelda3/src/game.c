@@ -11,6 +11,7 @@
 #include "variables.h"
 #include "features.h"
 #include "util.h"
+#include "controls.h"
 
 const uint8 *g_asset_ptrs[kNumberOfAssets];
 uint32 g_asset_sizes[kNumberOfAssets];
@@ -64,18 +65,15 @@ static void Init(void) {
     g_wanted_zelda_features = kFeatures0_ExtendScreen64 | kFeatures0_WidescreenVisualFixes;
 }
 
-// The game's joypad word has B in bit 0, the engine's in bit 15
+// The devices, as this game's joypad word (controls.c)
 static void Update(const nshvc_input *in) {
-  int pad = 0;
-  for (int b = 0; b < 12; b++)
-    if (in->pad[0] & (0x8000 >> b))
-      pad |= 1 << b;
-  ZeldaRunFrame(pad);
+  ZeldaRunFrame(Controls_Read(in));
 }
 
 static void Draw(float between) {
   (void)between;
   ZeldaDraw();
+  Controls_Draw();
 }
 
 #ifndef ZELDA3_CHECK_BUILD

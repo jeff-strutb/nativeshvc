@@ -17,6 +17,7 @@ The game logic is unchanged. Its imitation SNES hardware (PPU, DMA, DSP, APU), S
 | File | What it does |
 |---|---|
 | `src/game.c` | The entry point: `nshvc_game`, the update and the draw |
+| `src/controls.c` | The game's controls, from the devices the engine reports |
 | `src/video.c` | Tile sets, maps, and the description of each picture |
 | `src/spc_player.c`, `src/audio.c` | The sound driver, on engine voices from the audio thread |
 | `tests/check.c` | Hooks for checks: a picture hash, and starting a section of the game |
@@ -38,6 +39,19 @@ tools/nshvc-build macos examples/zelda3
 ```
 
 The same command builds for `linux`, `windows`, `windows-d3d12`, `android` and `ios`. Set `ZELDA3_ASPECT=16:9` when running to use a widescreen view.
+
+## Controls
+
+The engine reports each device as it is, and the game decides what it does. `src/controls.c` turns them into the joypad word the game reads:
+
+| SNES | Keyboard | Controller |
+|---|---|---|
+| D-pad | Arrow keys | D-pad or left stick |
+| B, A, Y, X | Z, X, A, S | The face buttons by place: bottom, right, left, top |
+| L, R | Q, W | The shoulder buttons |
+| Start, Select | Return; Shift or Tab | Menu; View |
+
+On a touch screen the game draws its own discs, once a finger has touched the screen, and a finger on one presses it.
 
 ## What has been tested
 

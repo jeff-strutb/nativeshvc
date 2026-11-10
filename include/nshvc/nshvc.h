@@ -15,18 +15,15 @@
 extern "C" {
 #endif
 
-#define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 7
+#define NSHVC_VERSION_MAJOR 5
+#define NSHVC_VERSION_MINOR 0
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
 
-/* the SNES's buttons, as bits of nshvc_input.pad[] */
-enum {
-    NSHVC_B = 0x8000, NSHVC_Y = 0x4000, NSHVC_SELECT = 0x2000, NSHVC_START = 0x1000,
-    NSHVC_UP = 0x0800, NSHVC_DOWN = 0x0400, NSHVC_LEFT = 0x0200, NSHVC_RIGHT = 0x0100,
-    NSHVC_A = 0x0080, NSHVC_X = 0x0040, NSHVC_L = 0x0020, NSHVC_R = 0x0010
-};
+/* Each device as the device has it (5.0). The engine maps nothing to a
+   game's controls: the game decides what every key, button, stick, pointer
+   and finger does. */
 
 /* a controller's buttons as itself, as bits of nshvc_input.controller[].buttons,
    named by their place on an Xbox controller (south, east, west, north...) */
@@ -36,20 +33,18 @@ enum {
     NSHVC_CTL_LS = 1u << 8, NSHVC_CTL_RS = 1u << 9, NSHVC_CTL_LT = 1u << 10, NSHVC_CTL_RT = 1u << 11,
     NSHVC_CTL_UP = 1u << 12, NSHVC_CTL_RIGHT = 1u << 13, NSHVC_CTL_DOWN = 1u << 14, NSHVC_CTL_LEFT = 1u << 15
 };
+enum { NSHVC_STYLE_GENERIC, NSHVC_STYLE_XBOX, NSHVC_STYLE_PLAYSTATION, NSHVC_STYLE_NINTENDO };
+typedef int nshvc_key;          /* a Windows virtual key code, on every host */
 
 typedef struct nshvc_input {
-    /* the SNES's controls, mapped from every device */
-    uint16_t pad[8];
-    struct { int16_t dx, dy; uint8_t buttons, speed; } mouse[2];
-    struct { int32_t x, y; uint8_t trigger, cursor, turbo, pause, start; uint8_t on_screen; } gun[2];
-    /* the devices themselves, as the host reports them (4.5) */
     /* every key, one bit a key by nshvc_key: held now; gone down since the
        last update (set even when already let go); gone up since the last update */
     uint32_t keys[8], keys_pressed[8], keys_released[8];
-    /* the pointer, in window pixels from the top left; buttons bit 0 left,
-       1 right, 2 middle; the wheel turned since the last update, in lines,
-       positive up and right; inside: over the window */
-    struct { float x, y, wheel_x, wheel_y; uint8_t buttons, inside; } pointer;
+    /* the pointer, in window pixels from the top left; dx, dy how far the
+       mouse moved since the last update (it moves on at the window's edge);
+       buttons bit 0 left, 1 right, 2 middle; the wheel turned since the last
+       update, in lines, positive up and right; inside: over the window */
+    struct { float x, y, dx, dy, wheel_x, wheel_y; uint8_t buttons, inside; } pointer;
     /* every finger on a touch screen, in window pixels; an id lasts while
        its finger is down */
     struct { int32_t id; float x, y; } touch[10];
@@ -63,29 +58,16 @@ typedef struct nshvc_input {
 #define NSHVC_KEY_PRESSED(in, k)  (((in)->keys_pressed[(k) >> 5] >> ((k) & 31)) & 1u)
 #define NSHVC_KEY_RELEASED(in, k) (((in)->keys_released[(k) >> 5] >> ((k) & 31)) & 1u)
 
-typedef enum { NSHVC_PAD, NSHVC_MOUSE, NSHVC_SUPERSCOPE, NSHVC_JUSTIFIER } nshvc_device;
-/* what each player uses; a multitap is just more players */
-void nshvc_players(uint32_t count, const nshvc_device *devices);
-
-enum { NSHVC_SOURCE_NONE, NSHVC_SOURCE_KEYBOARD, NSHVC_SOURCE_CONTROLLER, NSHVC_SOURCE_MOUSE, NSHVC_SOURCE_TOUCH };
-enum { NSHVC_STYLE_GENERIC, NSHVC_STYLE_XBOX, NSHVC_STYLE_PLAYSTATION, NSHVC_STYLE_NINTENDO };
-typedef struct nshvc_source { int kind, style; char name[64]; } nshvc_source;
-typedef int nshvc_key;          /* a Windows virtual key code, on every host */
-
-/* the control bound to button (NSHVC_B...) on the player's device, as that
-   device labels it (a controller's in its family's terms); "" when none */
-const char *nshvc_control_name(uint32_t player, uint32_t button);
-nshvc_source nshvc_control_source(uint32_t player);
-/* the keyboard's key that presses button (player 0; the key taken from
-   whichever button had it; 0 none) */
-void nshvc_control_bind(uint32_t player, uint32_t button, nshvc_key key);
-/* the controller button ctl (one NSHVC_CTL_* bit; 0 none) that presses button
-   on the player's controller, taken from whichever button had it; the left
-   stick always steers (4.6) */
-void nshvc_control_bind_controller(uint32_t player, uint32_t button, uint32_t ctl);
-/* the engine's own bindings back: the player's controller, and for player 0
-   the keyboard (4.6) */
-void nshvc_control_defaults(uint32_t player);
+/* a key's name as a keyboard shows it ("Z", "Return", "F1"...); "" unknown */
+const char *nshvc_key_name(nshvc_key key);
+/* controller c's product name; "" when none is connected there */
+const char *nshvc_controller_name(uint32_t c);
+/* button ctl (one NSHVC_CTL_* bit) as controller c shows it ("A", "Cross",
+   "L1"...); "" when none is connected there */
+const char *nshvc_controller_label(uint32_t c, uint32_t ctl);
+/* window pixel (x, y), as the pointer and touches give it, as the picture's
+   pixel; 0 when it is outside the picture */
+int nshvc_window_to_picture(float x, float y, int32_t *picture_x, int32_t *picture_y);
 /* what has been typed since the last read: 'A'-'Z', digits, space, 8, 13 */
 uint32_t nshvc_text_read(char *buffer, uint32_t max);
 
@@ -125,7 +107,7 @@ typedef struct nshvc_game {
 /* Runs the game; returns at exit with the process's status.
  *   --headless       no window and no real time: one update, then one draw
  *   --updates N      end after N updates
- *   --input FILE     input by update number
+ *   --input FILE     the devices by update number (docs/api.md section 4)
  *   --shots DIR      each picture, as DIR/NNNNNN.ppm
  *   --sound FILE     the sound: 16-bit stereo at 32,040 Hz (headless)
  *   --inspect FILE   what the game feeds the engine, each time F12 is pressed */
@@ -372,8 +354,7 @@ nshvc_display nshvc_display_info(void);
 #define NSHVC_OVERLAYS 32
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha);
 /* the game takes text: the system's on-screen keyboard where there is no
-   keyboard, and keys that type ('A'-'Z', digits, space, Backspace) go to
-   nshvc_text_read alone, pressing no SNES button (Enter still does) */
+   keyboard; what is typed reads with nshvc_text_read */
 void nshvc_text_input(int on);
 
 #ifdef __cplusplus

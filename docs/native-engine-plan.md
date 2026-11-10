@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-09)
 
-API 4.7, on `main`. Every stage is built.
+API 5.0, on `main`. Every stage is built.
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
@@ -73,7 +73,7 @@ for every platform it supports.
 | **Shaders** | Games' own shaders in one engine shading language (decision B), compiled by the engine for every backend. Effects the SNES did not have, such as water, are the game's, written in that language | Games' own per-platform shaders |
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
 | **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
-| **Input** | The game declares its controls. The engine maps every keyboard, controller, mouse and touch screen to them, adds on-screen controls where needed, and names each control as it is labelled. Joypad, mouse, multitap and light gun as native inputs | Ports, latches, bit protocols, each game's touch code |
+| **Input** | Every device as the device has it: keys, pointer, every finger, each controller's buttons, sticks and triggers, with each key and button named as it is labelled. The game maps them to its own controls, on-screen controls included | Ports, latches, bit protocols, SNES buttons and bindings in the engine |
 | **Saves** | The game's own save files, stored natively in the system's save folder, written off the game's thread. The game decides what to save, when, and in what form. There are no save states: rewinding to any instant is an emulator feature, and neither Unity nor Unreal has one | Battery RAM mapping, `.srm` files, `fork` and replay states |
 | **Game data** | Packages whatever assets the game's project contains into its build, and loads them on every platform, including inside app bundles. Where the game's data comes from is the game's concern | `rom`, `rom_pages` and `rom_read` |
 | **Profiling** | Per-thread timing tools on every platform, so a game can keep to its own budget | |
