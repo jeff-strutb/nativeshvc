@@ -7,5 +7,7 @@ void main()
 {
     int cols = u.i[0].z, tpp = u.i[0].w, s = 8 * tpp;
     ivec2 p = ivec2(gl_FragCoord.xy) & 7;
-    o = texelFetch(ti1, ivec2(int(v_tile) % cols * s + p.x * tpp + tpp / 2, int(v_tile) / cols * s + p.y * tpp + tpp / 2), 0).r;
+    /* a tile past the set's reads 0, as tile_texel's */
+    o = int(v_tile) / cols * s >= textureSize(ti1, 0).y ? 0u
+      : texelFetch(ti1, ivec2(int(v_tile) % cols * s + p.x * tpp + tpp / 2, int(v_tile) / cols * s + p.y * tpp + tpp / 2), 0).r;
 }

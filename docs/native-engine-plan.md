@@ -8,7 +8,7 @@ API 6.0. Every stage is built. 6.0 replaced the renderer (stage 3, below): the p
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer: compiled, not run.** It compiles for macOS, iOS, Windows (Vulkan and D3D12), Android and headless, with
-  zelda3, comet and the checks; no picture of it has been looked at, timed or checked on any platform. Every result below
+  the example games and the checks; no picture of it has been looked at, timed or checked on any platform. Every result below
   about pictures, scenes or speed was of the renderer it replaced, and says nothing of this one.
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
@@ -16,8 +16,8 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
 - **Feature scenes:** removed in 6.0. They held each picture feature to bsnes byte for byte; a native renderer draws at the
   window's resolution, and an emulator's picture is not its standard.
 - **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
-- **A full game, zelda3, converted to the API** with no imitation hardware left. See the conversion guide. Attract frames that line up match the ROM in bsnes byte for byte; dungeons, the world map, game over, boss scenes and the credits match its previous renderer apart from the timing of its 3D polygons. One scene, save and quit, ended differently from that reference, in the game's logic, and was not explained. A run gives the same picture on macOS, Linux, D3D12 headless and the Windows host under Wine, and in real time on macOS, Linux, Android and iOS.
-- **Sound:** the voices match the old mixer, itself held to bsnes, on 1.28 million samples with echo writes switching, and on 1.9 million before that. zelda3's music is not aligned with the ROM's, so it is compared only in loudness.
+- **A full game converted to the API** (in `examples/`) with no imitation hardware left. See the conversion guide. Attract frames that line up match the ROM in bsnes byte for byte; dungeons, the world map, game over, boss scenes and the credits match its previous renderer apart from the timing of its 3D polygons. One scene, save and quit, ended differently from that reference, in the game's logic, and was not explained. A run gives the same picture on macOS, Linux, D3D12 headless and the Windows host under Wine, and in real time on macOS, Linux, Android and iOS.
+- **Sound:** the voices match the old mixer, itself held to bsnes, on 1.28 million samples with echo writes switching, and on 1.9 million before that. Its music is not aligned with the ROM's, so it is compared only in loudness.
 - **Speed:** at most 7.9 us of engine work a picture on an Apple M4 Pro, against the 30 us target, which was set on another machine.
 - **Example and kit:** `examples/comet` builds with one command for every platform; on Linux that needs the shader tools installed. `tools/nshvc-check` compares a converted game's sound with its ROM's in bsnes.
 - **`dxc`:** Homebrew has none. `tools/nshvc-shaders` and `src/render/shaders/build.sh` use `DXC`, else `dxc` on the PATH, else `build/tools/dxc/bin/dxc` (not in git; build it from DirectXShaderCompiler source and place it there with its `lib/libdxcompiler`).
@@ -46,7 +46,7 @@ for every platform it supports.
 - No console speed: a game with speed limits in its code fixes its code. Anyone who wants the game as it was has the
   assembly and bsnes.
 - The SNES's split stands: the console provides the pipeline, and the cartridge brings its own chips.
-- nativeshvc is done first and completely, on a new branch, then SRFX on its own. Old and new never live side by side. No
+- nativeshvc is done first and completely, on a new branch, then the first game on its own. Old and new never live side by side. No
   shims, no hacks, no shortcuts.
 
 ## 3. Principles
@@ -110,10 +110,10 @@ How a decompiled game becomes a native game on the engine:
    message to the game's music code.
 3. **Convert sound and chips:** the music code drives voices, and the chip code feeds the drawing pipeline.
 4. **Clean up:** the register style goes from the game's internal code.
-5. **Check, after every area:** the checking setup compares what the game shows, plays and stores with the original running
-   in bsnes.
+5. **Check, after every area:** the checking setup compares what the game plays with the original running in bsnes; what
+   it shows is looked at, not held to an emulator's picture.
 
-SRFX, once converted, is the worked example of every kind of change.
+The first game, once converted, is the worked example of every kind of change.
 
 ## 7. What goes, and what it costs
 
@@ -128,7 +128,7 @@ builds against it and it is not maintained.
 - The claim of matching bsnes read for read, to the clock, goes. bsnes stays the reference for the rules: what a layer, a
   blend or a voice should produce.
 - The original's slowdown is gone from native builds.
-- No real game runs on the engine until SRFX is converted. Recorded game data reduces that risk, but an API gap could still
+- No real game runs on the engine until the first game is converted. Recorded game data reduces that risk, but an API gap could still
   show up late. Filling one is a change to the engine's API, made properly.
 - The engine pays off only if more than one game uses it.
 
@@ -171,7 +171,7 @@ estimate, not a measurement.
 
 ### 1. The API
 
-Write every call in section 4 as the contract, from the current feature lists and SRFX's measured use (appendix A). No register name or address appears in it.
+Write every call in section 4 as the contract, from the current feature lists and the first game's measured use (appendix A). No register name or address appears in it.
 
 Write the API's stability rules with it: version numbers, what a minor release may add, and that only a major release may
 change or remove anything a game relies on (approved by the maintainer, 2026-11-08).
@@ -293,7 +293,7 @@ reusable checking setup against bsnes for any game; and a complete example game 
 `hello`.
 
 **Done when:** a reader with a decompiled game and the kit knows every change to make and how to check each one, and the
-finder lists every hardware touch in SRFX's current C.
+finder lists every hardware touch in the first game's current C.
 
 ### 12. Documents
 
@@ -335,19 +335,19 @@ D3D12 (Windows, and the path to Xbox), which the maintainer added the same day. 
 Settled, 2026-11-08: saves are the game's own native files, with no `.srm` compatibility. Where a game's code and data live
 is the game's concern, not the engine's.
 
-## 10. After the engine: SRFX
+## 10. After the engine: the first game
 
-SRFX gets its own branch, with a plan of its own, only after stage 13. Its record, the assembly and the proven C, stays
-untouched, and the native game is converted from it. Where SRFX keeps that code is its own decision. It is not playable on the engine
+The first game gets its own branch, with a plan of its own, only after stage 13. Its record, the assembly and the proven C, stays
+untouched, and the native game is converted from it. Where the game keeps that code is its own decision. It is not playable on the engine
 until its conversion is complete enough, so that plan sets out how each area is checked before then, including recording
-SRFX's picture state, voice events and polygons and comparing their replay with bsnes (moved from stage 10 by the maintainer,
+its picture state, voice events and polygons and comparing their replay with bsnes (moved from stage 10 by the maintainer,
 2026-11-08). Its conversion is the
 first full use of the integration kit.
 
 ## 11. What is not known
 
 - Whether the API covers a real game before one runs on it.
-- Whether the voice calls cover every game's sound driver. SRFX's drivers are the first test, and their data has not been read.
+- Whether the voice calls cover every game's sound driver. The first game's drivers are the first test, and their data has not been read.
 - How much the threads gain, until stage 14.
 - How much of a game's logic can split across threads. That is game work, after this plan.
 - How much of a conversion the tools can automate.
@@ -361,7 +361,7 @@ run.
 ### The maintainer's earlier written rules
 
 The maintainer's standing rules, already written down in the game's repository
-(`ports/stuntracefx/PLAN.md:23-32`, `HANDOFF.md:62-79`, headed "The rules (Jeff's, all standing)"):
+(its plan and hand-over notes, headed "The rules (Jeff's, all standing)"):
 
 > **Zero emulation when done.** The finished port is the game's own source as native C over native parts:
 > no bus (rd8/wr8), no console register files or register-number interfaces, no CPU/SPC700/Super FX
@@ -373,8 +373,8 @@ The maintainer's standing rules, already written down in the game's repository
 
 Two later decisions also stand:
 
-- **Behaviour exact, not cycle exact** (2026-10-28, `docs/stuntracefx/PLAN.md:78-88`).
-- **Fixes go into the decomp's C, with no separate copy** (rule 20, `docs/stuntracefx/PLAN.md:275`). This
+- **Behaviour exact, not cycle exact** (2026-10-28, in the game's plan).
+- **Fixes go into the decomp's C, with no separate copy** (rule 20 of the game's plan). This
   one conflicts with the zero-emulation rules. Where a game keeps its code is the game's concern, not the engine's.
 
 ### Where the code stands
@@ -393,7 +393,7 @@ Two later decisions also stand:
 | Drawing | Mostly GPU, with CPU work below | Below |
 | Threads | **One, for the game, the console, the sound, a chip and the drawing submission** | `console.c:1229-1234` |
 
-This matches what `ports/stuntracefx/PLAN.md:13-15` set out to remove: "a model of the console under it
+This matches what the game's plan set out to remove: "a model of the console under it
 (bus, PPU, DMA and HDMA, Super FX registers, sound unit, DSP, coroutines)".
 
 **So by the maintainer's own definition, today's console is mostly a hardware model.** It has no emulated
@@ -403,7 +403,7 @@ bsnes counts as a defect.
 
 #### The game
 
-The source is about 140,000 lines. Recounted from `src/stuntracefx`, leaving out sound and Enhanced for the
+The source is about 140,000 lines. Recounted from the game's source, leaving out sound and Enhanced for the
 first four rows:
 
 | What | Count |

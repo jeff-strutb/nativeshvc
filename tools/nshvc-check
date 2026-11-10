@@ -16,7 +16,7 @@ then each pad's buttons in hex (B 8000, Y 4000, Select 2000, Start 1000, Up
 converted game reads devices, not buttons, so it is given the keys its own
 controls map to each button: MAP is BUTTON=VK pairs, VK a key's Windows
 virtual key code in hex, the second pad's buttons as 2.BUTTON (default: the
-zelda3 example's keyboard, B=5A,Y=41,SELECT=10,START=0D,UP=26,DOWN=28,
+full example game's keyboard, B=5A,Y=41,SELECT=10,START=0D,UP=26,DOWN=28,
 LEFT=25,RIGHT=27,A=58,X=53,L=51,R=57). --sound-offset N skips N samples of the
 game's sound, or of the original's when negative.
 

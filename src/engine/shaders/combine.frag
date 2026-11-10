@@ -29,8 +29,11 @@ void main()
         return;
     }
     {
-        /* each channel in eighths of a 5-bit step: a 15-bit colour's are its own, exactly */
+        /* each channel in eighths of a 5-bit step: a 15-bit colour's are its
+           own, exactly, and are halved and dimmed in whole steps as the SNES
+           does; a colour past 15 bits (eighths in it) keeps its eighths */
         uvec3 z = c - (c >> 5u);
+        bvec3 fine = notEqual(z & 7u, uvec3(0u));
         if (maths) {
             bool halve = u.i[1].y != 0 && !clip;
             uvec3 y;
@@ -43,17 +46,18 @@ void main()
             } else {
                 uvec3 oc = channels(other);
                 y = oc - (oc >> 5u);
+                fine = bvec3(uvec3(fine) | uvec3(notEqual(y & 7u, uvec3(0u))));
             }
             if (u.i[1].x != 0)
                 z = uvec3(greaterThan(z, y)) * (z - y);
             else
                 z = z + y;
             if (halve)
-                z = (z >> 4u) << 3u;
+                z = mix((z >> 4u) << 3u, z >> 1u, fine);
             z = min(z, uvec3(248u));
         }
         if (bright != 15)
-            z = ((((z >> 3u) * uint(bright) + 7u) * 4370u) >> 16u) << 3u;
+            z = mix(((((z >> 3u) * uint(bright) + 7u) * 4370u) >> 16u) << 3u, ((z * uint(bright) + 7u) * 4370u) >> 16u, notEqual(z & 7u, uvec3(0u)));
         r = z + (z >> 5u);
     }
     o = vec4(vec3(r) / 255.0, 1.0);

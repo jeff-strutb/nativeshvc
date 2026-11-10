@@ -34,7 +34,7 @@
     <text x="492" y="358">32,040 Hz</text>
     <text x="492" y="382">game's music code</text>
     <text x="702" y="314" font-weight="bold">Input, saves, data</text>
-    <text x="702" y="338">devices mapped to controls</text>
+    <text x="702" y="338">devices as they are</text>
     <text x="702" y="358">native save files</text>
     <text x="702" y="382">profiling, inspection</text>
   </g>

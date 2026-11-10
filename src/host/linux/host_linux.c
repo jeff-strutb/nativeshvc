@@ -48,6 +48,7 @@ typedef union {
 #define X_MASK (1L | 2L | 4L | 8L | (1L << 6) | (1L << 17) | (1L << 21))
 
 static Display *(*pXOpenDisplay)(const char *);
+static int (*pXInitThreads)(void);
 static int (*pXDefaultScreen)(Display *);
 static XWindow (*pXRootWindow)(Display *, int);
 static XWindow (*pXCreateSimpleWindow)(Display *, XWindow, int, int, unsigned, unsigned, unsigned, unsigned long, unsigned long);
@@ -78,7 +79,7 @@ static int load_x11(void)
     if (!h)
         return 0;
 #define L(n) if (!(p##n = dlsym(h, #n))) return 0;
-    L(XOpenDisplay) L(XDefaultScreen) L(XRootWindow) L(XCreateSimpleWindow) L(XSelectInput) L(XMapWindow) L(XStoreName)
+    L(XInitThreads) L(XOpenDisplay) L(XDefaultScreen) L(XRootWindow) L(XCreateSimpleWindow) L(XSelectInput) L(XMapWindow) L(XStoreName)
     L(XInternAtom) L(XSetWMProtocols) L(XPending) L(XNextEvent) L(XLookupKeysym) L(XConnectionNumber) L(XFlush) L(XDestroyWindow)
 #undef L
     /* a held key's repeats as presses alone, not a release and a press */
@@ -168,7 +169,10 @@ static void window_icon(void)
 int host_window_open(int width, int height, const char *title)
 {
     int s;
-    if (!load_x11() || !(dpy = pXOpenDisplay(NULL)))
+    /* the display is used from two threads: this one's events, and the
+       renderer's presenting to a surface on it (VK_KHR_xlib_surface asks for
+       this, before any other Xlib call) */
+    if (!load_x11() || !pXInitThreads() || !(dpy = pXOpenDisplay(NULL)))
         return 0;
     if (pXkbSetDetectableAutoRepeat)
         pXkbSetDetectableAutoRepeat(dpy, 1, NULL);

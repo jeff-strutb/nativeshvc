@@ -30,7 +30,7 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define FRAMES 3
 #define MAX_TEXTURES 16384
 #define MAX_SHADERS 256
-#define RTVS 4096
+#define RTVS 5                          /* the shared views: the three screens, the output, the picture */
 #define MAX_TABLES (1000000 / RR_TEX_SLOTS)    /* a shader-visible heap's most descriptors, every binding tier, in tables */
 #define MIN_TABLES 1024
 #define UNUSED_FRAMES 120               /* an extra target unused this many frames is let go */
@@ -43,11 +43,13 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 enum { KIND_SCREEN, KIND_INDEX, KIND_INDEX32, KIND_COLOUR, KINDS };
 
 typedef struct { ID3D12Resource *r; void *at; UINT64 size; } Buf;
-/* a texture: rtv its first level's render-target view, the rest after it
-   (an array's: layer by layer, each layer's levels together); fresh: each
-   layer not drawn into yet */
+/* a texture: its render-target views, layer by layer, each layer's levels
+   together: a frame's texture's in its own heap (rh, rtvs of them), the
+   picture's and the output's at rtv in the shared one; fresh: each layer
+   not drawn into yet */
 typedef struct {
     ID3D12Resource *r;
+    ID3D12DescriptorHeap *rh;
     uint8_t *fresh;
     int w, h, format, rtv, rtvs, levels, layers, array, target;
     D3D12_RESOURCE_STATES state;
@@ -71,7 +73,6 @@ static int sc_w, sc_h;
 static ID3D12RootSignature *root;
 static ID3D12DescriptorHeap *rtv_heap, *dsv_heap, *srv_heap;
 static UINT rtv_step, dsv_step, srv_step, srv_tables;
-static uint8_t rtv_taken[RTVS];         /* each render-target view slot: held */
 static Tex tex[MAX_TEXTURES];
 static Tex none_colour, none_index, none_array;
 static Tex screen_ms[3], screen_ds[3], screen_res[3], picture, output;
@@ -80,33 +81,22 @@ static Buf ubuf, dbuf, staging, readback;
 static Code game_ps[MAX_SHADERS];
 static int targets_w, targets_h, last_w, last_h, ever;
 
-/* n slots together, the first that are free; -1 none */
-static int rtv_alloc(int n)
-{
-    int at, k;
-    for (at = 0; at + n <= RTVS; at++) {
-        for (k = 0; k < n && !rtv_taken[at + k]; k++)
-            ;
-        if (k == n) {
-            memset(rtv_taken + at, 1, (size_t)n);
-            return at;
-        }
-        at += k;
-    }
-    return -1;
-}
-
-static void rtv_release(int at, int n)
-{
-    if (n > 0)
-        memset(rtv_taken + at, 0, (size_t)n);
-}
-
-/* RTV slots: 0-2 the screens, 3 the output, 4 the picture, then textures drawn into */
+/* the shared RTV slots: 0-2 the screens, 3 the output, 4 the picture */
 static D3D12_CPU_DESCRIPTOR_HANDLE rtv(int i)
 {
     D3D12_CPU_DESCRIPTOR_HANDLE h;
     rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(rtv_heap, &h);
+    h.ptr += (SIZE_T)i * rtv_step;
+    return h;
+}
+
+/* texture t's render-target view i (layer * levels + level) */
+static D3D12_CPU_DESCRIPTOR_HANDLE tex_rtv(const Tex *t, int i)
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE h;
+    if (!t->rh)
+        return rtv(t->rtv + i);
+    t->rh->lpVtbl->GetCPUDescriptorHandleForHeapStart(t->rh, &h);
     h.ptr += (SIZE_T)i * rtv_step;
     return h;
 }
@@ -119,12 +109,40 @@ static D3D12_CPU_DESCRIPTOR_HANDLE dsv(int i)
     return h;
 }
 
+/* the GPU lost (removed or reset): said so by name, with Windows' reason for
+   it, and the end, as Vulkan's renderer does; never a hang */
+static void lost(const char *what, HRESULT hr)
+{
+    HRESULT why = dev ? ID3D12Device_GetDeviceRemovedReason(dev) : S_OK;
+    fprintf(stderr, "rr: d3d12: %s failed (0x%08lx; the device's removal reason 0x%08lx)\n", what, (unsigned long)hr, (unsigned long)why);
+    exit(70);
+}
+
+static void check(const char *what, HRESULT hr)
+{
+    if (FAILED(hr))
+        lost(what, hr);
+}
+
+static int removed(HRESULT hr) { return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET; }
+
+/* the work sent so far finished: waited for a second at a time; a device
+   removed (its fence then reads as done) or nothing finished in 10 seconds
+   said so, and the end */
 static void wait_gpu(void)
 {
-    if (ID3D12Fence_GetCompletedValue(fence) < fence_at) {
-        ID3D12Fence_SetEventOnCompletion(fence, fence_at, fence_event);
-        WaitForSingleObject(fence_event, INFINITE);
+    int k;
+    for (k = 0; k < 10; k++) {
+        if (ID3D12Fence_GetCompletedValue(fence) >= fence_at) {
+            HRESULT why = ID3D12Device_GetDeviceRemovedReason(dev);
+            if (FAILED(why))
+                lost("the GPU's work", why);
+            return;
+        }
+        check("ID3D12Fence_SetEventOnCompletion", ID3D12Fence_SetEventOnCompletion(fence, fence_at, fence_event));
+        WaitForSingleObject(fence_event, 1000);
     }
+    lost("the GPU's work (none finished in 10 seconds)", ID3D12Device_GetDeviceRemovedReason(dev));
 }
 
 static uint64_t mix64(uint64_t x)
@@ -201,12 +219,16 @@ static void transition(ID3D12Resource *r, D3D12_RESOURCE_STATES *state, D3D12_RE
     *state = to;
 }
 
-/* a texture let go; its render-target views' slots are kept for the next made in its place */
+/* a texture let go, and its own render-target views */
 static void tex_free(Tex *t)
 {
     if (t->r)
         ID3D12Resource_Release(t->r);
     t->r = NULL;
+    if (t->rh)
+        ID3D12DescriptorHeap_Release(t->rh);
+    t->rh = NULL;
+    t->rtvs = 0;
     free(t->fresh);
     t->fresh = NULL;
 }
@@ -329,7 +351,8 @@ int rr_open(void)
         return open_failed();
     if (FAILED(ID3D12Device_CreateCommandList(dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, NULL, &IID_ID3D12GraphicsCommandList, (void **)&list)))
         return open_failed();
-    ID3D12GraphicsCommandList_Close(list);
+    if (FAILED(ID3D12GraphicsCommandList_Close(list)))
+        return open_failed();
     if (FAILED(ID3D12Device_CreateFence(dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void **)&fence)))
         return open_failed();
     if (!(fence_event = CreateEventA(NULL, FALSE, FALSE, NULL)))
@@ -341,8 +364,6 @@ int rr_open(void)
     if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&rtv_heap)))
         return open_failed();
     rtv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    memset(rtv_taken, 0, sizeof rtv_taken);
-    memset(rtv_taken, 1, 5);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     hd.NumDescriptors = 3;
     if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&dsv_heap)))
@@ -384,7 +405,7 @@ int rr_open(void)
             s[k].AddressU = s[k].AddressV = s[k].AddressW = !f ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
                                                           : k == 1 || k == 6 ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_BORDER;
             s[k].BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-            s[k].MaxLOD = D3D12_FLOAT32_MAX;
+            s[k].MaxLOD = f ? D3D12_FLOAT32_MAX : 0.0f;    /* at texels: level 0 only, as Vulkan's and Metal's */
             s[k].ShaderRegister = (UINT)(2 + k);
             s[k].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         }
@@ -867,22 +888,19 @@ static void make_textures(const rr_frame *f)
         t->target = (o->flags & RR_TEX_TARGET) != 0;
         t->made_frame = frame_no;
         t->made_at = i;
-        if (!t->target || t->rtvs < levels * layers) {
-            /* the slots it held given back, unless they are enough for it now */
-            rtv_release(t->rtv, t->rtvs);
-            t->rtv = t->rtvs = 0;
-        }
         if (t->target) {
-            /* a render-target view for each layer's each level */
-            if (!t->rtvs) {
-                int at = rtv_alloc(levels * layers);
-                if (at < 0) {
-                    fprintf(stderr, "rr: d3d12: more than %d levels of textures drawn into\n", RTVS);
-                    exit(70);
-                }
-                t->rtv = at;
-                t->rtvs = levels * layers;
+            /* a render-target view for each layer's each level, in a heap of
+               the texture's own (made with it, let go with it): as many as any
+               texture needs, never short of room */
+            D3D12_DESCRIPTOR_HEAP_DESC hd;
+            memset(&hd, 0, sizeof hd);
+            hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+            hd.NumDescriptors = (UINT)(levels * layers);
+            if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&t->rh))) {
+                fprintf(stderr, "rr: d3d12: no room for texture %u's %d views\n", o->id, levels * layers);
+                exit(70);
             }
+            t->rtvs = levels * layers;
             for (ly = 0; ly < layers; ly++)
                 for (lv = 0; lv < levels; lv++) {
                     D3D12_RENDER_TARGET_VIEW_DESC rv;
@@ -897,7 +915,7 @@ static void make_textures(const rr_frame *f)
                         rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
                         rv.Texture2D.MipSlice = (UINT)lv;
                     }
-                    ID3D12Device_CreateRenderTargetView(dev, t->r, &rv, rtv(t->rtv + ly * levels + lv));
+                    ID3D12Device_CreateRenderTargetView(dev, t->r, &rv, tex_rtv(t, ly * levels + lv));
                 }
         }
     }
@@ -930,7 +948,7 @@ static void record_texops(const rr_frame *f)
             continue;                   /* made again later this frame: that one is cleared */
         transition(t->r, &t->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
         for (k = 0; k < t->rtvs; k++)
-            ID3D12GraphicsCommandList_ClearRenderTargetView(list, rtv(t->rtv + k), zero, 0, NULL);
+            ID3D12GraphicsCommandList_ClearRenderTargetView(list, tex_rtv(t, k), zero, 0, NULL);
         transition(t->r, &t->state, SHADER_READ);
     }
     for (i = 0; i < f->ntexops; i++) {
@@ -1040,6 +1058,8 @@ int rr_draw(rr_frame *f)
                     if (sc_img[j])
                         ID3D12Resource_Release(sc_img[j]);
                 hr = IDXGISwapChain3_ResizeBuffers(swapchain, FRAMES, (UINT)ww, (UINT)wh, DXGI_FORMAT_UNKNOWN, 0);
+                if (removed(hr))
+                    lost("IDXGISwapChain3_ResizeBuffers", hr);
                 /* the buffers again, made at the new size or kept at the old */
                 swapchain_buffers();
                 if (SUCCEEDED(hr)) {
@@ -1131,7 +1151,7 @@ int rr_draw(rr_frame *f)
         } else {
             layer = to->array ? (int)ps->layer : 0;
             transition(to->r, &to->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            rt = rtv(to->rtv + layer * to->levels);
+            rt = tex_rtv(to, layer * to->levels);
             ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, NULL);
             /* kept, unless just made: then cleared */
             if (!ps->load || to->fresh[layer]) {
@@ -1203,7 +1223,7 @@ int rr_draw(rr_frame *f)
             mc.program = to->array ? RR_MIPS_LAYER : RR_MIPS;
             pl = pipe_of(&mc, KIND_COLOUR);
             for (lv = 1; pl && lv < to->levels && mip_at < mip_blocks; lv++) {
-                D3D12_CPU_DESCRIPTOR_HANDLE lr = rtv(to->rtv + layer * to->levels + lv);
+                D3D12_CPU_DESCRIPTOR_HANDLE lr = tex_rtv(to, layer * to->levels + lv);
                 UINT sub = (UINT)(lv + layer * to->levels);
                 D3D12_VIEWPORT vp;
                 D3D12_RECT sc;
@@ -1250,14 +1270,19 @@ int rr_draw(rr_frame *f)
         transition(sc_img[back], &sc_state[back], D3D12_RESOURCE_STATE_PRESENT);
         transition(output.r, &output.state, SHADER_READ);
     }
-    ID3D12GraphicsCommandList_Close(list);
+    check("ID3D12GraphicsCommandList_Close", ID3D12GraphicsCommandList_Close(list));
     lists[0] = (ID3D12CommandList *)list;
     ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
     if (show) {
-        IDXGISwapChain3_Present(swapchain, 1, 0);
-        paced = 1;
+        HRESULT hr = IDXGISwapChain3_Present(swapchain, 1, 0);
+        if (removed(hr))
+            lost("IDXGISwapChain3_Present", hr);
+        if (FAILED(hr))
+            fprintf(stderr, "rr: d3d12: the picture could not be shown (0x%08lx)\n", (unsigned long)hr);
+        else
+            paced = 1;
     }
-    ID3D12CommandQueue_Signal(queue, fence, ++fence_at);
+    check("ID3D12CommandQueue_Signal", ID3D12CommandQueue_Signal(queue, fence, ++fence_at));
     ever = 1;
     last_w = ow;
     last_h = oh;
@@ -1297,10 +1322,10 @@ int rr_read(uint32_t *argb, int *w, int *h)
         transition(output.r, &output.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
         ID3D12GraphicsCommandList_CopyTextureRegion(list, &to, 0, 0, 0, &from, NULL);
         transition(output.r, &output.state, SHADER_READ);
-        ID3D12GraphicsCommandList_Close(list);
+        check("ID3D12GraphicsCommandList_Close", ID3D12GraphicsCommandList_Close(list));
         lists[0] = (ID3D12CommandList *)list;
         ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
-        ID3D12CommandQueue_Signal(queue, fence, ++fence_at);
+        check("ID3D12CommandQueue_Signal", ID3D12CommandQueue_Signal(queue, fence, ++fence_at));
         wait_gpu();
         /* BGRA bytes are 0xAARRGGBB words */
         for (y = 0; y < last_h; y++)
@@ -1313,8 +1338,9 @@ void rr_close(void)
 {
     size_t i;
     int k;
-    if (queue && fence) {
-        ID3D12CommandQueue_Signal(queue, fence, ++fence_at);
+    if (queue && fence && SUCCEEDED(ID3D12Device_GetDeviceRemovedReason(dev))) {
+        /* the GPU's work finished first; a device already lost has none to wait for */
+        check("ID3D12CommandQueue_Signal", ID3D12CommandQueue_Signal(queue, fence, ++fence_at));
         wait_gpu();
     }
     for (i = 0; i < cap_pipes; i++)
@@ -1394,7 +1420,6 @@ void rr_close(void)
     memset(&none_index, 0, sizeof none_index);
     memset(&none_array, 0, sizeof none_array);
     memset(screen_used, 0, sizeof screen_used);
-    memset(rtv_taken, 0, sizeof rtv_taken);
     memset(sc_img, 0, sizeof sc_img);
     sc_w = sc_h = 0;
     targets_w = targets_h = last_w = last_h = ever = 0;

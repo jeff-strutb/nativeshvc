@@ -1,15 +1,16 @@
 /* host_ios.m: the iOS host -- the app, a full-screen view that shows the
- * frames, touch controls, the keyboard and game controllers, sound out.
+ * frames, touches, the keyboard and game controllers, sound out.
  * The counterpart of host/macos/host_macos.m; host/posix under it supplies
  * time and files.
  *
- * UIKit keeps the main thread, so the game's main (nshvc_game_main: the
- * game writes NSHVC_MAIN) runs its own loop on a thread of its own, started
- * when the scene first becomes active. What UIKit reports reaches that
- * thread through a locked event queue that host_poll_event drains. When the
- * app leaves the foreground, the game thread is held inside
- * host_poll_event until it comes back: iOS allows no GPU work in the
- * background.
+ * UIKit keeps the main thread, so the game's main (its own main, named
+ * nshvc_game_main by the build: CMakeLists.txt) runs on a thread of its
+ * own, started when the scene first becomes active; it calls nshvc_run, and
+ * is the engine's system thread. What UIKit reports reaches that thread
+ * through a locked event queue that host_poll_event drains. When the app
+ * leaves the foreground, that thread is held inside host_poll_event, and
+ * the renderer inside host_window_take, until it comes back: iOS allows no
+ * GPU work in the background. The engine's game thread runs on.
  *
  * Frames are drawn by the renderer (render/metal) into the view's
  * CAMetalLayer (host_metal_layer), one drawable pixel per screen pixel.
@@ -40,8 +41,8 @@
 
 #include "host.h"
 
-/* the game's main (nshvc.h NSHVC_MAIN: on iOS the host keeps main and runs
-   the game's on a thread of its own) */
+/* the game's main, renamed by the build (on iOS the host keeps main and
+   runs the game's on a thread of its own) */
 int nshvc_game_main(int argc, char **argv);
 static void host_audio_resume(void);
 
@@ -261,8 +262,8 @@ void host_text_input(int on)
 int host_keyboard_attached(void) { return atomic_load(&s_hwkb); }
 
 /* ---- touch: every touch to the game (HOST_EV_TOUCH), in points ------------------- */
-/* What a touch means is the game's (nshvc_hooks.touch): the host only says
-   where each finger is, as it lands, moves and lifts. A touch's id is
+/* What a touch means is the game's (nshvc_input's touches): the host only
+   says where each finger is, as it lands, moves and lifts. A touch's id is
    small and stays its own while it lasts. */
 static _Atomic float s_safe[4];             /* the view's safe area: left, top, right, bottom */
 
@@ -693,9 +694,6 @@ void host_window_points(float *w, float *h)
     sizes_read(&pw, &ph, w, h);
 }
 
-/* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the view, at
-   the shape `aspect` (width over height), centred in the largest
-   rectangle of that shape the view holds */
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {
     uint64_t until = host_ticks_ns() + (uint64_t)wait_ms * 1000000ull;
@@ -847,10 +845,6 @@ static void host_pad_identify(GCController *c, GCExtendedGamepad *g, host_pad *o
             snprintf(o->label[i], sizeof o->label[i], "%s", [el[i].localizedName UTF8String]);
 }
 
-/* any controller macOS knows (Xbox, PlayStation, MFi, Switch Pro) through
- * GameController.framework, in the order macOS lists those with a full
- * gamepad profile. One plugged in while the game runs is picked up at the
- * next read. */
 /* any controller iOS knows (Xbox, PlayStation, MFi, Switch Pro), in the
  * order GameController lists those with a full gamepad profile */
 int host_pad_read(int index, host_pad *o)

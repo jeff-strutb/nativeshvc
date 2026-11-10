@@ -68,12 +68,18 @@ uint m7_texel(ivec2 p, int outside, int cols, int tpp)
    an edge between texels crosses mixes the two by how much of it each covers.
    t is the pixel's centre in texels: k the nearest texel edge, w the part of
    the pixel past it (texel k's share; texel k - 1 has the rest). */
-void sharp(vec2 t, out ivec2 k, out vec2 w)
+void sharp_at(vec2 t, vec2 span, out ivec2 k, out vec2 w)
 {
-    vec2 d = max(fwidth(t), vec2(1.0 / 256.0));
+    vec2 d = max(span, vec2(1.0 / 256.0));
     vec2 b = floor(t + 0.5);
     w = clamp((t - b) / d + 0.5, 0.0, 1.0);
     k = ivec2(b);
+}
+
+/* the same, the pixel's span in texels from t itself */
+void sharp(vec2 t, out ivec2 k, out vec2 w)
+{
+    sharp_at(t, fwidth(t), k, w);
 }
 
 /* the weight of corner (i, j) of the 2 x 2 texels around edge k */
@@ -113,7 +119,22 @@ vec3 direct(uint c, uint p)
 /* texel (x, y) of tile t in an atlas of `cols` tiles a row, `s` texels a side, in ti0 */
 uint tile_texel(uint t, int x, int y, int s, int cols)
 {
+    /* a tile past the set's reads 0: one in the atlas's last row is never
+       written (a new texture reads 0), one past it is not read */
+    if (int(t) / cols * s >= textureSize(ti0, 0).y)
+        return 0u;
     return texelFetch(ti0, ivec2(int(t) % cols * s + x, int(t) / cols * s + y), 0).r;
+}
+
+/* Mode 7's per-line rounding at picture row `row`, in texels: the console
+   keeps b x line and d x line to 64ths before adding them (the linear matrix
+   a quad is drawn with has them exact from its first row, i[5].y, on, its
+   rounding that row's): this row's rounding less that row's. i[4]: b, d, and
+   the console's line of picture row r, i[4].z + i[4].w * r */
+vec2 m7_line_round(int row)
+{
+    ivec2 a = u.i[4].xy * (u.i[4].z + u.i[4].w * row), b = u.i[4].xy * (u.i[4].z + u.i[4].w * u.i[5].y);
+    return vec2(((a & ~63) - a) - ((b & ~63) - b)) / 256.0;
 }
 
 uint word(int k) { return data.w[k]; }

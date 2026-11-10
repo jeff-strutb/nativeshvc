@@ -339,7 +339,7 @@ typedef enum {
     NSHVC_LINE_MASK_MAIN = 80,      /* + BG1-4, sprites */
     NSHVC_LINE_MASK_SUB = 88,       /* + BG1-4, sprites */
     NSHVC_LINE_SPRITES_MAIN = 96, NSHVC_LINE_SPRITES_SUB = 97,
-    NSHVC_LINE_PALETTE = 256
+    NSHVC_LINE_PALETTE = 256        /* + entry: a 15-bit BGR colour, as nshvc_palette_write's */
 } nshvc_line_field;
 void nshvc_line(uint32_t line, nshvc_line_field field, int32_t value);
 void nshvc_line_from(uint32_t line, int32_t column, nshvc_line_field field, int32_t value);

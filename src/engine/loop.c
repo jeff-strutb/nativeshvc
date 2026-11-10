@@ -191,8 +191,9 @@ static void render_thread(void *arg)
         hs_want = 1;
         host_cond_broadcast(game_wake);
         for (;;) {
-            /* the renderer is the game thread's while it reads the picture: the window waits for that */
-            while (!hs_ready && !hs_quit && (!hs_window || hs_reading))
+            /* the renderer is the game thread's while it reads the picture: a
+               picture to draw, a window change and the end all wait for that */
+            while (hs_reading || (!hs_ready && !hs_quit && !hs_window))
                 host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
             if (hs_ready || hs_quit)
                 break;
@@ -312,12 +313,13 @@ const uint32_t *nshvc_picture_read(int *width, int *height)
     if (!eng_on("nshvc_picture_read", ENG_GAME))
         return NULL;
     /* the last finished picture: once the render thread is done with the
-       renderer (a picture, or a window let go). It then waits for the game's
-       next picture, which this thread sends, and holds any window change
-       until the read is done (hs_reading), so the renderer is this thread's
-       alone meanwhile (from update, draw or shutdown alike) */
+       renderer (a picture, or a window let go), which it always is in time,
+       the run ending or not. While this thread reads (hs_reading) the render
+       thread touches the renderer for nothing, a picture already sent
+       included, so the two never use it at once (from update, draw or
+       shutdown alike) */
     host_mutex_lock(hs_lock);
-    while (hs_busy && !hs_quit)
+    while (hs_busy)
         host_cond_wait(game_wake, hs_lock, HOST_WAIT_FOREVER);
     hs_reading = 1;
     host_mutex_unlock(hs_lock);

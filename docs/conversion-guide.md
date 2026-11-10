@@ -90,23 +90,17 @@ game --headless --updates 600 --input keys.txt --sound out.raw
 tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom game.sfc --game "build/game" --input inputs.txt --keys B=5A,A=58,START=0D --frames 1800
 ```
 
-## 8. Worked example: zelda3
+## 8. Worked example: a full game
 
-[zelda3](https://github.com/snesrev/zelda3) is a decompilation of about 80,000 lines of C, and was converted to the engine as its first full test. The converted game is in [`examples/zelda3`](../examples/zelda3), with credit to its authors and the steps to build it; you supply your own ROM, from which it extracts its game data. These pictures are the engine's own output:
-
-| Title screen | A text box | Play |
-|---|---|---|
-| ![zelda3's title screen on the engine](images/zelda3-title.png) | ![A zelda3 text box on the engine](images/zelda3-dialog.png) | ![zelda3 in play on the engine](images/zelda3-play.png) |
-
-| The Mode 7 world map | 16:9 |
-|---|---|
-| ![zelda3's world map on the engine](images/zelda3-world-map.png) | ![zelda3 at 16:9 on the engine](images/zelda3-widescreen.png) |
+A full game's decompilation, about 80,000 lines of C, was converted to the engine as its first full test. The converted
+game is in [`examples/`](../examples), with credit to its authors and the steps to build it; you supply your own ROM, from
+which it extracts its game data. No picture of it on 6.0's renderer has been taken yet.
 
 The conversion removed the game's imitation PPU, DMA, DSP and APU, its SDL front end, its OpenGL code and its snapshot and comparison code. `tools/nshvc-find-hardware` finds nothing left in it. The game logic did not change.
 
 **The game's entry.** One small file replaces the front end:
 
-| What zelda3 had | On the engine |
+| What the game had | On the engine |
 |---|---|
 | `main`, an SDL window and loop | `nshvc_game` and `nshvc_run` |
 | The frame function | `update`, at 60 a second |
@@ -120,7 +114,7 @@ The conversion removed the game's imitation PPU, DMA, DSP and APU, its SDL front
 
 **Changes during the picture.** The game's per-line effects are arrays with one value a line, such as window edges for the spotlight or Mode 7's zoom for the world map. A few are short runs of lines. `draw` sends each change with `nshvc_line`.
 
-**Music.** zelda3's sound driver is already C, so it became the game's music code:
+**Music.** The game's sound driver is already C, so it became the game's music code:
 
 - `nshvc_music.tick` runs at 32,040 Hz and counts samples: one driver step every 64 samples, the rate of the driver's timer.
 - The driver sets voices with `nshvc_voice_*` directly.

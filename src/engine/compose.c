@@ -847,7 +847,9 @@ static void m7_coeffs(const eng_state *s, int y0, double *t)
 
 /* the plane's texel at screen point (x, y), as the console's sum from row y0
    on: f[4], f[5], in texels; the console's own pixel (x, y) shows the texel
-   at the point (x, y), its top left corner */
+   at the point (x, y), its top left corner. The console rounds b and d
+   times each line by itself: what the shaders add to this for each row
+   (common.glsl m7_line_round) in i[4] and i[5].y */
 static void m7_affine(rr_uniform *u, const eng_state *s, int y0)
 {
     double t[6];
@@ -857,6 +859,12 @@ static void m7_affine(rr_uniform *u, const eng_state *s, int y0)
         u->f[4][k] = (float)t[k];
         u->f[5][k] = (float)t[3 + k];
     }
+    u->i[4][0] = s->m7.b;
+    u->i[4][1] = s->m7.d;
+    /* the console's line of picture row r, as m7_coeffs counts it */
+    u->i[4][2] = s->m7.flip_y ? 254 + P->oy : 1 - P->oy;
+    u->i[4][3] = s->m7.flip_y ? -1 : 1;
+    u->i[5][1] = y0;
 }
 
 /* the state at row r, column x */
@@ -1087,8 +1095,7 @@ static void sprite_pieces(void)
                 int e = kept[k];
                 const nshvc_sprite *s = &P->sprites[who[e]];
                 int sx = s->x - P->ox, vis = s->width, first = sx > -8 ? 0 : (-sx - 8) / 8 + 1;
-                if (sx < 0)
-                    vis -= (-sx + 7) / 8;
+                vis -= first;           /* the columns wholly off the left; one partly on counts, as on the right */
                 if (sx + s->width * 8 > 256)
                     vis -= (sx + s->width * 8 - 256) / 8;
                 if (vis < 0)
@@ -1277,22 +1284,51 @@ static int eq_combine(const eng_state *a, const eng_state *b)
 }
 
 typedef struct { int x0, x1, inside, y0; const eng_state *s; } CSeg;
-typedef struct { const eng_state *s; float r[4]; int inside, done; } CRect;
+/* what eq_combine compares, as numbers: equal keys, equal settings */
+typedef struct { int32_t v[10]; } CKey;
+typedef struct { const eng_state *s; float r[4]; int inside; CKey key; } CRect;
 static CSeg *copen, *ccur;
 static size_t cap_copen, cap_ccur;
 static CRect *crects;
 static size_t ncrects, cap_crects;
 
+static void ckey_of(const eng_state *s, CKey *k)
+{
+    const nshvc_blend *b = &s->b;
+    memset(k, 0, sizeof *k);
+    k->v[0] = s->blank;
+    if (s->blank)
+        return;                         /* blanked rows are all alike */
+    k->v[1] = b->subtract;
+    k->v[2] = b->half;
+    k->v[3] = b->use_fixed;
+    k->v[4] = maths_of(s);
+    k->v[5] = b->clip & 3;
+    k->v[6] = b->prevent & 3;
+    k->v[7] = b->fixed_bgr15 & 0x7FFF;
+    k->v[8] = s->bright;
+    k->v[9] = hires_of(s);
+}
+
+static int cmp_crect(const void *a, const void *b)
+{
+    const CRect *p = &crects[*(const size_t *)a], *q = &crects[*(const size_t *)b];
+    int c = memcmp(&p->key, &q->key, sizeof p->key);
+    if (c)
+        return c;
+    return *(const size_t *)a < *(const size_t *)b ? -1 : 1;
+}
+
 static void crect_add(const eng_state *s, float x0, float y0, float x1, float y1, int in)
 {
     crects = (CRect *)grow(crects, &cap_crects, ncrects + 1, sizeof *crects);
     crects[ncrects].s = s;
+    ckey_of(s, &crects[ncrects].key);
     crects[ncrects].r[0] = x0;
     crects[ncrects].r[1] = y0;
     crects[ncrects].r[2] = x1;
     crects[ncrects].r[3] = y1;
     crects[ncrects].inside = in;
-    crects[ncrects].done = 0;
     ncrects++;
 }
 
@@ -1302,7 +1338,7 @@ static void crect_add(const eng_state *s, float x0, float y0, float x1, float y1
 static void combine(int field)
 {
     size_t nopen = 0, ncur, k, i, j;
-    int r;
+    int r, sub, aux;
     ncrects = 0;
     for (r = 0; r <= P->h; r++) {
         int same;
@@ -1365,46 +1401,51 @@ static void combine(int field)
         }
         nopen = ncur;
     }
-    /* a draw for each set of settings, its rectangles its instances */
-    for (i = 0; i < ncrects; i++) {
-        const eng_state *s = crects[i].s;
-        const nshvc_blend *b = &s->b;
-        size_t n = 0;
-        uint32_t at;
-        rr_uniform *u;
-        rr_cmd *d;
-        if (crects[i].done)
-            continue;
-        for (j = i; j < ncrects; j++)
-            n += !crects[j].done && eq_combine(s, crects[j].s);
-        at = words(n * 5);
-        n = 0;
-        for (j = i; j < ncrects; j++) {
-            if (crects[j].done || !eq_combine(s, crects[j].s))
-                continue;
-            crects[j].done = 1;
-            memcpy(&F->data[at + n * 5], crects[j].r, 16);
-            F->data[at + n * 5 + 4] = (uint32_t)crects[j].inside;
-            n++;
+    /* a draw for each set of settings, its rectangles its instances: the
+       rectangles sorted by their settings, so each set's are together */
+    {
+        static size_t *ord;
+        static size_t cap_ord;
+        ord = (size_t *)grow(ord, &cap_ord, ncrects + 1, sizeof *ord);
+        for (i = 0; i < ncrects; i++)
+            ord[i] = i;
+        qsort(ord, ncrects, sizeof *ord, cmp_crect);
+        sub = any_state(need_sub);
+        aux = any_state(need_aux);
+        for (i = 0; i < ncrects; i = j) {
+            const eng_state *s = crects[ord[i]].s;
+            const nshvc_blend *b = &s->b;
+            size_t n;
+            uint32_t at;
+            rr_uniform *u;
+            rr_cmd *d;
+            for (j = i + 1; j < ncrects && !memcmp(&crects[ord[j]].key, &crects[ord[i]].key, sizeof (CKey)); j++)
+                ;
+            at = words((j - i) * 5);
+            for (n = 0; n < j - i; n++) {
+                const CRect *c = &crects[ord[i + n]];
+                memcpy(&F->data[at + n * 5], c->r, 16);
+                F->data[at + n * 5 + 4] = (uint32_t)c->inside;
+            }
+            d = draw(P_COMBINE, &u);
+            u->i[0][0] = (int32_t)at;
+            u->i[1][0] = b->subtract != 0;
+            u->i[1][1] = b->half != 0;
+            u->i[1][2] = b->use_fixed != 0;
+            u->i[1][3] = maths_of(s);
+            u->i[2][0] = b->clip & 3;
+            u->i[2][1] = b->prevent & 3;
+            u->i[2][2] = s->bright;
+            u->i[2][3] = s->blank;
+            u->i[3][0] = hires_of(s);
+            u->i[3][1] = b->fixed_bgr15 & 0x7FFF;
+            d->instances = (uint32_t)n;
+            d->tex[0] = RR_TEX_FRAME;
+            if (sub)
+                d->tex[1] = RR_TEX_EXTRA0;
+            if (aux)
+                d->tex[2] = RR_TEX_EXTRA1;
         }
-        d = draw(P_COMBINE, &u);
-        u->i[0][0] = (int32_t)at;
-        u->i[1][0] = b->subtract != 0;
-        u->i[1][1] = b->half != 0;
-        u->i[1][2] = b->use_fixed != 0;
-        u->i[1][3] = maths_of(s);
-        u->i[2][0] = b->clip & 3;
-        u->i[2][1] = b->prevent & 3;
-        u->i[2][2] = s->bright;
-        u->i[2][3] = s->blank;
-        u->i[3][0] = hires_of(s);
-        u->i[3][1] = b->fixed_bgr15 & 0x7FFF;
-        d->instances = (uint32_t)n;
-        d->tex[0] = RR_TEX_FRAME;
-        if (any_state(need_sub))
-            d->tex[1] = RR_TEX_EXTRA0;
-        if (any_state(need_aux))
-            d->tex[2] = RR_TEX_EXTRA1;
     }
 }
 
@@ -1646,27 +1687,45 @@ static int m7_drawn(const eng_state *s, int kind)
     return kind == 1 ? s->l[0].enabled_main || s->l[0].enabled_sub : s->m7.extbg && (s->l[1].enabled_main || s->l[1].enabled_sub);
 }
 
-/* the most texels a window pixel spans at row r, columns x0-x1, for state s:
-   across, by its matrix; down, to the next row by that row's matrix; sx, sy
-   window pixels a picture pixel */
-static double m7_reach(const eng_state *s, int r, int x0, int x1, double sx, double sy)
+/* the texel step from row r to row r + 1 at column x, each by its own
+   matrix; where either is no Mode 7, s's own step within a row */
+static double m7_row_step(const eng_state *s, int r, double x)
 {
-    double t[6], n[6], x = (x0 + x1) * 0.5, ax, ay, dx, dy;
-    const eng_state *o = r + 1 < P->h ? state_at(r + 1, (int)x) : NULL;
-    m7_coeffs(s, r, t);
-    ax = t[0];
-    ay = t[3];
-    if (o && o->m == 7 && !o->blank && m7_valid(o)) {
-        m7_coeffs(o, r + 1, n);
+    double t[6], n[6], dx, dy;
+    const eng_state *a = r >= 0 && r < P->h ? state_at(r, (int)x) : NULL, *b = r + 1 >= 0 && r + 1 < P->h ? state_at(r + 1, (int)x) : NULL;
+    if (a && b && a->m == 7 && !a->blank && m7_valid(a) && b->m == 7 && !b->blank && m7_valid(b)) {
+        m7_coeffs(a, r, t);
+        m7_coeffs(b, r + 1, n);
         dx = n[0] * x + n[1] * (r + 1.5) + n[2] - (t[0] * x + t[1] * (r + 0.5) + t[2]);
         dy = n[3] * x + n[4] * (r + 1.5) + n[5] - (t[3] * x + t[4] * (r + 0.5) + t[5]);
     } else {
+        m7_coeffs(s, r, t);
         dx = t[1];
         dy = t[4];
     }
-    ax = sqrt(ax * ax + ay * ay) / sx;
-    dx = sqrt(dx * dx + dy * dy) / sy;
-    return ax > dx ? ax : dx;
+    return sqrt(dx * dx + dy * dy);
+}
+
+/* the most texels a window pixel can span at row r, columns x0-x1, for
+   state s: across, by its matrix; down, by the step from the row above and
+   to the row below (the shader's footprint lies between those), at both
+   ends of the run, where the most is (each step's length is convex along a
+   row); sx, sy window pixels a picture pixel. More than 1: drawn smaller
+   than its texels somewhere there */
+static double m7_reach(const eng_state *s, int r, int x0, int x1, double sx, double sy)
+{
+    double t[6], most, e;
+    int k;
+    m7_coeffs(s, r, t);
+    most = sqrt(t[0] * t[0] + t[3] * t[3]) / sx;
+    for (k = 0; k < 2; k++) {
+        double x = k ? x1 - 1 : x0;
+        if ((e = m7_row_step(s, r, x) / sy) > most)
+            most = e;
+        if ((e = m7_row_step(s, r - 1, x) / sy) > most)
+            most = e;
+    }
+    return most;
 }
 
 static int cmp_want(const void *a, const void *b)
@@ -2021,9 +2080,11 @@ static void tint_passes(void)
                     head[s->pal] = at;
                 }
                 vs = &vars[kind - 1][at];
-                vs->rows++;
                 if (rank < vs->rank)
                     vs->rank = rank;
+                if (rank >= 1e9)
+                    continue;           /* nowhere smaller than its texels: no planes for it */
+                vs->rows++;
                 if (s->m7.outside == 2) {
                     vs->tile0_out = 1;
                     tile0_out[kind - 1] = 1;
@@ -2031,9 +2092,12 @@ static void tint_passes(void)
             }
         }
         vs = vars[kind - 1];
-        /* the base: the look with the most rows */
+        /* the base: the look with the most rows drawn smaller than their texels
+           (rows: those only); looks with none have no planes, as nothing filters them */
         for (i = 0; i < nvars[kind - 1]; i++) {
             int total = 0;
+            if (!vs[i].rows)
+                continue;
             for (j = 0; j < nvars[kind - 1]; j++)
                 if (vs[j].hash == vs[i].hash && look_eq(&vs[j].look, &vs[i].look))
                     total += vs[j].rows;
@@ -2050,7 +2114,7 @@ static void tint_passes(void)
             full_make(b, vs[best_i].s, kind, &vs[best_i].look);
         /* the other looks, the same ones sharing a want, each ranked by its nearest rows */
         for (i = 0; i < nvars[kind - 1]; i++) {
-            if (vs[i].hash == vs[best_i].hash && look_eq(&vs[i].look, &vs[best_i].look))
+            if (!vs[i].rows || (vs[i].hash == vs[best_i].hash && look_eq(&vs[i].look, &vs[best_i].look)))
                 continue;
             for (j = 0; j < i; j++)
                 if (vs[j].want >= 0 && vs[j].hash == vs[i].hash && look_eq(&vs[j].look, &vs[i].look))
@@ -2109,8 +2173,8 @@ static int m7_filtered(const eng_state *s, int kind, rr_cmd *d, rr_uniform *u)
     int outside = s->m7.outside, at;
     const Full *f;
     const Small *a = NULL;
-    if (!base_on[kind - 1] || (at = var_of(s, kind)) < 0)
-        return 0;
+    if (!base_on[kind - 1] || (at = var_of(s, kind)) < 0 || !vars[kind - 1][at].rows)
+        return 0;                       /* nowhere smaller than its texels: drawn sharp */
     p = vars[kind - 1][at].place;
     f = p >= 1 && p < M7_SMALLS ? &fulls[p - 1] : &bases[kind - 1];
     if (outside == 2 && f->q < 0)

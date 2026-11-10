@@ -1,11 +1,11 @@
 /* host_macos.m: the macOS host -- a Cocoa window that shows the frames, the
  * keyboard and game controllers, Core Audio out.
  *
- * The game keeps its own loop on the main thread, so this host never runs
- * [NSApp run]: each host_poll_event drains Cocoa's queue itself. Frames
- * are drawn by the renderer (render/metal or render/vulkan) into the
- * view's CAMetalLayer (host_metal_layer), one drawable pixel per
- * window pixel.
+ * The engine's system thread is the main thread and keeps its own loop
+ * (nshvc_run), so this host never runs [NSApp run]: each host_poll_event
+ * drains Cocoa's queue itself. Frames are drawn by the renderer
+ * (render/metal) into the view's CAMetalLayer (host_metal_layer), one
+ * drawable pixel per window pixel.
  *
  * PORT_SAVEDIR names the save folder (default ~/Library/Application
  * Support/<app>); PORT_NOACTIVATE=1 opens the window without taking the
@@ -375,7 +375,7 @@ int host_window_open(int width, int height, const char *title)
         [s_win setTitle:[NSString stringWithUTF8String:title ? title : s_app_title]];
         [s_win setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
         s_view = [[PortView alloc] initWithFrame:r];
-        /* the view's layer is a Metal layer, for a renderer that draws with Metal or Vulkan (MoltenVK) */
+        /* the view's layer is a Metal layer, for the renderer, which draws with Metal */
         s_layer = [CAMetalLayer layer];
         [s_layer setPixelFormat:MTLPixelFormatBGRA8Unorm];
         [s_layer setFramebufferOnly:NO];       /* the renderer copies its frame in */
@@ -414,8 +414,8 @@ int host_window_visible(void)
     return s_win && ([s_win occlusionState] & NSWindowOcclusionStateVisible) != 0;
 }
 
-/* the window's CAMetalLayer, for a renderer that draws with Metal or
-   Vulkan (MoltenVK); made with the window, on the main thread */
+/* the window's CAMetalLayer, for the renderer (Metal); made with the
+   window, on the main thread */
 CAMetalLayer *host_metal_layer(void) { return s_layer; }
 
 /* the drawable's size in pixels, as the main thread last set it (one pixel
@@ -449,11 +449,6 @@ void host_window_points(float *w, float *h)
     int pw, ph;
     sizes_read(&pw, &ph, w, h);
 }
-
-/* a picture of ARGB pixels (0xAARRGGBB, top row first) onto the window, at
-   the shape `aspect` (width over height): drawn into the largest rectangle
-   of that shape the view holds, centred; the window takes any shape the
-   player gives it, the rest black */
 
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {

@@ -933,7 +933,8 @@ engine implements the SNES's documented rules natively: the picture on the GPU,
 and BRR, Gaussian interpolation and envelopes as codecs and filters.
 
 **The reference emulator is the oracle.** bsnes checks the companion C
-(sections 4.5, 4.6) and the engine (pixels and DSP samples). `tools/nshvc-check`
+(sections 4.5, 4.6) and the engine's sound (DSP samples); the engine's
+picture is native, at the window's resolution, and not held to it. `tools/nshvc-check`
 compares a converted game with its ROM. The game never ports or cites its code.
 
 **The engine does not bend for one game.** A difference is the conversion's

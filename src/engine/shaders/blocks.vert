@@ -79,7 +79,7 @@ void main()
         v_e = uvec2(c, (e >> 16) & 7u);
         high = ((e >> 19) & 1u) != 0u;
     } else {
-        ivec2 t = ivec2(floor(vec2(dot(u.f[4].xyz, vec3(b0, 1.0)), dot(u.f[5].xyz, vec3(b0, 1.0)))));
+        ivec2 t = ivec2(floor(vec2(dot(u.f[4].xyz, vec3(b0, 1.0)), dot(u.f[5].xyz, vec3(b0, 1.0))) + m7_line_round(int(floor(b0.y)))));
         uint p = m7_texel(t, u.i[6].y, 0, u.i[6].z);
         if (kind == 1) {
             if (p == 0u || p == 0x100u) {

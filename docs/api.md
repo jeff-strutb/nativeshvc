@@ -100,9 +100,9 @@ typedef struct nshvc_screen {
     uint8_t overscan;           /* 239 lines in place of 224, as the SNES's setting */
     uint8_t interlace;          /* fields woven: each picture draws one field's half-rows, keeping the other's */
     uint8_t brightness;         /* 0-15, the SNES's */
-    uint8_t blank;
+    uint8_t blank;              /* the screen black */
     int32_t show_left, show_right, show_top, show_bottom;   /* the part shown, the rest black; right, bottom 0: to the edge */
-    float   aspect;             /* shown shape, width over height: 0 the original's pixels (256 x 224 is 4:3), 8.0f / 7.0f etc; NSHVC_ASPECT_FILL fills the window */              /* the screen black */
+    float   aspect;             /* shown shape, width over height: 0 the original's pixels (256 x 224 is 4:3), 8.0f / 7.0f etc; NSHVC_ASPECT_FILL fills the window */
 } nshvc_screen;
 void nshvc_screen_set(const nshvc_screen *s);
 
@@ -172,11 +172,19 @@ the texel the console shows there, and the window's pixels between show the plan
 a texel, the GPU filters the plane in colour along the pixel's footprint (anisotropic, between its smaller levels), and a
 footprint across the plane's edge mixes the plane and what is outside it by how much of each it covers. An `outside`
 other than 0, 1 or 2 is reported and not taken: `nshvc_mode7_set` takes the rest and keeps `outside` as it was; a line
-change to it is left out.
-The rest are kept, made in the palette most of its rows have, and a row whose palette differs adds its differences, each
-weighted by how much of the footprint has that value, filtered the same way. Neither the cost nor the memory grows with
-palette changes: at most three planes in colour a picture, made again only when they change, and coverage for at most 255
-plane values, made once until the plane changes; about 24.5 MB of GPU memory at most.
+change to it is left out. Each line's own rounding of the matrix, as the console's, holds on every row.
+
+Where it is filtered, the plane in colour is kept full size with its smaller levels: for each layer's (BG1's, and BG2's
+two priorities) its rows' most common colouring (the base), and the four other colourings (palette, direct colour, tile
+set) whose rows are nearest; a row in one of those reads it in one read, exactly. Past those, each colouring has the plane
+at a quarter of the size in its own colours, and its rows read the base plus that less the base at the same size, exact
+wherever a pixel spans four texels or more, only the finest detail of the difference lost nearer. With tile 0 outside,
+tile 0 repeated across the plane is kept beside each of those, so a footprint across the edge mixes the two exactly.
+Only colourings drawn smaller than their texels somewhere have planes; each is made again only when its plane, tiles or
+colours change, a plane of tile 0 only when tile 0's colours do. GPU memory: the plane (1 MB); about 5.6 MB for each of
+up to three bases and four full-size planes; the quarter-size planes in arrays of 64 layers (about 22.4 MB each, the
+first holding the first 57 colourings past the full-size ones, more arrays as more colourings come; they are kept once
+made); with tile 0 outside, up to seven planes of tile 0 (about 5.6 MB each).
 
 ### 3.5 Sprites
 
@@ -220,14 +228,15 @@ void nshvc_line_from(uint32_t line, int32_t column, nshvc_line_field field, int3
 void nshvc_lines(uint32_t first, uint32_t count, nshvc_line_field field, const int32_t *values);
 ```
 
-Any field of sections 3.1 to 3.6 can change from a line on: scroll, palette entries, the fixed colour, window edges,
-brightness, layer enables, mode and the Mode 7 matrix. This replaces HDMA and raster interrupts.
+Any field of sections 3.1 to 3.6 can change from a line on: scroll, palette entries (15-bit colours, as
+`nshvc_palette_write` takes), the fixed colour, window edges, brightness, layer enables, mode and the Mode 7 matrix. This replaces HDMA and raster interrupts.
 
 ## 4. Images, the drawing pipeline and shaders
 
 ```c
 nshvc_image nshvc_image_create(uint32_t w, uint32_t h, nshvc_image_format f);  /* indexed or full colour */
-void nshvc_image_write(nshvc_image i, const void *texels);
+void nshvc_image_write(nshvc_image i, const void *texels);   /* a full-colour texel's alpha: how much of it covers
+                                                               its place, the same as a layer and in a list */
 
 nshvc_draw_list nshvc_draw_list_create(void);
 void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height);   /* its size in pixels */
@@ -401,7 +410,8 @@ The same game runs headless with no window or audio device: `--headless --update
 FILE`. The devices are replayed by update number (section 7), so a run repeats exactly. `nshvc_picture_read()` returns the last finished picture as the
 renderer drew it, at the window's size with its overlays (headless, at the screen's size, a pixel for a pixel), read
 back from the GPU, for checks and screenshots, or for a game's own use (from `update`, `draw` or shutdown; it waits for
-a picture being drawn to finish, and costs a readback, so a game calls it when it needs one). `--shots` writes the same.
+a picture being drawn to finish, a picture sent and not yet drawn waits for it, the run ending or not, and it costs a
+readback, so a game calls it when it needs one). `--shots` writes the same.
 
 ## 11. Stability rules
 
@@ -459,7 +469,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_cart`: mappings, ROM, routine tables, `nshvc_access_kind` | No address space. Data comes from the game's package |
 | `nshvc_set_cpu_costs`, the cost profile | No console speed (principle 6) |
 | `nshvc_hold_interrupts` | No interrupts |
-| `nshvc_set_frame_hook`, `nshvc_set_hooks` | `draw` and the engine's input mapping |
+| `nshvc_set_frame_hook`, `nshvc_set_hooks` | `draw`, and the game's own mapping of the devices (section 7) |
 | `nshvc_set_write_hook`, `_read_hook`, `_register_write_hook`, `nshvc_peek` | No bus to watch |
 | `nshvc_wram`, `nshvc_sram`, `nshvc_aram`, `nshvc_vram`, `nshvc_cgram`, `nshvc_oam` | No console memories. A game's data is its own |
 | `nshvc_ext_gpu_device`, `_canvas_screen_gpu`, `_canvas_chars_gpu`, `_overlay_gpu`, the GPU handles and fences | Per-platform GPU code in a game (principle 4). Shaders take their place |
@@ -474,4 +484,5 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
    Vulkan, Metal Shading Language for Metal, and DXIL for D3D12.
 2. **`draw` sets the whole picture each time.** The settings of sections 3.1 and 3.3 to 3.7 apply to the picture being
    drawn and nothing carries over. Tile sets, maps, palettes, images and samples are objects that persist until changed.
-3. **The mouse's speed setting and the guns' extra buttons stay,** as the SNES had them, because games read them.
+3. **The mouse's speed setting and the guns' extra buttons are the game's own.** The engine reports each device as it is
+   (section 7); a game that read those makes them from the devices it gets.

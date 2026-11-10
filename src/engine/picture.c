@@ -123,9 +123,14 @@ nshvc_tiles nshvc_tiles_create(uint8_t bpp, uint32_t count, uint8_t tpp)
         eng_report(call, "bpp %u, count %u, texels_per_pixel %u", bpp, count, tpp);
         return r;
     }
-    /* the atlas: 16 tiles a row, more when it would be taller than MAX_SIDE */
+    /* the atlas: 16 tiles a row, more when it would be taller than MAX_SIDE;
+       no more tiles than a MAX_SIDE square holds (nothing past that wraps) */
     s = 8u * tpp;
     most_rows = MAX_SIDE / s;
+    if ((uint64_t)count > (uint64_t)most_rows * most_rows) {
+        eng_report(call, "%u tiles of %u texels a side", count, s);
+        return r;
+    }
     o = &eng_tiles_of[eng_ntiles];
     o->cols = count < 16 ? count : 16;
     if ((count + o->cols - 1) / o->cols > most_rows)
@@ -157,15 +162,15 @@ void nshvc_tiles_write(nshvc_tiles t, uint32_t first, const void *data, uint32_t
     uint32_t s, tb, n, a;
     if (!eng_on(call, ENG_GAME))
         return;
-    if (!t.id || t.id >= eng_ntiles || !data || first + count > eng_tiles_of[t.id].count) {
+    if (!t.id || t.id >= eng_ntiles || !data || (uint64_t)first + count > eng_tiles_of[t.id].count) {
         eng_report(call, "tile set %u, first %u, count %u", t.id, first, count);
         return;
     }
     if (!count)
         return;                         /* no tiles: nothing written */
     o = &eng_tiles_of[t.id];
-    if (f == NSHVC_TILES_PLANAR && o->tpp != 1) {
-        eng_report(call, "the SNES's planar format has one texel a pixel");
+    if ((f == NSHVC_TILES_PLANAR || f == NSHVC_TILES_MODE7) && o->tpp != 1) {
+        eng_report(call, "the SNES's planar and Mode 7 formats have one texel a pixel");
         return;
     }
     s = 8u * o->tpp;
@@ -242,7 +247,7 @@ static uint32_t *map_args(const char *call, nshvc_map m, uint32_t x, uint32_t y,
     eng_map *o;
     if (!eng_on(call, ENG_GAME))
         return NULL;
-    if (!m.id || m.id >= eng_nmaps || !data || !w || !h || x + w > eng_maps_of[m.id].w || y + h > eng_maps_of[m.id].h) {
+    if (!m.id || m.id >= eng_nmaps || !data || !w || !h || (uint64_t)x + w > eng_maps_of[m.id].w || (uint64_t)y + h > eng_maps_of[m.id].h) {
         eng_report(call, "map %u, at %u,%u, %u x %u", m.id, x, y, w, h);
         return NULL;
     }
@@ -277,7 +282,7 @@ void nshvc_palette_write(uint32_t first, uint32_t count, const uint16_t *c)
     uint32_t i;
     if (!eng_on("nshvc_palette_write", ENG_GAME))
         return;
-    if (first + count > 256 || !c) {
+    if ((uint64_t)first + count > 256 || !c) {
         eng_report("nshvc_palette_write", "first %u, count %u", first, count);
         return;
     }
@@ -290,7 +295,7 @@ void nshvc_palette_write_rgb(uint32_t first, uint32_t count, const uint32_t *c)
     uint32_t i;
     if (!eng_on("nshvc_palette_write_rgb", ENG_GAME))
         return;
-    if (first + count > 256 || !c) {
+    if ((uint64_t)first + count > 256 || !c) {
         eng_report("nshvc_palette_write_rgb", "first %u, count %u", first, count);
         return;
     }
@@ -513,7 +518,7 @@ nshvc_shader nshvc_shader_load(const char *name)
     rr_frame *f = &frames[cur];
     if (!eng_on(call, ENG_GAME))
         return r;
-    if (!name || nshaders == MAX_SHADERS || f->nshaders == RR_SHADER_LOADS) {
+    if (!name || nshaders == MAX_SHADERS) {
         eng_report(call, "shader %s", name ? name : "(none)");
         return r;
     }
@@ -539,6 +544,7 @@ nshvc_shader nshvc_shader_load(const char *name)
     }
     nshvc_asset_close(a);
     r.id = nshaders++;
+    f->shaders = (rr_shader_load *)grow(f->shaders, &f->cap_shaders, (size_t)f->nshaders + 1, sizeof *f->shaders);
     f->shaders[f->nshaders].id = r.id;
     f->shaders[f->nshaders].code = code;   /* kept: the backend owns it from here */
     f->shaders[f->nshaders].size = size;
@@ -651,7 +657,7 @@ static void apply(eng_state *n, uint32_t *pal, int field, int32_t v, uint32_t li
     if (field >= NSHVC_LINE_PALETTE) {
         int e = field - NSHVC_LINE_PALETTE;
         if (e < 256) {
-            pal[e] = (uint32_t)v;
+            pal[e] = (uint32_t)v & 0x7FFFu;     /* a 15-bit colour, as nshvc_palette_write takes */
             *pal_changed = 1;
         }
     } else if (field < NSHVC_LINE_SCROLL_Y) {
@@ -894,6 +900,8 @@ void eng_picture_begin(void)
     memset(&windows, 0, sizeof windows);
     memset(&blend, 0, sizeof blend);
     nsprites = 0;
+    show_main = 1;                      /* until set, main only: nothing carries over */
+    show_sub = 0;
     nchanges = 0;
 }
 

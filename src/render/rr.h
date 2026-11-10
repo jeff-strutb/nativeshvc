@@ -127,8 +127,8 @@ typedef struct rr_tex_op {
     size_t at;
 } rr_tex_op;
 
-/* a game's shader made since the last frame: the backend's own compiled form */
-#define RR_SHADER_LOADS 16
+/* a game's shader made since the last frame: the backend's own compiled form;
+   as many in a frame as the game loads (all of its init is one frame) */
 typedef struct { uint32_t id; const void *code; size_t size; } rr_shader_load;
 
 typedef struct rr_frame {
@@ -136,8 +136,9 @@ typedef struct rr_frame {
     size_t ntexops, cap_texops;
     uint8_t *upload;
     size_t upload_bytes, upload_cap;
-    rr_shader_load shaders[RR_SHADER_LOADS];
+    rr_shader_load *shaders;
     uint32_t nshaders;
+    size_t cap_shaders;
     uint32_t *data;             /* binding 1's words */
     size_t data_words, data_cap;
     rr_uniform *uniforms;

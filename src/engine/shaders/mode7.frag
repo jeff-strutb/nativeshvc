@@ -63,9 +63,11 @@ void main()
     vec2 dx = dFdx(v_t) + extra * dFdx(v_p.y), dy = dFdy(v_t) + extra * dFdy(v_p.y);
     float lx = length(dx), ly = length(dy);
     vec4 acc = vec4(0.0);
-    sharp(v_t, k, w);
+    /* the texel point with this row's own rounding; the span across a pixel, the matrix's */
+    vec2 t = v_t + m7_line_round(int(floor(v_p.y)));
+    sharp_at(t, fwidth(v_t), k, w);
     if (u.i[7].x != 0 && max(lx, ly) > 1.0) {
-        acc = filtered(v_t, dx, dy);
+        acc = filtered(t, dx, dy);
     } else {
         int kind = u.i[6].x, prow = u.i[2].w;
         for (int j = 0; j < 2; j++)

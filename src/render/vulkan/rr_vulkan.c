@@ -58,12 +58,15 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 typedef struct { VkBuffer b; VkDeviceMemory m; void *at; VkDeviceSize size; } Buf;
 /* an image: v its view of every level (and layer), fv of the first level
    (drawn into, through f); an array's layers' first levels lv, through lf;
-   fresh: not drawn into yet (each layer's, an array's) */
+   fresh: not drawn into yet (each layer's, an array's); a target with
+   smaller levels: each layer's each level its own view (mv, layer * levels +
+   level) and, past the first, a framebuffer (mf), its level made from the
+   one before by the renderer's own program */
 typedef struct {
     VkImage i;
     VkDeviceMemory m;
-    VkImageView v, fv, *lv;
-    VkFramebuffer f, *lf;
+    VkImageView v, fv, *lv, *mv;
+    VkFramebuffer f, *lf, *mf;
     uint8_t *fresh;
     int w, h, format, levels, layers, array, target, made, unready;
 } Image;
@@ -212,6 +215,14 @@ static void image_free(Image *t)
         if (t->lv[k])
             vkDestroyImageView(dev, t->lv[k], NULL);
     }
+    for (k = 0; t->mv && k < t->layers * t->levels; k++) {
+        if (t->mf[k])
+            vkDestroyFramebuffer(dev, t->mf[k], NULL);
+        if (t->mv[k])
+            vkDestroyImageView(dev, t->mv[k], NULL);
+    }
+    free(t->mv);
+    free(t->mf);
     free(t->lv);
     free(t->lf);
     free(t->fresh);
@@ -329,6 +340,35 @@ static VkFramebuffer framebuffer(VkRenderPass rp, const VkImageView *views, uint
     if ((e = vkCreateFramebuffer(dev, &fi, NULL, &fb)) != VK_SUCCESS)
         fail("vkCreateFramebuffer", e);
     return fb;
+}
+
+/* a colour target's views of each layer's each level, and framebuffers for
+   all but the first (mv, mf), its smaller levels drawn from them */
+static void mip_views(Image *t, VkFormat f, VkRenderPass rp)
+{
+    int ly, lv, n = t->layers * t->levels;
+    VkResult e;
+    t->mv = (VkImageView *)calloc((size_t)n, sizeof *t->mv);
+    t->mf = (VkFramebuffer *)calloc((size_t)n, sizeof *t->mf);
+    if (!t->mv || !t->mf)
+        exit(70);
+    for (ly = 0; ly < t->layers; ly++)
+        for (lv = 0; lv < t->levels; lv++) {
+            VkImageViewCreateInfo vi = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            int k = ly * t->levels + lv, w = t->w >> lv ? t->w >> lv : 1, h = t->h >> lv ? t->h >> lv : 1;
+            vi.image = t->i;
+            vi.viewType = t->array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+            vi.format = f;
+            vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            vi.subresourceRange.baseMipLevel = (uint32_t)lv;
+            vi.subresourceRange.levelCount = 1;
+            vi.subresourceRange.baseArrayLayer = (uint32_t)ly;
+            vi.subresourceRange.layerCount = 1;
+            if ((e = vkCreateImageView(dev, &vi, NULL, &t->mv[k])) != VK_SUCCESS)
+                fail("vkCreateImageView (a level's)", e);
+            if (lv)
+                t->mf[k] = framebuffer(rp, &t->mv[k], 1, w, h);
+        }
 }
 
 static void barrier_levels(VkImage i, uint32_t layer, uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to, VkAccessFlags src,
@@ -1465,8 +1505,6 @@ static void make_textures(const rr_frame *f)
             int array = (o->flags & RR_TEX_ARRAY) != 0, layers = array && o->layers ? (int)o->layers : 1;
             if (o->flags & RR_TEX_TARGET)
                 u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-            if (levels > 1)
-                u |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
             image_make_layers(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels, layers, array, u, VK_IMAGE_ASPECT_COLOR_BIT);
             t->format = o->format;
             t->target = (o->flags & RR_TEX_TARGET) != 0;
@@ -1477,6 +1515,8 @@ static void make_textures(const rr_frame *f)
                         t->lf[k] = framebuffer(rp, &t->lv[k], 1, (int)o->w, (int)o->h);
                 else
                     t->f = framebuffer(rp, &t->fv, 1, (int)o->w, (int)o->h);
+                if (levels > 1)
+                    mip_views(t, format_of(o->format), rp);     /* colour only: RR_TEX_MIPS */
             }
         }
     }
@@ -1685,7 +1725,7 @@ int rr_draw(rr_frame *f)
     memcpy(staging.at, f->upload, f->upload_bytes);
     buf_fit(&dbuf, (f->data_words + 1) * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     memcpy(dbuf.at, f->data, f->data_words * 4);
-    buf_fit(&ubuf, (f->nuniforms + 1) * 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    buf_fit(&ubuf, (f->nuniforms + 2) * 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);   /* past the frame's: the show pass's, the levels' */
     if (sets_gen != views_gen)
         sets_reset();
 
@@ -1715,6 +1755,11 @@ int rr_draw(rr_frame *f)
         u.f[0][2] = 1.0f;
         u.f[0][3] = 1.0f;
         memcpy((char *)ubuf.at + f->nuniforms * 256, &u, sizeof u);
+        /* the smaller levels' block after it: a whole level drawn, up the right way */
+        memset(&u, 0, sizeof u);
+        u.f[0][2] = 1.0f;
+        u.f[0][3] = 1.0f;
+        memcpy((char *)ubuf.at + (f->nuniforms + 1) * 256, &u, sizeof u);
     }
 
     if (show && !pipe_of(RR_SHOW, 0, RR_BLEND_REPLACE, 0, 0, KIND_SHOW)) {
@@ -1840,38 +1885,38 @@ int rr_draw(rr_frame *f)
             vkCmdDraw(cmd, c->vertices, c->instances, 0, 0);
         }
         vkCmdEndRenderPass(cmd);
-        if (to && ps->mips && to->levels > 1) {
-            /* its smaller levels (that layer's), each blitted from the one before */
-            int lv, w = to->w, h = to->h;
-            barrier_levels(to->i, layer, 0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, ALL_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
-            for (lv = 1; lv < to->levels; lv++) {
-                VkImageBlit bl;
-                int nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1;
-                memset(&bl, 0, sizeof bl);
-                bl.srcSubresource.aspectMask = bl.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                bl.srcSubresource.mipLevel = (uint32_t)lv - 1;
-                bl.dstSubresource.mipLevel = (uint32_t)lv;
-                bl.srcSubresource.baseArrayLayer = bl.dstSubresource.baseArrayLayer = layer;
-                bl.srcSubresource.layerCount = bl.dstSubresource.layerCount = 1;
-                bl.srcOffsets[1].x = w;
-                bl.srcOffsets[1].y = h;
-                bl.srcOffsets[1].z = 1;
-                bl.dstOffsets[1].x = nw;
-                bl.dstOffsets[1].y = nh;
-                bl.dstOffsets[1].z = 1;
-                barrier_levels(to->i, layer, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                               VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-                vkCmdBlitImage(cmd, to->i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to->i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl,
-                               VK_FILTER_LINEAR);
-                barrier_levels(to->i, layer, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               VK_PIPELINE_STAGE_TRANSFER_BIT);
-                w = nw;
-                h = nh;
+        if (to && ps->mips && to->levels > 1 && to->mv) {
+            /* its smaller levels (that layer's), each texel the mean of the 2 x 2 of
+               the level before, by the renderer's own program: the same box on
+               every backend */
+            VkPipeline pl = pipe_of(to->array ? RR_MIPS_LAYER : RR_MIPS, 0, RR_BLEND_REPLACE, 0, 0, KIND_COLOUR);
+            uint32_t off = ((uint32_t)f->nuniforms + 1) * 256;
+            int lv;
+            for (lv = 1; pl && lv < to->levels; lv++) {
+                VkRenderPassBeginInfo mb = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+                VkClearValue none;
+                VkImageView v[RR_TEX_SLOTS];
+                VkDescriptorSet set;
+                uint32_t mw = (uint32_t)(to->w >> lv ? to->w >> lv : 1), mh = (uint32_t)(to->h >> lv ? to->h >> lv : 1);
+                VkViewport vp = { 0, 0, (float)mw, (float)mh, 0, 1 };
+                VkRect2D sc = { { 0, 0 }, { mw, mh } };
+                memset(&none, 0, sizeof none);
+                for (k = 0; k < RR_TEX_SLOTS; k++)
+                    v[k] = k == 0 ? to->mv[(int)layer * to->levels + lv - 1] : slot_view(0, k);
+                set = set_of_views(v);
+                mb.renderPass = rp_colour[0];
+                mb.framebuffer = to->mf[(int)layer * to->levels + lv];
+                mb.renderArea = sc;
+                mb.clearValueCount = 1;
+                mb.pClearValues = &none;
+                vkCmdBeginRenderPass(cmd, &mb, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 1, &off);
+                vkCmdSetViewport(cmd, 0, 1, &vp);
+                vkCmdSetScissor(cmd, 0, 1, &sc);
+                vkCmdDraw(cmd, 6, 1, 0, 0);
+                vkCmdEndRenderPass(cmd);
             }
-            barrier_levels(to->i, layer, 0, (uint32_t)to->levels, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                           VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, SHADER_STAGES);
         }
     }
     if (show) {

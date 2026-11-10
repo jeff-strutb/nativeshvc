@@ -2,10 +2,6 @@
 
 A complete game running natively on the engine: a converted copy of [zelda3](https://github.com/snesrev/zelda3), a decompilation of The Legend of Zelda: A Link to the Past in about 80,000 lines of C. It is here as a proven example of what a game looks like on nativeshvc, and how it uses the API.
 
-| Original 4:3 | Widescreen 16:9 |
-|---|---|
-| ![The title screen](../../docs/images/zelda3-title.png) | ![The game outdoors at 16:9](../../docs/images/zelda3-widescreen.png) |
-
 ## Credit
 
 The game's C code, data tools and decompilation are the work of **[snesrev](https://github.com/snesrev)** and the contributors to [snesrev/zelda3](https://github.com/snesrev/zelda3). This copy is based on commit `45a149d` and keeps that project's MIT licence, in [LICENSE.txt](LICENSE.txt). That licence covers this folder; the engine itself is AGPL-3.0. The game itself is Nintendo's. No ROM or game data is included.
@@ -55,4 +51,6 @@ On a touch screen the game draws its own discs, once a finger has touched the sc
 
 ## What has been tested
 
-macOS was built and played. Linux, Android and iOS (Simulator) and Windows (under Wine) ran the same check and drew the same pictures. See `docs/native-engine-plan.md` for what has and has not been run.
+On the engine's 6.0 renderer it has been compiled for every platform and not yet run: no picture of it has been looked at.
+Before 6.0, macOS was built and played, and Linux, Android, iOS (Simulator) and Windows (under Wine) ran the same check
+and drew the same pictures, on the renderer 6.0 replaced. See `docs/native-engine-plan.md` for what has and has not been run.

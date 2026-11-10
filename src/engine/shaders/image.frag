@@ -17,9 +17,9 @@ void main()
                 continue;
             ivec2 q = clamp(k - 1 + ivec2(i, j), ivec2(0), last);
             if (u.i[0].z != 0) {
+                /* alpha: how much of the texel covers the pixel, as a draw list's image */
                 vec4 c = texelFetch(tc1, q, 0);
-                if (c.a > 0.0)
-                    acc += vec4(c.rgb * wt, wt);
+                acc += vec4(c.rgb * c.a, c.a) * wt;
             } else {
                 uint c = texelFetch(ti0, q, 0).r;
                 if (c != 0u)

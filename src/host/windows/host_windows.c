@@ -2,10 +2,10 @@
  * controllers, sound out. The counterpart of host/macos/host_macos.m;
  * host/win32 under it supplies time and files.
  *
- * The game keeps its own loop on the main thread, so this host never runs a
- * message loop of its own: host_poll_event drains the real queue. Frames
- * are drawn on the window by the renderer (render/vulkan or render/d3d12,
- * host_window_handle).
+ * The engine's system thread is the main thread and keeps its own loop
+ * (nshvc_run), so this host never runs a message loop of its own:
+ * host_poll_event drains the real queue. Frames are drawn on the window by
+ * the renderer (render/vulkan or render/d3d12, host_window_handle).
  *
  *   keys      a key message's virtual key; Alt+Enter and F11 switch the
  *             window between full screen and a window (the game never
@@ -304,7 +304,6 @@ int host_window_open(int width, int height, const char *title)
     if (s_win)
         return 1;
     memset(&wc, 0, sizeof wc);
-    wc.style = CS_OWNDC;              /* (an OpenGL context keeps its DC) */
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = GetModuleHandleA(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -342,54 +341,12 @@ void *host_vulkan_loader(void)
     return v ? (void *)GetProcAddress(v, "vkGetInstanceProcAddr") : NULL;
 }
 
-int host_close_pending(void);
-
-typedef struct {
-    void (*fn)(void *);
-    void *arg;
-} PumpedRun;
-
-static DWORD WINAPI pumped_thread(LPVOID p)
-{
-    PumpedRun *r = (PumpedRun *)p;
-    r->fn(r->arg);
-    return 0;
-}
-
-/* fn(arg) on a thread with as much stack as the main one could want (a driver's
-   compiler may go deep), the window serviced until it returns; on this thread if
-   none can be had. A close asked for meanwhile ends the program: nothing has begun. */
-void host_run_pumped(void (*fn)(void *), void *arg)
-{
-    PumpedRun r;
-    HANDLE t;
-    r.fn = fn;
-    r.arg = arg;
-    t = s_win ? CreateThread(NULL, 16u << 20, pumped_thread, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL) : NULL;
-    if (!t) {
-        fn(arg);
-        return;
-    }
-    for (;;) {
-        MSG m;
-        if (MsgWaitForMultipleObjects(1, &t, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0)
-            break;
-        while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&m);
-            DispatchMessageA(&m);
-        }
-        if (host_close_pending())
-            TerminateProcess(GetCurrentProcess(), 0);
-    }
-    CloseHandle(t);
-}
-
 int host_window_visible(void)
 {
     return s_win && IsWindowVisible(s_win) && !IsIconic(s_win);
 }
 
-/* the window for a renderer that draws on it (render/gl, render/vulkan):
+/* the window for a renderer that draws on it (render/vulkan, render/d3d12):
    its HWND, its client area in pixels, the module */
 void *host_window_handle(void) { return (void *)s_win; }
 void host_window_pixels(int *w, int *h);
@@ -435,16 +392,6 @@ void host_window_pixels(int *w, int *h)
         *w = r.right - r.left;
         *h = r.bottom - r.top;
     }
-}
-
-/* a close waiting in the queue (render/gl's wait while its shaders are made) */
-int host_close_pending(void)
-{
-    int i;
-    for (i = s_qh; i != s_qt; i = (i + 1) % QMAX)
-        if (s_q[i].type == HOST_EV_CLOSE)
-            return 1;
-    return 0;
 }
 
 int host_poll_event(host_event *ev, uint32_t wait_ms)

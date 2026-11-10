@@ -1,18 +1,19 @@
 /*
- * oracle.c: the reference nativeshvc's tests are held to: a ROM run on a
- * libretro core (bsnes, its speed shortcuts off), headless, with no input.
- * None of the core's code or logic is in nativeshvc; this program only
- * runs it and records what it shows and plays.
+ * oracle.c: the original a converted game's sound is held to
+ * (tools/nshvc-check): a ROM run on a libretro core (bsnes, its speed
+ * shortcuts off), headless. None of the core's code or logic is in
+ * nativeshvc; this program only runs it and records what it plays, and
+ * what it shows for looking at (nativeshvc's picture is native, at the
+ * window's resolution, and is not compared with it).
  *
  *   oracle --core DYLIB --rom ROM --frames N --out DIR [--shot F,F...]
  *          [--sound FILE] [--wram FILE] [--overscan]
  *   oracle --core DYLIB --rom ROM --script FILE --out DIR
  *
  * Shots are DIR/frame_F.ppm (F counted from 1, the frames the core has
- * run), each pixel's 15-bit colour widened as nativeshvc widens it (c << 3
- * | c >> 2), so the two compare byte for byte. The core draws every frame
- * 512 wide and with its lines doubled; a shot is the picture as the PPU
- * made it: its lines once, and 256 wide unless a line is hires (its pixel
+ * run), each pixel's 15-bit colour widened to 8 bits (c << 3 | c >> 2).
+ * The core draws every frame 512 wide and with its lines doubled; a shot
+ * has its lines once, and is 256 wide unless a line is hires (its pixel
  * pairs differ); an interlaced picture (its two fields' lines differ) keeps
  * its 448 (or 478) lines. --overscan: the core shows 239 lines (else 224). --sound: every sample the
  * DSP makes, raw 16-bit stereo, left first, at the DSP's rate (the pinned core's
@@ -22,15 +23,13 @@
  * read (2: an S-CPU write to a port, $F4-$F7 its address, at the SPC700's
  * time when the core reports it, which may be behind the S-CPU's), the
  * address and the value, little-endian (the DSP's clock is the
- * SPC700's cycle: tests/dsp/mix_replay; and to pair with nativeshvc's
- * NSHVC_SPCLOG); --spcreads: every data read too. --cpulog: each S-CPU
+ * SPC700's cycle); --spcreads: every data read too. --cpulog: each S-CPU
  * read and write (an interrupt's pushes too), and each byte a DMA or HDMA
  * writes, 16 bytes: the core's CPU clock as it is made (master clocks from
  * power-on, 64 bits; a read's 4 clocks before its cycle ends, a write's at
  * its end), the address (32 bits), 0 for a read of data, 1 for a write, 2
  * for a fetch of code (the open bus holds what it fetched), 3 for a DMA's
- * or HDMA's write, the value, 2 bytes of 0; little-endian
- * (tests/rom/replay.c plays it back on nativeshvc). --cpustats FILE
+ * or HDMA's write, the value, 2 bytes of 0; little-endian. --cpustats FILE
  * [--cpustats-after SHOT]: the CPU's own time around its accesses, the
  * work the game's C does not reproduce: for each S-CPU read of data and
  * each write, the clocks its CPU spent since the one before on code
@@ -49,13 +48,12 @@
  * each sample, each voice's envelope level, its stage, pitch counter, BRR
  * block and byte, as the core's DSP holds them (40 32-bit values).
  *
- * --script: a play as nativeshvc's front end runs one (src/front/script.c:
- * wait, hold, press, repeat ... end, shot, dump, save, load, plug, pad,
- * mouse, gun, load replaying the play in NSHVC_STATES that saves the
- * state, as there), the buttons of each frame
+ * --script: a play, step by step (wait, hold, press, repeat ... end, shot,
+ * dump, save, load, plug, pad, mouse, gun; a load replays the play in the
+ * folder NSHVC_STATES names that saved the state), the buttons of each frame
  * set before the core runs it, a step's shots and dumps (DIR/NAME.ppm,
  * .wram) taken at the end of the frame before it, the first frame's
- * buttons taken before power-on (as there, they reach no joypad read). --watch
+ * buttons taken before power-on (they reach no joypad read). --watch
  * F-T:A,A...: each write to work RAM offsets A (hex) in frames F to T
  * (the frame being run counted from 1), to stderr with the S-CPU's
  * instruction that made it (a DMA's: the last instruction before it).
@@ -464,9 +462,9 @@ static void write_mem(const char *dir, const char *name, const char *ext, const 
     fclose(f);
 }
 
-/* The script's steps (src/front/script.c's, which says what each does),
-   run on the core. Where the machine is put back (a load) the run forks as
-   nativeshvc's does, so the two make the same frames in the same order. */
+/* The script's steps, run on the core. Where the machine is put back (a
+   load) the run forks, replaying the play that saved it, so a load makes
+   the same frames in the same order as the play that saved it did. */
 enum {
     S_FRAMES, S_SHOT, S_DUMP, S_SAVE, S_LOAD, S_INPUT,
 };
@@ -622,7 +620,7 @@ static void list_load(List *l, const char *path)
 
 static void script_load(const char *path) { list_load(&main_list, path); }
 
-/* ---- the processes (src/front/script.c's) ---- */
+/* ---- the processes ---- */
 #ifdef _WIN32
 /* Windows has no fork. A load runs the oracle again from power-on, as a new
    process told (NSHVC_ORACLE_LOAD=NAME:STEP) to replay the play that saved
