@@ -16,8 +16,8 @@
  * pixel: shown, and kept for rr_read. A texture target is one of the frame's
  * textures made with RR_TEX_TARGET. A pass into the picture, the output or
  * a texture clears it to the pass's colour, or keeps what it held (`load`;
- * a target just made is cleared); a texture made with RR_TEX_MIPS has its
- * smaller levels made from the first when a pass into it asks (`mips`). A
+ * a target just made is cleared); a colour texture made with RR_TEX_MIPS has
+ * its smaller levels made from the first when a pass into it asks (`mips`). A
  * texture made with RR_TEX_ARRAY has `layers` layers; a pass draws into one
  * of them (`layer`), and makes that layer's smaller levels.
  *
@@ -54,7 +54,7 @@
 /* texture formats */
 enum { RR_R8U, RR_R32U, RR_BGRA8 };
 #define RR_TEX_TARGET 1         /* a texture drawn into */
-#define RR_TEX_MIPS 2           /* with every smaller level, down to 1 x 1 */
+#define RR_TEX_MIPS 2           /* with every smaller level, down to 1 x 1 (colour only) */
 #define RR_TEX_ARRAY 4          /* an array of layers (colour only) */
 /* textures that are no texture of the frame's: the targets, resolved */
 #define RR_TEX_EXTRA0 (-1)

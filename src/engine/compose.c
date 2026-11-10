@@ -1813,6 +1813,7 @@ void eng_compose(rr_frame *f, const eng_picture *p)
     field = p->interlace ? (field == 1 ? 2 : 1) : 0;
     pass_begin(RR_TARGET_PICTURE, 0);
     F->passes[F->npasses - 1].load = field != 0;
+    F->passes[F->npasses - 1].clear[3] = 1.0f;     /* opaque black where nothing is drawn */
     combine(field);
     /* outside the part shown: black */
     if (p->show_t > 0)
@@ -1829,6 +1830,7 @@ void eng_compose(rr_frame *f, const eng_picture *p)
 
     /* the output: the picture, then the overlays over the window */
     pass_begin(RR_TARGET_OUTPUT, 0);
+    F->passes[F->npasses - 1].clear[3] = 1.0f;
     d = draw(RR_SHOW, &u);
     d->space = RR_SPACE_TARGET;
     d->tex[0] = RR_TEX_PICTURE;
