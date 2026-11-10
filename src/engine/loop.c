@@ -43,6 +43,8 @@ static host_mutex *hs_lock;
 static host_cond *game_wake, *render_wake;
 static int hs_want, hs_ready, hs_quit;
 static int hs_busy;          /* the render thread is drawing a picture */
+static int hs_window;        /* the window went, came or changed since the render thread last looked */
+static uint64_t hs_updates;  /* the game's updates so far */
 static rr_frame *hs_packet;
 
 static atomic_int quit_asked;
@@ -152,7 +154,8 @@ static void write_shot(void)
     fclose(f);
 }
 
-static void show(rr_frame *p)
+/* the picture drawn and shown: 1 if a display paced it */
+static int show(rr_frame *p)
 {
     uint64_t t = host_ticks_ns();
     int paced = rr_draw(p);
@@ -161,8 +164,16 @@ static void show(rr_frame *p)
     host_mutex_unlock(hs_lock);
     if (shots_dir)
         write_shot();
-    if (!paced && !headless)
-        host_sleep_ms(1);
+    return paced;
+}
+
+/* the host's word that the window went, came or changed (any thread) */
+static void window_changed(void)
+{
+    host_mutex_lock(hs_lock);
+    hs_window = 1;
+    host_cond_broadcast(render_wake);
+    host_mutex_unlock(hs_lock);
 }
 
 static void render_thread(void *arg)
@@ -172,11 +183,21 @@ static void render_thread(void *arg)
     host_thread_interactive();
     for (;;) {
         rr_frame *p;
+        uint64_t drawn;
+        int paced;
         host_mutex_lock(hs_lock);
         hs_want = 1;
         host_cond_broadcast(game_wake);
-        while (!hs_ready && !hs_quit)
+        while (!hs_ready && !hs_quit && !hs_window)
             host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
+        if (!hs_ready && !hs_quit) {
+            /* the window went or came between pictures (during the game's
+               init, say): anything kept on one that went let go now */
+            hs_window = 0;
+            host_mutex_unlock(hs_lock);
+            rr_window();
+            continue;
+        }
         if (!hs_ready) {
             host_mutex_unlock(hs_lock);
             return;
@@ -184,11 +205,18 @@ static void render_thread(void *arg)
         hs_ready = 0;
         hs_busy = 1;
         p = hs_packet;
+        drawn = p->update;
         host_mutex_unlock(hs_lock);
-        show(p);
+        paced = show(p);
         host_mutex_lock(hs_lock);
         hs_busy = 0;
         host_cond_broadcast(game_wake);
+        /* nothing shown it and nothing paced it (no window, or one minimised):
+           the next picture once the game has moved on or the window changes,
+           not as fast as pictures can be drawn */
+        if (!paced && !headless)
+            while (hs_updates == drawn && !hs_window && !hs_quit)
+                host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
         host_mutex_unlock(hs_lock);
     }
 }
@@ -380,6 +408,10 @@ static void run_live(void)
                 one_update();
         }
         host_mutex_lock(hs_lock);
+        if (hs_updates != updates) {
+            hs_updates = updates;
+            host_cond_broadcast(render_wake);
+        }
         if (!hs_want && !hs_quit && !atomic_load(&quit_asked)) {
             if (paused) {
                 host_cond_wait(game_wake, hs_lock, HOST_WAIT_FOREVER);
@@ -477,6 +509,7 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
     hs_lock = host_mutex_new();
     game_wake = host_cond_new();
     render_wake = host_cond_new();
+    host_window_watch(window_changed);
     eng_jobs_start();
     eng_inspect_start(inspect_path);
     eng_input_start(input_path);

@@ -50,7 +50,7 @@ static int picture_fresh, output_fresh, memoryless;
 static int windowed;                    /* drawn for a window's layer, not headless */
 static uint64_t screen_used[3], frame_no;
 static id<MTLBuffer> ubuf, dbuf, rbuf;
-static id<MTLSamplerState> sampler, filtered;
+static id<MTLSamplerState> sampler, filtered, bordered;   /* at texels; filtered repeating; filtered, transparent outside */
 static int last_w, last_h, ever;
 
 /* pipelines by program (and game shader), blend and pass kind; depth-stencil
@@ -106,6 +106,8 @@ int rr_open(void)
             sd.maxAnisotropy = 16;
             sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeRepeat;
             filtered = [dev newSamplerStateWithDescriptor:sd];
+            sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToZero;   /* (0, 0, 0, 0) outside: it has alpha */
+            bordered = [dev newSamplerStateWithDescriptor:sd];
         }
         {
             MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:1 height:1 mipmapped:NO];
@@ -152,7 +154,7 @@ void rr_close(void)
     none_colour = none_index = none_array = nil;
     ubuf = dbuf = rbuf = nil;
     pipes = dss = nil;
-    sampler = filtered = nil;
+    sampler = filtered = bordered = nil;
     queue = nil;
     dev = nil;
     ever = 0;
@@ -407,12 +409,15 @@ static int pass_target(const rr_pass *ps, int *kind, id<MTLTexture> *to)
     return 1;
 }
 
+/* the layer is the host's for good: nothing kept on a window that went */
+void rr_window(void) {}
+
 int rr_draw(rr_frame *f)
 {
     int paced = 0;
     @autoreleasepool {
         /* the layer, held until the frame is committed (iOS lets none be drawn while the app is away) */
-        CAMetalLayer *ml = windowed ? (__bridge CAMetalLayer *)host_window_take() : nil;
+        CAMetalLayer *ml = windowed ? (__bridge CAMetalLayer *)host_window_take(NULL, NULL) : nil;
         id<CAMetalDrawable> dr = nil;
         id<MTLCommandBuffer> cb;
         int ow = 0, oh = 0, k;
@@ -443,9 +448,10 @@ int rr_draw(rr_frame *f)
             host_metal_layer_fit(&ow, &oh);
         if (ow < 1 || oh < 1) {
             if (windowed) {
-                /* no window to show in now: drawn as before, not shown */
-                ow = last_w;
-                oh = last_h;
+                /* no window to show in now: drawn as before (at the frame's own
+                   units before any), not shown; texture targets drawn all the same */
+                ow = last_w ? last_w : f->width;
+                oh = last_h ? last_h : f->height;
             } else {
                 const char *e = getenv("RR_SIZE");
                 ow = f->width;
@@ -457,12 +463,8 @@ int rr_draw(rr_frame *f)
             }
             ml = nil;
         }
-        if (ow < 1 || oh < 1) {
-            dispatch_semaphore_signal(inflight);
-            if (windowed)
-                host_window_give(NULL);
-            return 0;
-        }
+        if (ow < 1 || oh < 1)
+            ow = oh = 1;
         targets_fit(f, ow, oh);
         last_w = ow;
         last_h = oh;
@@ -577,7 +579,7 @@ int rr_draw(rr_frame *f)
                 [e setFragmentBuffer:dbuf offset:0 atIndex:1];
                 for (k = 0; k < RR_TEX_SLOTS; k++) {
                     id<MTLTexture> t = slot_texture(c->tex[k], k);
-                    id<MTLSamplerState> sm = k == 1 || k == 2 || k >= 6 ? filtered : sampler;
+                    id<MTLSamplerState> sm = k == 1 || k == 6 ? filtered : k == 2 || k >= 7 ? bordered : sampler;
                     [e setVertexTexture:t atIndex:(NSUInteger)(2 + k)];
                     [e setFragmentTexture:t atIndex:(NSUInteger)(2 + k)];
                     [e setVertexSamplerState:sm atIndex:(NSUInteger)(2 + k)];

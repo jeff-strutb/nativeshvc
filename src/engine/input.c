@@ -23,6 +23,9 @@ static struct { int id; float x, y; } touch[16];
 static int touches;
 static char typed[64];
 static uint32_t ntyped;
+/* the window's size in pixels the last sample's pointer was put in (the game
+   thread's own): the same size maps it to the picture */
+static int sample_w, sample_h, sampled;
 
 /* the game thread's */
 static host_pad pads[CONTROLLERS];
@@ -233,6 +236,9 @@ void eng_input_sample(nshvc_input *in, uint64_t n, int headless)
         float pw = 0, ph = 0, sx = 1, sy = 1;
         int ww = 0, wh = 0, t;
         host_window_sizes(&ww, &wh, &pw, &ph);   /* from the same resize */
+        sample_w = ww;
+        sample_h = wh;
+        sampled = 1;
         if (pw > 0 && ph > 0 && ww > 0 && wh > 0) {
             sx = (float)ww / pw;
             sy = (float)wh / ph;
@@ -313,7 +319,13 @@ int nshvc_window_to_picture(float x, float y, int32_t *picture_x, int32_t *pictu
     int ww = 0, wh = 0, sw = 256, sh = 224, vx, vy, vw, vh;
     if (!eng_on("nshvc_window_to_picture", ENG_GAME))
         return 0;
-    host_window_pixels(&ww, &wh);
+    /* the size the pointer was sampled in, so both are of one resize; before any sample, the window's now */
+    if (sampled) {
+        ww = sample_w;
+        wh = sample_h;
+    } else {
+        host_window_pixels(&ww, &wh);
+    }
     eng_picture_size(&sw, &sh);
     if (ww <= 0 || wh <= 0) {
         /* no window: the picture is the window, a pixel for a pixel */

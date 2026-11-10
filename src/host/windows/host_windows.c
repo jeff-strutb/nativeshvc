@@ -138,6 +138,7 @@ static void key_event(WPARAM vk, int down)
 
 /* ---- the window ----------------------------------------------------------------- */
 static HWND s_win;
+static void (*s_watch)(void);  /* told when the window changes size, minimised or back (the window's thread) */
 
 /* Each monitor's own pixels: a process aware only of the system's DPI is drawn at
    the primary monitor's scale and stretched by Windows on the others. The calls
@@ -256,6 +257,10 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         qpush(&e);
         return 0;
     }
+    case WM_SIZE:                     /* a new size, minimised or back: the renderer told */
+        if (s_watch)
+            s_watch();
+        break;
     case WM_CLOSE:
         e.type = HOST_EV_CLOSE;
         qpush(&e);
@@ -387,12 +392,22 @@ int host_window_visible(void)
 /* the window for a renderer that draws on it (render/gl, render/vulkan):
    its HWND, its client area in pixels, the module */
 void *host_window_handle(void) { return (void *)s_win; }
-/* the window lasts until it is closed, after the renderer: nothing to wait for */
-void *host_window_take(void) { return (void *)s_win; }
-void host_window_give(void *kept) { (void)kept; }
-void *host_win32_instance(void) { return (void *)GetModuleHandleA(NULL); }
-
 void host_window_pixels(int *w, int *h);
+int host_windowed(void) { return s_win != NULL; }
+/* the window lasts until it is closed, after the renderer: nothing to wait for */
+void *host_window_take(int *w, int *h)
+{
+    int a, b;
+    host_window_pixels(&a, &b);
+    if (w)
+        *w = a;
+    if (h)
+        *h = b;
+    return (void *)s_win;
+}
+void host_window_give(void *kept) { (void)kept; }
+void host_window_watch(void (*changed)(void)) { s_watch = changed; }
+void *host_win32_instance(void) { return (void *)GetModuleHandleA(NULL); }
 
 /* both from one reading of the window: points are pixels at its dots per inch over 96 */
 void host_window_sizes(int *pw, int *ph, float *tw, float *th)

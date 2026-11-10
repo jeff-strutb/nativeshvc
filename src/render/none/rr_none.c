@@ -6,6 +6,7 @@
 const char *rr_shader_ext(void) { return "spv"; }
 int rr_open(void) { return 1; }
 void rr_close(void) {}
+void rr_window(void) {}
 const char *rr_name(void) { return "none"; }
 int rr_draw(rr_frame *f)
 {

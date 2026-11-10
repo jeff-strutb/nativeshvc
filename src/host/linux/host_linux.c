@@ -196,9 +196,22 @@ void host_window_close(void)
 
 int host_window_visible(void) { return win != 0; }
 void *host_window_handle(void) { return (void *)win; }
+int host_windowed(void) { return win != 0; }
 /* the window lasts until it is closed, after the renderer: nothing to wait for */
-void *host_window_take(void) { return (void *)win; }
+void *host_window_take(int *w, int *h)
+{
+    int a, b;
+    host_window_pixels(&a, &b);
+    if (w)
+        *w = a;
+    if (h)
+        *h = b;
+    return (void *)win;
+}
 void host_window_give(void *kept) { (void)kept; }
+/* the events are read on the thread that set it */
+static void (*watch)(void);
+void host_window_watch(void (*changed)(void)) { watch = changed; }
 void *host_x11_display(void) { return dpy; }
 void host_window_pixels(int *w, int *h)
 {
@@ -371,6 +384,8 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
             win_w = e.configure.width;
             win_h = e.configure.height;
             atomic_store(&win_px, (uint64_t)(uint32_t)win_w << 32 | (uint32_t)win_h);
+            if (watch)
+                watch();
             return 0;
         case X_ClientMessage:
             if ((Atom)e.client.data.l[0] == wm_delete) {

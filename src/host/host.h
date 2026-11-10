@@ -90,14 +90,22 @@ int  host_window_visible(void);
    the OS's handle (a CAMetalLayer on macOS and iOS, an HWND on Windows; NULL
    without a window) and its drawable size in pixels */
 void *host_window_handle(void);
+/* 1 when the renderer draws on a window, whether there now or not (Android's
+   comes and goes with the app; one may be absent when the renderer opens) */
+int  host_windowed(void);
 /* the renderer's hold on the window, from any one thread at a time: take
-   gives the window to draw into now (NULL: none, nothing is shown) and keeps
-   it as it is until give; give says which window the renderer still keeps
+   gives the window to draw into now (NULL: none, nothing is shown) and that
+   window's size in pixels, read with it (w and h may be NULL), and keeps it
+   as it is until give; give says which window the renderer still keeps
    anything of its own on (a surface), NULL none. A host whose window can go
    (Android's, iOS's to the background) waits, before letting it go, until
    the renderer has given it back keeping nothing on it. */
-void *host_window_take(void);
+void *host_window_take(int *w, int *h);
 void host_window_give(void *kept);
+/* `changed` called, on any thread, whenever the window comes, goes, or
+   changes size or whether it can be shown: the engine's render thread then
+   wakes, to let go of a window that went (rr_window) or draw for one come */
+void host_window_watch(void (*changed)(void));
 void host_window_pixels(int *w, int *h);
 /* the window's size in points (the OS's units for touches and layout; 0
    without a window) */

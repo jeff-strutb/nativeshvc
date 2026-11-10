@@ -167,6 +167,14 @@ static CAMetalLayer *s_layer;           /* made with the window, on the main thr
 /* the drawable's size in pixels and the view's in points, from one resize:
    written on the main thread under a sequence count (odd while writing), read
    anywhere again until the same even count is seen before and after */
+/* told when the window comes, goes or changes size: set by the engine's thread, called on the main one */
+static void (*_Atomic s_watch)(void);
+static void watch_tell(void)
+{
+    void (*w)(void) = atomic_load(&s_watch);
+    if (w)
+        w();
+}
 static _Atomic uint32_t s_seq;
 static _Atomic int s_pw, s_ph;
 static _Atomic float s_ptw, s_pth;
@@ -218,6 +226,7 @@ static void layer_publish(void)
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize([s_layer drawableSize], want))
         [s_layer setDrawableSize:want];
     sizes_publish((int)want.width, (int)want.height, (float)b.width, (float)b.height);
+    watch_tell();
 }
 
 @implementation PortView
@@ -419,8 +428,19 @@ void host_metal_layer_fit(int *w, int *h)
 
 void *host_window_handle(void) { return (__bridge void *)s_layer; }
 /* the window lasts until it is closed, after the renderer: nothing to wait for */
-void *host_window_take(void) { return (__bridge void *)s_layer; }
+int host_windowed(void) { return s_layer != nil; }
+void *host_window_take(int *w, int *h)
+{
+    int a, b;
+    host_metal_layer_fit(&a, &b);
+    if (w)
+        *w = a;
+    if (h)
+        *h = b;
+    return (__bridge void *)s_layer;
+}
 void host_window_give(void *kept) { (void)kept; }
+void host_window_watch(void (*changed)(void)) { atomic_store(&s_watch, changed); }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_sizes(int *pw, int *ph, float *tw, float *th) { sizes_read(pw, ph, tw, th); }
 

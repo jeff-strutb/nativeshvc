@@ -17,33 +17,41 @@ vec2 row_step(vec2 p)
 }
 
 /* where a pixel spans more than a texel: the plane in colour at plane point t,
-   filtered by the GPU along the footprint (dx, dy, in texels): one read of
-   the plane in this row's palette (tc1), or of tile 0 in it outside (tc2);
-   past those kept full size, the base's plus this palette's (layer i[7].y of
-   ta0, tile 0's of ta1, a quarter's side) less the base's at that size
-   (layer i[6].x - 1) */
+   filtered by the GPU along the footprint (dx, dy, in texels), one read of
+   it in this row's palette. Outside the plane (i[6].y): 0 it repeats, read
+   repeating (tc1); 1 it is see-through, read as transparent outside (tc2);
+   2 tile 0 repeats there: tile 0 repeated everywhere (tc1, 8 x 8), plus the
+   plane, less tile 0 repeated across the plane (layer i[5].z of ta2), both
+   transparent outside, so every footprint mixes the plane and tile 0 by how
+   much of it each has. Past the full-size planes: the base palette's (tc1,
+   tc2, ta2), plus this palette's at a quarter's side (layer i[7].y of ta0 or
+   ta1, as the plane is read), less the base's at that size (layer i[6].x - 1);
+   tile 0 this palette's (ta0's layer i[7].y), and the plane of tile 0
+   repeated corrected the same way (layers i[5].x and i[6].x + 2 of ta1) */
 vec4 filtered(vec2 t, vec2 dx, vec2 dy)
 {
-    int over = u.i[7].y;
-    bool out_ = any(lessThan(t, vec2(0.0))) || any(greaterThanEqual(t, vec2(1024.0)));
-    vec2 p, gx, gy;
+    int outside = u.i[6].y, over = u.i[7].y, kind = u.i[6].x;
+    vec2 p = t / 1024.0, gx = dx / 1024.0, gy = dy / 1024.0;
     vec4 c;
-    if (out_ && u.i[6].y == 1)
-        return vec4(0.0);
-    if (out_ && u.i[6].y == 2) {
-        p = t / 8.0;
-        gx = dx / 8.0;
-        gy = dy / 8.0;
-        return over >= 0 ? textureGrad(ta1, vec3(p, float(over)), gx, gy) : textureGrad(tc2, p, gx, gy);
+    if (outside == 0) {
+        c = textureGrad(tc1, p, gx, gy);
+        if (over >= 0)
+            c.rgb += textureGrad(ta0, vec3(p, float(over)), gx, gy).rgb - textureGrad(ta0, vec3(p, float(kind - 1)), gx, gy).rgb;
+    } else {
+        c = textureGrad(tc2, p, gx, gy);
+        if (over >= 0)
+            c.rgb += textureGrad(ta1, vec3(p, float(over)), gx, gy).rgb - textureGrad(ta1, vec3(p, float(kind - 1)), gx, gy).rgb;
+        if (outside == 2) {
+            vec2 q = t / 8.0, qx = dx / 8.0, qy = dy / 8.0;
+            vec4 t0 = over >= 0 ? textureGrad(ta0, vec3(q, float(over)), qx, qy) : textureGrad(tc1, q, qx, qy);
+            vec4 r = textureGrad(ta2, vec3(p, float(u.i[5].z)), gx, gy);
+            if (over >= 0 && u.i[5].x >= 0)
+                r.rgb += textureGrad(ta1, vec3(p, float(u.i[5].x)), gx, gy).rgb - textureGrad(ta1, vec3(p, float(kind + 2)), gx, gy).rgb;
+            c += t0 - r;
+        }
     }
-    p = t / 1024.0;
-    gx = dx / 1024.0;
-    gy = dy / 1024.0;
-    c = textureGrad(tc1, p, gx, gy);
-    if (over >= 0) {
-        c.rgb += textureGrad(ta0, vec3(p, float(over)), gx, gy).rgb - textureGrad(ta0, vec3(p, float(u.i[6].x - 1)), gx, gy).rgb;
-        c.rgb = clamp(c.rgb, vec3(0.0), vec3(c.a));
-    }
+    c.a = clamp(c.a, 0.0, 1.0);
+    c.rgb = clamp(c.rgb, vec3(0.0), vec3(c.a));
     return c;
 }
 

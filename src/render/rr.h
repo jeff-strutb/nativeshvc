@@ -33,10 +33,11 @@
  * Programs. A program is a vertex and a fragment stage, compiled into the
  * backend (rr_spv.h, rr_msl.h, rr_dxil.h, from src/render/shaders). It reads
  * the draw's uniform block (binding 0), the frame's words (binding 1) and up
- * to eight textures (bindings 2-9): binding 2 sampled at its texels, bindings
- * 3 and 4 filtered (linear between texels and levels, anisotropic, the
- * texture repeating), bindings 5-7 integer textures read at their texels,
- * bindings 8 and 9 arrays of layers, filtered as 3 and 4 are; a texture of
+ * to nine textures (bindings 2-10): binding 2 sampled at its texels, bindings
+ * 3 and 4 filtered (linear between texels and levels, anisotropic): 3 the
+ * texture repeating, 4 transparent outside it; bindings 5-7 integer
+ * textures read at their texels; bindings 8, 9 and 10 arrays of layers,
+ * filtered: 8 repeating, 9 and 10 transparent outside; a texture of
  * another kind than its binding's reads as nothing there. It
  * draws `vertices` vertices of each of `instances` instances, with nothing
  * in vertex buffers, as triangles. A game's shader takes the place of a
@@ -55,7 +56,7 @@
 #define RR_SHOW 12              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise) */
 #define RR_MIPS 13              /* a level made from the one before (binding 2), for a backend that needs it */
 #define RR_MIPS_LAYER 14        /* the same for a layer of an array (binding 2, an array of one layer) */
-#define RR_TEX_SLOTS 8          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9: colour arrays */
+#define RR_TEX_SLOTS 9          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9, 10: colour arrays */
 
 /* texture formats */
 enum { RR_R8U, RR_R32U, RR_BGRA8 };
@@ -156,6 +157,9 @@ void rr_close(void);
 const char *rr_name(void);
 /* runs the frame and shows it; 1 if a display paced it, 0 if nothing waited */
 int  rr_draw(rr_frame *f);
+/* the window went or came between frames (host_window_watch): anything kept
+   on a window that went let go now, not at the next frame */
+void rr_window(void);
 /* the last output, 0xFFRRGGBB, top row first; 0 when none. *w, *h its size;
    argb NULL only asks the size */
 int  rr_read(uint32_t *argb, int *w, int *h);

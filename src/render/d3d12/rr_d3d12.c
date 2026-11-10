@@ -354,7 +354,8 @@ int rr_open(void)
 
     {
         /* b0 the draw's uniforms, t1 the frame's words, t2-t9 its textures, s2-s9 their samplers:
-           s3, s4, s8 and s9 filtered, anisotropic and repeating, the rest at texels */
+           s3, s4 and s8-s10 filtered and anisotropic, s3 and s8 repeating, s4, s9 and s10
+           transparent outside the texture; the rest at texels */
         D3D12_ROOT_PARAMETER p[3];
         D3D12_DESCRIPTOR_RANGE r;
         D3D12_STATIC_SAMPLER_DESC s[RR_TEX_SLOTS];
@@ -380,7 +381,9 @@ int rr_open(void)
             int f = k == 1 || k == 2 || k >= 6;
             s[k].Filter = f ? D3D12_FILTER_ANISOTROPIC : D3D12_FILTER_MIN_MAG_MIP_POINT;
             s[k].MaxAnisotropy = f ? 16 : 1;
-            s[k].AddressU = s[k].AddressV = s[k].AddressW = f ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            s[k].AddressU = s[k].AddressV = s[k].AddressW = !f ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+                                                          : k == 1 || k == 6 ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s[k].BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
             s[k].MaxLOD = D3D12_FLOAT32_MAX;
             s[k].ShaderRegister = (UINT)(2 + k);
             s[k].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -981,6 +984,9 @@ static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, in
     *th = (*to)->h;
     return 1;
 }
+
+/* the window lasts as long as the renderer: nothing kept on one that went */
+void rr_window(void) {}
 
 int rr_draw(rr_frame *f)
 {

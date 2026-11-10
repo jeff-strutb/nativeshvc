@@ -24,9 +24,20 @@ int nshvc_game_main(int argc, char **argv);
 
 static struct android_app *app;
 /* the window, set and taken under w_lock: w_taken while the renderer draws a
-   frame with it, w_kept the window the renderer keeps a surface on */
-static ANativeWindow *window, *w_kept;
+   frame with it, w_kept the window the renderer keeps a surface on; w_gone a
+   window that went while the renderer still kept a surface on it (it did not
+   let go in time), given to it as no window until it lets go, so a window
+   made again at the same address is never taken for the one that went */
+static ANativeWindow *window, *w_kept, *w_gone;
 static int w_taken;
+/* told when the window comes, goes or changes size */
+static void (*_Atomic w_watch)(void);
+static void watch_tell(void)
+{
+    void (*f)(void) = atomic_load(&w_watch);
+    if (f)
+        f();
+}
 static pthread_mutex_t w_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t w_cond = PTHREAD_COND_INITIALIZER;
 static char save_dir[1024];
@@ -288,22 +299,32 @@ static void on_cmd(struct android_app *a, int32_t cmd)
         window = a->window;
         pthread_mutex_unlock(&w_lock);
         surface_ready = 1;
+        watch_tell();
+        break;
+    case APP_CMD_WINDOW_RESIZED:
+        watch_tell();
         break;
     case APP_CMD_TERM_WINDOW: {
         /* the window goes once this returns: first the renderer finishes the
-           frame it is drawing with it and lets go of its surface. A renderer
-           stuck elsewhere is waited for 2 seconds, within the time Android
-           allows before it calls the app hung. */
+           frame it is drawing with it and lets go of its surface; one between
+           frames is woken to let go at once. A renderer stuck elsewhere is
+           waited for 2 seconds, within the time Android allows before it
+           calls the app hung. */
         ANativeWindow *old;
         struct timespec until;
         pthread_mutex_lock(&w_lock);
         old = window;
         window = NULL;
+        pthread_mutex_unlock(&w_lock);
+        watch_tell();
+        pthread_mutex_lock(&w_lock);
         clock_gettime(CLOCK_REALTIME, &until);
         until.tv_sec += 2;
         while (w_taken || (old && w_kept == old))
             if (pthread_cond_timedwait(&w_cond, &w_lock, &until)) {
                 __android_log_print(ANDROID_LOG_WARN, "nativeshvc", "the renderer did not let go of the window in time");
+                if (old && w_kept == old)
+                    w_gone = old;
                 break;
             }
         pthread_mutex_unlock(&w_lock);
@@ -392,15 +413,46 @@ void *host_window_handle(void)
     return n;
 }
 
-void *host_window_take(void)
+/* the size of window n, asked of it in two calls (under w_lock, so it cannot
+   go meanwhile): asked again until a width and height are read together
+   with nothing changed between */
+static void size_of(ANativeWindow *n, int *w, int *h)
+{
+    int a = 0, b = 0;
+    if (n) {
+        a = ANativeWindow_getWidth(n);
+        for (;;) {
+            b = ANativeWindow_getHeight(n);
+            if (ANativeWindow_getWidth(n) == a)
+                break;
+            a = ANativeWindow_getWidth(n);
+        }
+    }
+    *w = a;
+    *h = b;
+}
+
+int host_windowed(void) { return 1; }
+
+void *host_window_take(int *w, int *h)
 {
     ANativeWindow *n;
+    int a, b;
     pthread_mutex_lock(&w_lock);
-    n = window;
+    if (w_gone && w_kept != w_gone)
+        w_gone = NULL;
+    n = w_gone ? NULL : window;
     w_taken = 1;
+    size_of(n, &a, &b);
     pthread_mutex_unlock(&w_lock);
+    if (w)
+        *w = a;
+    if (h)
+        *h = b;
     return n;
 }
+
+void host_window_watch(void (*changed)(void)) { atomic_store(&w_watch, changed); }
 
 void host_window_give(void *kept)
 {
@@ -411,27 +463,12 @@ void host_window_give(void *kept)
     pthread_mutex_unlock(&w_lock);
 }
 
-/* the window's size, asked of the window itself in two calls (under the
-   lock, so the window cannot go meanwhile): asked again until a width and
-   height are read together with nothing changed between */
+/* the window's size, read with the window under the lock */
 void host_window_pixels(int *w, int *h)
 {
-    ANativeWindow *n;
-    int a = 0, b = 0;
     pthread_mutex_lock(&w_lock);
-    n = window;
-    if (n) {
-        a = ANativeWindow_getWidth(n);
-        for (;;) {
-            b = ANativeWindow_getHeight(n);
-            if (ANativeWindow_getWidth(n) == a)
-                break;
-            a = ANativeWindow_getWidth(n);
-        }
-    }
+    size_of(window, w, h);
     pthread_mutex_unlock(&w_lock);
-    *w = a;
-    *h = b;
 }
 
 /* points are pixels here: both from one reading */

@@ -22,7 +22,7 @@ void main()
     for (int j = 0; j < b; j++)
         for (int i = 0; i < b; i++) {
             ivec2 q = p * b + ivec2(i, j);
-            uint t = u.i[0].x == 0 ? texelFetch(ti0, q, 0).r : texelFetch(ti1, q * tpp + tpp / 2, 0).r;
+            uint t = u.i[0].x == 0 ? texelFetch(ti0, q, 0).r : texelFetch(ti1, (q & 7) * tpp + tpp / 2, 0).r;
             acc += tint_of(t, kind);
         }
     o = acc / float(b * b);

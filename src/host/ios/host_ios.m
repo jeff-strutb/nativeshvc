@@ -369,6 +369,14 @@ static CAMetalLayer *s_layer;
 /* the drawable's size in pixels and the view's in points, from one resize:
    written on the main thread under a sequence count (odd while writing), read
    anywhere again until the same even count is seen before and after */
+/* told when the window comes, goes or changes size: set by the engine's thread, called on the main one */
+static void (*_Atomic s_watch)(void);
+static void watch_tell(void)
+{
+    void (*w)(void) = atomic_load(&s_watch);
+    if (w)
+        w();
+}
 static _Atomic uint32_t s_seq;
 static _Atomic int s_pw, s_ph;
 static _Atomic float s_ptw, s_pth;
@@ -415,6 +423,7 @@ static void sizes_read(int *pw, int *ph, float *tw, float *th)
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize(s_layer.drawableSize, want))
         s_layer.drawableSize = want;
     sizes_publish((int)want.width, (int)want.height, (float)b.width, (float)b.height);
+    watch_tell();
 }
 @end
 
@@ -528,6 +537,7 @@ static void app_active(void)
     atomic_store(&s_active, 1);
     pthread_cond_broadcast(&s_pc);
     pthread_mutex_unlock(&s_pm);
+    watch_tell();
     focus_event(1);
     if (!s_started) {
         pthread_attr_t a;
@@ -563,6 +573,7 @@ static void app_inactive(void)
         if (pthread_cond_timedwait(&s_pc, &s_pm, &until))
             break;
     pthread_mutex_unlock(&s_pm);
+    watch_tell();
 }
 
 /* ---- the app and its scene ------------------------------------------------------------ */
@@ -645,17 +656,25 @@ void *host_window_handle(void) { return (__bridge void *)s_layer; }
 /* the layer, for the frame being drawn. iOS lets no GPU work run in the
    background, so while the app is away the renderer waits here, as the game
    thread does at its poll; going away waits for the frame in hand */
-void *host_window_take(void)
+int host_windowed(void) { return s_layer != nil; }
+void *host_window_take(int *w, int *h)
 {
     void *l;
+    int a, b;
     pthread_mutex_lock(&s_pm);
     while (!atomic_load(&s_active))
         pthread_cond_wait(&s_pc, &s_pm);
     l = (__bridge void *)s_layer;
     s_taken = 1;
     pthread_mutex_unlock(&s_pm);
+    host_metal_layer_fit(&a, &b);
+    if (w)
+        *w = a;
+    if (h)
+        *h = b;
     return l;
 }
+void host_window_watch(void (*changed)(void)) { atomic_store(&s_watch, changed); }
 
 void host_window_give(void *kept)
 {

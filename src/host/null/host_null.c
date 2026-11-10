@@ -83,8 +83,17 @@ int host_window_visible(void) { return 0; }
 /* no window: a renderer draws offscreen */
 void *host_window_handle(void) { return NULL; }
 void host_window_pixels(int *w, int *h) { *w = *h = 0; }
-void *host_window_take(void) { return NULL; }
+int host_windowed(void) { return 0; }
+void *host_window_take(int *w, int *h)
+{
+    if (w)
+        *w = 0;
+    if (h)
+        *h = 0;
+    return NULL;
+}
 void host_window_give(void *kept) { (void)kept; }
+void host_window_watch(void (*changed)(void)) { (void)changed; }
 void host_window_points(float *w, float *h) { *w = *h = 0; }
 void host_window_sizes(int *pw, int *ph, float *tw, float *th) { *pw = *ph = 0; *tw = *th = 0; }
 #ifdef _WIN32

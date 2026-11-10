@@ -6,12 +6,13 @@ layout(std140, binding = 0) uniform D { vec4 f[8]; ivec4 i[8]; } u;
 layout(std430, binding = 1) readonly buffer W { uint w[]; } data;
 layout(binding = 2) uniform sampler2D tc0;     /* read at its texels */
 layout(binding = 3) uniform sampler2D tc1;     /* filtered: linear, between levels, anisotropic, repeating */
-layout(binding = 4) uniform sampler2D tc2;     /* the same */
+layout(binding = 4) uniform sampler2D tc2;     /* filtered the same, transparent outside the texture */
 layout(binding = 5) uniform usampler2D ti0;
 layout(binding = 6) uniform usampler2D ti1;
 layout(binding = 7) uniform usampler2D ti2;
-layout(binding = 8) uniform sampler2DArray ta0;  /* arrays of layers, filtered as tc1 and tc2 */
-layout(binding = 9) uniform sampler2DArray ta1;
+layout(binding = 8) uniform sampler2DArray ta0;  /* arrays of layers, filtered as tc1 (repeating) */
+layout(binding = 9) uniform sampler2DArray ta1;  /* and as tc2 (transparent outside) */
+layout(binding = 10) uniform sampler2DArray ta2; /* the same */
 
 /* u.f[1].xy: the units of the picture's space */
 vec4 clip_at(vec2 p, float depth)

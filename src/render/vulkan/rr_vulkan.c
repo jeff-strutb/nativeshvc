@@ -102,7 +102,7 @@ static int sc_turns;                    /* quarter turns clockwise the picture i
 static VkRenderPass rp_screen, rp_colour[2], rp_index[2], rp_index32[2], rp_show;
 static VkDescriptorSetLayout set_layout;
 static VkPipelineLayout layout;
-static VkSampler sampler, filtered;
+static VkSampler sampler, filtered, bordered;   /* at texels; filtered repeating; filtered, transparent outside */
 static VkCommandPool cmd_pool;
 static VkCommandBuffer cmd;
 static VkFence fence;
@@ -738,7 +738,7 @@ static VkDescriptorSet set_of_views(const VkImageView *v)
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[1].pBufferInfo = &db;
     for (k = 0; k < RR_TEX_SLOTS; k++) {
-        ii[k].sampler = k == 1 || k == 2 || k >= 6 ? filtered : sampler;
+        ii[k].sampler = k == 1 || k == 6 ? filtered : k == 2 || k >= 7 ? bordered : sampler;
         ii[k].imageView = v[k];
         ii[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         w[2 + k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -827,22 +827,22 @@ static void window_drop(void)
     sc_w = sc_h = 0;
 }
 
-/* a surface on a window come (back): one this device's queue can show to, else none */
+/* a surface on a window come (back): one this device's queue can show to,
+   else none, and the window kept as the one tried, not tried again until
+   another comes (or it goes and comes back) */
 static void window_make(void *window)
 {
     VkBool32 ok = VK_FALSE;
+    sc_window = window;
     if (!make_surface(window)) {
-        fprintf(stderr, "rr: vulkan: no surface could be made on the window\n");
+        fprintf(stderr, "rr: vulkan: no surface could be made on the window: nothing shown until another comes\n");
         return;
     }
-    vkGetPhysicalDeviceSurfaceSupportKHR(phys, family, surface, &ok);
-    if (!ok) {
-        fprintf(stderr, "rr: vulkan: the window cannot be shown from this device's queue\n");
+    if (vkGetPhysicalDeviceSurfaceSupportKHR(phys, family, surface, &ok) != VK_SUCCESS || !ok) {
+        fprintf(stderr, "rr: vulkan: the window cannot be shown from this device's queue: nothing shown until another comes\n");
         vkDestroySurfaceKHR(inst, surface, NULL);
         surface = VK_NULL_HANDLE;
-        return;
     }
-    sc_window = window;
 }
 
 /* the surface's format: 8-bit BGRA or RGBA without sRGB encoding, in the
@@ -892,7 +892,14 @@ static int swapchain_make(int w, int h)
     VkSwapchainKHR made_sc = VK_NULL_HANDLE;
     uint32_t i, n, made;
     int iw, ih, turns, mirror;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface, &c);
+    if ((e = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface, &c)) != VK_SUCCESS) {
+        if (e == VK_ERROR_DEVICE_LOST)
+            fail("vkGetPhysicalDeviceSurfaceCapabilitiesKHR (the GPU was lost)", e);
+        fprintf(stderr, "rr: vulkan: the window's surface could not be asked its sizes (VkResult %d): nothing shown until it changes\n", (int)e);
+        sc_failed = 1;
+        sc_lost = e == VK_ERROR_SURFACE_LOST_KHR;
+        return 0;
+    }
     if (c.currentExtent.width != UINT32_MAX) {
         w = (int)c.currentExtent.width;
         h = (int)c.currentExtent.height;
@@ -970,7 +977,7 @@ static int swapchain_make(int w, int h)
             fail("vkCreateSwapchainKHR (the GPU was lost)", e);
         fprintf(stderr, "rr: vulkan: no swapchain for a window of %d x %d (VkResult %d): nothing shown until it changes\n", w, h, (int)e);
         sc_failed = 1;
-        sc_lost = e == VK_ERROR_SURFACE_LOST_KHR || e == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR;
+        sc_lost = e == VK_ERROR_SURFACE_LOST_KHR;   /* a window in use stays so: tried again when its size changes */
         return 0;
     }
     swapchain = made_sc;
@@ -1018,6 +1025,18 @@ static int swapchain_make(int w, int h)
     return 1;
 }
 
+/* the window went or came between frames: a surface on one that went let go now */
+void rr_window(void)
+{
+    void *wnd;
+    if (!dev || !windowed)
+        return;
+    wnd = host_window_take(NULL, NULL);
+    if (wnd != sc_window)
+        window_drop();
+    host_window_give(surface ? sc_window : NULL);
+}
+
 /* ---- opening ---- */
 static VkPhysicalDeviceFeatures want_features;
 
@@ -1040,7 +1059,7 @@ int rr_open(void)
     VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     VkInstanceCreateInfo ii = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     const char *iext[2] = { "VK_KHR_surface", NULL };
-    void *window = host_window_handle();
+    void *window;
     int k;
     VkPhysicalDevice devs[16];
     uint32_t n = 16, i, d;
@@ -1060,7 +1079,9 @@ int rr_open(void)
 #elif defined(__linux__) && !defined(__ANDROID__)
     iext[1] = "VK_KHR_xlib_surface";
 #endif
-    windowed = window != NULL;
+    /* drawn on a window even when none is there now (Android's comes and
+       goes): one is made a surface whenever it comes */
+    windowed = host_windowed();
     app.apiVersion = VK_API_VERSION_1_0;
     ii.pApplicationInfo = &app;
     ii.enabledExtensionCount = windowed && iext[1] ? 2 : 0;
@@ -1071,12 +1092,15 @@ int rr_open(void)
     VK_FUNCS(X)
 #undef X
     if (windowed) {
-        /* the surface the device is chosen for; the window held while it is made */
-        window = host_window_take();
+        /* the surface the device is chosen for, where a window is there now
+           (held while it is made); without one, a device that can draw, which
+           can show too where windows come and go (every Android device's
+           queues can show to any window) */
+        window = host_window_take(NULL, NULL);
         if (window && make_surface(window))
             sc_window = window;
         host_window_give(surface ? sc_window : NULL);
-        if (!surface)
+        if (window && !surface)
             return open_failed();
     }
     if (vkEnumeratePhysicalDevices(inst, &n, devs) < 0 || !n)
@@ -1118,7 +1142,7 @@ int rr_open(void)
     qi.pQueuePriorities = &prio;
     di.queueCreateInfoCount = 1;
     di.pQueueCreateInfos = &qi;
-    di.enabledExtensionCount = surface ? 1 : 0;
+    di.enabledExtensionCount = windowed ? 1 : 0;
     di.ppEnabledExtensionNames = &dext;
     if (vkCreateDevice(phys, &di, NULL, &dev) != VK_SUCCESS)
         return open_failed();
@@ -1169,6 +1193,10 @@ int rr_open(void)
             if (!si.anisotropyEnable)
                 si.maxAnisotropy = 1;
             if (vkCreateSampler(dev, &si, NULL, &filtered) != VK_SUCCESS)
+                return open_failed();
+            si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+            si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+            if (vkCreateSampler(dev, &si, NULL, &bordered) != VK_SUCCESS)
                 return open_failed();
         }
     }
@@ -1285,6 +1313,7 @@ void rr_close(void)
         vkDestroyRenderPass(dev, rp_show, NULL);
     vkDestroySampler(dev, sampler, NULL);
     vkDestroySampler(dev, filtered, NULL);
+    vkDestroySampler(dev, bordered, NULL);
     vkDestroyPipelineLayout(dev, layout, NULL);
     vkDestroyDescriptorSetLayout(dev, set_layout, NULL);
     vkDestroyDevice(dev, NULL);
@@ -1314,7 +1343,7 @@ instance:
     memset(rp_index32, 0, sizeof rp_index32);
     set_layout = VK_NULL_HANDLE;
     layout = VK_NULL_HANDLE;
-    sampler = filtered = VK_NULL_HANDLE;
+    sampler = filtered = bordered = VK_NULL_HANDLE;
     cmd_pool = VK_NULL_HANDLE;
     cmd = VK_NULL_HANDLE;
     fence = VK_NULL_HANDLE;
@@ -1588,15 +1617,14 @@ int rr_draw(rr_frame *f)
     if (windowed) {
         /* the window this frame, held until the frame is shown: when it went or is another
            (Android's, after the app was away), its surface let go, and one made on a new one */
-        void *wnd = host_window_take();
         int ww = 0, wh = 0;
+        void *wnd = host_window_take(&ww, &wh);     /* and that window's size */
         if (wnd != sc_window || (sc_lost && wnd)) {
             window_drop();
             if (wnd)
                 window_make(wnd);
         }
         if (surface) {
-            host_window_pixels(&ww, &wh);
             /* made again for a new size or when it no longer fits; until it can be made, nothing is
                shown: a size the surface has none for (minimised) is only asked, a failure not tried
                again until the size changes */
@@ -1613,10 +1641,11 @@ int rr_draw(rr_frame *f)
             ow = sc_ew;
             oh = sc_eh;
             show = 1;
-        } else if (targets_w) {
-            /* no window, or none to show in: drawn as before, not shown */
-            ow = targets_w;
-            oh = targets_h;
+        } else {
+            /* no window, or none to show in: drawn as before (at the frame's own
+               units before any), not shown; texture targets drawn all the same */
+            ow = targets_w ? targets_w : f->width;
+            oh = targets_w ? targets_h : f->height;
         }
     } else {
         const char *e = getenv("RR_SIZE");
@@ -1872,7 +1901,7 @@ int rr_draw(rr_frame *f)
             sc_ok = 0;
     }
     if (windowed)
-        host_window_give(sc_window);
+        host_window_give(surface ? sc_window : NULL);
     ever = 1;
     last_w = ow;
     last_h = oh;
