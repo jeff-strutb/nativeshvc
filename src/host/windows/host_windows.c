@@ -278,6 +278,15 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
         pointer_event(h, wp, lp);
         return 0;
+    case WM_MOUSEWHEEL:               /* in lines (WHEEL_DELTA a notch), positive up and right */
+    case 0x020E:                      /* WM_MOUSEHWHEEL */
+        e.type = HOST_EV_WHEEL;
+        if (m == WM_MOUSEWHEEL)
+            e.dy = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        else
+            e.dx = (float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA;
+        qpush(&e);
+        return 0;
     }
     return DefWindowProcA(h, m, wp, lp);
 }
@@ -578,6 +587,12 @@ int host_pad_read(int index, host_pad *o)
     o->y = -g->sThumbLY / 32767.0f;
     if (o->x < -1) o->x = -1;
     if (o->y < -1) o->y = -1;
+    o->rx = g->sThumbRX / 32767.0f;
+    o->ry = -g->sThumbRY / 32767.0f;
+    if (o->rx < -1) o->rx = -1;
+    if (o->ry > 1) o->ry = 1;
+    o->lt = g->bLeftTrigger / 255.0f;
+    o->rt = g->bRightTrigger / 255.0f;
     if (g->wButtons & XINPUT_GAMEPAD_A) b |= 1u << 0;
     if (g->wButtons & XINPUT_GAMEPAD_B) b |= 1u << 1;
     if (g->wButtons & XINPUT_GAMEPAD_X) b |= 1u << 2;

@@ -24,6 +24,7 @@ struct host_event;
 void eng_input_start(const char *replay_path);
 void eng_input_event(const struct host_event *e);
 void eng_input_sample(nshvc_input *in, uint64_t n, int headless);
+void eng_input_text(int on);
 int  eng_input_touch_host(void);
 int  eng_input_zones(void);
 void eng_input_zone(int z, float *x, float *y, float *r);

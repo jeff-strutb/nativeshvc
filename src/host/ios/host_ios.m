@@ -148,6 +148,8 @@ static int hid_vk(long u)
         { 0x35, 0xC0 }, { 0x2D, 0xBD }, { 0x2E, 0xBB }, { 0x2F, 0xDB }, { 0x30, 0xDD }, { 0x31, 0xDC },
         { 0x33, 0xBA }, { 0x34, 0xDE }, { 0x36, 0xBC }, { 0x37, 0xBE }, { 0x38, 0xBF },
         { 0x4A, 0x24 }, { 0x4B, 0x21 }, { 0x4D, 0x23 }, { 0x4E, 0x22 }, { 0x49, 0x2D }, { 0x4C, 0x2E },
+        { 0x39, 0x14 }, { 0xE3, 0x5B }, { 0xE7, 0x5C }, { 0x53, 0x90 }, { 0x54, 0x6F }, { 0x55, 0x6A },
+        { 0x56, 0x6D }, { 0x57, 0x6B }, { 0x62, 0x60 }, { 0x63, 0x6E },
     };
     size_t i;
     if (u >= 0x04 && u <= 0x1D)
@@ -158,6 +160,10 @@ static int hid_vk(long u)
         return '0';
     if (u >= 0x3A && u <= 0x45)
         return 0x70 + (int)(u - 0x3A);
+    if (u >= 0x68 && u <= 0x73)                 /* F13-F24 */
+        return 0x7C + (int)(u - 0x68);
+    if (u >= 0x59 && u <= 0x61)                 /* the keypad's 1-9 */
+        return 0x61 + (int)(u - 0x59);
     for (i = 0; i < sizeof k / sizeof k[0]; i++)
         if (k[i].hid == u)
             return k[i].vk;
@@ -789,6 +795,10 @@ int host_pad_read(int index, host_pad *o)
         host_pad_identify(c, g, o);
         o->x = g.leftThumbstick.xAxis.value;
         o->y = -g.leftThumbstick.yAxis.value;
+        o->rx = g.rightThumbstick.xAxis.value;
+        o->ry = -g.rightThumbstick.yAxis.value;
+        o->lt = g.leftTrigger.value;
+        o->rt = g.rightTrigger.value;
         if (g.buttonA.pressed) b |= 1u << 0;
         if (g.buttonB.pressed) b |= 1u << 1;
         if (g.buttonX.pressed) b |= 1u << 2;

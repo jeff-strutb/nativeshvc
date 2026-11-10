@@ -22,8 +22,10 @@ static host_mutex *lock;
 /* the system thread's, under lock */
 static int vk_of[BUTTONS] = { 'Z', 'A', 0x10, 0x0D, 0x26, 0x28, 0x25, 0x27, 'X', 'S', 'Q', 'W' };
 static uint8_t key_down[256];
-static float mouse_x, mouse_y, mouse_dx, mouse_dy;
-static int mouse_buttons, mouse_seen, key_seen;
+static uint32_t key_pressed[8], key_released[8];   /* since the last sample */
+static float mouse_x, mouse_y, mouse_dx, mouse_dy, wheel_x, wheel_y;
+static int mouse_buttons, mouse_seen, mouse_here, key_seen;
+static int text_on;          /* nshvc_text_input: keys that type go to the text only */
 static struct { int id; float x, y; } touch[16];
 static int touches;
 static int touch_host;
@@ -96,26 +98,47 @@ static uint16_t touch_buttons(void)
     return out;
 }
 
+/* a key that types text: 'A'-'Z', digits, space, Backspace */
+static int types(int vk)
+{
+    return vk == 0x20 || vk == 0x08 || (vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z');
+}
+
 /* on the system thread */
 void eng_input_event(const host_event *e)
 {
     host_mutex_lock(lock);
     switch (e->type) {
     case HOST_EV_KEY:
-        if (e->vk >= 0 && e->vk < 256)
+        if (e->vk > 0 && e->vk < 256) {
+            if (e->down && !key_down[e->vk])
+                key_pressed[e->vk >> 5] |= 1u << (e->vk & 31);
+            if (!e->down && key_down[e->vk])
+                key_released[e->vk >> 5] |= 1u << (e->vk & 31);
             key_down[e->vk] = (uint8_t)(e->down != 0);
+        }
         if (e->down) {
             key_seen = 1;
-            if (e->vk == 0x20 || e->vk == 0x08 || e->vk == 0x0D || (e->vk >= '0' && e->vk <= '9') || (e->vk >= 'A' && e->vk <= 'Z'))
+            if (types(e->vk) || e->vk == 0x0D)
                 if (ntyped < sizeof typed)
                     typed[ntyped++] = (char)e->vk;
         }
         break;
     case HOST_EV_FOCUS:
-        if (!e->down)
+        if (!e->down) {
+            int k;
+            for (k = 0; k < 256; k++)
+                if (key_down[k])
+                    key_released[k >> 5] |= 1u << (k & 31);
             memset(key_down, 0, sizeof key_down);
+        }
+        break;
+    case HOST_EV_WHEEL:
+        wheel_x += e->dx;
+        wheel_y += e->dy;
         break;
     case HOST_EV_MOUSE:
+        mouse_here = 1;
         mouse_x = e->x;
         mouse_y = e->y;
         mouse_dx += e->dx;
@@ -247,16 +270,59 @@ void eng_input_sample(nshvc_input *in, uint64_t n, int headless)
             in->pad[p] = pad_bits(&now);
             if (in->pad[p] & ~was)
                 set_source(p, NSHVC_SOURCE_CONTROLLER, &now);
+            in->controller[p].on = 1;
+            in->controller[p].style = (uint8_t)(now.style == HOST_PAD_XBOX ? NSHVC_STYLE_XBOX
+                                                : now.style == HOST_PAD_PLAYSTATION ? NSHVC_STYLE_PLAYSTATION
+                                                : now.style == HOST_PAD_NINTENDO ? NSHVC_STYLE_NINTENDO : NSHVC_STYLE_GENERIC);
+            in->controller[p].buttons = (uint16_t)now.buttons;
+            in->controller[p].lx = now.x;
+            in->controller[p].ly = now.y;
+            in->controller[p].rx = now.rx;
+            in->controller[p].ry = now.ry;
+            in->controller[p].lt = now.lt;
+            in->controller[p].rt = now.rt;
         }
     }
     host_mutex_lock(lock);
     {
-        int b;
+        int b, k;
+        /* while the game takes text, keys that type are the text's alone */
         for (b = 0; b < BUTTONS; b++)
-            if (vk_of[b] && key_down[vk_of[b]])
+            if (vk_of[b] && key_down[vk_of[b]] && !(text_on && types(vk_of[b])))
                 in->pad[0] |= bit_of[b];
         if (vk_of[2] == 0x10 && key_down[0x09])
             in->pad[0] |= NSHVC_SELECT;
+        for (k = 1; k < 256; k++)
+            if (key_down[k])
+                in->keys[k >> 5] |= 1u << (k & 31);
+        memcpy(in->keys_pressed, key_pressed, sizeof key_pressed);
+        memcpy(in->keys_released, key_released, sizeof key_released);
+        memset(key_pressed, 0, sizeof key_pressed);
+        memset(key_released, 0, sizeof key_released);
+    }
+    {
+        /* the pointer and touches, from points to window pixels */
+        float pw = 0, ph = 0, sx = 1, sy = 1;
+        int ww = 0, wh = 0, t;
+        host_window_points(&pw, &ph);
+        host_window_pixels(&ww, &wh);
+        if (pw > 0 && ph > 0 && ww > 0 && wh > 0) {
+            sx = (float)ww / pw;
+            sy = (float)wh / ph;
+        }
+        in->pointer.x = mouse_x * sx;
+        in->pointer.y = mouse_y * sy;
+        in->pointer.wheel_x = wheel_x;
+        in->pointer.wheel_y = wheel_y;
+        in->pointer.buttons = (uint8_t)(mouse_buttons & 7);
+        in->pointer.inside = (uint8_t)(mouse_here && mouse_x >= 0 && mouse_y >= 0 && mouse_x < pw && mouse_y < ph);
+        wheel_x = wheel_y = 0;
+        for (t = 0; t < touches && t < 10; t++) {
+            in->touch[t].id = touch[t].id;
+            in->touch[t].x = touch[t].x * sx;
+            in->touch[t].y = touch[t].y * sy;
+        }
+        in->touches = (uint8_t)t;
     }
     if (key_seen) {
         set_source(0, NSHVC_SOURCE_KEYBOARD, NULL);
@@ -390,6 +456,14 @@ uint32_t nshvc_text_read(char *buffer, uint32_t max)
     ntyped -= n;
     host_mutex_unlock(lock);
     return n;
+}
+
+/* nshvc_text_input's switch, from the game thread */
+void eng_input_text(int on)
+{
+    host_mutex_lock(lock);
+    text_on = on != 0;
+    host_mutex_unlock(lock);
 }
 
 /* the on-screen controls: 1 once a touch screen is in use */

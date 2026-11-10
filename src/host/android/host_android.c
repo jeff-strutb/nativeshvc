@@ -58,7 +58,7 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
 }
 
 /* ---- controllers ---- */
-static struct { int on; unsigned buttons; float x, y, hx, hy; } pad;
+static struct { int on; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; } pad;
 
 static int pad_bit(int key)
 {
@@ -90,6 +90,10 @@ int host_pad_read(int i, host_pad *p)
         return 0;
     p->x = pad.x;
     p->y = pad.y;
+    p->rx = pad.rx;
+    p->ry = pad.ry;
+    p->lt = pad.lt;
+    p->rt = pad.rt;
     p->buttons = pad.buttons;
     if (pad.hy < -0.5f) p->buttons |= 1u << 12;
     if (pad.hx > 0.5f) p->buttons |= 1u << 13;
@@ -106,7 +110,44 @@ static int vk_of(int k)
         return 'A' + (k - AKEYCODE_A);
     if (k >= AKEYCODE_0 && k <= AKEYCODE_9)
         return '0' + (k - AKEYCODE_0);
+    if (k >= AKEYCODE_F1 && k <= AKEYCODE_F12)
+        return 0x70 + (k - AKEYCODE_F1);
+    if (k >= AKEYCODE_NUMPAD_0 && k <= AKEYCODE_NUMPAD_9)
+        return 0x60 + (k - AKEYCODE_NUMPAD_0);
     switch (k) {
+    case AKEYCODE_ESCAPE: return 0x1B;
+    case AKEYCODE_CTRL_LEFT: case AKEYCODE_CTRL_RIGHT: return 0x11;
+    case AKEYCODE_ALT_LEFT: case AKEYCODE_ALT_RIGHT: return 0x12;
+    case AKEYCODE_META_LEFT: return 0x5B;
+    case AKEYCODE_META_RIGHT: return 0x5C;
+    case AKEYCODE_CAPS_LOCK: return 0x14;
+    case AKEYCODE_NUM_LOCK: return 0x90;
+    case AKEYCODE_SCROLL_LOCK: return 0x91;
+    case AKEYCODE_BREAK: return 0x13;
+    case AKEYCODE_SYSRQ: return 0x2C;
+    case AKEYCODE_MOVE_HOME: return 0x24;
+    case AKEYCODE_MOVE_END: return 0x23;
+    case AKEYCODE_PAGE_UP: return 0x21;
+    case AKEYCODE_PAGE_DOWN: return 0x22;
+    case AKEYCODE_INSERT: return 0x2D;
+    case AKEYCODE_FORWARD_DEL: return 0x2E;
+    case AKEYCODE_GRAVE: return 0xC0;
+    case AKEYCODE_MINUS: return 0xBD;
+    case AKEYCODE_EQUALS: return 0xBB;
+    case AKEYCODE_LEFT_BRACKET: return 0xDB;
+    case AKEYCODE_RIGHT_BRACKET: return 0xDD;
+    case AKEYCODE_BACKSLASH: return 0xDC;
+    case AKEYCODE_SEMICOLON: return 0xBA;
+    case AKEYCODE_APOSTROPHE: return 0xDE;
+    case AKEYCODE_COMMA: return 0xBC;
+    case AKEYCODE_PERIOD: return 0xBE;
+    case AKEYCODE_SLASH: return 0xBF;
+    case AKEYCODE_NUMPAD_DIVIDE: return 0x6F;
+    case AKEYCODE_NUMPAD_MULTIPLY: return 0x6A;
+    case AKEYCODE_NUMPAD_SUBTRACT: return 0x6D;
+    case AKEYCODE_NUMPAD_ADD: return 0x6B;
+    case AKEYCODE_NUMPAD_DOT: return 0x6E;
+    case AKEYCODE_NUMPAD_ENTER: return 0x0D;
     case AKEYCODE_SPACE: return 0x20;
     case AKEYCODE_ENTER: return 0x0D;
     case AKEYCODE_DEL: return 0x08;
@@ -154,6 +195,47 @@ static int32_t on_input(struct android_app *a, AInputEvent *e)
             pad.y = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
             pad.hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0);
             pad.hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
+            pad.rx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0);
+            pad.ry = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0);
+            /* a controller reports its triggers on one pair of axes or the other */
+            {
+                float l = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0);
+                float r = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0);
+                float b = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0);
+                float g = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
+                pad.lt = l > b ? l : b;
+                pad.rt = r > g ? r : g;
+            }
+            return 1;
+        }
+        if (source & AINPUT_SOURCE_MOUSE & ~AINPUT_SOURCE_CLASS_POINTER) {
+            /* a mouse: the pointer, its buttons and its wheel, never a touch */
+            static float lx, ly;
+            static int have;
+            host_event h;
+            int kind = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
+            int32_t st = AMotionEvent_getButtonState(e);
+            memset(&h, 0, sizeof h);
+            if (kind == AMOTION_EVENT_ACTION_SCROLL) {
+                h.type = HOST_EV_WHEEL;
+                h.dx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HSCROLL, 0);
+                h.dy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_VSCROLL, 0);
+                qpush(&h);
+                return 1;
+            }
+            h.type = HOST_EV_MOUSE;
+            h.x = AMotionEvent_getX(e, 0);
+            h.y = AMotionEvent_getY(e, 0);
+            if (have) {
+                h.dx = h.x - lx;
+                h.dy = h.y - ly;
+            }
+            have = 1;
+            lx = h.x;
+            ly = h.y;
+            h.buttons = ((st & AMOTION_EVENT_BUTTON_PRIMARY) ? 1 : 0) | ((st & AMOTION_EVENT_BUTTON_SECONDARY) ? 2 : 0)
+                        | ((st & AMOTION_EVENT_BUTTON_TERTIARY) ? 4 : 0);
+            qpush(&h);
             return 1;
         }
         {

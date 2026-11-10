@@ -113,6 +113,8 @@ static const struct { uint16_t mac; uint8_t vk; } k_keys[] = {
     { 0x52, 0x60 }, { 0x53, 0x61 }, { 0x54, 0x62 }, { 0x55, 0x63 }, { 0x56, 0x64 }, { 0x57, 0x65 },
     { 0x58, 0x66 }, { 0x59, 0x67 }, { 0x5B, 0x68 }, { 0x5C, 0x69 }, { 0x41, 0x6E }, { 0x43, 0x6A },
     { 0x45, 0x6B }, { 0x4E, 0x6D }, { 0x4B, 0x6F },
+    { 0x37, 0x5B }, { 0x36, 0x5C }, { 0x39, 0x14 }, { 0x47, 0x90 }, { 0x51, 0xBB }, { 0x69, 0x7C },
+    { 0x6B, 0x7D }, { 0x71, 0x7E },
 };
 
 /* ---- the event queue the host fills and host_poll_event drains ------------------- */
@@ -180,6 +182,8 @@ static CGColorSpaceRef s_rgb;
     case 0x38: case 0x3C: down = (f & NSEventModifierFlagShift) != 0; break;
     case 0x3B: case 0x3E: down = (f & NSEventModifierFlagControl) != 0; break;
     case 0x3A: case 0x3D: down = (f & NSEventModifierFlagOption) != 0; break;
+    case 0x37: case 0x36: down = (f & NSEventModifierFlagCommand) != 0; break;
+    case 0x39: down = (f & NSEventModifierFlagCapsLock) != 0; break;
     default: return;
     }
     key_event(k, down);
@@ -228,6 +232,18 @@ static void mouse_event(NSView *v, NSEvent *ev)
 - (void)rightMouseUp:(NSEvent *)ev { mouse_event(self, ev); }
 - (void)otherMouseDown:(NSEvent *)ev { mouse_event(self, ev); }
 - (void)otherMouseUp:(NSEvent *)ev { mouse_event(self, ev); }
+/* the wheel, in lines: AppKit's deltaY is positive scrolling up, its deltaX
+   positive scrolling left */
+- (void)scrollWheel:(NSEvent *)ev
+{
+    host_event e;
+    memset(&e, 0, sizeof e);
+    e.type = HOST_EV_WHEEL;
+    e.dx = -(float)[ev deltaX];
+    e.dy = (float)[ev deltaY];
+    if (e.dx != 0 || e.dy != 0)
+        qpush(&e);
+}
 @end
 
 @implementation PortWindowDelegate
@@ -510,6 +526,10 @@ int host_pad_read(int index, host_pad *o)
         host_pad_identify(c, g, o);
         o->x = g.leftThumbstick.xAxis.value;
         o->y = -g.leftThumbstick.yAxis.value;
+        o->rx = g.rightThumbstick.xAxis.value;
+        o->ry = -g.rightThumbstick.yAxis.value;
+        o->lt = g.leftTrigger.value;
+        o->rt = g.rightTrigger.value;
         if (g.buttonA.pressed) b |= 1u << 0;
         if (g.buttonB.pressed) b |= 1u << 1;
         if (g.buttonX.pressed) b |= 1u << 2;

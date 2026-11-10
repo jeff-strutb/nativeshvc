@@ -60,6 +60,7 @@ static KeySym (*pXLookupKeysym)(void *, int);
 static int (*pXConnectionNumber)(Display *);
 static int (*pXFlush)(Display *);
 static int (*pXDestroyWindow)(Display *, XWindow);
+static int (*pXkbSetDetectableAutoRepeat)(Display *, int, int *);
 
 static Display *dpy;
 static XWindow win;
@@ -76,6 +77,8 @@ static int load_x11(void)
     L(XOpenDisplay) L(XDefaultScreen) L(XRootWindow) L(XCreateSimpleWindow) L(XSelectInput) L(XMapWindow) L(XStoreName)
     L(XInternAtom) L(XSetWMProtocols) L(XPending) L(XNextEvent) L(XLookupKeysym) L(XConnectionNumber) L(XFlush) L(XDestroyWindow)
 #undef L
+    /* a held key's repeats as presses alone, not a release and a press */
+    pXkbSetDetectableAutoRepeat = (int (*)(Display *, int, int *))dlsym(h, "XkbSetDetectableAutoRepeat");
     return 1;
 }
 
@@ -128,6 +131,8 @@ int host_window_open(int width, int height, const char *title)
     int s;
     if (!load_x11() || !(dpy = pXOpenDisplay(NULL)))
         return 0;
+    if (pXkbSetDetectableAutoRepeat)
+        pXkbSetDetectableAutoRepeat(dpy, 1, NULL);
     s = pXDefaultScreen(dpy);
     win_w = width * 3;
     win_h = height * 3;
@@ -165,6 +170,48 @@ static int vk_of(KeySym k)
     if ((k >= 'A' && k <= 'Z') || (k >= '0' && k <= '9') || k == ' ')
         return (int)k;
     switch (k) {
+    case '`': return 0xC0;
+    case '-': return 0xBD;
+    case '=': return 0xBB;
+    case '[': return 0xDB;
+    case ']': return 0xDD;
+    case '\\': return 0xDC;
+    case ';': return 0xBA;
+    case '\'': return 0xDE;
+    case ',': return 0xBC;
+    case '.': return 0xBE;
+    case '/': return 0xBF;
+    case 0xFF13: return 0x13;
+    case 0xFF14: return 0x91;
+    case 0xFF50: return 0x24;
+    case 0xFF55: return 0x21;
+    case 0xFF56: return 0x22;
+    case 0xFF57: return 0x23;
+    case 0xFF61: return 0x2C;
+    case 0xFF63: return 0x2D;
+    case 0xFF67: return 0x5D;
+    case 0xFF7F: return 0x90;
+    case 0xFFFF: return 0x2E;
+    case 0xFFE5: return 0x14;
+    case 0xFFEB: return 0x5B;
+    case 0xFFEC: return 0x5C;
+    /* the keypad, as its keys are named with Num Lock off and on */
+    case 0xFF9E: return 0x60;
+    case 0xFF9C: return 0x61;
+    case 0xFF99: return 0x62;
+    case 0xFF9B: return 0x63;
+    case 0xFF96: return 0x64;
+    case 0xFF9D: return 0x65;
+    case 0xFF98: return 0x66;
+    case 0xFF95: return 0x67;
+    case 0xFF97: return 0x68;
+    case 0xFF9A: return 0x69;
+    case 0xFF9F: case 0xFFAE: return 0x6E;
+    case 0xFFAA: return 0x6A;
+    case 0xFFAB: return 0x6B;
+    case 0xFFAD: return 0x6D;
+    case 0xFFAF: return 0x6F;
+    case 0xFF8D: return 0x0D;
     case 0xFF08: return 0x08;
     case 0xFF09: return 0x09;
     case 0xFF0D: return 0x0D;
@@ -177,12 +224,15 @@ static int vk_of(KeySym k)
     case 0xFFE3: case 0xFFE4: return 0x11;
     case 0xFFE9: case 0xFFEA: return 0x12;
     }
-    if (k >= 0xFFBE && k <= 0xFFC9)
+    if (k >= 0xFFB0 && k <= 0xFFB9)
+        return (int)(k - 0xFFB0 + 0x60);
+    if (k >= 0xFFBE && k <= 0xFFD5)              /* F1-F24 */
         return (int)(k - 0xFFBE + 0x70);
     return 0;
 }
 
 static int last_x, last_y, buttons;
+static uint8_t key_held[256];        /* by X key code: a repeat is not a new press */
 
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {
@@ -203,14 +253,30 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
         pXNextEvent(dpy, &e);
         switch (e.type) {
         case X_KeyPress:
-        case X_KeyRelease:
+        case X_KeyRelease: {
+            unsigned c = e.key.keycode & 0xFF;
+            int down = e.type == X_KeyPress;
+            if (key_held[c] == down)
+                return 0;
+            key_held[c] = (uint8_t)down;
             ev->type = HOST_EV_KEY;
             ev->vk = vk_of(pXLookupKeysym(&e, 0));
-            ev->down = e.type == X_KeyPress;
+            ev->down = down;
             return ev->vk != 0;
+        }
         case X_ButtonPress:
         case X_ButtonRelease: {
-            int b = e.button.button == 1 ? 1 : e.button.button == 3 ? 2 : e.button.button == 2 ? 4 : 0;
+            int b;
+            if (e.button.button >= 4 && e.button.button <= 7) {
+                /* the wheel: a press a notch, up, down, left, right */
+                if (e.type != X_ButtonPress)
+                    return 0;
+                ev->type = HOST_EV_WHEEL;
+                ev->dy = e.button.button == 4 ? 1.0f : e.button.button == 5 ? -1.0f : 0.0f;
+                ev->dx = e.button.button == 7 ? 1.0f : e.button.button == 6 ? -1.0f : 0.0f;
+                return 1;
+            }
+            b = e.button.button == 1 ? 1 : e.button.button == 3 ? 2 : e.button.button == 2 ? 4 : 0;
             if (e.type == X_ButtonPress)
                 buttons |= b;
             else
@@ -233,6 +299,8 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
             return 1;
         case X_FocusIn:
         case X_FocusOut:
+            if (e.type == X_FocusOut)
+                memset(key_held, 0, sizeof key_held);
             ev->type = HOST_EV_FOCUS;
             ev->down = e.type == X_FocusIn;
             return 1;
@@ -257,7 +325,7 @@ struct js_event { uint32_t time; int16_t value; uint8_t type, number; };
 #define JS_AXIS 2
 #define JSIOCGNAME(len) (((2U) << 30) | ((len) << 16) | ('j' << 8) | 0x13)
 
-static struct { int fd, tried; unsigned buttons; float x, y, hx, hy; char name[64]; } joy[8];
+static struct { int fd, tried; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; } joy[8];
 
 int host_pad_read(int i, host_pad *p)
 {
@@ -288,12 +356,21 @@ int host_pad_read(int i, host_pad *p)
             float v = (float)e.value / 32767.0f;
             if (e.number == 0) joy[i].x = v;
             if (e.number == 1) joy[i].y = v;
+            /* the common layout's right stick and triggers (a trigger at rest reads -1) */
+            if (e.number == 2) joy[i].lt = (v + 1.0f) * 0.5f;
+            if (e.number == 3) joy[i].rx = v;
+            if (e.number == 4) joy[i].ry = v;
+            if (e.number == 5) joy[i].rt = (v + 1.0f) * 0.5f;
             if (e.number == 6) joy[i].hx = v;
             if (e.number == 7) joy[i].hy = v;
         }
     }
     p->x = joy[i].x;
     p->y = joy[i].y;
+    p->rx = joy[i].rx;
+    p->ry = joy[i].ry;
+    p->lt = joy[i].lt < 0 ? 0 : joy[i].lt > 1 ? 1 : joy[i].lt;
+    p->rt = joy[i].rt < 0 ? 0 : joy[i].rt > 1 ? 1 : joy[i].rt;
     p->buttons = joy[i].buttons;
     if (joy[i].hy < -0.5f) p->buttons |= 1u << 12;
     if (joy[i].hx > 0.5f) p->buttons |= 1u << 13;

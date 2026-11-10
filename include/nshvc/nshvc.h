@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 4
+#define NSHVC_VERSION_MINOR 5
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -28,11 +28,40 @@ enum {
     NSHVC_A = 0x0080, NSHVC_X = 0x0040, NSHVC_L = 0x0020, NSHVC_R = 0x0010
 };
 
+/* a controller's buttons as itself, as bits of nshvc_input.controller[].buttons,
+   named by their place on an Xbox controller (south, east, west, north...) */
+enum {
+    NSHVC_CTL_SOUTH = 1u << 0, NSHVC_CTL_EAST = 1u << 1, NSHVC_CTL_WEST = 1u << 2, NSHVC_CTL_NORTH = 1u << 3,
+    NSHVC_CTL_LB = 1u << 4, NSHVC_CTL_RB = 1u << 5, NSHVC_CTL_BACK = 1u << 6, NSHVC_CTL_MENU = 1u << 7,
+    NSHVC_CTL_LS = 1u << 8, NSHVC_CTL_RS = 1u << 9, NSHVC_CTL_LT = 1u << 10, NSHVC_CTL_RT = 1u << 11,
+    NSHVC_CTL_UP = 1u << 12, NSHVC_CTL_RIGHT = 1u << 13, NSHVC_CTL_DOWN = 1u << 14, NSHVC_CTL_LEFT = 1u << 15
+};
+
 typedef struct nshvc_input {
+    /* the SNES's controls, mapped from every device */
     uint16_t pad[8];
     struct { int16_t dx, dy; uint8_t buttons, speed; } mouse[2];
     struct { int32_t x, y; uint8_t trigger, cursor, turbo, pause, start; uint8_t on_screen; } gun[2];
+    /* the devices themselves, as the host reports them (4.5) */
+    /* every key, one bit a key by nshvc_key: held now; gone down since the
+       last update (set even when already let go); gone up since the last update */
+    uint32_t keys[8], keys_pressed[8], keys_released[8];
+    /* the pointer, in window pixels from the top left; buttons bit 0 left,
+       1 right, 2 middle; the wheel turned since the last update, in lines,
+       positive up and right; inside: over the window */
+    struct { float x, y, wheel_x, wheel_y; uint8_t buttons, inside; } pointer;
+    /* every finger on a touch screen, in window pixels; an id lasts while
+       its finger is down */
+    struct { int32_t id; float x, y; } touch[10];
+    uint8_t touches;
+    /* each controller: on when connected; style NSHVC_STYLE_*; buttons
+       NSHVC_CTL_*; sticks -1..1, y positive downward; triggers 0..1 */
+    struct { uint8_t on, style; uint16_t buttons; float lx, ly, rx, ry, lt, rt; } controller[8];
 } nshvc_input;
+
+#define NSHVC_KEY_HELD(in, k)     (((in)->keys[(k) >> 5] >> ((k) & 31)) & 1u)
+#define NSHVC_KEY_PRESSED(in, k)  (((in)->keys_pressed[(k) >> 5] >> ((k) & 31)) & 1u)
+#define NSHVC_KEY_RELEASED(in, k) (((in)->keys_released[(k) >> 5] >> ((k) & 31)) & 1u)
 
 typedef enum { NSHVC_PAD, NSHVC_MOUSE, NSHVC_SUPERSCOPE, NSHVC_JUSTIFIER } nshvc_device;
 /* what each player uses; a multitap is just more players */
@@ -326,6 +355,9 @@ nshvc_display nshvc_display_info(void);
    bottom left, in window pixels; alpha 0-1; no image: off. RGBA images only. */
 #define NSHVC_OVERLAYS 32
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha);
+/* the game takes text: the system's on-screen keyboard where there is no
+   keyboard, and keys that type ('A'-'Z', digits, space, Backspace) go to
+   nshvc_text_read alone, pressing no SNES button (Enter still does) */
 void nshvc_text_input(int on);
 
 #ifdef __cplusplus

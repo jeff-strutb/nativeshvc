@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 4.4. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 4.5. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 

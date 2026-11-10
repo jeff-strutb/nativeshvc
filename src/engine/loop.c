@@ -109,8 +109,10 @@ nshvc_display nshvc_display_info(void)
 
 void nshvc_text_input(int on)
 {
-    if (eng_on("nshvc_text_input", ENG_GAME))
+    if (eng_on("nshvc_text_input", ENG_GAME)) {
+        eng_input_text(on);
         host_text_input(on);
+    }
 }
 
 /* ---- the render thread ---- */

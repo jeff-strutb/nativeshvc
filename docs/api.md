@@ -1,4 +1,4 @@
-# The native engine's API, version 4.4
+# The native engine's API, version 4.5
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -294,6 +294,12 @@ typedef struct nshvc_input {
     uint16_t pad[8];            /* the SNES's buttons, B Y Select Start Up Down Left Right A X L R, as bits */
     struct { int16_t dx, dy; uint8_t buttons, speed; } mouse[2];
     struct { int32_t x, y; uint8_t trigger, cursor, turbo, pause, start; uint8_t on_screen; } gun[2];
+    /* the devices themselves, as the host reports them */
+    uint32_t keys[8], keys_pressed[8], keys_released[8];   /* every key, one bit each, by nshvc_key */
+    struct { float x, y, wheel_x, wheel_y; uint8_t buttons, inside; } pointer;   /* window pixels; wheel in lines */
+    struct { int32_t id; float x, y; } touch[10];          /* every finger, in window pixels */
+    uint8_t touches;
+    struct { uint8_t on, style; uint16_t buttons; float lx, ly, rx, ry, lt, rt; } controller[8];
 } nshvc_input;
 
 const char *nshvc_control_name(uint32_t player, uint32_t button);   /* as the player's device labels it */
@@ -303,7 +309,15 @@ void nshvc_control_bind(uint32_t player, uint32_t button, nshvc_key key);
 
 - The engine maps every keyboard, controller, mouse and touch screen to these automatically, with on-screen controls on a
   touch screen. A light gun's aim is simply where the pointer or touch is, in screen pixels.
-- `update` receives the input sampled for that update, so a recorded run replays exactly.
+- Beside the SNES's controls, every device is the game's as itself: every key by its `nshvc_key` (a Windows virtual key
+  code on every host), held, gone down and gone up since the last update (`NSHVC_KEY_HELD`, `_PRESSED`, `_RELEASED`); the
+  pointer in window pixels with its buttons and wheel; every finger on a touch screen; and each controller's buttons
+  (`NSHVC_CTL_*`, by their place), both sticks and both triggers. A game's own interface, and a "press the key you
+  want" for `nshvc_control_bind`, read these.
+- While `nshvc_text_input(1)` is on, keys that type ('A'-'Z', digits, space, Backspace) go to the text alone and press
+  no SNES button; Enter still presses its button.
+- `update` receives the input sampled for that update, so a recorded run replays exactly. A recorded run holds the SNES
+  controls; the devices themselves read as idle in it.
 
 ## 8. Saves and game data
 
@@ -335,7 +349,7 @@ back from the GPU, for checks and screenshots.
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.4. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`.
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.5. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input` (keys, pointer, touches, controllers), and keys that type kept off the SNES controls while text is taken.
 - **Major (5.0):** the only release that may change or remove anything a game uses.
 - **Minor (4.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 4.0 game
   builds and plays the same.
