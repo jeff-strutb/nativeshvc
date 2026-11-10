@@ -192,6 +192,7 @@ static void apply_texops(const rr_frame *f)
         } else if (tex[o->id] && ((uint64_t)o->x + o->w > tex[o->id].width || (uint64_t)o->y + o->h > tex[o->id].height || !o->w || !o->h)) {
             fprintf(stderr, "rr: metal: a write past texture %u's edge left out\n", o->id);
         } else if (tex[o->id]) {
+            tex_fresh[o->id][0] = 0;    /* written: a pass that keeps what it held keeps this */
             [tex[o->id] replaceRegion:MTLRegionMake2D(o->x, o->y, o->w, o->h) mipmapLevel:0 withBytes:f->upload + o->at
                           bytesPerRow:(NSUInteger)o->w * (NSUInteger)bytes_of(tex_format[o->id])];
         }
@@ -310,8 +311,11 @@ static id<MTLDepthStencilState> ds_of(const rr_cmd *c, int kind)
     return s;
 }
 
+/* the texture binding `slot` reads: one of another kind than the binding's
+   (colour, integer, array of colour) reads as none, said once a frame */
 static id<MTLTexture> slot_texture(int32_t t, int slot)
 {
+    static uint64_t said;
     id<MTLTexture> r = nil;
     if (t == RR_TEX_FRAME)
         r = screen_res[0];
@@ -319,10 +323,18 @@ static id<MTLTexture> slot_texture(int32_t t, int slot)
         r = screen_res[t == RR_TEX_EXTRA0 ? 1 : 2];
     else if (t == RR_TEX_PICTURE)
         r = picture;
-    else if (t > 0 && t < MAX_TEXTURES && tex[t] && (slot >= 6) == (tex[t].textureType == MTLTextureType2DArray))
+    else if (t > 0 && t < MAX_TEXTURES)
         r = tex[t];
-    if (r)
-        return r;
+    if (r) {
+        int array = r.textureType == MTLTextureType2DArray;
+        int integer = r.pixelFormat != MTLPixelFormatBGRA8Unorm;
+        if (slot < 3 ? !array && !integer : slot < 6 ? !array && integer : array && !integer)
+            return r;
+        if (said != frame_no) {
+            said = frame_no;
+            fprintf(stderr, "rr: metal: texture %d is of another kind than binding %d reads: read as none\n", (int)t, slot + 2);
+        }
+    }
     return slot >= 6 ? none_array : slot < 3 ? none_colour : none_index;
 }
 

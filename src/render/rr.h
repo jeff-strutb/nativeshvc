@@ -16,8 +16,10 @@
  * pixel: shown, and kept for rr_read. A texture target is one of the frame's
  * textures made with RR_TEX_TARGET. A pass into the picture, the output or
  * a texture clears it to the pass's colour, or keeps what it held (`load`;
- * a target just made is cleared); a colour texture made with RR_TEX_MIPS has
- * its smaller levels made from the first when a pass into it asks (`mips`). A
+ * a target just made, and neither written nor drawn into since, is cleared;
+ * a write keeps its texels, the frame's order holding); a colour texture
+ * made with RR_TEX_MIPS has its smaller levels made from the first when a
+ * pass into it asks (`mips`). A
  * texture made with RR_TEX_ARRAY has `layers` layers; a pass draws into one
  * of them (`layer`), and makes that layer's smaller levels.
  *
@@ -34,7 +36,8 @@
  * to eight textures (bindings 2-9): binding 2 sampled at its texels, bindings
  * 3 and 4 filtered (linear between texels and levels, anisotropic, the
  * texture repeating), bindings 5-7 integer textures read at their texels,
- * bindings 8 and 9 arrays of layers, filtered as 3 and 4 are. It
+ * bindings 8 and 9 arrays of layers, filtered as 3 and 4 are; a texture of
+ * another kind than its binding's reads as nothing there. It
  * draws `vertices` vertices of each of `instances` instances, with nothing
  * in vertex buffers, as triangles. A game's shader takes the place of a
  * program's fragment stage.

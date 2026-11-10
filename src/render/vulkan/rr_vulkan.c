@@ -663,16 +663,29 @@ static VkDescriptorSet set_alloc(void)
     }
 }
 
+/* the view binding `slot` reads: a texture of another kind than the binding's
+   (colour, integer, array of colour) reads as none, said once a frame */
 static VkImageView slot_view(int32_t t, int slot)
 {
-    if (t == RR_TEX_FRAME && screen_res[0].v)
-        return screen_res[0].v;
-    if ((t == RR_TEX_EXTRA0 || t == RR_TEX_EXTRA1) && screen_res[t == RR_TEX_EXTRA0 ? 1 : 2].v)
-        return screen_res[t == RR_TEX_EXTRA0 ? 1 : 2].v;
-    if (t == RR_TEX_PICTURE && picture.v)
-        return picture.v;
-    if (t > 0 && t < MAX_TEXTURES && tex[t].v && (slot >= 6) == (tex[t].array != 0))
-        return tex[t].v;
+    static uint64_t said;
+    const Image *r = NULL;
+    if (t == RR_TEX_FRAME)
+        r = &screen_res[0];
+    else if (t == RR_TEX_EXTRA0 || t == RR_TEX_EXTRA1)
+        r = &screen_res[t == RR_TEX_EXTRA0 ? 1 : 2];
+    else if (t == RR_TEX_PICTURE)
+        r = &picture;
+    else if (t > 0 && t < MAX_TEXTURES)
+        r = &tex[t];
+    if (r && r->v) {
+        int integer = r->format != RR_BGRA8;
+        if (slot < 3 ? !r->array && !integer : slot < 6 ? !r->array && integer : r->array && !integer)
+            return r->v;
+        if (said != frame_no) {
+            said = frame_no;
+            fprintf(stderr, "rr: vulkan: texture %d is of another kind than binding %d reads: read as none\n", (int)t, slot + 2);
+        }
+    }
     return slot >= 6 ? none_array.v : slot < 3 ? none_colour.v : none_index.v;
 }
 
@@ -1228,6 +1241,7 @@ static void screen_fit(int k, int w, int h)
     image_make(&screen_ds[k], depth_format, w, h, RR_SAMPLES, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     image_make(&screen_res[k], COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    screen_res[k].format = RR_BGRA8;
     v[0] = screen_ms[k].v;
     v[1] = screen_ds[k].v;
     v[2] = screen_res[k].v;
@@ -1259,9 +1273,11 @@ static void targets_fit(const rr_frame *f, int w, int h)
         return;
     image_make(&picture, COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     picture.f = framebuffer(rp_colour[0], &picture.v, 1, w, h);
+    picture.format = RR_BGRA8;
     image_make(&output, COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                VK_IMAGE_ASPECT_COLOR_BIT);
     output.f = framebuffer(rp_colour[0], &output.v, 1, w, h);
+    output.format = RR_BGRA8;
     targets_w = w;
     targets_h = h;
 }
@@ -1367,6 +1383,7 @@ static void record_texops(const rr_frame *f)
             c.imageExtent.height = o->h;
             c.imageExtent.depth = 1;
             vkCmdCopyBufferToImage(cmd, staging.b, t->i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+            t->fresh[0] = 0;            /* written: a pass that keeps what it held keeps this */
         }
         if (writes)
             barrier_levels(t->i, 0, 0, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,

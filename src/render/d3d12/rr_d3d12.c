@@ -549,12 +549,18 @@ static Table *tables;
 static size_t cap_table_slots, ndistinct;
 static UINT ntables;                    /* tables placed in the heap this frame */
 static uint64_t tables_gen;
-static UINT peak_tables;                /* the most tables a frame has needed lately, and since when */
-static size_t peak_distinct;
+/* the most tables (and different sets) a frame has needed in this window of
+   UNUSED_FRAMES frames and in the one before, and when this one began */
+static UINT peak_tables, prev_tables;
+static size_t peak_distinct, prev_distinct;
 static uint64_t peak_frame;
+static UINT failed_need;                /* the need a heap could not be grown to: not tried again until it changes */
 
+/* the texture binding `slot` reads: one of another kind than the binding's
+   (colour, integer, array of colour) reads as none, said once a frame */
 static const Tex *slot_tex(int32_t t, int slot)
 {
+    static uint64_t said;
     const Tex *r = NULL;
     if (t == RR_TEX_FRAME)
         r = &screen_res[0];
@@ -562,10 +568,17 @@ static const Tex *slot_tex(int32_t t, int slot)
         r = &screen_res[t == RR_TEX_EXTRA0 ? 1 : 2];
     else if (t == RR_TEX_PICTURE)
         r = &picture;
-    else if (t > 0 && t < MAX_TEXTURES && (slot >= 6) == (tex[t].array != 0))
+    else if (t > 0 && t < MAX_TEXTURES)
         r = &tex[t];
-    if (r && r->r)
-        return r;
+    if (r && r->r) {
+        int integer = r->format != RR_BGRA8;
+        if (slot < 3 ? !r->array && !integer : slot < 6 ? !r->array && integer : r->array && !integer)
+            return r;
+        if (said != frame_no) {
+            said = frame_no;
+            fprintf(stderr, "rr: d3d12: texture %d is of another kind than binding %d reads: read as none\n", (int)t, slot + 2);
+        }
+    }
     return slot >= 6 ? &none_array : slot < 3 ? &none_colour : &none_index;
 }
 
@@ -681,8 +694,10 @@ static void tables_prepare(const rr_frame *f, int ow, int oh, size_t mip_blocks)
         fprintf(stderr, "rr: d3d12: %zu sets of textures in a frame, past the %u a heap holds: the rest left out\n", ndistinct + mip_blocks + 1,
                 (unsigned)MAX_TABLES);
     /* the heap: grown to what this frame needs, by doubling; shrunk to twice the most a frame has needed
-       in the last UNUSED_FRAMES when it is four times that */
-    if (frame_no - peak_frame > UNUSED_FRAMES) {
+       in this window and the one before when it is four times that, so a heavy frame now and then keeps it */
+    if (frame_no - peak_frame >= UNUSED_FRAMES) {
+        prev_tables = peak_tables;
+        prev_distinct = peak_distinct;
         peak_tables = 0;
         peak_distinct = 0;
         peak_frame = frame_no;
@@ -691,21 +706,31 @@ static void tables_prepare(const rr_frame *f, int ow, int oh, size_t mip_blocks)
         peak_tables = need;
     if (ndistinct > peak_distinct)
         peak_distinct = ndistinct;
-    size = srv_tables;
-    if (size < need) {
-        while (size < need)
-            size = size * 2 < MAX_TABLES ? size * 2 : MAX_TABLES;
-    } else if (size > MIN_TABLES && size / 4 > peak_tables) {
-        size = peak_tables * 2 > MIN_TABLES ? peak_tables * 2 : MIN_TABLES;
-    }
-    /* a heap that could not be made larger leaves the sets past its room out (said when made) */
-    srv_heap_make(size);
-    /* the hash, smaller again when it has long been far larger than frames need */
-    if (cap_table_slots > 1024 && cap_table_slots / 8 > peak_distinct + 1) {
-        size_t c = 256;
-        while (c < (peak_distinct + 1) * 4)
-            c *= 2;
-        tables_rehash(c);
+    {
+        UINT most = peak_tables > prev_tables ? peak_tables : prev_tables;
+        size_t most_distinct = peak_distinct > prev_distinct ? peak_distinct : prev_distinct;
+        size = srv_tables;
+        if (size < need) {
+            while (size < need)
+                size = size * 2 < MAX_TABLES ? size * 2 : MAX_TABLES;
+        } else if (size > MIN_TABLES && size / 4 > most) {
+            size = most * 2 > MIN_TABLES ? most * 2 : MIN_TABLES;
+        }
+        /* a heap that could not be made larger leaves the sets past its room out, said once: tried again
+           only when the need changes */
+        if (size > srv_tables && need == failed_need)
+            size = srv_tables;
+        if (!srv_heap_make(size) && size > srv_tables)
+            failed_need = need;
+        else if (srv_tables >= need)
+            failed_need = 0;
+        /* the hash, smaller again when it has long been far larger than frames need */
+        if (cap_table_slots > 1024 && cap_table_slots / 8 > most_distinct + 1) {
+            size_t c = 256;
+            while (c < (most_distinct + 1) * 4)
+                c *= 2;
+            tables_rehash(c);
+        }
     }
     /* each set's views, written once */
     for (k = 0; k < cap_table_slots; k++)
@@ -922,6 +947,7 @@ static void record_texops(const rr_frame *f)
         to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         transition(t->r, &t->state, D3D12_RESOURCE_STATE_COPY_DEST);
         ID3D12GraphicsCommandList_CopyTextureRegion(list, &to, o->x, o->y, 0, &from, NULL);
+        t->fresh[0] = 0;                /* written: a pass that keeps what it held keeps this */
         transition(t->r, &t->state, SHADER_READ);
         at += (UINT64)pitch * o->h;
     }
