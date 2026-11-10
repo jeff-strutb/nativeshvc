@@ -13,19 +13,37 @@ layout(binding = 7) uniform usampler2D ti2;
 layout(binding = 8) uniform sampler2DArray ta0;  /* arrays of layers, filtered as tc1 (repeating) */
 layout(binding = 9) uniform sampler2DArray ta1;  /* and as tc2 (transparent outside) */
 layout(binding = 10) uniform sampler2DArray ta2; /* the same */
+layout(binding = 11) uniform sampler2D tsub;   /* read at its texels: the sub screen, for the colour maths (maths.glsl) */
+layout(binding = 12) uniform sampler2D taux;   /* and the main screen alone, for a hires row's even half-columns */
+
+/* a normalised point (-1 to 1, y down) as the clip space of the target it is
+   drawn into. u.f[0].w is the backend's code, a small whole number: bit 0, the
+   API's clip y is down (else up); bits 1-2, quarter turns clockwise; bit 3,
+   mirrored left to right first: a window-sized target the display is turned
+   from is drawn turned (the backend turns its viewport and scissors to match) */
+vec4 oriented(vec2 n, float depth)
+{
+    int code = int(u.f[0].w);
+    if ((code & 8) != 0)
+        n.x = -n.x;
+    switch ((code >> 1) & 3) {
+    case 1: n = vec2(-n.y, n.x); break;
+    case 2: n = -n; break;
+    case 3: n = vec2(n.y, -n.x); break;
+    }
+    return vec4(n.x, (code & 1) != 0 ? n.y : -n.y, depth, 1.0);
+}
 
 /* u.f[1].xy: the units of the picture's space */
 vec4 clip_at(vec2 p, float depth)
 {
-    vec2 n = p * (2.0 / u.f[1].xy) - 1.0;
-    return vec4(n.x, n.y * u.f[0].w, depth, 1.0);
+    return oriented(p * (2.0 / u.f[1].xy) - 1.0, depth);
 }
 
-/* a target pixel's position as window pixels, u.f[0].xy the target's size */
+/* a target pixel's position as window pixels, u.f[0].xy the target's size (unturned) */
 vec4 clip_at_target(vec2 p)
 {
-    vec2 n = p * (2.0 / u.f[0].xy) - 1.0;
-    return vec4(n.x, n.y * u.f[0].w, 0.0, 1.0);
+    return oriented(p * (2.0 / u.f[0].xy) - 1.0, 0.0);
 }
 
 /* the corner of a quad that vertex i of 6 is: two triangles */
@@ -90,6 +108,14 @@ float share(vec2 w, int i, int j)
 
 #endif
 
+#ifdef FRAG
+#define MATHS_U u
+#define MATHS_DATA data
+#define MATHS_SUB tsub
+#define MATHS_AUX taux
+#include "maths.glsl"
+#endif
+
 /* the samples a part `cover` of a pixel covers, as a sample mask; u.f[0].z the samples */
 int cover_mask(float cover)
 {
@@ -140,11 +166,15 @@ vec2 m7_line_round(int row)
 uint word(int k) { return data.w[k]; }
 float wordf(int k) { return uintBitsToFloat(data.w[k]); }
 
-/* the palette version at picture point p, as its row has it: the frame's
-   words from u.i[7].w hold two a row (its first entry's word, its entries),
-   an entry the column the version starts at and the version */
+/* the palette version at picture point p: the draw's own, u.i[7].x - 1, where
+   every row and column it covers has one (u.i[7].x 0 where not); else as its
+   row has it: the frame's words from u.i[7].w hold two a row (its first
+   entry's word, its entries), an entry the column the version starts at and
+   the version */
 int row_palette(vec2 p)
 {
+    if (u.i[7].x > 0)
+        return u.i[7].x - 1;
     int r = clamp(int(floor(p.y)), 0, int(u.f[1].y) - 1), k = u.i[7].w + r * 2;
     int first = int(word(k)), n = int(word(k + 1)), pal = int(word(first + 1));
     for (int i = 1; i < n; i++)

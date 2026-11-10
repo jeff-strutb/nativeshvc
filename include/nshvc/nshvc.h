@@ -322,6 +322,13 @@ void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, 
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m);
 /* smooth: vertices where given; exact: on the list's whole pixels (6.0) */
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);
+/* how many samples a pixel of the list has: 1, 2, 4, 8 (the default) or 16.
+   Each is composed as a pixel is and the colours averaged, so edges are
+   smooth; 1 gives hard edges. A GPU that can't fill so many uses the most it
+   can; a list with fewer than the picture's own (8 where the GPU has them,
+   else 4) is drawn into a target of its own, a window-sized pass for it.
+   Kept until changed (6.0) */
+void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);
 
 /* what a line can change; those with a layer add it (0-3), the palette an entry */
 typedef enum {

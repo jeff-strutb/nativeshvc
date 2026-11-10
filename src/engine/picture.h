@@ -29,7 +29,7 @@ typedef struct {
     float inputs[8];
 } eng_list_cmd;
 typedef struct {
-    uint32_t w, h, rule;
+    uint32_t w, h, rule, samples;     /* samples: asked for, 1, 2, 4, 8 (the default) or 16 */
     nshvc_vertex *v;
     size_t nv, cap_v;
     eng_list_cmd *cmd;

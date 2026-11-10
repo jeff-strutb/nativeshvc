@@ -7,23 +7,50 @@
  * it. Everything runs on the render thread but rr_open, which runs on the
  * system thread after the window opens.
  *
- * Targets. The frame target and the two extra targets are the window's size,
- * multisampled (RR_SAMPLES), with depth and stencil; each is cleared when its
- * pass begins and resolved into its texture when it ends (RR_TEX_FRAME,
- * RR_TEX_EXTRA0, RR_TEX_EXTRA1). The picture target is the window's size,
- * one sample a pixel, and keeps what was drawn into it from one frame to the
- * next (RR_TEX_PICTURE). The output is the window's picture, one sample a
- * pixel: shown, and kept for rr_read. A texture target is one of the frame's
- * textures made with RR_TEX_TARGET. A pass into the picture, the output or
- * a texture clears it to the pass's colour, or keeps what it held (`load`;
- * a target just made, and neither written nor drawn into since, is cleared;
- * a write keeps its texels, the frame's order holding); a colour texture
- * made with RR_TEX_MIPS has its smaller levels made from the first when a
- * pass into it asks (`mips`). A
+ * Targets. The window target is the window itself: the window's size,
+ * multisampled (rr_samples) with depth and stencil, cleared when its pass
+ * begins and resolved straight into the window's drawable when it ends.
+ * With no drawable (a window that is gone or hidden, or none: headless) the
+ * window's pass does not run; and when the frame has no pass into the picture
+ * target, no pass but a texture's does (what only the window's pass reads is
+ * left out with it). A frame that has one is an interlaced picture, state
+ * that builds up from one picture to the next: all its passes but the
+ * window's run on every picture, drawable or not. The frame target and the two extra targets
+ * are made the same way, multisampled with depth and stencil, but resolved
+ * into textures of their own (RR_TEX_FRAME, RR_TEX_EXTRA0, RR_TEX_EXTRA1)
+ * for a later pass to read. The picture target is the window's size, one
+ * sample a pixel, and keeps what was drawn into it from one frame to the
+ * next (RR_TEX_PICTURE). A side target (RR_TARGET_SIDE, the pass's `layer` of
+ * RR_SIDES) is a window-sized target made the same way with the pass's own
+ * `samples`, resolved into its own texture (RR_TEX_SIDE0 - layer); with
+ * `samples` 1 it is not multisampled and is drawn straight into its texture.
+ * It is cleared to the pass's colour, turned like the other window-sized
+ * targets, and run again for a read like the extra ones. A target is made
+ * when passes draw into it, and let go of after some frames in which none does.
+ * A texture target is one of the frame's textures made with RR_TEX_TARGET.
+ * A pass into the picture or a texture clears it to the pass's colour, or
+ * keeps what it held (`load`; a target just made, and neither written nor
+ * drawn into since, is cleared; a write keeps its texels, the frame's order
+ * holding); a colour texture made with RR_TEX_MIPS has its smaller levels
+ * made from the first when a pass into it asks (`mips`). A
  * texture made with RR_TEX_ARRAY has `layers` layers; a pass draws into one
  * of them (`layer`), and makes that layer's smaller levels. A texture just
  * made reads 0 in every texel, level and layer until it is written or drawn
  * into, on every backend; so does a binding with no texture.
+ *
+ * Orientation. Where the display is turned from the picture (a phone held
+ * sideways), the window and every window-sized target take the display's own
+ * extent and are drawn turned (the uniform block's code, below): the backend
+ * is told no more than that, and turns each viewport and scissor with the
+ * draws. Their pixels line up with one another, so a pass reads another's
+ * target at its own pixel. rr_read gives the picture unturned.
+ *
+ * Reading. Nothing of a frame is kept for rr_read but the frame itself: the
+ * backend keeps a reference to the last frame it ran (its owner leaves it
+ * whole until a later frame has been run), and rr_read runs that frame's
+ * passes again, the window's into a texture of the window's size, and reads
+ * that; of a frame with a pass into the picture target only the window's pass
+ * is run again (the picture is already that frame's).
  *
  * Spaces. A draw in RR_SPACE_VIEW is in the frame's own units (width x
  * height), shown at its aspect, centred in the target and as large as fits
@@ -53,26 +80,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define RR_SAMPLES 4            /* the frame's and extra targets' samples a pixel */
-#define RR_PROGRAMS 15          /* programs compiled into the backend */
-#define RR_SHOW 12              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise) */
-#define RR_MIPS 13              /* a level made from the one before (binding 2), for a backend that needs it */
-#define RR_MIPS_LAYER 14        /* the same for a layer of an array (binding 2, an array of one layer) */
-#define RR_TEX_SLOTS 9          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9, 10: colour arrays */
+#define RR_SIDES 8              /* the most side targets a frame draws into */
+#define RR_PROGRAMS 16          /* programs compiled into the backend */
+#define RR_SHOW 13              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise: the engine sets neither, the backend does where it gives an interlaced picture back unturned) */
+#define RR_MIPS 14              /* a level made from the one before (binding 2), for a backend that needs it */
+#define RR_MIPS_LAYER 15        /* the same for a layer of an array (binding 2, an array of one layer) */
+#define RR_TEX_SLOTS 11         /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9, 10: colour arrays; 11, 12: colour textures */
 
 /* texture formats */
 enum { RR_R8U, RR_R32U, RR_BGRA8 };
 #define RR_TEX_TARGET 1         /* a texture drawn into */
 #define RR_TEX_MIPS 2           /* with every smaller level, down to 1 x 1 (colour only) */
 #define RR_TEX_ARRAY 4          /* an array of layers (colour only) */
-/* textures that are no texture of the frame's: the targets, resolved */
+/* textures that are no texture of the frame's: the targets, resolved (the window's own is no texture to read) */
 #define RR_TEX_EXTRA0 (-1)
 #define RR_TEX_EXTRA1 (-2)
 #define RR_TEX_FRAME (-3)
 #define RR_TEX_PICTURE (-4)
+#define RR_TEX_SIDE0 (-5)       /* side target k's: RR_TEX_SIDE0 - k, k < RR_SIDES */
 
 /* pass targets */
-enum { RR_TARGET_FRAME, RR_TARGET_EXTRA0, RR_TARGET_EXTRA1, RR_TARGET_TEXTURE, RR_TARGET_PICTURE, RR_TARGET_OUTPUT };
+enum { RR_TARGET_FRAME, RR_TARGET_EXTRA0, RR_TARGET_EXTRA1, RR_TARGET_TEXTURE, RR_TARGET_PICTURE, RR_TARGET_WINDOW, RR_TARGET_SIDE };
 
 /* blend states: what a draw does to the colour there; rgba the target's, s the draw's */
 enum {
@@ -91,8 +119,15 @@ enum { RR_STENCIL_OFF, RR_STENCIL_EQUAL, RR_STENCIL_EQUAL_INC, RR_STENCIL_SET, R
 enum { RR_SPACE_VIEW, RR_SPACE_TARGET };
 
 /* a draw's uniform block: 256 bytes. f[0] is the backend's: the target's
-   width, height, samples a pixel, and the sign that turns a downward y into
-   the API's clip space; the rest is the program's */
+   width, height (unturned: see below), samples a pixel, and a code, a whole
+   number: bit 0 set if the API's clip y is down (else up), bits 1-2 the
+   quarter turns clockwise and bit 3 the mirroring, left to right first, that
+   a window-sized target is drawn with where the display is turned from the
+   picture (common.glsl oriented); the rest is the program's. A texture
+   target is never turned. A window-sized target's own size is the turned
+   one: width and height in f[0] are the picture's orientation's, which
+   normalise the units, and the backend turns the draw's viewport and
+   scissor with it. */
 typedef struct rr_uniform {
     float f[8][4];
     int32_t i[8][4];
@@ -111,7 +146,8 @@ typedef struct rr_cmd {
 typedef struct rr_pass {
     uint8_t target;
     uint8_t load, mips;         /* keep what the target held; then make a texture's smaller levels */
-    uint32_t texture, layer;    /* RR_TARGET_TEXTURE's, and its layer if an array */
+    uint32_t texture, layer;    /* RR_TARGET_TEXTURE's, and its layer if an array; RR_TARGET_SIDE's, which of RR_SIDES */
+    uint32_t samples;           /* RR_TARGET_SIDE's samples a pixel (1, 2, 4, 8, 16: at most rr_samples_at_most's) */
     float clear[4];             /* the colour it is cleared to */
     size_t first, count;        /* its draws */
 } rr_pass;
@@ -153,6 +189,13 @@ typedef struct rr_frame {
     float between;
 } rr_frame;
 
+/* the samples a pixel of the window, frame and extra targets have: 8 where the
+   device has them for the formats the screens use, else 4; fixed when the
+   renderer opens (after it, any thread) */
+int  rr_samples(void);
+/* the largest count of samples a pixel the device supports (for those formats)
+   that is not above n; 1 always is */
+int  rr_samples_at_most(int n);
 /* the file extension of this backend's compiled shaders */
 const char *rr_shader_ext(void);
 int  rr_open(void);             /* 0 when it cannot run here */
@@ -163,8 +206,9 @@ int  rr_draw(rr_frame *f);
 /* the window went or came between frames (host_window_watch): anything kept
    on a window that went let go now, not at the next frame */
 void rr_window(void);
-/* the last output, 0xFFRRGGBB, top row first; 0 when none. *w, *h its size;
-   argb NULL only asks the size */
+/* the last frame run, as the window shows it (or would), 0xFFRRGGBB, top row
+   first; 0 when none. *w, *h its size; argb NULL only asks the size. It runs
+   the frame's passes again: nothing is kept on a frame nobody reads */
 int  rr_read(uint32_t *argb, int *w, int *h);
 
 #endif

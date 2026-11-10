@@ -12,10 +12,11 @@
 #define P_IMAGE 5       /* an image as a layer */
 #define P_LIST 6        /* a draw list's triangles */
 #define P_LINES 7       /* a draw list's lines, as quads a list pixel wide */
-#define P_COMBINE 8     /* the colour maths, brightness and blanking: the drawn screens into the picture */
+#define P_FIELD 8       /* rectangles of a texture copied pixel for pixel: an interlaced picture's field */
 #define P_PLANE 9       /* Mode 7's plane drawn from its map and tiles into a texture */
 #define P_TINT 10       /* Mode 7's plane (or its tile 0) in colour, with its smaller levels */
 #define P_OVERLAY 11    /* an overlay in window pixels */
+#define P_PLACED 12     /* a draw list drawn into a side target, placed where its layer is */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */

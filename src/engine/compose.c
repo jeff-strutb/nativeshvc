@@ -15,22 +15,31 @@
  *                 shows a pixel keeps it: a stencil bit
  *   images        a quad (image); draw lists: their own triangles, and lines
  *                 as quads a list pixel wide (list, lines)
- *   priorities    depth and the depth test
+ *   priorities    depth and the depth test, the screen's draws front to back
  *   windows       stencil bits, set from rectangles made from the window edges
  *   by line       strips: the rows (and columns) where a capability's values
  *                 are the same are drawn together, with those values; a draw
  *                 list's or the sprites' strips of one state are drawn once,
  *                 kept to them by a stencil bit
- *   colour maths  the main screen drawn into the frame, the sub screen into a
- *                 target of its own; one pass over the picture combines the
- *                 two already drawn, exactly as the capability defines it, with
- *                 brightness and blanking (combine)
- *   hires         the sub screen in the main's even half-columns: a stencil bit
- *   interlace     the picture keeps the other field's half-rows
+ *   colour maths  done where a layer's colour is written (maths.glsl): on its
+ *                 own pixel and what the other screen shows there (the sub
+ *                 screen, or on a hires row's even half-columns the main
+ *                 alone), each drawn into a target of its own before the main
+ *                 screen when the maths need it; a draw has one set of the
+ *                 settings, the colour window read from a bit table
+ *   the picture   one pass into the window: the main screen, the black outside
+ *                 the part shown, the overlays; a draw list with fewer samples
+ *                 than that pass has is drawn first into a side target of its
+ *                 own at its count and placed where its layer is
+ *   hires         the sub screen in the main's even half-columns: a stencil
+ *                 bit; the first half-column black, drawn nearest
+ *   interlace     the one picture that keeps state: the screen is drawn into
+ *                 the frame, this field's half-rows of it into the picture
+ *                 (kept from the picture before), the picture into the window
  *
  * Pixels texels cover are drawn whole; only the pixel an edge falls in is
- * mixed (common.glsl, and the frame's samples at geometry's edges). Nothing
- * of a layer is worked out per pixel but the texels the pixel shows. */
+ * mixed (common.glsl, and the samples at geometry's edges). Nothing of a layer
+ * is worked out per pixel but the texels the pixel shows. */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +52,7 @@
 static rr_frame *F;
 static const eng_picture *P;
 static uint32_t rows_at;        /* each row's palette versions in the frame's words (common.glsl row_palette) */
+static uint32_t win_at;         /* the colour window's bit table in the frame's words (maths.glsl); its first word is stored in the word before the rows table */
 
 static void *grow(void *p, size_t *cap, size_t want, size_t size)
 {
@@ -129,8 +139,8 @@ static void rect_add(float x0, float y0, float x1, float y1)
     nrects++;
 }
 
-/* the gathered rectangles as one fill draw, or none */
-static rr_cmd *fill_rects(rr_uniform **u)
+/* the gathered rectangles as one draw of program (P_FILL, P_FIELD), or none */
+static rr_cmd *rects_draw(int program, rr_uniform **u)
 {
     uint32_t at;
     rr_cmd *c;
@@ -138,12 +148,14 @@ static rr_cmd *fill_rects(rr_uniform **u)
         return NULL;
     at = words(nrects * 4);
     memcpy(&F->data[at], rects, nrects * 16);
-    c = draw(P_FILL, u);
+    c = draw(program, u);
     (*u)->i[0][0] = (int32_t)at;
     c->instances = (uint32_t)nrects;
     nrects = 0;
     return c;
 }
+
+static rr_cmd *fill_rects(rr_uniform **u) { return rects_draw(P_FILL, u); }
 
 static rr_cmd *fill(float x0, float y0, float x1, float y1, rr_uniform **u)
 {
@@ -236,6 +248,87 @@ static float flag_of(int v, const eng_state *s, int bit)
     if (!in_frame(v))
         return 1.0f;
     return (s->b.layers >> bit) & 1 ? 1.0f : 0.0f;
+}
+
+/* ---- the colour maths and the palette, as a draw's settings ---- */
+
+/* whether the colour window's regions (the clip, the prevent) are read for state s */
+static int uses_cwin(const eng_state *s)
+{
+    int clip = s->b.clip & 3, prevent = s->b.prevent & 3;
+    if (s->blank)
+        return 0;
+    return clip == 1 || clip == 2 || (maths_of(s) && (prevent == 1 || prevent == 2));
+}
+
+/* a draw's colour settings on view v for state s, as the bits 0-14 maths.glsl
+   reads (0 for a draw that is no main screen's) */
+static int32_t colour_word(int v, const eng_state *s)
+{
+    const nshvc_blend *b = &s->b;
+    int maths = maths_of(s);
+    if (!in_frame(v) || s->blank)
+        return 0;
+    return 1 | (maths && b->subtract) << 1 | (maths && b->half) << 2 | (maths && b->use_fixed) << 3 | maths << 4 | (b->clip & 3) << 5 |
+           (maths ? (b->prevent & 3) : 0) << 7 | (15 - (s->bright & 15)) << 9 | (v == V_SUBM) << 13 | uses_cwin(s) << 14;
+}
+
+/* the fixed colour a draw's maths reads, 15-bit BGR */
+static int32_t colour_fixed(int v, const eng_state *s)
+{
+    return in_frame(v) && !s->blank && maths_of(s) ? (int32_t)(s->b.fixed_bgr15 & 0x7FFF) : 0;
+}
+
+/* whether two states have the same colour settings on view v */
+static int colour_same(int v, const eng_state *a, const eng_state *b)
+{
+    return colour_word(v, a) == colour_word(v, b) && colour_fixed(v, a) == colour_fixed(v, b);
+}
+
+/* a draw's colour maths: its settings, and the other screen's texture where
+   it reads one (the sub screen, or on a hires row's even half-columns the aux) */
+static void colour_set(rr_uniform *u, rr_cmd *d, int v, const eng_state *s)
+{
+    u->f[1][2] = (float)colour_word(v, s);     /* small whole numbers, exact as floats */
+    u->f[1][3] = (float)colour_fixed(v, s);
+    if (in_frame(v) && !s->blank && maths_of(s) && !s->b.use_fixed) {
+        if (v == V_SUBM)
+            d->tex[10] = RR_TEX_EXTRA1;
+        else
+            d->tex[9] = RR_TEX_EXTRA0;
+    }
+}
+
+/* the palette version every pixel of the rectangle shows, as its rows have
+   it (common.glsl row_palette: a row's first part from its left edge, its
+   last to its right); -1 where more than one */
+static int pal_over(int x0, int y0, int x1, int y1)
+{
+    int r, pal = -1;
+    if (y0 < 0) y0 = 0;
+    if (y1 > P->h) y1 = P->h;
+    for (r = y0; r < y1; r++) {
+        const eng_row *row = &P->rows[r];
+        uint32_t i;
+        for (i = 0; i < row->count; i++) {
+            const eng_part *pt = &P->parts[row->first + i];
+            int p;
+            if ((i + 1 < row->count && P->parts[row->first + i + 1].x0 <= x0) || (i > 0 && pt->x0 >= x1))
+                continue;
+            p = P->states[pt->state].pal;
+            if (pal >= 0 && p != pal)
+                return -1;
+            pal = p;
+        }
+    }
+    return pal;
+}
+
+/* the palette version of a draw over the rectangle, where it is one (u.i[7].x, one more than the version; 0: by row) */
+static void pal_set(rr_uniform *u, int x0, int y0, int x1, int y1)
+{
+    int p = pal_over(x0, y0, x1, y1);
+    u->i[7][0] = p >= 0 ? p + 1 : 0;
 }
 
 /* whether layer L (0-4) is hidden inside its window on this view's screen */
@@ -536,7 +629,8 @@ static int eq_backdrop(const Ctx *c, const eng_state *a, const eng_state *b)
         return 0;
     if (!on)
         return 1;
-    return hires_of(a) == hires_of(b) && backdrop_colour(v, a) == backdrop_colour(v, b) && flag_of(v, a, 5) == flag_of(v, b, 5);
+    return hires_of(a) == hires_of(b) && backdrop_colour(v, a) == backdrop_colour(v, b) && flag_of(v, a, 5) == flag_of(v, b, 5) &&
+           colour_same(v, a, b);
 }
 
 static void emit_backdrop(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
@@ -550,6 +644,7 @@ static void emit_backdrop(const Ctx *c, const eng_state *s, int x0, int y0, int 
     colour_of(backdrop_colour(v, s), u->f[3]);
     u->f[3][3] = in_frame(v) ? flag_of(v, s, 5) : 0.0f;
     u->f[4][0] = depth_of(0);
+    colour_set(u, d, v, s);
     d->depth = RR_DEPTH_LEQUAL;
     stencil_of(d, v, s, -1);
 }
@@ -588,9 +683,9 @@ static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
         return 1;
     k = kind_of(a, n);
     if (k != kind_of(b, n) || a->m != b->m || a->b3 != b->b3 || hires_of(a) != hires_of(b) || flag_of(v, a, n) != flag_of(v, b, n) ||
-        masked(a, n, v) != masked(b, n, v))
+        masked(a, n, v) != masked(b, n, v) || !colour_same(v, a, b))
         return 0;
-    /* the palette's version is read by row (row_palette), so it splits nothing */
+    /* the palette's version splits nothing: it is read by row (row_palette) where a draw has more than one */
     if (k == K_LIST)
         return p->draw_list.id == q->draw_list.id;
     if (k == K_IMAGE)
@@ -689,6 +784,8 @@ static void emit_tiles(int v, const eng_state *s, int n, int x0, int y0, int x1,
     }
     rect_of(u, (float)x0, (float)y0, (float)x1, (float)y1);
     u->f[3][0] = flag_of(v, s, n);
+    colour_set(u, d, v, s);
+    pal_set(u, x0, y0, x1, y1);
     d->depth = RR_DEPTH_LEQUAL;
     stencil_of(d, v, s, n);
 }
@@ -709,21 +806,72 @@ static void emit_image(int v, const eng_state *s, int n, int x0, int y0, int x1,
     u->i[0][2] = rgba;
     d->tex[0] = (int32_t)P->palette_tex;
     d->tex[rgba ? 1 : 3] = (int32_t)im->tex;
+    colour_set(u, d, v, s);
+    pal_set(u, x0, y0, x1, y1);
     d->depth = RR_DEPTH_LEQUAL;
     stencil_of(d, v, s, n);
+}
+
+/* ---- lists with fewer samples than the screens: a side target each ---- */
+static uint8_t list_side[ENG_LISTS];    /* by list: 1 + its side target, or 0 (drawn in the screens' passes) */
+static uint8_t side_samples[RR_SIDES];
+static uint32_t side_list[RR_SIDES];
+static int nsides;
+
+/* the samples a list is drawn with: as many as asked that the device has, no more than the screens' */
+static int list_samples(const eng_list *l)
+{
+    int n = rr_samples_at_most((int)l->samples);
+    return n < rr_samples() ? n : rr_samples();
+}
+
+static int lists_in(const eng_state *s, int n) { return kind_of(s, n) == K_LIST && !s->blank && (s->l[n].enabled_main || s->l[n].enabled_sub); }
+
+/* the lists this picture draws with fewer samples than the screens' own, each given a side target (more than
+   RR_SIDES: the rest said so, and drawn in the screens' passes) */
+static void side_lists(void)
+{
+    int r, said = 0;
+    memset(list_side, 0, sizeof list_side);
+    nsides = 0;
+    for (r = 0; r < P->h; r++) {
+        uint32_t i;
+        for (i = 0; i < P->rows[r].count; i++) {
+            const eng_state *s = &P->states[P->parts[P->rows[r].first + i].state];
+            int n;
+            for (n = 0; n < 4; n++) {
+                uint32_t id;
+                int c;
+                if (!lists_in(s, n))
+                    continue;
+                id = s->l[n].draw_list.id;
+                c = list_samples(&eng_lists_of[id]);
+                if (list_side[id] || c >= rr_samples())
+                    continue;
+                if (nsides == RR_SIDES) {
+                    if (!said++)
+                        eng_report("nativeshvc", "more than %d draw lists with fewer samples than the picture's in one picture: the rest are drawn with its", RR_SIDES);
+                    continue;
+                }
+                list_side[id] = (uint8_t)(1 + nsides);
+                side_samples[nsides] = (uint8_t)c;
+                side_list[nsides++] = id;
+            }
+        }
+    }
 }
 
 /* each list's vertices in this frame's words, once: seven words a vertex */
 static uint32_t list_at[ENG_LISTS];
 static uint8_t list_put[ENG_LISTS];
 
-/* a list's commands, once for its group of strips */
-static void emit_list(const Ctx *c, const eng_state *s, const float *box)
+/* a list's commands over a box, for state s's layer n on view v in a screen (flagged, its stencil and group, its
+   colour maths); or, with `side`, into its side target: raw colour, alpha 1, the depths of its own */
+static void list_draws(uint32_t id, const float *box, int v, const eng_state *s, int n, int side)
 {
-    int v = c->view, n = c->n;
-    uint32_t id = s->l[n].draw_list.id, k;
+    uint32_t k;
     const eng_list *l = &eng_lists_of[id];
-    float z = depth_of(zbg(s, n, 0));
+    float z = side ? 1.0f : depth_of(zbg(s, n, 0));
     if (!list_put[id]) {
         size_t i;
         list_at[id] = words(l->nv * 7);
@@ -745,7 +893,7 @@ static void emit_list(const Ctx *c, const eng_state *s, const float *box)
         rr_uniform *u;
         rr_cmd *d = draw(cm->lines ? P_LINES : P_LIST, &u);
         rect_of(u, box[0], box[1], box[2], box[3]);
-        u->f[3][0] = flag_of(v, s, n);
+        u->f[3][0] = side ? 1.0f : flag_of(v, s, n);
         memcpy(u->f[4], cm->inputs, 32);
         u->f[6][0] = (float)P->w / (float)l->w;
         u->f[6][1] = (float)P->h / (float)l->h;
@@ -767,10 +915,53 @@ static void emit_list(const Ctx *c, const eng_state *s, const float *box)
             }
         }
         d->shader = (uint16_t)cm->shader;
+        if (!side)
+            colour_set(u, d, v, s);
+        pal_set(u, (int)box[0], (int)box[1], (int)box[2], (int)box[3]);
         d->vertices = cm->lines ? cm->count / 2 * 6 : cm->count;
+        d->depth = RR_DEPTH_LEQUAL;
+        if (!side) {
+            stencil_of(d, v, s, n);
+            in_group(d);
+        }
+    }
+}
+
+/* a list's commands, once for its group of strips: in the screen's pass, or the side target's list placed over the box */
+static void emit_list(const Ctx *c, const eng_state *s, const float *box)
+{
+    int v = c->view, n = c->n;
+    uint32_t id = s->l[n].draw_list.id;
+    if (list_side[id]) {
+        rr_uniform *u;
+        rr_cmd *d = draw(P_PLACED, &u);
+        rect_of(u, box[0], box[1], box[2], box[3]);
+        u->f[3][0] = flag_of(v, s, n);
+        u->f[3][1] = depth_of(zbg(s, n, 0));
+        d->tex[0] = RR_TEX_SIDE0 - (list_side[id] - 1);
+        colour_set(u, d, v, s);
         d->depth = RR_DEPTH_LEQUAL;
         stencil_of(d, v, s, n);
         in_group(d);
+        return;
+    }
+    list_draws(id, box, v, s, n, 0);
+}
+
+/* the side targets' passes: each list once, over the picture, at its own samples */
+static void side_passes(void)
+{
+    int k;
+    for (k = 0; k < nsides; k++) {
+        float box[4];
+        box[0] = box[1] = 0.0f;
+        box[2] = (float)P->w;
+        box[3] = (float)P->h;
+        pass_begin(RR_TARGET_SIDE, 0);
+        F->passes[F->npasses - 1].layer = (uint32_t)k;
+        F->passes[F->npasses - 1].samples = side_samples[k];
+        list_draws(side_list[k], box, V_MAIN, NULL, 0, 1);
+        pass_end();
     }
 }
 
@@ -814,7 +1005,7 @@ static int eq_m7(const Ctx *c, const eng_state *a, const eng_state *b)
            (a->l[0].mosaic > 1 ? a->l[0].mosaic : 1) == (b->l[0].mosaic > 1 ? b->l[0].mosaic : 1) &&
            (a->l[0].mosaic <= 1 || a->anchor[0] == b->anchor[0]) && a->l[0].direct_colour == b->l[0].direct_colour && a->pal == b->pal &&
            flag_of(v, a, 0) == flag_of(v, b, 0) && flag_of(v, a, 1) == flag_of(v, b, 1) && masked(a, 0, v) == masked(b, 0, v) &&
-           masked(a, 1, v) == masked(b, 1, v) && hires_of(a) == hires_of(b);
+           masked(a, 1, v) == masked(b, 1, v) && hires_of(a) == hires_of(b) && colour_same(v, a, b);
 }
 
 /* the plane's texel at screen point (x, y) for state s, as the console's sum
@@ -956,6 +1147,8 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
             u->i[0][2] = bx1 - bx0 + 1;
             u->i[0][3] = by1 - by0 + 1;
             d->instances = (uint32_t)((bx1 - bx0 + 1) * (by1 - by0 + 1));
+            colour_set(u, d, v, s);
+            pal_set(u, a, b, e, f);
             stencil_of(d, v, s, n);
             continue;
         }
@@ -972,6 +1165,7 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
             u->f[3][0] = flag_of(v, s, n);
             u->f[3][1] = depth_of(n ? 1 : 3);
             u->f[3][2] = depth_of(n ? 5 : 3);
+            colour_set(u, d, v, s);     /* its palette is the state's own (i[2].w), i[7].x is the filter's */
             stencil_of(d, v, s, n);
         }
     }
@@ -1158,7 +1352,7 @@ static int eq_spr(const Ctx *c, const eng_state *a, const eng_state *b)
     if (!on)
         return 1;
     return a->m == b->m && flag_of(v, a, 4) == flag_of(v, b, 4) && masked(a, 4, v) == masked(b, 4, v) &&
-           hires_of(a) == hires_of(b);
+           hires_of(a) == hires_of(b) && colour_same(v, a, b);
 }
 
 static void emit_spr(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
@@ -1190,6 +1384,8 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         d->tex[0] = (int32_t)P->palette_tex;
         d->tex[3] = (int32_t)t->tex;
         d->instances = runs[k].count;
+        colour_set(u, d, v, s);
+        pal_set(u, (int)box[0], (int)box[1], (int)box[2], (int)box[3]);
         d->depth = RR_DEPTH_LEQUAL;
         stencil_of(d, v, s, 4);
         /* the first sprite to show a pixel keeps it, behind a layer or not */
@@ -1201,20 +1397,28 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
 }
 
 /* ---- a screen ---- */
+
+/* A screen's draws front to back, so that what is hidden is not shaded: the
+   sprites, Mode 7, the layers, the backdrop. No result depends on their
+   order: no two layers take the same depth (zbg, zobj and depth_of give each
+   priority of each layer and the sprites their own, and a draw list's depths
+   lie between its layer's and the next one's), a layer's own draws are in
+   disjoint rectangles or keep their order, and the sprites' stencil bit is
+   set by the sprites alone, in their own order, wherever one is drawn. */
 static void screen_draws(int v)
 {
     Ctx c;
     c.view = v;
     c.n = 0;
-    strips(&c, eq_backdrop, emit_backdrop);
+    strips(&c, eq_spr, emit_spr);
+    groups(&c, eq_spr, spr_group);
+    strips(&c, eq_m7, emit_m7);
     for (c.n = 0; c.n < 4; c.n++) {
         strips(&c, eq_bg, emit_bg);
         groups(&c, eq_bg, emit_list);
     }
     c.n = 0;
-    strips(&c, eq_m7, emit_m7);
-    strips(&c, eq_spr, emit_spr);
-    groups(&c, eq_spr, spr_group);
+    strips(&c, eq_backdrop, emit_backdrop);
 }
 
 /* whether any row needs a test of `pred` */
@@ -1241,11 +1445,97 @@ static int masks3(const eng_state *s) { return masks_layer(s, 3); }
 static int masks4(const eng_state *s) { return masks_layer(s, 4); }
 static int (*const masks_of[5])(const eng_state *) = { masks0, masks1, masks2, masks3, masks4 };
 
-/* a target's pass: the windows' bits, then its screen */
+/* ---- the colour window: a bit a picture pixel, set inside it ---- */
+
+/* the first word of the table, rows of (width + 31) / 32 words, the bits set
+   where a row's column is inside the colour window of its state; none unless
+   a state reads it */
+static void window_table(void)
+{
+    uint32_t per = ((uint32_t)P->w + 31) / 32, *bits;
+    int r;
+    win_at = 0;
+    F->data[rows_at - 1] = 0;
+    if (!any_state(uses_cwin))
+        return;
+    win_at = words((size_t)P->h * per);
+    F->data[rows_at - 1] = win_at;
+    bits = &F->data[win_at];
+    memset(bits, 0, (size_t)P->h * per * 4);
+    for (r = 0; r < P->h; r++) {
+        const eng_row *row = &P->rows[r];
+        uint32_t i;
+        for (i = 0; i < row->count; i++) {
+            const eng_part *pt = &P->parts[row->first + i];
+            const eng_state *s = &P->states[pt->state];
+            int x0 = pt->x0, x1 = i + 1 < row->count ? P->parts[row->first + i + 1].x0 : P->w, b[6], nb = 0, use = s->w.layer_use[5], j, x;
+            if (x0 < 0) x0 = 0;
+            if (x1 > P->w) x1 = P->w;
+            if (x1 <= x0 || !uses_cwin(s))
+                continue;
+            b[nb++] = x0;
+            if (use & (NSHVC_WIN1 | NSHVC_WIN2)) {
+                if (s->w.w[0].left > x0 && s->w.w[0].left < x1) b[nb++] = s->w.w[0].left;
+                if (s->w.w[0].right + 1 > x0 && s->w.w[0].right + 1 < x1) b[nb++] = s->w.w[0].right + 1;
+                if (s->w.w[1].left > x0 && s->w.w[1].left < x1) b[nb++] = s->w.w[1].left;
+                if (s->w.w[1].right + 1 > x0 && s->w.w[1].right + 1 < x1) b[nb++] = s->w.w[1].right + 1;
+                qsort(b, (size_t)nb, sizeof *b, cmp_int);
+            }
+            b[nb] = x1;
+            for (j = 0; j < nb; j++) {
+                if (b[j + 1] <= b[j] || !inside(&s->w, use, b[j]))
+                    continue;
+                /* the run's bits by whole words, masks at its two ends */
+                x = b[j];
+                for (;;) {
+                    uint32_t lo = (uint32_t)(x & 31), end = (uint32_t)(b[j + 1] - (x & ~31)), hi = end < 32 ? end : 32;
+                    uint32_t m = (hi == 32 ? ~0u : (1u << hi) - 1u) & (~0u << lo);
+                    bits[(size_t)r * per + (size_t)(x >> 5)] |= m;
+                    x = (x & ~31) + 32;
+                    if (x >= b[j + 1])
+                        break;
+                }
+            }
+        }
+    }
+}
+
+/* ---- passes ---- */
+
+/* black where nothing of the picture is shown: outside the part shown */
+static void show_rects(void)
+{
+    rr_uniform *u;
+    rr_cmd *d;
+    if (P->show_t > 0)
+        rect_add(0.0f, 0.0f, (float)P->w, (float)P->show_t);
+    if (P->show_b < P->h)
+        rect_add(0.0f, (float)P->show_b, (float)P->w, (float)P->h);
+    if (P->show_l > 0)
+        rect_add(0.0f, (float)P->show_t, (float)P->show_l, (float)P->show_b);
+    if (P->show_r < P->w)
+        rect_add((float)P->show_r, (float)P->show_t, (float)P->w, (float)P->show_b);
+    if ((d = fill_rects(&u)))
+        u->f[3][3] = 1.0f;
+}
+
+/* the first half-column of a hires row is black, whatever is drawn there: the
+   nearest depth, drawn first, hides everything after it */
+static void emit_first(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
+{
+    (void)c;
+    (void)x1;
+    if (hires_of(s) && !s->blank && x0 == 0)
+        rect_add(0.0f, (float)y0, 0.5f, (float)y1);
+}
+
+/* a pass for a target's screens: the windows' bits, then the screen: the main
+   (V_MAIN and V_SUBM) or one view of the other two */
 static void target_pass(int target, int v)
 {
     int L;
     pass_begin(target, 0);
+    F->passes[F->npasses - 1].clear[3] = in_frame(v) ? 1.0f : 0.0f;     /* opaque black; no layer, no backdrop */
     for (L = 0; L < 5; L++)
         if (any_state(masks_of[L]))
             window_bits(L, SB_LAYER0 << L);
@@ -1261,191 +1551,42 @@ static void target_pass(int target, int v)
                 d->write_mask = SB_STRIPE;
                 d->ref = 0xFF;
             }
+            strips(&c, eq_hires, emit_first);
+            if ((d = fill_rects(&u))) {
+                u->f[3][3] = 1.0f;
+                u->f[4][0] = 0.0f;
+                d->depth = RR_DEPTH_LEQUAL;
+            }
         }
         screen_draws(V_MAIN);
         screen_draws(V_SUBM);
     } else {
         screen_draws(v);
     }
-    pass_end();
 }
 
-/* ---- the picture: the colour maths, brightness and blanking ---- */
-static int eq_combine(const eng_state *a, const eng_state *b)
+/* the overlays over the window */
+static void overlay_draws(void)
 {
-    const nshvc_blend *p = &a->b, *q = &b->b;
-    if (a->blank != b->blank)
-        return 0;
-    if (a->blank)
-        return 1;
-    return p->subtract == q->subtract && p->half == q->half && p->use_fixed == q->use_fixed && maths_of(a) == maths_of(b) &&
-           (p->clip & 3) == (q->clip & 3) && (p->prevent & 3) == (q->prevent & 3) && (p->fixed_bgr15 & 0x7FFF) == (q->fixed_bgr15 & 0x7FFF) &&
-           a->bright == b->bright && hires_of(a) == hires_of(b);
-}
-
-typedef struct { int x0, x1, inside, y0; const eng_state *s; } CSeg;
-/* what eq_combine compares, as numbers: equal keys, equal settings */
-typedef struct { int32_t v[10]; } CKey;
-typedef struct { const eng_state *s; float r[4]; int inside; CKey key; } CRect;
-static CSeg *copen, *ccur;
-static size_t cap_copen, cap_ccur;
-static CRect *crects;
-static size_t ncrects, cap_crects;
-
-static void ckey_of(const eng_state *s, CKey *k)
-{
-    const nshvc_blend *b = &s->b;
-    memset(k, 0, sizeof *k);
-    k->v[0] = s->blank;
-    if (s->blank)
-        return;                         /* blanked rows are all alike */
-    k->v[1] = b->subtract;
-    k->v[2] = b->half;
-    k->v[3] = b->use_fixed;
-    k->v[4] = maths_of(s);
-    k->v[5] = b->clip & 3;
-    k->v[6] = b->prevent & 3;
-    k->v[7] = b->fixed_bgr15 & 0x7FFF;
-    k->v[8] = s->bright;
-    k->v[9] = hires_of(s);
-}
-
-static int cmp_crect(const void *a, const void *b)
-{
-    const CRect *p = &crects[*(const size_t *)a], *q = &crects[*(const size_t *)b];
-    int c = memcmp(&p->key, &q->key, sizeof p->key);
-    if (c)
-        return c;
-    return *(const size_t *)a < *(const size_t *)b ? -1 : 1;
-}
-
-static void crect_add(const eng_state *s, float x0, float y0, float x1, float y1, int in)
-{
-    crects = (CRect *)grow(crects, &cap_crects, ncrects + 1, sizeof *crects);
-    crects[ncrects].s = s;
-    ckey_of(s, &crects[ncrects].key);
-    crects[ncrects].r[0] = x0;
-    crects[ncrects].r[1] = y0;
-    crects[ncrects].r[2] = x1;
-    crects[ncrects].r[3] = y1;
-    crects[ncrects].inside = in;
-    ncrects++;
-}
-
-/* the picture's pixels: every row in runs, each run inside or outside the
-   colour window, with its row's settings; an interlaced picture this
-   field's half of each row only */
-static void combine(int field)
-{
-    size_t nopen = 0, ncur, k, i, j;
-    int r, sub, aux;
-    ncrects = 0;
-    for (r = 0; r <= P->h; r++) {
-        int same;
-        ncur = 0;
-        if (r < P->h) {
-            const eng_row *row = &P->rows[r];
-            uint32_t pi;
-            for (pi = 0; pi < row->count; pi++) {
-                const eng_part *pt = &P->parts[row->first + pi];
-                const eng_state *s = &P->states[pt->state];
-                int x0 = pt->x0, x1 = pi + 1 < row->count ? P->parts[row->first + pi + 1].x0 : P->w, b[6], nb = 0, use = s->w.layer_use[5];
-                if (x0 < 0) x0 = 0;
-                if (x1 > P->w) x1 = P->w;
-                if (x1 <= x0)
-                    continue;
-                b[nb++] = x0;
-                if (use & (NSHVC_WIN1 | NSHVC_WIN2)) {
-                    if (s->w.w[0].left > x0 && s->w.w[0].left < x1) b[nb++] = s->w.w[0].left;
-                    if (s->w.w[0].right + 1 > x0 && s->w.w[0].right + 1 < x1) b[nb++] = s->w.w[0].right + 1;
-                    if (s->w.w[1].left > x0 && s->w.w[1].left < x1) b[nb++] = s->w.w[1].left;
-                    if (s->w.w[1].right + 1 > x0 && s->w.w[1].right + 1 < x1) b[nb++] = s->w.w[1].right + 1;
-                    qsort(b, (size_t)nb, sizeof *b, cmp_int);
-                }
-                b[nb] = x1;
-                for (k = 0; k < (size_t)nb; k++) {
-                    int in = inside(&s->w, use, b[k]);
-                    if (b[k + 1] <= b[k])
-                        continue;
-                    if (ncur && ccur[ncur - 1].x1 == b[k] && ccur[ncur - 1].inside == in && eq_combine(ccur[ncur - 1].s, s)) {
-                        ccur[ncur - 1].x1 = b[k + 1];
-                        continue;
-                    }
-                    ccur = (CSeg *)grow(ccur, &cap_ccur, ncur + 1, sizeof *ccur);
-                    ccur[ncur].x0 = b[k];
-                    ccur[ncur].x1 = b[k + 1];
-                    ccur[ncur].inside = in;
-                    ccur[ncur].s = s;
-                    ncur++;
-                }
-            }
-        }
-        same = !field && r < P->h && ncur == nopen;
-        for (k = 0; same && k < ncur; k++)
-            same = ccur[k].x0 == copen[k].x0 && ccur[k].x1 == copen[k].x1 && ccur[k].inside == copen[k].inside && eq_combine(copen[k].s, ccur[k].s);
-        if (same)
+    int k;
+    for (k = 0; k < NSHVC_OVERLAYS; k++) {
+        const eng_overlay *o = &P->overlays[k];
+        const eng_image *im;
+        rr_uniform *u;
+        rr_cmd *d;
+        if (!o->image || o->alpha <= 0)
             continue;
-        for (k = 0; k < nopen; k++) {
-            float y0 = (float)copen[k].y0, y1 = (float)r;
-            if (field) {
-                /* this field's half of the row */
-                y0 += field == 2 ? 0.5f : 0.0f;
-                y1 = y0 + 0.5f;
-            }
-            crect_add(copen[k].s, (float)copen[k].x0, y0, (float)copen[k].x1, y1, copen[k].inside);
-        }
-        copen = (CSeg *)grow(copen, &cap_copen, ncur + 1, sizeof *copen);
-        for (k = 0; k < ncur; k++) {
-            copen[k] = ccur[k];
-            copen[k].y0 = r;
-        }
-        nopen = ncur;
-    }
-    /* a draw for each set of settings, its rectangles its instances: the
-       rectangles sorted by their settings, so each set's are together */
-    {
-        static size_t *ord;
-        static size_t cap_ord;
-        ord = (size_t *)grow(ord, &cap_ord, ncrects + 1, sizeof *ord);
-        for (i = 0; i < ncrects; i++)
-            ord[i] = i;
-        qsort(ord, ncrects, sizeof *ord, cmp_crect);
-        sub = any_state(need_sub);
-        aux = any_state(need_aux);
-        for (i = 0; i < ncrects; i = j) {
-            const eng_state *s = crects[ord[i]].s;
-            const nshvc_blend *b = &s->b;
-            size_t n;
-            uint32_t at;
-            rr_uniform *u;
-            rr_cmd *d;
-            for (j = i + 1; j < ncrects && !memcmp(&crects[ord[j]].key, &crects[ord[i]].key, sizeof (CKey)); j++)
-                ;
-            at = words((j - i) * 5);
-            for (n = 0; n < j - i; n++) {
-                const CRect *c = &crects[ord[i + n]];
-                memcpy(&F->data[at + n * 5], c->r, 16);
-                F->data[at + n * 5 + 4] = (uint32_t)c->inside;
-            }
-            d = draw(P_COMBINE, &u);
-            u->i[0][0] = (int32_t)at;
-            u->i[1][0] = b->subtract != 0;
-            u->i[1][1] = b->half != 0;
-            u->i[1][2] = b->use_fixed != 0;
-            u->i[1][3] = maths_of(s);
-            u->i[2][0] = b->clip & 3;
-            u->i[2][1] = b->prevent & 3;
-            u->i[2][2] = s->bright;
-            u->i[2][3] = s->blank;
-            u->i[3][0] = hires_of(s);
-            u->i[3][1] = b->fixed_bgr15 & 0x7FFF;
-            d->instances = (uint32_t)n;
-            d->tex[0] = RR_TEX_FRAME;
-            if (sub)
-                d->tex[1] = RR_TEX_EXTRA0;
-            if (aux)
-                d->tex[2] = RR_TEX_EXTRA1;
-        }
+        im = &eng_images_of[o->image];
+        d = draw(P_OVERLAY, &u);
+        u->f[3][0] = o->alpha;
+        memcpy(u->f[4], o->corners, 16);
+        u->f[5][0] = o->corners[4];
+        u->f[5][1] = o->corners[5];
+        u->i[0][0] = (int32_t)im->w;
+        u->i[0][1] = (int32_t)im->h;
+        d->tex[0] = (int32_t)im->tex;
+        d->blend = RR_BLEND_OVER;
+        d->space = RR_SPACE_TARGET;
     }
 }
 
@@ -2207,7 +2348,6 @@ void eng_compose(rr_frame *f, const eng_picture *p)
     static int field;
     rr_uniform *u;
     rr_cmd *d;
-    int k;
     F = f;
     P = p;
     rows_at = 0;
@@ -2215,7 +2355,9 @@ void eng_compose(rr_frame *f, const eng_picture *p)
         /* each row's palette versions, by the column each starts at: what the
            layers, sprites and lists read their colours through */
         int r;
-        uint32_t at = words((size_t)p->h * 2);
+        uint32_t at;
+        words(1);                       /* the colour window's table, if any (window_table), just before the rows */
+        at = words((size_t)p->h * 2);
         rows_at = at;
         for (r = 0; r < p->h; r++) {
             const eng_row *row = &p->rows[r];
@@ -2237,57 +2379,54 @@ void eng_compose(rr_frame *f, const eng_picture *p)
             F->data[at + (uint32_t)r * 2 + 1] = n;
         }
     }
+    window_table();
     memset(list_put, 0, sizeof list_put);
     sprite_pieces();
     plane_pass();
     tint_passes();
-    if (any_state(need_sub))
+    side_lists();
+    side_passes();
+    if (any_state(need_sub)) {
         target_pass(RR_TARGET_EXTRA0, V_SUB);
-    if (any_state(need_aux))
+        pass_end();
+    }
+    if (any_state(need_aux)) {
         target_pass(RR_TARGET_EXTRA1, V_AUX);
+        pass_end();
+    }
+    if (!p->interlace) {
+        /* the window itself: the main screen, the black outside the part shown, the overlays */
+        field = 0;
+        target_pass(RR_TARGET_WINDOW, V_MAIN);
+        show_rects();
+        overlay_draws();
+        pass_end();
+        return;
+    }
+    /* an interlaced picture keeps the other field's half-rows from the picture
+       before: the main screen into the frame, this field's half-rows of it into the picture, the picture into the window */
+    field = field == 1 ? 2 : 1;
     target_pass(RR_TARGET_FRAME, V_MAIN);
-
-    /* the picture: an interlaced one keeps the other field's half-rows from the picture before */
-    field = p->interlace ? (field == 1 ? 2 : 1) : 0;
-    pass_begin(RR_TARGET_PICTURE, 0);
-    F->passes[F->npasses - 1].load = field != 0;
-    F->passes[F->npasses - 1].clear[3] = 1.0f;     /* opaque black where nothing is drawn */
-    combine(field);
-    /* outside the part shown: black */
-    if (p->show_t > 0)
-        rect_add(0.0f, 0.0f, (float)p->w, (float)p->show_t);
-    if (p->show_b < p->h)
-        rect_add(0.0f, (float)p->show_b, (float)p->w, (float)p->h);
-    if (p->show_l > 0)
-        rect_add(0.0f, (float)p->show_t, (float)p->show_l, (float)p->show_b);
-    if (p->show_r < p->w)
-        rect_add((float)p->show_r, (float)p->show_t, (float)p->w, (float)p->show_b);
-    if ((d = fill_rects(&u)))
-        u->f[3][3] = 1.0f;
     pass_end();
-
-    /* the output: the picture, then the overlays over the window */
-    pass_begin(RR_TARGET_OUTPUT, 0);
+    pass_begin(RR_TARGET_PICTURE, 0);
+    F->passes[F->npasses - 1].load = 1;
+    F->passes[F->npasses - 1].clear[3] = 1.0f;     /* opaque black where nothing is drawn */
+    {
+        int r;
+        for (r = 0; r < p->h; r++) {
+            float y0 = (float)r + (field == 2 ? 0.5f : 0.0f);
+            rect_add(0.0f, y0, (float)p->w, y0 + 0.5f);
+        }
+        d = rects_draw(P_FIELD, &u);
+        d->tex[0] = RR_TEX_FRAME;
+    }
+    show_rects();
+    pass_end();
+    pass_begin(RR_TARGET_WINDOW, 0);
     F->passes[F->npasses - 1].clear[3] = 1.0f;
     d = draw(RR_SHOW, &u);
     d->space = RR_SPACE_TARGET;
     d->tex[0] = RR_TEX_PICTURE;
-    for (k = 0; k < NSHVC_OVERLAYS; k++) {
-        const eng_overlay *o = &p->overlays[k];
-        const eng_image *im;
-        if (!o->image || o->alpha <= 0)
-            continue;
-        im = &eng_images_of[o->image];
-        d = draw(P_OVERLAY, &u);
-        u->f[3][0] = o->alpha;
-        memcpy(u->f[4], o->corners, 16);
-        u->f[5][0] = o->corners[4];
-        u->f[5][1] = o->corners[5];
-        u->i[0][0] = (int32_t)im->w;
-        u->i[0][1] = (int32_t)im->h;
-        d->tex[0] = (int32_t)im->tex;
-        d->blend = RR_BLEND_OVER;
-        d->space = RR_SPACE_TARGET;
-    }
+    overlay_draws();
     pass_end();
 }

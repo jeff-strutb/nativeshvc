@@ -202,12 +202,12 @@ an iPhone 15 Pro Max once a draw-list layer existed). It is gone. In its place:
    instanced tile quads with the map read in the vertex stage; mosaic as instanced blocks; Mode 7 as a plane textured
    through its matrix, the plane drawn into a texture from its map; sprites as instanced quads; priorities as depth;
    windows as stencil from the window edges; per-line changes as strips of rows drawn with their own values (a draw list's
-   or the sprites' strips of one state drawn once, kept to them by stencil); colour maths, brightness and blanking as one
-   pass that combines the screens already drawn, exactly as the SNES defines them; hires by a stencil bit; interlace by a
-   picture that keeps the other field. Mode 7 is filtered through the plane's colours and their smaller levels where it
+   or the sprites' strips of one state drawn once, kept to them by stencil); colour maths, brightness and blanking done where a layer's
+   colour is written, from the other screen's pixel, exactly as the SNES defines them; hires by a stencil bit; interlace by a
+   picture that keeps the other field (the only picture drawn through a kept target; any other is one pass into the window). Mode 7 is filtered through the plane's colours and their smaller levels where it
    shrinks, by the GPU's own anisotropic filter in one read: the plane in its most-used palette, and in the four other
    palettes with the nearest rows, full size; past those, a quarter-size plane in the row's palette adds its difference,
-   so only that difference's finest detail is lost. All at the window's resolution, texels sharp, edges smoothed by 4 samples a pixel.
+   so only that difference's finest detail is lost. All at the window's resolution, texels sharp, edges smoothed by the picture's samples a pixel (8 where the GPU has them, else 4).
 3. **Custom work through the lower API:** draw lists, materials and game shaders, drawn straight into the frame in their
    layer's place, with depth.
 

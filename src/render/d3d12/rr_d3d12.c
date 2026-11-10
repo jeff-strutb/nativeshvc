@@ -4,9 +4,12 @@
  * written through an upload buffer at its start; its words are a root shader
  * resource and each draw's uniforms a root constant buffer; its textures a
  * descriptor table. The multisampled targets are resolved with
- * ResolveSubresource. Pipelines are made when first used and kept (a failure
- * too), found by hashing. The programs are DXIL (rr_dxil.h). One frame is in
- * flight.
+ * ResolveSubresource; the window's straight into the swapchain's back buffer.
+ * Pipelines are made when first used and kept (a failure too), found by
+ * hashing. The programs are DXIL (rr_dxil.h). One frame is in flight. A frame
+ * read back (rr_read) is run again: the backend keeps a reference to the last
+ * frame it ran, and its passes but the textures' are recorded again, the
+ * window's into a texture.
  */
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
@@ -30,7 +33,8 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define FRAMES 3
 #define MAX_TEXTURES 16384
 #define MAX_SHADERS 256
-#define RTVS 5                          /* the shared views: the three screens, the output, the picture */
+#define SCREENS (4 + RR_SIDES)          /* the screens by index: 0 the frame, 1 and 2 the extra targets, 3 the window's, 4 and on the side targets */
+#define RTVS (5 + RR_SIDES)             /* the shared views: the screens' (the picture's after the window's), the side targets' */
 #define MAX_TABLES (1000000 / RR_TEX_SLOTS)    /* a shader-visible heap's most descriptors, every binding tier, in tables */
 #define MIN_TABLES 1024
 #define UNUSED_FRAMES 120               /* an extra target unused this many frames is let go */
@@ -38,14 +42,14 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define DEPTH DXGI_FORMAT_D24_UNORM_S8_UINT
 #define SHADER_READ (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
 
-/* what a pass draws into: the multisampled screens with depth and stencil, an
-   8-bit or 32-bit integer texture, or a colour texture, the picture or the output */
+/* what a pass draws into: the multisampled screens (the window's too) with depth
+   and stencil, an 8-bit or 32-bit integer texture, or a colour texture or the picture */
 enum { KIND_SCREEN, KIND_INDEX, KIND_INDEX32, KIND_COLOUR, KINDS };
 
 typedef struct { ID3D12Resource *r; void *at; UINT64 size; } Buf;
 /* a texture: its render-target views, layer by layer, each layer's levels
    together: a frame's texture's in its own heap (rh, rtvs of them), the
-   picture's and the output's at rtv in the shared one; fresh: each layer
+   picture's at rtv in the shared one; fresh: each layer
    not drawn into yet */
 typedef struct {
     ID3D12Resource *r;
@@ -75,13 +79,21 @@ static ID3D12DescriptorHeap *rtv_heap, *dsv_heap, *srv_heap;
 static UINT rtv_step, dsv_step, srv_step, srv_tables;
 static Tex tex[MAX_TEXTURES];
 static Tex none_colour, none_index, none_array;
-static Tex screen_ms[3], screen_ds[3], screen_res[3], picture, output;
-static uint64_t screen_used[3], frame_no;
+/* the screens: each resolved into screen_res (the window's into the back buffer, which has none); a side target at one
+   sample is drawn into its screen_res and has no screen_ms */
+static Tex screen_ms[SCREENS], screen_ds[SCREENS], screen_res[SCREENS], picture;
+static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS];
+static int pass_samples, samples_have;  /* the screens' samples a pixel; the counts the device has (a bit each) */
+static uint64_t screen_used[SCREENS], picture_used, frame_no;
+static const rr_frame *last_frame;      /* the last frame run, for rr_read: its owner leaves it whole until a later one is run */
+static float last_aspect;
+static size_t mip_blocks, mip_at;       /* this frame's blocks for the levels its mips make, and the next */
 static Buf ubuf, dbuf, staging, readback;
 static Code game_ps[MAX_SHADERS];
-static int targets_w, targets_h, last_w, last_h, ever;
+static int last_w, last_h, ever;
 
-/* the shared RTV slots: 0-2 the screens, 3 the output, 4 the picture */
+/* the shared RTV slots: 0-3 the screens, 4 the picture, 5 on the side targets (the screen's index plus one) */
+static int rtv_slot(int sc) { return sc < 4 ? sc : sc + 1; }
 static D3D12_CPU_DESCRIPTOR_HANDLE rtv(int i)
 {
     D3D12_CPU_DESCRIPTOR_HANDLE h;
@@ -361,6 +373,26 @@ int rr_open(void)
     if (!(fence_event = CreateEventA(NULL, FALSE, FALSE, NULL)))
         return open_failed();
 
+    {
+        /* the samples the screens have: the counts the device fills for the colour and depth-stencil formats, 8 if it has them, else 4 */
+        int c;
+        samples_have = 1;
+        for (c = 2; c <= 16; c *= 2) {
+            D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q;
+            int ok;
+            memset(&q, 0, sizeof q);
+            q.Format = COLOUR;
+            q.SampleCount = (UINT)c;
+            ok = SUCCEEDED(ID3D12Device_CheckFeatureSupport(dev, D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof q)) && q.NumQualityLevels > 0;
+            memset(&q, 0, sizeof q);
+            q.Format = DEPTH;
+            q.SampleCount = (UINT)c;
+            ok = ok && SUCCEEDED(ID3D12Device_CheckFeatureSupport(dev, D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof q)) && q.NumQualityLevels > 0;
+            if (ok)
+                samples_have |= c;
+        }
+        pass_samples = samples_have & 8 ? 8 : samples_have & 4 ? 4 : samples_have & 2 ? 2 : 1;
+    }
     memset(&hd, 0, sizeof hd);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     hd.NumDescriptors = RTVS;
@@ -368,7 +400,7 @@ int rr_open(void)
         return open_failed();
     rtv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    hd.NumDescriptors = 3;
+    hd.NumDescriptors = SCREENS;
     if (FAILED(ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&dsv_heap)))
         return open_failed();
     dsv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -377,9 +409,9 @@ int rr_open(void)
         return open_failed();
 
     {
-        /* b0 the draw's uniforms, t1 the frame's words, t2-t10 its textures, s2-s10 their samplers:
+        /* b0 the draw's uniforms, t1 the frame's words, t2-t12 its textures, s2-s12 their samplers:
            s3, s4 and s8-s10 filtered and anisotropic, s3 and s8 repeating, s4, s9 and s10
-           transparent outside the texture; the rest at texels */
+           transparent outside the texture; the rest (s11 and s12 too) at texels */
         D3D12_ROOT_PARAMETER p[3];
         D3D12_DESCRIPTOR_RANGE r;
         D3D12_STATIC_SAMPLER_DESC s[RR_TEX_SLOTS];
@@ -402,7 +434,7 @@ int rr_open(void)
         p[2].DescriptorTable.pDescriptorRanges = &r;
         p[0].ShaderVisibility = p[1].ShaderVisibility = p[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         for (k = 0; k < RR_TEX_SLOTS; k++) {
-            int f = k == 1 || k == 2 || k >= 6;
+            int f = k == 1 || k == 2 || (k >= 6 && k < 9);
             s[k].Filter = f ? D3D12_FILTER_ANISOTROPIC : D3D12_FILTER_MIN_MAG_MIP_POINT;
             s[k].MaxAnisotropy = f ? 16 : 1;
             s[k].AddressU = s[k].AddressV = s[k].AddressW = !f ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
@@ -461,6 +493,15 @@ int rr_open(void)
 }
 
 const char *rr_name(void) { return "d3d12"; }
+int rr_samples(void) { return pass_samples ? pass_samples : 4; }
+int rr_samples_at_most(int n)
+{
+    int c;
+    for (c = 16; c > 1; c /= 2)
+        if (c <= n && (samples_have & c))
+            return c;
+    return 1;
+}
 const char *rr_shader_ext(void) { return "dxil"; }
 
 /* ---- pipelines: made when first asked for, a failure kept too, found by hashing ---- */
@@ -508,11 +549,11 @@ static PipeSlot *pipe_slot(UINT64 key)
 
 static DXGI_FORMAT kind_format(int kind) { return kind == KIND_INDEX ? DXGI_FORMAT_R8_UINT : kind == KIND_INDEX32 ? DXGI_FORMAT_R32_UINT : COLOUR; }
 
-static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind)
+static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind, int samples)
 {
     int depth = kind == KIND_SCREEN ? c->depth : 0, stencil = kind == KIND_SCREEN ? c->stencil : 0;
     UINT64 key = (UINT64)c->program | (UINT64)c->shader << 8 | (UINT64)c->blend << 24 | (UINT64)depth << 28 | (UINT64)stencil << 30 |
-                 (UINT64)kind << 33 | (UINT64)(stencil ? c->read_mask : 0) << 40 | (UINT64)(stencil ? c->write_mask : 0) << 48;
+                 (UINT64)kind << 33 | (UINT64)(stencil ? c->read_mask : 0) << 40 | (UINT64)(stencil ? c->write_mask : 0) << 48 | (UINT64)samples << 56;
     PipeSlot *slot = pipe_slot(key);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
     D3D12_DEPTH_STENCILOP_DESC so;
@@ -541,7 +582,7 @@ static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind)
     d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     d.NumRenderTargets = 1;
     d.RTVFormats[0] = kind_format(kind);
-    d.SampleDesc.Count = kind == KIND_SCREEN ? RR_SAMPLES : 1;
+    d.SampleDesc.Count = kind == KIND_SCREEN ? (UINT)samples : 1;
     if (kind == KIND_SCREEN) {
         d.DSVFormat = DEPTH;
         d.DepthStencilState.DepthEnable = depth == RR_DEPTH_LEQUAL;
@@ -595,18 +636,20 @@ static const Tex *slot_tex(int32_t t, int slot)
         r = &screen_res[t == RR_TEX_EXTRA0 ? 1 : 2];
     else if (t == RR_TEX_PICTURE)
         r = &picture;
+    else if (t <= RR_TEX_SIDE0 && t > RR_TEX_SIDE0 - RR_SIDES)
+        r = &screen_res[4 + (RR_TEX_SIDE0 - t)];
     else if (t > 0 && t < MAX_TEXTURES)
         r = &tex[t];
     if (r && r->r) {
         int integer = r->format != RR_BGRA8;
-        if (slot < 3 ? !r->array && !integer : slot < 6 ? !r->array && integer : r->array && !integer)
+        if (slot < 3 || slot >= 9 ? !r->array && !integer : slot < 6 ? !r->array && integer : r->array && !integer)
             return r;
         if (said != frame_no) {
             said = frame_no;
             fprintf(stderr, "rr: d3d12: texture %d is of another kind than binding %d reads: read as none\n", (int)t, slot + 2);
         }
     }
-    return slot >= 6 ? &none_array : slot < 3 ? &none_colour : &none_index;
+    return slot >= 9 || slot < 3 ? &none_colour : slot >= 6 ? &none_array : &none_index;
 }
 
 /* t's view at descriptor `at`: every level (and layer), or level `only` alone
@@ -691,13 +734,13 @@ static void slot_texes(const int32_t *ids, const Tex **t)
         t[k] = slot_tex(ids ? ids[k] : 0, k);
 }
 
-static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, int *th, Tex **to);
+static int pass_target(const rr_pass *ps, int ow, int oh, int wok, int *kind, int *tw, int *th, Tex **to);
 
 /* the frame's tables: each different set of textures its draws bind, once,
    and room for the levels its mips make; the heap made just large enough
    (within the device's most), and smaller again when it has long been far
    larger than frames need. The GPU is idle. */
-static void tables_prepare(const rr_frame *f, int ow, int oh, size_t mip_blocks)
+static void tables_prepare(const rr_frame *f, int ow, int oh, int wok)
 {
     size_t p, i, k;
     UINT need, size;
@@ -708,7 +751,7 @@ static void tables_prepare(const rr_frame *f, int ow, int oh, size_t mip_blocks)
         const rr_pass *ps = &f->passes[p];
         Tex *to;
         int kind, tw, th;
-        if (!pass_target(ps, ow, oh, &kind, &tw, &th, &to))
+        if (!pass_target(ps, ow, oh, wok, &kind, &tw, &th, &to))
             continue;
         for (i = ps->first; i < ps->first + ps->count; i++) {
             const Tex *t[RR_TEX_SLOTS];
@@ -804,67 +847,103 @@ static int table_level(const Tex *t, int level, int layer, D3D12_GPU_DESCRIPTOR_
     at = ntables++ * RR_TEX_SLOTS;
     srv_put_layer(at, t, level, layer);
     for (k = 1; k < RR_TEX_SLOTS; k++)
-        srv_put(at + (UINT)k, k >= 6 ? &none_array : k < 3 ? &none_colour : &none_index);
+        srv_put(at + (UINT)k, k >= 9 || k < 3 ? &none_colour : k >= 6 ? &none_array : &none_index);
     *g = table_at(at);
     return 1;
 }
 
 /* ---- a frame ---- */
+/* the screen (screen_ms's index) a pass target is: the frame, the extra targets, the window, a side target; -1 none */
+static int screen_at(const rr_pass *ps)
+{
+    return ps->target <= RR_TARGET_EXTRA1 ? (int)ps->target : ps->target == RR_TARGET_WINDOW ? 3 : ps->target == RR_TARGET_SIDE ? 4 + (int)(ps->layer % RR_SIDES) : -1;
+}
+
+/* the samples a pixel of what a pass draws into has */
+static int pass_n(const rr_pass *ps)
+{
+    int sc = screen_at(ps);
+    return sc < 0 ? 1 : sc < 4 ? pass_samples : (int)ps->samples;
+}
+
 static void screen_free(int k)
 {
     tex_free(&screen_ms[k]);
     tex_free(&screen_ds[k]);
     tex_free(&screen_res[k]);
-    screen_ms[k].w = screen_ms[k].h = 0;
+    screen_w[k] = screen_h[k] = screen_samp[k] = 0;
 }
 
-/* a screen target (0 the frame, 1 and 2 the extra ones) of w x h */
-static void screen_fit(int k, int w, int h)
+/* a screen target (0 the frame, 1 and 2 the extra ones, 3 the window's, 4 and on side targets) of w x h and `samples` */
+static void screen_fit(int k, int w, int h, int samples)
 {
     D3D12_DEPTH_STENCIL_VIEW_DESC dv;
-    if (screen_ms[k].r && screen_ms[k].w == w && screen_ms[k].h == h)
+    if (screen_w[k] == w && screen_h[k] == h && screen_samp[k] == samples)
         return;
+    screen_free(k);
     memset(&dv, 0, sizeof dv);
     dv.Format = DEPTH;
-    dv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
-    tex_make(&screen_ms[k], COLOUR, w, h, RR_SAMPLES, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    tex_make(&screen_ds[k], DEPTH, w, h, RR_SAMPLES, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    ID3D12Device_CreateRenderTargetView(dev, screen_ms[k].r, NULL, rtv(k));
+    dv.ViewDimension = samples > 1 ? D3D12_DSV_DIMENSION_TEXTURE2DMS : D3D12_DSV_DIMENSION_TEXTURE2D;
+    if (samples > 1) {
+        tex_make(&screen_ms[k], COLOUR, w, h, samples, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        ID3D12Device_CreateRenderTargetView(dev, screen_ms[k].r, NULL, rtv(rtv_slot(k)));
+    }
+    tex_make(&screen_ds[k], DEPTH, w, h, samples, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     ID3D12Device_CreateDepthStencilView(dev, screen_ds[k].r, &dv, dsv(k));
-    tex_make(&screen_res[k], COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
-    screen_res[k].format = RR_BGRA8;
+    if (k != 3) {
+        /* at one sample the readable texture is what is drawn into */
+        tex_make(&screen_res[k], COLOUR, w, h, 1, samples > 1 ? D3D12_RESOURCE_FLAG_NONE : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, SHADER_READ);
+        screen_res[k].format = RR_BGRA8;
+        if (samples == 1)
+            ID3D12Device_CreateRenderTargetView(dev, screen_res[k].r, NULL, rtv(rtv_slot(k)));
+    }
+    screen_w[k] = w;
+    screen_h[k] = h;
+    screen_samp[k] = samples;
 }
 
-/* the window-sized targets this frame draws into: made at this size, the extra ones only while passes use
-   them; one not drawn into is never another size than the window: it is let go, and reads of it read nothing */
-static void targets_fit(const rr_frame *f, int w, int h)
+/* the window-sized targets the passes draw into, made at this size, and only
+   while passes use them (`window`: the window's pass runs; `others`: the other
+   screens', the side targets' and the picture's do); one not drawn into is let
+   go when long unused, or no longer the window's size, and reads of it read
+   nothing */
+static void targets_fit(const rr_frame *f, int w, int h, int window, int others)
 {
-    int k, used[3] = { 0, 0, 0 };
+    int k, pic = 0, used[SCREENS] = { 0 }, count[SCREENS] = { 0 };
     size_t p;
-    for (p = 0; p < f->npasses; p++)
-        if (f->passes[p].target <= RR_TARGET_EXTRA1)
-            used[f->passes[p].target] = 1;
-    for (k = 0; k < 3; k++) {
+    for (p = 0; p < f->npasses; p++) {
+        const rr_pass *ps = &f->passes[p];
+        int t = ps->target, sc = screen_at(ps);
+        if (t == RR_TARGET_TEXTURE || (t == RR_TARGET_WINDOW ? !window : !others))
+            continue;
+        if (sc >= 0) {
+            used[sc] = 1;
+            count[sc] = pass_n(ps);
+        } else if (t == RR_TARGET_PICTURE) {
+            pic = 1;
+        }
+    }
+    for (k = 0; k < SCREENS; k++) {
         if (used[k]) {
-            screen_fit(k, w, h);
+            screen_fit(k, w, h, count[k]);
             screen_used[k] = frame_no;
-        } else if (screen_ms[k].r && (frame_no - screen_used[k] > UNUSED_FRAMES || screen_ms[k].w != w || screen_ms[k].h != h)) {
+        } else if (screen_w[k] && (frame_no - screen_used[k] > UNUSED_FRAMES || screen_w[k] != w || screen_h[k] != h)) {
             /* not drawn into this frame: let go when long unused, or when no longer the window's size */
             screen_free(k);
         }
     }
-    if (targets_w == w && targets_h == h)
-        return;
-    tex_make(&output, COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, SHADER_READ);
-    output.format = RR_BGRA8;
-    output.rtv = 3;
-    ID3D12Device_CreateRenderTargetView(dev, output.r, NULL, rtv(3));
-    tex_make(&picture, COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, SHADER_READ);
-    picture.format = RR_BGRA8;
-    picture.rtv = 4;
-    ID3D12Device_CreateRenderTargetView(dev, picture.r, NULL, rtv(4));
-    targets_w = w;
-    targets_h = h;
+    if (pic) {
+        if (!picture.r || picture.w != w || picture.h != h) {
+            tex_make(&picture, COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, SHADER_READ);
+            picture.format = RR_BGRA8;
+            picture.rtv = 4;
+            ID3D12Device_CreateRenderTargetView(dev, picture.r, NULL, rtv(4));
+        }
+        picture_used = frame_no;
+    } else if (picture.r && (frame_no - picture_used > UNUSED_FRAMES || picture.w != w || picture.h != h)) {
+        tex_free(&picture);
+        picture.w = picture.h = 0;
+    }
 }
 
 /* the frame's textures made, before anything reads their sizes */
@@ -994,15 +1073,16 @@ static void record_texops(const rr_frame *f)
     }
 }
 
-/* a pass's target: its kind, size, and whether it can be drawn into */
-static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, int *th, Tex **to)
+/* a pass's target: its kind, size, and whether it can be drawn into (the window's: `wok`, a place to resolve it) */
+static int pass_target(const rr_pass *ps, int ow, int oh, int wok, int *kind, int *tw, int *th, Tex **to)
 {
+    int sc = screen_at(ps);
     *to = NULL;
     *tw = ow;
     *th = oh;
-    if (ps->target <= RR_TARGET_EXTRA1) {
+    if (sc >= 0) {
         *kind = KIND_SCREEN;
-        return screen_ms[ps->target].r != NULL;
+        return screen_w[sc] > 0 && (sc != 3 || wok);
     }
     if (ps->target == RR_TARGET_TEXTURE) {
         Tex *t;
@@ -1015,8 +1095,10 @@ static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, in
         *to = t;
         *kind = t->format == RR_R8U ? KIND_INDEX : t->format == RR_R32U ? KIND_INDEX32 : KIND_COLOUR;
     } else {
-        *to = ps->target == RR_TARGET_PICTURE ? &picture : &output;
+        *to = &picture;
         *kind = KIND_COLOUR;
+        if (!picture.r)
+            return 0;
     }
     *tw = (*to)->w;
     *th = (*to)->h;
@@ -1026,10 +1108,182 @@ static int pass_target(const rr_pass *ps, int ow, int oh, int *kind, int *tw, in
 /* the window lasts as long as the renderer: nothing kept on one that went */
 void rr_window(void) {}
 
+/* whether the frame has a pass into the picture target: an interlaced picture */
+static int has_picture(const rr_frame *f)
+{
+    size_t p;
+    for (p = 0; p < f->npasses; p++)
+        if (f->passes[p].target == RR_TARGET_PICTURE)
+            return 1;
+    return 0;
+}
+
+/* whether the frame has a pass into the window */
+static int has_window(const rr_frame *f)
+{
+    size_t p;
+    for (p = 0; p < f->npasses; p++)
+        if (f->passes[p].target == RR_TARGET_WINDOW)
+            return 1;
+    return 0;
+}
+
+/* the frame's passes recorded: the textures' (not when `again`, a frame being
+   run again for reading: they are what they were), the window's when
+   `window` (resolved into wres, in state *wstate, left in wfinal) and the
+   other screens' and the picture's when `others` */
+static void record_passes(const rr_frame *f, int ow, int oh, float aspect, int window, int others, int again, ID3D12Resource *wres,
+                          D3D12_RESOURCE_STATES *wstate, D3D12_RESOURCE_STATES wfinal)
+{
+    size_t i, p;
+    for (p = 0; p < f->npasses; p++) {
+        const rr_pass *ps = &f->passes[p];
+        D3D12_CPU_DESCRIPTOR_HANDLE rt;
+        int kind, tw, th, layer = 0, vx, vy, vw, vh, sc = screen_at(ps);
+        Tex *to;
+        if (ps->target == RR_TARGET_TEXTURE ? again : ps->target == RR_TARGET_WINDOW ? !window : !others)
+            continue;
+        if (!pass_target(ps, ow, oh, wres != NULL, &kind, &tw, &th, &to)) {
+            if (ps->count)
+                fprintf(stderr, "rr: d3d12: a pass into no target (%u, texture %u, layer %u) left out\n", ps->target, ps->texture, ps->layer);
+            continue;
+        }
+        /* the view: the frame's units shown at their aspect, centred in this target; a
+           window-sized target with no window and no RR_SIZE is the units themselves, filled */
+        rr_view(ps->target == RR_TARGET_TEXTURE ? f->aspect : aspect, tw, th, &vx, &vy, &vw, &vh);
+        if (kind == KIND_SCREEN) {
+            D3D12_CPU_DESCRIPTOR_HANDLE ds = dsv(sc);
+            if (screen_samp[sc] <= 1)
+                transition(screen_res[sc].r, &screen_res[sc].state, D3D12_RESOURCE_STATE_RENDER_TARGET);     /* drawn straight into */
+            rt = rtv(rtv_slot(sc));
+            ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, &ds);
+            ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, ps->clear, 0, NULL);
+            ID3D12GraphicsCommandList_ClearDepthStencilView(list, ds, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, NULL);
+        } else {
+            layer = to->array ? (int)ps->layer : 0;
+            transition(to->r, &to->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            rt = tex_rtv(to, layer * to->levels);
+            ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, NULL);
+            /* kept, unless just made: then cleared */
+            if (!ps->load || to->fresh[layer]) {
+                FLOAT clear[4];
+                memcpy(clear, ps->clear, sizeof clear);
+                if (integer_kind(kind))
+                    clear[1] = clear[2] = clear[3] = 0;
+                ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, clear, 0, NULL);
+            }
+            to->fresh[layer] = 0;
+        }
+        for (i = ps->first; i < ps->first + ps->count; i++) {
+            const rr_cmd *c = &f->cmds[i];
+            ID3D12PipelineState *pl = pipe_of(c, kind, kind == KIND_SCREEN ? pass_n(ps) : 1);
+            D3D12_VIEWPORT vp;
+            D3D12_RECT sr;
+            D3D12_GPU_DESCRIPTOR_HANDLE table;
+            int view = c->space == RR_SPACE_VIEW;
+            if (!pl || !c->vertices || !c->instances || !table_of(c->tex, &table))
+                continue;
+            vp.TopLeftX = view ? (FLOAT)vx : 0.0f;
+            vp.TopLeftY = view ? (FLOAT)vy : 0.0f;
+            vp.Width = view ? (FLOAT)vw : (FLOAT)tw;
+            vp.Height = view ? (FLOAT)vh : (FLOAT)th;
+            vp.MinDepth = 0;
+            vp.MaxDepth = 1;
+            sr.left = sr.top = 0;
+            sr.right = tw;
+            sr.bottom = th;
+            if (c->scissor) {
+                /* the rectangle in the draw's own units: the frame's in view space, target pixels else */
+                int x0, y0, x1, y1;
+                rr_scissor(f->uniforms[c->uniform].f[2], view ? f->width : tw, view ? f->height : th, (int)vp.TopLeftX, (int)vp.TopLeftY,
+                           (int)vp.Width, (int)vp.Height, &x0, &y0, &x1, &y1);
+                if (x1 <= x0 || y1 <= y0)
+                    continue;
+                sr.left = x0;
+                sr.top = y0;
+                sr.right = x1;
+                sr.bottom = y1;
+            }
+            ID3D12GraphicsCommandList_SetPipelineState(list, pl);
+            ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) + (UINT64)c->uniform * 256);
+            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table);
+            ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
+            ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sr);
+            ID3D12GraphicsCommandList_OMSetStencilRef(list, c->ref);
+            ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ID3D12GraphicsCommandList_DrawInstanced(list, c->vertices, c->instances, 0, 0);
+        }
+        if (kind == KIND_SCREEN) {
+            /* resolved into its texture, or the window's into the back buffer (or the texture read back); at one sample it was drawn into its texture */
+            ID3D12Resource *dres = sc == 3 ? wres : screen_res[sc].r;
+            D3D12_RESOURCE_STATES *dstate = sc == 3 ? wstate : &screen_res[sc].state;
+            Tex *src = &screen_ms[sc];
+            if (screen_samp[sc] <= 1) {
+                transition(screen_res[sc].r, &screen_res[sc].state, SHADER_READ);
+                continue;
+            }
+            transition(src->r, &src->state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+            transition(dres, dstate, D3D12_RESOURCE_STATE_RESOLVE_DEST);
+            ID3D12GraphicsCommandList_ResolveSubresource(list, dres, 0, src->r, 0, COLOUR);
+            transition(src->r, &src->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            transition(dres, dstate, sc == 3 ? wfinal : SHADER_READ);
+            continue;
+        }
+        transition(to->r, &to->state, SHADER_READ);
+        if (ps->target == RR_TARGET_TEXTURE && ps->mips && to->levels > 1 && !integer_kind(kind)) {
+            /* its smaller levels (that layer's), each the mean of the one before (the renderer's own program) */
+            rr_cmd mc;
+            ID3D12PipelineState *pl;
+            int lv, w = to->w, h = to->h;
+            memset(&mc, 0, sizeof mc);
+            mc.program = to->array ? RR_MIPS_LAYER : RR_MIPS;
+            pl = pipe_of(&mc, KIND_COLOUR, 1);
+            for (lv = 1; pl && lv < to->levels && mip_at < mip_blocks; lv++) {
+                D3D12_CPU_DESCRIPTOR_HANDLE lr = tex_rtv(to, layer * to->levels + lv);
+                UINT sub = (UINT)(lv + layer * to->levels);
+                D3D12_VIEWPORT vp;
+                D3D12_RECT sr;
+                D3D12_GPU_DESCRIPTOR_HANDLE table;
+                rr_uniform u;
+                if (!table_level(to, lv - 1, layer, &table))
+                    break;              /* no room in the heap: the smaller levels left as they were */
+                w = w > 1 ? w / 2 : 1;
+                h = h > 1 ? h / 2 : 1;
+                memset(&u, 0, sizeof u);
+                u.f[0][0] = (float)w;
+                u.f[0][1] = (float)h;
+                u.f[0][2] = 1.0f;
+                u.f[0][3] = 0.0f;       /* the orientation code (rr.h): clip y up, not turned */
+                memcpy((char *)ubuf.at + (f->nuniforms + mip_at) * 256, &u, sizeof u);
+                vp.TopLeftX = vp.TopLeftY = 0;
+                vp.Width = (FLOAT)w;
+                vp.Height = (FLOAT)h;
+                vp.MinDepth = 0;
+                vp.MaxDepth = 1;
+                sr.left = sr.top = 0;
+                sr.right = w;
+                sr.bottom = h;
+                transition_level(to->r, sub, SHADER_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &lr, FALSE, NULL);
+                ID3D12GraphicsCommandList_SetPipelineState(list, pl);
+                ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) +
+                                                                                (UINT64)(f->nuniforms + mip_at) * 256);
+                ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table);
+                ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
+                ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sr);
+                ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                ID3D12GraphicsCommandList_DrawInstanced(list, 6, 1, 0, 0);
+                transition_level(to->r, sub, D3D12_RESOURCE_STATE_RENDER_TARGET, SHADER_READ);
+                mip_at++;
+            }
+        }
+    }
+}
+
 int rr_draw(rr_frame *f)
 {
-    size_t mip_blocks = 0, mip_at = 0, i, p;
-    int ow = f->width, oh = f->height, paced = 0, back = 0, show = 0;
+    size_t i, p;
+    int ow = f->width, oh = f->height, paced = 0, back = 0, show = 0, others;
     float aspect = f->aspect;
     ID3D12CommandList *lists[1];
 
@@ -1078,10 +1332,10 @@ int rr_draw(rr_frame *f)
             back = (int)IDXGISwapChain3_GetCurrentBackBufferIndex(swapchain);
             if (!sc_img[back])
                 show = 0;
-        } else if (targets_w) {
+        } else if (last_w) {
             /* minimised: drawn as before, not shown */
-            ow = targets_w;
-            oh = targets_h;
+            ow = last_w;
+            oh = last_h;
         }
     } else {
         const char *e = getenv("RR_SIZE");
@@ -1094,37 +1348,40 @@ int rr_draw(rr_frame *f)
         ow = oh = 1;
 
     /* everything this frame makes, made before anything reads a size */
-    targets_fit(f, ow, oh);
+    show = show && has_window(f);           /* a frame with no window pass shows nothing */
+    others = show || has_picture(f);        /* an interlaced picture builds up: its passes but the window's always run */
+    targets_fit(f, ow, oh, show, others);
     make_textures(f);
 
     /* the words and the uniforms, each block given its target's size and samples */
     buf_fit(&dbuf, (f->data_words + 1) * 4);
     memcpy(dbuf.at, f->data, f->data_words * 4);
     /* past the frame's blocks, one for each level the mips make */
+    mip_blocks = mip_at = 0;
     for (p = 0; p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
         Tex *to;
         int kind, tw, th;
-        if (ps->target == RR_TARGET_TEXTURE && ps->mips && pass_target(ps, ow, oh, &kind, &tw, &th, &to) && to->levels > 1)
+        if (ps->target == RR_TARGET_TEXTURE && ps->mips && pass_target(ps, ow, oh, 0, &kind, &tw, &th, &to) && to->levels > 1)
             mip_blocks += (size_t)(to->levels - 1);
     }
     buf_fit(&ubuf, (f->nuniforms + mip_blocks + 1) * 256);
     for (p = 0; p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
         Tex *to;
-        int kind, tw, th, samples = ps->target <= RR_TARGET_EXTRA1 ? RR_SAMPLES : 1;
-        pass_target(ps, ow, oh, &kind, &tw, &th, &to);
+        int kind, tw, th, samples = pass_n(ps);
+        pass_target(ps, ow, oh, 1, &kind, &tw, &th, &to);
         for (i = ps->first; i < ps->first + ps->count; i++) {
             rr_uniform u = f->uniforms[f->cmds[i].uniform];
             u.f[0][0] = (float)tw;
             u.f[0][1] = (float)th;
             u.f[0][2] = (float)samples;
-            u.f[0][3] = -1.0f;
+            u.f[0][3] = 0.0f;           /* the orientation code (rr.h): clip y up, not turned */
             memcpy((char *)ubuf.at + (size_t)f->cmds[i].uniform * 256, &u, sizeof u);
         }
     }
     /* a table for each different set of textures, and for each level made */
-    tables_prepare(f, ow, oh, mip_blocks);
+    tables_prepare(f, ow, oh, show);
 
     ID3D12CommandAllocator_Reset(alloc);
     ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
@@ -1132,147 +1389,7 @@ int rr_draw(rr_frame *f)
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(list, root);
     ID3D12GraphicsCommandList_SetGraphicsRootShaderResourceView(list, 1, ID3D12Resource_GetGPUVirtualAddress(dbuf.r));
     record_texops(f);
-    for (p = 0; p < f->npasses; p++) {
-        const rr_pass *ps = &f->passes[p];
-        D3D12_CPU_DESCRIPTOR_HANDLE rt;
-        int kind, tw, th, layer = 0, vx, vy, vw, vh;
-        Tex *to;
-        if (!pass_target(ps, ow, oh, &kind, &tw, &th, &to)) {
-            if (ps->count)
-                fprintf(stderr, "rr: d3d12: a pass into no target (%u, texture %u, layer %u) left out\n", ps->target, ps->texture, ps->layer);
-            continue;
-        }
-        /* the view: the frame's units shown at their aspect, centred in this target; a
-           window-sized target with no window and no RR_SIZE is the units themselves, filled */
-        rr_view(ps->target == RR_TARGET_TEXTURE ? f->aspect : aspect, tw, th, &vx, &vy, &vw, &vh);
-        if (kind == KIND_SCREEN) {
-            D3D12_CPU_DESCRIPTOR_HANDLE ds = dsv(ps->target);
-            rt = rtv(ps->target);
-            ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, &ds);
-            ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, ps->clear, 0, NULL);
-            ID3D12GraphicsCommandList_ClearDepthStencilView(list, ds, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, NULL);
-        } else {
-            layer = to->array ? (int)ps->layer : 0;
-            transition(to->r, &to->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            rt = tex_rtv(to, layer * to->levels);
-            ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, NULL);
-            /* kept, unless just made: then cleared */
-            if (!ps->load || to->fresh[layer]) {
-                FLOAT clear[4];
-                memcpy(clear, ps->clear, sizeof clear);
-                if (integer_kind(kind))
-                    clear[1] = clear[2] = clear[3] = 0;
-                ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, clear, 0, NULL);
-            }
-            to->fresh[layer] = 0;
-        }
-        for (i = ps->first; i < ps->first + ps->count; i++) {
-            const rr_cmd *c = &f->cmds[i];
-            ID3D12PipelineState *pl = pipe_of(c, kind);
-            D3D12_VIEWPORT vp;
-            D3D12_RECT sc;
-            D3D12_GPU_DESCRIPTOR_HANDLE table;
-            int view = c->space == RR_SPACE_VIEW;
-            if (!pl || !c->vertices || !c->instances || !table_of(c->tex, &table))
-                continue;
-            vp.TopLeftX = view ? (FLOAT)vx : 0.0f;
-            vp.TopLeftY = view ? (FLOAT)vy : 0.0f;
-            vp.Width = view ? (FLOAT)vw : (FLOAT)tw;
-            vp.Height = view ? (FLOAT)vh : (FLOAT)th;
-            vp.MinDepth = 0;
-            vp.MaxDepth = 1;
-            sc.left = sc.top = 0;
-            sc.right = tw;
-            sc.bottom = th;
-            if (c->scissor) {
-                /* the rectangle in the draw's own units: the frame's in view space, target pixels else */
-                int x0, y0, x1, y1;
-                rr_scissor(f->uniforms[c->uniform].f[2], view ? f->width : tw, view ? f->height : th, (int)vp.TopLeftX, (int)vp.TopLeftY,
-                           (int)vp.Width, (int)vp.Height, &x0, &y0, &x1, &y1);
-                if (x1 <= x0 || y1 <= y0)
-                    continue;
-                sc.left = x0;
-                sc.top = y0;
-                sc.right = x1;
-                sc.bottom = y1;
-            }
-            ID3D12GraphicsCommandList_SetPipelineState(list, pl);
-            ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) + (UINT64)c->uniform * 256);
-            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table);
-            ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
-            ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
-            ID3D12GraphicsCommandList_OMSetStencilRef(list, c->ref);
-            ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            ID3D12GraphicsCommandList_DrawInstanced(list, c->vertices, c->instances, 0, 0);
-        }
-        if (kind == KIND_SCREEN) {
-            /* resolved into its texture */
-            Tex *dst = &screen_res[ps->target];
-            Tex *src = &screen_ms[ps->target];
-            transition(src->r, &src->state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
-            transition(dst->r, &dst->state, D3D12_RESOURCE_STATE_RESOLVE_DEST);
-            ID3D12GraphicsCommandList_ResolveSubresource(list, dst->r, 0, src->r, 0, COLOUR);
-            transition(src->r, &src->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            transition(dst->r, &dst->state, SHADER_READ);
-            continue;
-        }
-        transition(to->r, &to->state, SHADER_READ);
-        if (ps->target == RR_TARGET_TEXTURE && ps->mips && to->levels > 1 && !integer_kind(kind)) {
-            /* its smaller levels (that layer's), each the mean of the one before (the renderer's own program) */
-            rr_cmd mc;
-            ID3D12PipelineState *pl;
-            int lv, w = to->w, h = to->h;
-            memset(&mc, 0, sizeof mc);
-            mc.program = to->array ? RR_MIPS_LAYER : RR_MIPS;
-            pl = pipe_of(&mc, KIND_COLOUR);
-            for (lv = 1; pl && lv < to->levels && mip_at < mip_blocks; lv++) {
-                D3D12_CPU_DESCRIPTOR_HANDLE lr = tex_rtv(to, layer * to->levels + lv);
-                UINT sub = (UINT)(lv + layer * to->levels);
-                D3D12_VIEWPORT vp;
-                D3D12_RECT sc;
-                D3D12_GPU_DESCRIPTOR_HANDLE table;
-                rr_uniform u;
-                if (!table_level(to, lv - 1, layer, &table))
-                    break;              /* no room in the heap: the smaller levels left as they were */
-                w = w > 1 ? w / 2 : 1;
-                h = h > 1 ? h / 2 : 1;
-                memset(&u, 0, sizeof u);
-                u.f[0][0] = (float)w;
-                u.f[0][1] = (float)h;
-                u.f[0][2] = 1.0f;
-                u.f[0][3] = -1.0f;
-                memcpy((char *)ubuf.at + (f->nuniforms + mip_at) * 256, &u, sizeof u);
-                vp.TopLeftX = vp.TopLeftY = 0;
-                vp.Width = (FLOAT)w;
-                vp.Height = (FLOAT)h;
-                vp.MinDepth = 0;
-                vp.MaxDepth = 1;
-                sc.left = sc.top = 0;
-                sc.right = w;
-                sc.bottom = h;
-                transition_level(to->r, sub, SHADER_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &lr, FALSE, NULL);
-                ID3D12GraphicsCommandList_SetPipelineState(list, pl);
-                ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) +
-                                                                                (UINT64)(f->nuniforms + mip_at) * 256);
-                ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table);
-                ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
-                ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
-                ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                ID3D12GraphicsCommandList_DrawInstanced(list, 6, 1, 0, 0);
-                transition_level(to->r, sub, D3D12_RESOURCE_STATE_RENDER_TARGET, SHADER_READ);
-                mip_at++;
-            }
-        }
-    }
-    if (show) {
-        /* the output, shown */
-        transition(output.r, &output.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        transition(sc_img[back], &sc_state[back], D3D12_RESOURCE_STATE_COPY_DEST);
-        ID3D12GraphicsCommandList_CopyResource(list, sc_img[back], output.r);
-        transition(sc_img[back], &sc_state[back], D3D12_RESOURCE_STATE_PRESENT);
-        transition(output.r, &output.state, SHADER_READ);
-    }
+    record_passes(f, ow, oh, aspect, show, others, 0, show ? sc_img[back] : NULL, show ? &sc_state[back] : NULL, D3D12_RESOURCE_STATE_PRESENT);
     check("ID3D12GraphicsCommandList_Close", ID3D12GraphicsCommandList_Close(list));
     lists[0] = (ID3D12CommandList *)list;
     ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
@@ -1289,6 +1406,8 @@ int rr_draw(rr_frame *f)
     ever = 1;
     last_w = ow;
     last_h = oh;
+    last_aspect = aspect;
+    last_frame = f;
     return paced;
 }
 
@@ -1296,21 +1415,33 @@ int rr_read(uint32_t *argb, int *w, int *h)
 {
     *w = last_w;
     *h = last_h;
-    if (!ever)
+    if (!ever || !last_frame || !has_window(last_frame))
         return 0;
     if (argb) {
         D3D12_TEXTURE_COPY_LOCATION to, from;
         ID3D12CommandList *lists[1];
         UINT pitch = ((UINT)last_w * 4 + 255) / 256 * 256;
         UINT64 need = (UINT64)pitch * (UINT64)last_h;
-        int y;
+        Tex img;
+        int y, pic = has_picture(last_frame);
         wait_gpu();
         if (readback.size < need) {
             buf_free(&readback);
             buf_make(&readback, need, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
         }
+        /* the last frame's passes again (its buffers are as it left them), the window's into a texture
+           of the window's size; of an interlaced picture only the window's, the picture being that frame's */
+        targets_fit(last_frame, last_w, last_h, 1, !pic);
+        memset(&img, 0, sizeof img);
+        tex_make(&img, COLOUR, last_w, last_h, 1, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        mip_blocks = mip_at = 0;
+        tables_prepare(last_frame, last_w, last_h, 1);
         ID3D12CommandAllocator_Reset(alloc);
         ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
+        ID3D12GraphicsCommandList_SetDescriptorHeaps(list, 1, &srv_heap);
+        ID3D12GraphicsCommandList_SetGraphicsRootSignature(list, root);
+        ID3D12GraphicsCommandList_SetGraphicsRootShaderResourceView(list, 1, ID3D12Resource_GetGPUVirtualAddress(dbuf.r));
+        record_passes(last_frame, last_w, last_h, last_aspect, 1, !pic, 1, img.r, &img.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
         memset(&to, 0, sizeof to);
         memset(&from, 0, sizeof from);
         to.pResource = readback.r;
@@ -1320,16 +1451,15 @@ int rr_read(uint32_t *argb, int *w, int *h)
         to.PlacedFootprint.Footprint.Height = (UINT)last_h;
         to.PlacedFootprint.Footprint.Depth = 1;
         to.PlacedFootprint.Footprint.RowPitch = pitch;
-        from.pResource = output.r;
+        from.pResource = img.r;
         from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        transition(output.r, &output.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
         ID3D12GraphicsCommandList_CopyTextureRegion(list, &to, 0, 0, 0, &from, NULL);
-        transition(output.r, &output.state, SHADER_READ);
         check("ID3D12GraphicsCommandList_Close", ID3D12GraphicsCommandList_Close(list));
         lists[0] = (ID3D12CommandList *)list;
         ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
         check("ID3D12CommandQueue_Signal", ID3D12CommandQueue_Signal(queue, fence, ++fence_at));
         wait_gpu();
+        tex_free(&img);
         /* BGRA bytes are 0xAARRGGBB words */
         for (y = 0; y < last_h; y++)
             memcpy(argb + (size_t)y * last_w, (const char *)readback.at + (size_t)y * pitch, (size_t)last_w * 4);
@@ -1357,10 +1487,9 @@ void rr_close(void)
     cap_table_slots = 0;
     for (k = 0; k < MAX_TEXTURES; k++)
         tex_free(&tex[k]);
-    for (k = 0; k < 3; k++)
+    for (k = 0; k < SCREENS; k++)
         screen_free(k);
     tex_free(&picture);
-    tex_free(&output);
     tex_free(&none_colour);
     tex_free(&none_index);
     tex_free(&none_array);
@@ -1418,14 +1547,21 @@ void rr_close(void)
     memset(screen_ds, 0, sizeof screen_ds);
     memset(screen_res, 0, sizeof screen_res);
     memset(&picture, 0, sizeof picture);
-    memset(&output, 0, sizeof output);
     memset(&none_colour, 0, sizeof none_colour);
     memset(&none_index, 0, sizeof none_index);
     memset(&none_array, 0, sizeof none_array);
     memset(screen_used, 0, sizeof screen_used);
+    memset(screen_w, 0, sizeof screen_w);
+    memset(screen_h, 0, sizeof screen_h);
+    memset(screen_samp, 0, sizeof screen_samp);
+    pass_samples = samples_have = 0;
     memset(sc_img, 0, sizeof sc_img);
     sc_w = sc_h = 0;
-    targets_w = targets_h = last_w = last_h = ever = 0;
+    last_w = last_h = ever = 0;
+    picture_used = 0;
+    last_frame = NULL;
+    last_aspect = 0;
+    mip_blocks = mip_at = 0;
     fence_at = 0;
     frame_no = 0;
     ntables = 0;

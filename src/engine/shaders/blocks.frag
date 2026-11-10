@@ -19,5 +19,5 @@ void main()
         col = palette(pal * 16u + c, prow);
     else
         col = palette(uint(u.i[3].y) + pal * 4u + c, prow);
-    o = vec4(col, u.f[3].x);
+    o = nshvc_maths(col, u.f[3].x, v_p);
 }

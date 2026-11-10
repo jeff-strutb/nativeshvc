@@ -81,13 +81,13 @@ natively on the GPU, at the window's own resolution, with nothing emulated and n
 | Priorities between layers and sprites | Depth and the depth test |
 | Windows | Stencil bits, set from rectangles made from the window edges |
 | Changes by line | Strips: the rows (and columns) where a capability's values are the same are drawn together, with those values |
-| Colour maths, brightness, blanking | The main screen drawn into the frame and the sub screen into a target of its own; one pass over the picture combines the two already drawn, exactly as the SNES defines it: each channel in 5-bit steps (eighths of a step for colours past 15 bits) added or taken away, halved and kept to the range, then brightness |
+| Colour maths, brightness, blanking | Done where a layer's colour is written, on its own pixel and what the other screen shows there (the sub screen, drawn into a target of its own only on pictures whose maths need it), exactly as the SNES defines it: each channel in 5-bit steps (eighths of a step for colours past 15 bits) added or taken away, halved and kept to the range, then brightness |
 | Hires | The sub screen in the main's even half-columns, by a stencil bit |
-| Interlace | The picture keeps the other field's half-rows from the picture before |
+| Interlace | The picture keeps the other field's half-rows from the picture before; only an interlaced picture is drawn through a kept picture, any other is one pass into the window |
 
 Texels are drawn sharp: a pixel a texel covers takes its colour whole, and only the pixel an edge between texels falls in
 mixes the two. Where Mode 7's plane is drawn smaller than its texels, it is filtered from the plane in colour and its
-smaller levels, so it does not shimmer. Edges of geometry are smoothed by the frame's 4 samples a pixel. The cost follows
+smaller levels, so it does not shimmer. Edges of geometry are smoothed by the picture's samples a pixel (8 where the GPU has them, else 4). The cost follows
 what the game draws: a draw list's or the sprites' rows of one setting are drawn once, however the setting changes down
 the screen.
 
@@ -244,6 +244,7 @@ void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, c
 void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m);
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m);
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);   /* smooth, or vertices on the list's whole pixels */
+void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);  /* 1, 2, 4, 8 (the default) or 16 a pixel */
 
 typedef struct nshvc_vertex {
     float x, y;         /* in the list's pixels, with sub-pixel precision */
@@ -262,8 +263,15 @@ typedef struct nshvc_vertex {
   given. `w` makes texture coordinates follow perspective.
 - Its pixels take part in windows, colour maths and brightness as its layer's do. A list on a layer that neither screen
   shows is not drawn at all.
-- Its edges are smoothed by the frame's 4 samples a pixel; a pixel's alpha says how much of it a triangle covers.
-  A line is a list pixel wide at any window size.
+- Each of a list's pixels has several samples, 8 unless the game sets otherwise with `nshvc_draw_samples`. Each sample is
+  composed as a pixel is (palette, see-through 0, priorities, windows, colour maths) and the colours averaged, so
+  polygon edges are smooth and nothing else changes. 1 gives hard edges. A count above what the GPU can fill is capped
+  to the most it can; the picture itself has 8 samples a pixel where the GPU has them, else 4. A list with that many
+  or more is drawn in the picture's own pass; one with fewer is drawn into a window-sized target of its own at its
+  count and placed where its layer is, which costs one extra window-sized pass for that list, only on pictures where a
+  game asks for it (a picture draws at most eight such lists this way; the rest are drawn with the picture's samples
+  and the engine reports it). The setting is the list's, kept until changed. The picture `nshvc_picture_read` returns is
+  made the same way. A pixel's alpha says how much of it a triangle covers. A line is a list pixel wide at any window size.
 - A material's image is full colour, or indexed through the palette with 0 see-through, its texels drawn sharp; without
   one, the vertices' colours, mixed across the triangle.
 - Jobs may fill separate lists in parallel.
@@ -417,8 +425,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same.
 
 - `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.0. 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
-0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is gone, as a draw list is drawn straight into the frame with
-the frame's own samples; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
+0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
 - **Major (7.0):** the only release that may change or remove anything a game uses.
 - **Minor (6.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 6.0 game

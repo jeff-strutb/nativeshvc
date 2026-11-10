@@ -6,5 +6,5 @@ void main()
 {
     int i = gl_VertexIndex;
     vec2 k = vec2(i == 1 || i == 2 || i == 4 ? 1.0 : 0.0, i == 2 || i == 4 || i == 5 ? 1.0 : 0.0);
-    gl_Position = vec4(k.x * 2.0 - 1.0, (k.y * 2.0 - 1.0) * u.f[0].w, 0.0, 1.0);
+    gl_Position = vec4(k.x * 2.0 - 1.0, (k.y * 2.0 - 1.0) * ((int(u.f[0].w) & 1) != 0 ? 1.0 : -1.0), 0.0, 1.0);
 }

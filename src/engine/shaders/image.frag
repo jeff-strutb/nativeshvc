@@ -30,5 +30,5 @@ void main()
     if (m == 0)
         discard;
     gl_SampleMask[0] = m;
-    o = vec4(acc.rgb / acc.a, u.f[3].x);
+    o = nshvc_maths(acc.rgb / acc.a, u.f[3].x, v_p);
 }

@@ -19,10 +19,16 @@ each finished picture, the audio thread mixes voices and runs the game's music c
 **What crosses to the GPU.** Tile sets, maps, images and the palette are textures on the GPU, and a picture sends only the
 texels that changed since the last. `draw` sets the whole picture and nothing carries over but those objects, the palette
 and the overlays. `compose.c` turns what `draw` set into a frame for the renderer: its passes and their draws, the words
-the draws read, and their uniforms. The screens are drawn into multisampled targets with depth and stencil at the window's
-size: the sub screen into its own when the colour maths need it, then the main screen into the frame. One pass combines
-them into the picture (the colour maths, brightness and blanking, done exactly), which keeps the other field when
-interlaced; the output is the picture with the overlays over it.
+the draws read, and their uniforms. A picture is one pass into the window: the main screen is drawn
+into a multisampled target with depth and stencil at the window's size and resolved straight into the window's drawable,
+with the black outside the part shown and the overlays in the same pass. The colour maths, brightness and blanking are
+done exactly where each layer's colour is written, from the other screen's pixel; the sub screen (and, on hires rows, the
+main alone) is drawn into a target of its own first, only on pictures whose maths need it. A draw list that asks for
+fewer samples than the picture has is drawn first into a side target of its own and placed where its layer is. An
+interlaced picture is the one that keeps state: the screen is drawn into the frame, this field's half-rows of it are
+copied into the picture kept from before, and the picture is copied into the window. A frame is kept for `rr_read`,
+which runs its passes again into a texture, so nothing is kept or copied for a picture nobody reads. Where the display is
+turned from the picture (a phone held sideways), every window-sized target is drawn turned, in the vertex stage.
 
 **The picture's shape.** The viewport places the picture in the window (`rr_view`): 4:3 by default, centred with black
 margins, or the shape `nshvc_screen.aspect` names. Everything is drawn at the window's pixels. Overlays are placed in

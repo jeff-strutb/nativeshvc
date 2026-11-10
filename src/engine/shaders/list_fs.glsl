@@ -1,4 +1,5 @@
-/* list_fs.glsl: the fragment stage of a draw list's triangles (list.frag) and lines (lines.frag) */
+/* list_fs.glsl: the fragment stage of a draw list's triangles (list.frag) and lines (lines.frag),
+   its colour through the colour maths (maths.glsl) */
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_colour;
 layout(location = 2) noperspective in vec2 v_p;
@@ -34,5 +35,5 @@ void main()
     if (m == 0)
         discard;
     gl_SampleMask[0] = m;
-    o = vec4(c.rgb, u.f[3].x);
+    o = nshvc_maths(c.rgb, u.f[3].x, v_p);
 }

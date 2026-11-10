@@ -471,6 +471,7 @@ nshvc_draw_list nshvc_draw_list_create(void)
         return r;
     }
     r.id = eng_nlists++;
+    eng_lists_of[r.id].samples = 8;
     return r;
 }
 
@@ -498,6 +499,18 @@ void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height)
     l->h = height;
     l->nv = l->nc = 0;
     l->rule = NSHVC_FILL_SMOOTH;
+}
+
+void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples)
+{
+    eng_list *l = list_of("nshvc_draw_samples", d);
+    if (!l)
+        return;
+    if (samples != 1 && samples != 2 && samples != 4 && samples != 8 && samples != 16) {
+        eng_report("nshvc_draw_samples", "%u samples", samples);
+        return;
+    }
+    l->samples = samples;
 }
 
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r)

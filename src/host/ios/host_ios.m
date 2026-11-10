@@ -438,7 +438,7 @@ static void sizes_read(int *pw, int *ph, float *tw, float *th)
     s_view.backgroundColor = [UIColor blackColor];
     s_layer = (CAMetalLayer *)s_view.layer;
     s_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    s_layer.framebufferOnly = NO;     /* the renderer copies its frame in */
+    s_layer.framebufferOnly = NO;     /* the renderer's window pass resolves into the drawable's texture */
     s_layer.magnificationFilter = kCAFilterNearest;
     s_layer.opaque = YES;
     s_controls = [[PortTouch alloc] initWithFrame:CGRectZero];
