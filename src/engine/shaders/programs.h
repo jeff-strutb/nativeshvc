@@ -10,15 +10,17 @@
 #define P_MODE7 3       /* Mode 7's plane, textured through its matrix */
 #define P_SPRITES 4     /* sprites: an instance each */
 #define P_IMAGE 5       /* an image as a layer */
-#define P_LIST 6        /* a draw list's triangles and lines */
-#define P_COMBINE 7     /* the colour maths: another target, or a colour, onto the frame */
-#define P_PLANE 8       /* Mode 7's plane drawn from its map and tiles into a texture */
-#define P_OVERLAY 9     /* an overlay in window pixels */
+#define P_LIST 6        /* a draw list's triangles */
+#define P_LINES 7       /* a draw list's lines, as quads a list pixel wide */
+#define P_COMBINE 8     /* the colour maths, brightness and blanking: the drawn screens into the picture */
+#define P_PLANE 9       /* Mode 7's plane drawn from its map and tiles into a texture */
+#define P_TINT 10       /* Mode 7's plane (or its tile 0) in colour, for its smaller levels */
+#define P_OVERLAY 11    /* an overlay in window pixels */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */
 #define SB_STRIPE 2     /* a hires row's even half-column: the sub screen's */
-#define SB_COLOUR 4     /* inside the colour window */
+#define SB_GROUP 4      /* the rows of one state, drawn together */
 #define SB_LAYER0 8     /* inside layer n's window: SB_LAYER0 << n, BG1-4 and sprites */
 
 #endif

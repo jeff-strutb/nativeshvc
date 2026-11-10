@@ -9,11 +9,15 @@
  *
  * Targets. The frame target and the two extra targets are the window's size,
  * multisampled (RR_SAMPLES), with depth and stencil; each is cleared when its
- * pass begins and resolved when it ends: the frame into the output, an extra
- * target into its texture (RR_TEX_EXTRA0, RR_TEX_EXTRA1). The output is the
- * window's picture, one sample a pixel: drawn into after the frame, then
- * shown, and kept for rr_read. A texture target is one of the frame's
- * textures made with RR_TEX_TARGET, cleared to 0.
+ * pass begins and resolved into its texture when it ends (RR_TEX_FRAME,
+ * RR_TEX_EXTRA0, RR_TEX_EXTRA1). The picture target is the window's size,
+ * one sample a pixel, and keeps what was drawn into it from one frame to the
+ * next (RR_TEX_PICTURE). The output is the window's picture, one sample a
+ * pixel: shown, and kept for rr_read. A texture target is one of the frame's
+ * textures made with RR_TEX_TARGET. A pass into the picture, the output or
+ * a texture clears it to the pass's colour, or keeps what it held (`load`;
+ * a target just made is cleared); a texture made with RR_TEX_MIPS has its
+ * smaller levels made from the first when a pass into it asks (`mips`).
  *
  * Spaces. A draw in RR_SPACE_VIEW is in the frame's own units (width x
  * height), shown at its aspect, centred in the target and as large as fits
@@ -22,9 +26,12 @@
  * Programs. A program is a vertex and a fragment stage, compiled into the
  * backend (rr_spv.h, rr_msl.h, rr_dxil.h, from src/render/shaders). It reads
  * the draw's uniform block (binding 0), the frame's words (binding 1) and up
- * to five textures (bindings 2-6), and draws `vertices` vertices of each of
- * `instances` instances, with nothing in vertex buffers. A game's shader
- * takes the place of a program's fragment stage.
+ * to six textures (bindings 2-7): binding 2 sampled at its texels, bindings
+ * 3 and 4 filtered (linear between texels and levels, anisotropic, the
+ * texture repeating), bindings 5-7 integer textures read at their texels. It
+ * draws `vertices` vertices of each of `instances` instances, with nothing
+ * in vertex buffers, as triangles. A game's shader takes the place of a
+ * program's fragment stage.
  *
  *   RR_SIZE=WxH   with no window: the target's size (default: the frame's units)
  */
@@ -35,32 +42,28 @@
 #include <stdint.h>
 
 #define RR_SAMPLES 4            /* the frame's and extra targets' samples a pixel */
-#define RR_PROGRAMS 11          /* programs compiled into the backend */
-#define RR_SHOW 10              /* the backend's own: the output copied to the window */
-#define RR_TEX_SLOTS 5          /* bindings 2, 3: colour textures; 4, 5, 6: integer textures */
+#define RR_PROGRAMS 14          /* programs compiled into the backend */
+#define RR_SHOW 12              /* a texture copied a pixel for a pixel (binding 2, the target's size) */
+#define RR_MIPS 13              /* a level made from the one before (binding 2), for a backend that needs it */
+#define RR_TEX_SLOTS 6          /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures */
 
 /* texture formats */
 enum { RR_R8U, RR_R32U, RR_BGRA8 };
 #define RR_TEX_TARGET 1         /* a texture drawn into */
-/* textures that are no texture of the frame's: an extra target, resolved */
+#define RR_TEX_MIPS 2           /* with every smaller level, down to 1 x 1 */
+/* textures that are no texture of the frame's: the targets, resolved */
 #define RR_TEX_EXTRA0 (-1)
 #define RR_TEX_EXTRA1 (-2)
+#define RR_TEX_FRAME (-3)
+#define RR_TEX_PICTURE (-4)
 
 /* pass targets */
-enum { RR_TARGET_FRAME, RR_TARGET_EXTRA0, RR_TARGET_EXTRA1, RR_TARGET_TEXTURE, RR_TARGET_OUTPUT };
+enum { RR_TARGET_FRAME, RR_TARGET_EXTRA0, RR_TARGET_EXTRA1, RR_TARGET_TEXTURE, RR_TARGET_PICTURE, RR_TARGET_OUTPUT };
 
-/* blend states: what a draw does to the colour there; a, rgb the target's, s the draw's */
+/* blend states: what a draw does to the colour there; rgba the target's, s the draw's */
 enum {
     RR_BLEND_REPLACE,           /* rgba = s */
     RR_BLEND_NOCOLOUR,          /* nothing written */
-    RR_BLEND_ADD_BY_A,          /* rgb += s.rgb * a */
-    RR_BLEND_RSUB_BY_A,         /* rgb -= s.rgb * a */
-    RR_BLEND_MIX_BY_A,          /* rgb = rgb * (1 - a) + s.rgb * a */
-    RR_BLEND_RMIX_BY_A,         /* rgb = rgb * (1 - a) - s.rgb * a */
-    RR_BLEND_A_ZERO,            /* a = 0 */
-    RR_BLEND_RGB_ZERO_A_ADD,    /* rgb = 0; a += s.a * a */
-    RR_BLEND_A_ADD,             /* a += s.a * a */
-    RR_BLEND_RGB_SCALE,         /* rgb *= the draw's constant */
     RR_BLEND_OVER,              /* rgba = s + rgba * (1 - s.a): premultiplied */
     RR_BLENDS
 };
@@ -71,7 +74,6 @@ enum { RR_DEPTH_OFF, RR_DEPTH_LEQUAL, RR_DEPTHS };
    EQUAL_INC the same, and where drawn or hidden by depth, stencil + 1 under write_mask
    SET       stencil = ref under write_mask */
 enum { RR_STENCIL_OFF, RR_STENCIL_EQUAL, RR_STENCIL_EQUAL_INC, RR_STENCIL_SET, RR_STENCILS };
-enum { RR_TRIANGLES, RR_LINES };
 enum { RR_SPACE_VIEW, RR_SPACE_TARGET };
 
 /* a draw's uniform block: 256 bytes. f[0] is the backend's: the target's
@@ -84,10 +86,9 @@ typedef struct rr_uniform {
 
 typedef struct rr_cmd {
     uint8_t program, blend, depth, stencil;
-    uint8_t read_mask, write_mask, ref, topology;
+    uint8_t read_mask, write_mask, ref;
     uint8_t space, scissor;     /* scissor: kept to the rectangle in f[2] (x0, y0, x1, y1, the space's units) */
     uint16_t shader;            /* a game's shader in place of the fragment stage; 0 none */
-    float constant;             /* RR_BLEND_RGB_SCALE's */
     uint32_t uniform;           /* its block in the frame's */
     int32_t tex[RR_TEX_SLOTS];  /* the frame's textures, or RR_TEX_EXTRA*; 0 none */
     uint32_t vertices, instances;
@@ -95,8 +96,9 @@ typedef struct rr_cmd {
 
 typedef struct rr_pass {
     uint8_t target;
+    uint8_t load, mips;         /* keep what the target held; then make a texture's smaller levels */
     uint32_t texture;           /* RR_TARGET_TEXTURE's */
-    float clear[4];             /* the frame's and extra targets' colour when cleared */
+    float clear[4];             /* the colour it is cleared to */
     size_t first, count;        /* its draws */
 } rr_pass;
 

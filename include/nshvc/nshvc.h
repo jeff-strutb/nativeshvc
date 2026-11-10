@@ -201,7 +201,8 @@ typedef struct nshvc_screen {
     int32_t width, height;      /* any size; 0: the original's 256 x 224 */
     int32_t origin_x, origin_y; /* where the original's 256 x 224 sits in it */
     uint8_t overscan;
-    uint8_t interlace;          /* modes 5 and 6 show their layers' rows twice as fine, both fields at once */
+    uint8_t interlace;          /* fields woven: each picture draws one field's half-rows and keeps the other's
+                                   from the picture before; modes 5 and 6 show their layers' rows twice as fine */
     uint8_t brightness;         /* 0-15 */
     uint8_t blank;
     float   aspect;             /* the shape the screen is shown at, width over height, whatever the window's:
@@ -304,7 +305,8 @@ typedef struct nshvc_vertex {
 } nshvc_vertex;
 typedef struct nshvc_shader { uint32_t id; } nshvc_shader;
 typedef struct nshvc_material {
-    nshvc_image image;              /* full colour; no image: the vertices' colour */
+    nshvc_image image;              /* full colour, or indexed through the palette (0 see-through);
+                                       no image: the vertices' colour */
     nshvc_shader shader;            /* none: the image's or colour's value as it is */
     float inputs[8];                /* what the shader reads with nshvc_input */
 } nshvc_material;

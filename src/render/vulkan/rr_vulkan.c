@@ -22,7 +22,8 @@ void *host_vulkan_loader(void);
 
 #define VK_FUNCS(X) \
     X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceQueueFamilyProperties) \
-    X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr) \
+    X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) X(vkGetPhysicalDeviceFeatures) \
+    X(vkGetPhysicalDeviceProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr) \
     X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) \
     X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkCreateImage) X(vkDestroyImage) \
     X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) X(vkCreateSampler) \
@@ -31,7 +32,7 @@ void *host_vulkan_loader(void);
     X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCreateCommandPool) X(vkAllocateCommandBuffers) \
     X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkResetCommandBuffer) X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) \
     X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdDraw) \
-    X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetBlendConstants) \
+    X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdBlitImage) \
     X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdPipelineBarrier) X(vkQueueSubmit) X(vkQueueWaitIdle) X(vkCreateFence) \
     X(vkWaitForFences) X(vkResetFences) X(vkCreateSemaphore) X(vkDeviceWaitIdle) \
     X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
@@ -53,7 +54,8 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define COLOUR VK_FORMAT_B8G8R8A8_UNORM
 
 typedef struct { VkBuffer b; VkDeviceMemory m; void *at; VkDeviceSize size; } Buf;
-typedef struct { VkImage i; VkDeviceMemory m; VkImageView v; VkFramebuffer f; int w, h, format; } Image;
+/* an image: v its view of every level, fv of the first (drawn into, through f) */
+typedef struct { VkImage i; VkDeviceMemory m; VkImageView v, fv; VkFramebuffer f; int w, h, format, levels, fresh; } Image;
 
 /* what a pass draws into: the multisampled screens with depth and stencil,
    an integer texture, the output, the window */
@@ -73,17 +75,17 @@ static VkFramebuffer sc_fb[8];
 static uint32_t sc_n;
 static int sc_w, sc_h;          /* the window's size the swapchain was made for */
 static int sc_ew, sc_eh;        /* the swapchain's own size */
-static VkRenderPass rp_screen, rp_frame, rp_index, rp_output, rp_show;
+static VkRenderPass rp_screen, rp_colour[2], rp_index[2], rp_show;   /* [load]: cleared, or what it held kept */
 static VkDescriptorSetLayout set_layout;
 static VkPipelineLayout layout;
-static VkSampler sampler;
+static VkSampler sampler, filtered;
 static VkCommandBuffer cmd;
 static VkFence fence;
 static VkSemaphore sem_acquire, sem_done;
 static VkShaderModule vert_mod[RR_PROGRAMS], frag_mod[RR_PROGRAMS], game_mods[MAX_SHADERS];
 static Image tex[MAX_TEXTURES];
 static Image none_colour, none_index;
-static Image screen_ms[3], screen_ds[3], extra_res[2], output;
+static Image screen_ms[3], screen_ds[3], screen_res[3], picture, output;
 static VkFramebuffer screen_fb[3];
 static Buf ubuf, dbuf, staging, readback;
 static uint32_t pipe_key[MAX_PIPES];
@@ -164,6 +166,8 @@ static void image_free(Image *t)
 {
     if (t->f)
         vkDestroyFramebuffer(dev, t->f, NULL);
+    if (t->fv && t->fv != t->v)
+        vkDestroyImageView(dev, t->fv, NULL);
     if (t->v)
         vkDestroyImageView(dev, t->v, NULL);
     if (t->i) {
@@ -173,7 +177,18 @@ static void image_free(Image *t)
     memset(t, 0, sizeof *t);
 }
 
-static void image_make(Image *t, VkFormat f, int w, int h, int samples, VkImageUsageFlags usage, VkImageAspectFlags aspect)
+static int levels_of(int w, int h)
+{
+    int n = 1;
+    while ((w > 1 || h > 1) && n < 16) {
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+        n++;
+    }
+    return n;
+}
+
+static void image_make_levels(Image *t, VkFormat f, int w, int h, int samples, int levels, VkImageUsageFlags usage, VkImageAspectFlags aspect)
 {
     VkImageCreateInfo ci = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     VkImageViewCreateInfo vi = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -186,7 +201,8 @@ static void image_make(Image *t, VkFormat f, int w, int h, int samples, VkImageU
     ci.extent.width = (uint32_t)w;
     ci.extent.height = (uint32_t)h;
     ci.extent.depth = 1;
-    ci.mipLevels = ci.arrayLayers = 1;
+    ci.mipLevels = (uint32_t)levels;
+    ci.arrayLayers = 1;
     ci.samples = (VkSampleCountFlagBits)samples;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
@@ -202,11 +218,25 @@ static void image_make(Image *t, VkFormat f, int w, int h, int samples, VkImageU
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = f;
     vi.subresourceRange.aspectMask = aspect;
-    vi.subresourceRange.levelCount = vi.subresourceRange.layerCount = 1;
+    vi.subresourceRange.levelCount = (uint32_t)levels;
+    vi.subresourceRange.layerCount = 1;
     if ((e = vkCreateImageView(dev, &vi, NULL, &t->v)) != VK_SUCCESS)
         fail("vkCreateImageView", e);
+    t->fv = t->v;
+    if (levels > 1) {
+        vi.subresourceRange.levelCount = 1;
+        if ((e = vkCreateImageView(dev, &vi, NULL, &t->fv)) != VK_SUCCESS)
+            fail("vkCreateImageView", e);
+    }
     t->w = w;
     t->h = h;
+    t->levels = levels;
+    t->fresh = 1;
+}
+
+static void image_make(Image *t, VkFormat f, int w, int h, int samples, VkImageUsageFlags usage, VkImageAspectFlags aspect)
+{
+    image_make_levels(t, f, w, h, samples, 1, usage, aspect);
 }
 
 static VkFramebuffer framebuffer(VkRenderPass rp, const VkImageView *views, uint32_t n, int w, int h)
@@ -225,6 +255,23 @@ static VkFramebuffer framebuffer(VkRenderPass rp, const VkImageView *views, uint
     return fb;
 }
 
+static void barrier_levels(VkImage i, uint32_t level, uint32_t count, VkImageLayout from, VkImageLayout to, VkAccessFlags src, VkAccessFlags dst,
+                           VkPipelineStageFlags ss, VkPipelineStageFlags ds)
+{
+    VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    b.srcAccessMask = src;
+    b.dstAccessMask = dst;
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = i;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseMipLevel = level;
+    b.subresourceRange.levelCount = count;
+    b.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cmd, ss, ds, 0, 0, NULL, 0, NULL, 1, &b);
+}
+
 static void barrier(VkImage i, VkImageLayout from, VkImageLayout to, VkAccessFlags src, VkAccessFlags dst, VkPipelineStageFlags ss,
                     VkPipelineStageFlags ds)
 {
@@ -236,7 +283,8 @@ static void barrier(VkImage i, VkImageLayout from, VkImageLayout to, VkAccessFla
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = i;
     b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = b.subresourceRange.layerCount = 1;
+    b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+    b.subresourceRange.layerCount = 1;
     vkCmdPipelineBarrier(cmd, ss, ds, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
@@ -318,64 +366,19 @@ static VkRenderPass render_pass(VkFormat f, int samples, int screen, VkAttachmen
 static void blend_of(VkPipelineColorBlendAttachmentState *a, int blend)
 {
     memset(a, 0, sizeof *a);
-    a->colorWriteMask = 0xF;
-    a->blendEnable = blend != RR_BLEND_REPLACE && blend != RR_BLEND_NOCOLOUR;
+    a->colorWriteMask = blend == RR_BLEND_NOCOLOUR ? 0 : 0xF;
+    a->blendEnable = blend == RR_BLEND_OVER;
     a->colorBlendOp = a->alphaBlendOp = VK_BLEND_OP_ADD;
     a->srcColorBlendFactor = a->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    a->dstColorBlendFactor = a->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    switch (blend) {
-    case RR_BLEND_NOCOLOUR:
-        a->colorWriteMask = 0;
-        break;
-    case RR_BLEND_ADD_BY_A:
-    case RR_BLEND_RSUB_BY_A:
-        a->colorWriteMask = 7;
-        a->srcColorBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
-        a->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        a->colorBlendOp = blend == RR_BLEND_ADD_BY_A ? VK_BLEND_OP_ADD : VK_BLEND_OP_REVERSE_SUBTRACT;
-        break;
-    case RR_BLEND_MIX_BY_A:
-    case RR_BLEND_RMIX_BY_A:
-        a->colorWriteMask = 7;
-        a->srcColorBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
-        a->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-        a->colorBlendOp = blend == RR_BLEND_MIX_BY_A ? VK_BLEND_OP_ADD : VK_BLEND_OP_REVERSE_SUBTRACT;
-        break;
-    case RR_BLEND_A_ZERO:
-        a->colorWriteMask = 8;
-        a->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        a->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        break;
-    case RR_BLEND_RGB_ZERO_A_ADD:
-        a->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-        a->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-        a->srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
-        a->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        break;
-    case RR_BLEND_A_ADD:
-        a->colorWriteMask = 8;
-        a->srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
-        a->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        break;
-    case RR_BLEND_RGB_SCALE:
-        a->colorWriteMask = 7;
-        a->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-        a->dstColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
-        break;
-    case RR_BLEND_OVER:
-        a->dstColorBlendFactor = a->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        break;
-    default:
-        break;
-    }
+    a->dstColorBlendFactor = a->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 }
 
-static VkRenderPass pass_of_kind(int kind) { return kind == KIND_SCREEN ? rp_screen : kind == KIND_INDEX ? rp_index : rp_output; }
+static VkRenderPass pass_of_kind(int kind) { return kind == KIND_SCREEN ? rp_screen : kind == KIND_INDEX ? rp_index[0] : rp_colour[0]; }
 
-static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int stencil, int topology, int kind)
+static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int stencil, int kind)
 {
     uint32_t key = (uint32_t)program | (uint32_t)fshader << 4 | (uint32_t)blend << 13 | (uint32_t)depth << 17 | (uint32_t)stencil << 19 |
-                   (uint32_t)topology << 22 | (uint32_t)kind << 23;
+                   (uint32_t)kind << 23;
     VkPipelineShaderStageCreateInfo st[2];
     VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
@@ -385,8 +388,8 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
     VkPipelineDepthStencilStateCreateInfo dsi = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
     VkPipelineColorBlendAttachmentState ba;
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-    VkDynamicState dyn[6] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-                              VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK };
+    VkDynamicState dyn[5] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK };
     VkPipelineDynamicStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
     VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
     VkStencilOpState so;
@@ -406,7 +409,7 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     st[1].module = fs;
     st[1].pName = "main";
-    ia.topology = topology == RR_LINES ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     vp.viewportCount = vp.scissorCount = 1;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = VK_CULL_MODE_NONE;
@@ -430,7 +433,7 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
     blend_of(&ba, blend);
     cb.attachmentCount = 1;
     cb.pAttachments = &ba;
-    ds.dynamicStateCount = 6;
+    ds.dynamicStateCount = 5;
     ds.pDynamicStates = dyn;
     ci.stageCount = 2;
     ci.pStages = st;
@@ -565,6 +568,8 @@ static int swapchain_make(int w, int h)
 }
 
 /* ---- opening ---- */
+static VkPhysicalDeviceFeatures want_features;
+
 static int depth_ok(VkFormat f)
 {
     VkFormatProperties p;
@@ -633,6 +638,14 @@ int rr_open(void)
         fprintf(stderr, "rr: vulkan: no depth and stencil format\n");
         return 0;
     }
+    {
+        /* anisotropic filtering where the GPU has it */
+        VkPhysicalDeviceFeatures have;
+        vkGetPhysicalDeviceFeatures(phys, &have);
+        memset(&want_features, 0, sizeof want_features);
+        want_features.samplerAnisotropy = have.samplerAnisotropy;
+        di.pEnabledFeatures = &want_features;
+    }
     qi.queueFamilyIndex = family;
     qi.queueCount = 1;
     qi.pQueuePriorities = &prio;
@@ -645,9 +658,12 @@ int rr_open(void)
     vkGetDeviceQueue(dev, family, 0, &queue);
 
     rp_screen = render_pass(COLOUR, RR_SAMPLES, 1, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    rp_frame = render_pass(COLOUR, RR_SAMPLES, 1, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    rp_index = render_pass(VK_FORMAT_R8_UINT, 1, 0, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    rp_output = render_pass(COLOUR, 1, 0, VK_ATTACHMENT_LOAD_OP_LOAD, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    for (k = 0; k < 2; k++) {
+        VkAttachmentLoadOp op = k ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        VkImageLayout from = k ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+        rp_colour[k] = render_pass(COLOUR, 1, 0, op, from, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        rp_index[k] = render_pass(VK_FORMAT_R8_UINT, 1, 0, op, from, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
     rp_show = render_pass(COLOUR, 1, 0, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
                           surface ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_GENERAL);
     {
@@ -675,6 +691,20 @@ int rr_open(void)
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         if (vkCreateSampler(dev, &si, NULL, &sampler) != VK_SUCCESS)
             return 0;
+        {
+            VkPhysicalDeviceProperties pp;
+            vkGetPhysicalDeviceProperties(phys, &pp);
+            si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+            si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            si.maxLod = VK_LOD_CLAMP_NONE;
+            si.anisotropyEnable = want_features.samplerAnisotropy;
+            si.maxAnisotropy = pp.limits.maxSamplerAnisotropy < 16 ? pp.limits.maxSamplerAnisotropy : 16;
+            if (!si.anisotropyEnable)
+                si.maxAnisotropy = 1;
+            if (vkCreateSampler(dev, &si, NULL, &filtered) != VK_SUCCESS)
+                return 0;
+        }
     }
     for (k = 0; k < RR_PROGRAMS; k++) {
         vert_mod[k] = shader(programs[k].vs, programs[k].vs_size);
@@ -751,11 +781,15 @@ static VkDescriptorSet set_alloc(void)
 
 static VkImageView slot_view(int32_t t, int slot)
 {
+    if (t == RR_TEX_FRAME)
+        return screen_res[0].v;
     if (t == RR_TEX_EXTRA0 || t == RR_TEX_EXTRA1)
-        return extra_res[t == RR_TEX_EXTRA0 ? 0 : 1].v;
+        return screen_res[t == RR_TEX_EXTRA0 ? 1 : 2].v;
+    if (t == RR_TEX_PICTURE)
+        return picture.v;
     if (t > 0 && t < MAX_TEXTURES && tex[t].v)
         return tex[t].v;
-    return slot < 2 ? none_colour.v : none_index.v;
+    return slot < 3 ? none_colour.v : none_index.v;
 }
 
 static VkDescriptorSet set_of(const int32_t *t)
@@ -794,7 +828,7 @@ static VkDescriptorSet set_of(const int32_t *t)
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[1].pBufferInfo = &db;
     for (k = 0; k < RR_TEX_SLOTS; k++) {
-        ii[k].sampler = sampler;
+        ii[k].sampler = k == 1 || k == 2 ? filtered : sampler;
         ii[k].imageView = v[k];
         ii[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         w[2 + k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -820,18 +854,17 @@ static void targets_fit(int w, int h)
         image_make(&screen_ds[k], depth_format, w, h, RR_SAMPLES,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-    }
-    image_make(&output, COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-               VK_IMAGE_ASPECT_COLOR_BIT);
-    for (k = 0; k < 2; k++)
-        image_make(&extra_res[k], COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-    for (k = 0; k < 3; k++) {
+        image_make(&screen_res[k], COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         v[0] = screen_ms[k].v;
         v[1] = screen_ds[k].v;
-        v[2] = k == 0 ? output.v : extra_res[k - 1].v;
-        screen_fb[k] = framebuffer(k == 0 ? rp_frame : rp_screen, v, 3, w, h);
+        v[2] = screen_res[k].v;
+        screen_fb[k] = framebuffer(rp_screen, v, 3, w, h);
     }
-    output.f = framebuffer(rp_output, &output.v, 1, w, h);
+    image_make(&picture, COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    picture.f = framebuffer(rp_colour[0], &picture.v, 1, w, h);
+    image_make(&output, COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+               VK_IMAGE_ASPECT_COLOR_BIT);
+    output.f = framebuffer(rp_colour[0], &output.v, 1, w, h);
     targets_w = w;
     targets_h = h;
 }
@@ -849,12 +882,15 @@ static void apply_texops(const rr_frame *f)
         t = &tex[o->id];
         if (o->op == RR_TEX_CREATE) {
             VkImageUsageFlags u = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            int levels = o->flags & RR_TEX_MIPS ? levels_of((int)o->w, (int)o->h) : 1;
             if (o->flags & RR_TEX_TARGET)
                 u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-            image_make(t, format_of(o->format), (int)o->w, (int)o->h, 1, u, VK_IMAGE_ASPECT_COLOR_BIT);
+            if (levels > 1)
+                u |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            image_make_levels(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels, u, VK_IMAGE_ASPECT_COLOR_BIT);
             t->format = o->format;
             if (o->flags & RR_TEX_TARGET)
-                t->f = framebuffer(rp_index, &t->v, 1, (int)o->w, (int)o->h);
+                t->f = framebuffer(o->format == RR_R8U ? rp_index[0] : rp_colour[0], &t->fv, 1, (int)o->w, (int)o->h);
             /* readable from the first: unwritten texels are what they are */
             barrier(t->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
@@ -985,29 +1021,35 @@ int rr_draw(rr_frame *f)
         const rr_pass *ps = &f->passes[p];
         VkRenderPassBeginInfo bi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         VkClearValue clr[2];
+        Image *to = NULL;
         int kind, tw = ow, th = oh;
         memset(clr, 0, sizeof clr);
+        memcpy(clr[0].color.float32, ps->clear, sizeof ps->clear);
         if (ps->target <= RR_TARGET_EXTRA1) {
             kind = KIND_SCREEN;
-            bi.renderPass = ps->target == RR_TARGET_FRAME ? rp_frame : rp_screen;
+            bi.renderPass = rp_screen;
             bi.framebuffer = screen_fb[ps->target];
-            memcpy(clr[0].color.float32, ps->clear, sizeof ps->clear);
             clr[1].depthStencil.depth = 1;
             clr[1].depthStencil.stencil = 0;
             bi.clearValueCount = 2;
-        } else if (ps->target == RR_TARGET_TEXTURE) {
-            if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].f)
-                continue;
-            kind = KIND_INDEX;
-            tw = tex[ps->texture].w;
-            th = tex[ps->texture].h;
-            bi.renderPass = rp_index;
-            bi.framebuffer = tex[ps->texture].f;
-            bi.clearValueCount = 1;
         } else {
-            kind = KIND_COLOUR;
-            bi.renderPass = rp_output;
-            bi.framebuffer = output.f;
+            int keep;
+            if (ps->target == RR_TARGET_TEXTURE) {
+                if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].f)
+                    continue;
+                to = &tex[ps->texture];
+            } else {
+                to = ps->target == RR_TARGET_PICTURE ? &picture : &output;
+            }
+            kind = to->format == RR_R8U && ps->target == RR_TARGET_TEXTURE ? KIND_INDEX : KIND_COLOUR;
+            tw = to->w;
+            th = to->h;
+            /* kept, unless just made: then cleared */
+            keep = ps->load && !to->fresh;
+            to->fresh = 0;
+            bi.renderPass = kind == KIND_INDEX ? rp_index[keep] : rp_colour[keep];
+            bi.framebuffer = to->f;
+            bi.clearValueCount = 1;
         }
         bi.renderArea.extent.width = (uint32_t)tw;
         bi.renderArea.extent.height = (uint32_t)th;
@@ -1016,12 +1058,11 @@ int rr_draw(rr_frame *f)
         for (i = ps->first; i < ps->first + ps->count; i++) {
             const rr_cmd *c = &f->cmds[i];
             VkPipeline pl = pipe_of(c->program, c->shader < MAX_SHADERS ? c->shader : 0, c->blend, kind == KIND_SCREEN ? c->depth : 0,
-                                    kind == KIND_SCREEN ? c->stencil : 0, c->topology, kind);
+                                    kind == KIND_SCREEN ? c->stencil : 0, kind);
             VkViewport vp;
             VkRect2D sc;
             VkDescriptorSet set;
             uint32_t off = c->uniform * 256;
-            float bc[4];
             if (!pl || !c->vertices || !c->instances)
                 continue;
             if (c->space == RR_SPACE_VIEW && kind != KIND_INDEX) {
@@ -1050,23 +1091,53 @@ int rr_draw(rr_frame *f)
                 sc.extent.height = (uint32_t)(y1 - y0);
             }
             set = set_of(c->tex);
-            bc[0] = bc[1] = bc[2] = bc[3] = c->constant;
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 1, &off);
             vkCmdSetViewport(cmd, 0, 1, &vp);
             vkCmdSetScissor(cmd, 0, 1, &sc);
-            vkCmdSetBlendConstants(cmd, bc);
             vkCmdSetStencilReference(cmd, VK_STENCIL_FRONT_AND_BACK, c->ref);
             vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FRONT_AND_BACK, c->read_mask);
             vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FRONT_AND_BACK, c->write_mask);
             vkCmdDraw(cmd, c->vertices, c->instances, 0, 0);
         }
         vkCmdEndRenderPass(cmd);
+        if (to && ps->mips && to->levels > 1) {
+            /* its smaller levels, each blitted from the one before */
+            int lv, w = to->w, h = to->h;
+            barrier_levels(to->i, 0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, ALL_STAGES, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            for (lv = 1; lv < to->levels; lv++) {
+                VkImageBlit bl;
+                int nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1;
+                memset(&bl, 0, sizeof bl);
+                bl.srcSubresource.aspectMask = bl.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                bl.srcSubresource.mipLevel = (uint32_t)lv - 1;
+                bl.dstSubresource.mipLevel = (uint32_t)lv;
+                bl.srcSubresource.layerCount = bl.dstSubresource.layerCount = 1;
+                bl.srcOffsets[1].x = w;
+                bl.srcOffsets[1].y = h;
+                bl.srcOffsets[1].z = 1;
+                bl.dstOffsets[1].x = nw;
+                bl.dstOffsets[1].y = nh;
+                bl.dstOffsets[1].z = 1;
+                barrier_levels(to->i, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                               VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                vkCmdBlitImage(cmd, to->i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to->i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl,
+                               VK_FILTER_LINEAR);
+                barrier_levels(to->i, (uint32_t)lv, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT);
+                w = nw;
+                h = nh;
+            }
+            barrier_levels(to->i, 0, (uint32_t)to->levels, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, SHADER_STAGES);
+        }
     }
     if (show) {
         /* the output, shown */
         VkRenderPassBeginInfo bi = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-        VkPipeline pl = pipe_of(RR_SHOW, 0, RR_BLEND_REPLACE, 0, 0, RR_TRIANGLES, KIND_COLOUR);
+        VkPipeline pl = pipe_of(RR_SHOW, 0, RR_BLEND_REPLACE, 0, 0, KIND_COLOUR);
         VkViewport vp = { 0, 0, (float)ow, (float)oh, 0, 1 };
         VkRect2D sc = { { 0, 0 }, { (uint32_t)ow, (uint32_t)oh } };
         int32_t t[RR_TEX_SLOTS] = { 0 };
@@ -1094,7 +1165,7 @@ int rr_draw(rr_frame *f)
                 w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 w[1].pBufferInfo = &db;
                 for (k = 0; k < RR_TEX_SLOTS; k++) {
-                    ii[k].sampler = sampler;
+                    ii[k].sampler = k == 1 || k == 2 ? filtered : sampler;
                     ii[k].imageView = k == 0 ? output.v : slot_view(t[k], k);
                     ii[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     w[2 + k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

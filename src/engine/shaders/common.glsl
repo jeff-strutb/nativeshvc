@@ -4,11 +4,12 @@
 
 layout(std140, binding = 0) uniform D { vec4 f[8]; ivec4 i[8]; } u;
 layout(std430, binding = 1) readonly buffer W { uint w[]; } data;
-layout(binding = 2) uniform sampler2D tc0;
-layout(binding = 3) uniform sampler2D tc1;
-layout(binding = 4) uniform usampler2D ti0;
-layout(binding = 5) uniform usampler2D ti1;
-layout(binding = 6) uniform usampler2D ti2;
+layout(binding = 2) uniform sampler2D tc0;     /* read at its texels */
+layout(binding = 3) uniform sampler2D tc1;     /* filtered: linear, between levels, anisotropic, repeating */
+layout(binding = 4) uniform sampler2D tc2;     /* the same */
+layout(binding = 5) uniform usampler2D ti0;
+layout(binding = 6) uniform usampler2D ti1;
+layout(binding = 7) uniform usampler2D ti2;
 
 /* u.f[1].xy: the units of the picture's space */
 vec4 clip_at(vec2 p, float depth)

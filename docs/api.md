@@ -81,15 +81,15 @@ natively on the GPU, at the window's own resolution, with nothing emulated and n
 | Priorities between layers and sprites | Depth and the depth test |
 | Windows | Stencil bits, set from rectangles made from the window edges |
 | Changes by line | Strips: the rows (and columns) where a capability's values are the same are drawn together, with those values |
-| Colour maths | The sub screen drawn into a target of its own, then laid onto the main screen by blend state |
+| Colour maths, brightness, blanking | The main screen drawn into the frame and the sub screen into a target of its own; one pass over the picture combines the two already drawn, exactly as the SNES defines it: each channel in 5-bit steps (eighths of a step for colours past 15 bits) added or taken away, halved and kept to the range, then brightness |
 | Hires | The sub screen in the main's even half-columns, by a stencil bit |
-| Brightness | Blend state |
+| Interlace | The picture keeps the other field's half-rows from the picture before |
 
 Texels are drawn sharp: a pixel a texel covers takes its colour whole, and only the pixel an edge between texels falls in
-mixes the two. Edges of geometry are smoothed by the frame's 4 samples a pixel. The cost follows what the game draws.
-
-Colours mix as the GPU's blending mixes 8-bit channels, not as the console's 5-bit sums, so a colour-maths pixel can
-differ from the console's by a step of 1 in 255.
+mixes the two. Where Mode 7's plane is drawn smaller than its texels, it is filtered from the plane in colour and its
+smaller levels, so it does not shimmer. Edges of geometry are smoothed by the frame's 4 samples a pixel. The cost follows
+what the game draws: a draw list's or the sprites' rows of one setting are drawn once, however the setting changes down
+the screen.
 
 ### 3.1 Screen and settings
 
@@ -98,7 +98,7 @@ typedef struct nshvc_screen {
     int32_t width, height;      /* any size; 256 x 224 the original's */
     int32_t origin_x, origin_y; /* where the original's 256 x 224 sits in it, for layers that wrap */
     uint8_t overscan;           /* 239 lines in place of 224, as the SNES's setting */
-    uint8_t interlace;          /* modes 5 and 6: their layers' rows twice as fine, both fields drawn at once */
+    uint8_t interlace;          /* fields woven: each picture draws one field's half-rows, keeping the other's */
     uint8_t brightness;         /* 0-15, the SNES's */
     uint8_t blank;
     int32_t show_left, show_right, show_top, show_bottom;   /* the part shown, the rest black; right, bottom 0: to the edge */
@@ -167,7 +167,8 @@ void nshvc_mode7_set(const nshvc_mode7 *m);
 ```
 
 Drawn as a plane at the window's resolution, its texture coordinates from the matrix: the console's own pixel shows
-the texel the console shows there, and the window's pixels between show the plane between.
+the texel the console shows there, and the window's pixels between show the plane between. Where a pixel covers more than
+a texel, the plane is filtered from its colours and their smaller levels, along the pixel's footprint.
 
 ### 3.5 Sprites
 
@@ -245,8 +246,9 @@ typedef struct nshvc_vertex {
 - Its pixels take part in windows, colour maths and brightness as its layer's do. A list on a layer that neither screen
   shows is not drawn at all.
 - Its edges are smoothed by the frame's 4 samples a pixel; a pixel's alpha says how much of it a triangle covers.
-- A material's image is full colour, its texels drawn sharp; without one, the vertices' colours, mixed across the
-  triangle.
+  A line is a list pixel wide at any window size.
+- A material's image is full colour, or indexed through the palette with 0 see-through, its texels drawn sharp; without
+  one, the vertices' colours, mixed across the triangle.
 - Jobs may fill separate lists in parallel.
 
 ```c
@@ -256,7 +258,8 @@ nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine'
 
 A material names an image, an optional shader, and its inputs. A game's shader takes the place of the fragment stage of
 the engine's own draw-list program: `vec4 shade(vec2 uv)` returns the pixel's colour, its alpha how much of the pixel it
-covers, and reads `nshvc_image(ivec2)` (the material's image's texel, or the vertices' colour without an image) and
+covers, and reads `nshvc_image(ivec2)` (the material's image's texel, an indexed one's through the palette, or the
+vertices' colour without an image) and
 `nshvc_input(int)`. The core picture needs no shader from the game, and nothing in the core needs compute
 (principle 11).
 
@@ -397,9 +400,8 @@ a picture being drawn to finish, and costs a readback, so a game calls it when i
 - `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.0. 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is gone, as a draw list is drawn straight into the frame with
-the frame's own samples; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a material's image is full colour;
-a game's shader returns alpha as coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size;
-`interlace` draws both fields at once. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
+the frame's own samples; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
+coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
 - **Major (7.0):** the only release that may change or remove anything a game uses.
 - **Minor (6.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 6.0 game
   builds and plays the same.

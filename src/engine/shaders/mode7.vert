@@ -6,6 +6,7 @@
    f[2]: the rectangle; f[3]: alpha written, depth at priority 0, at 1
    i[6]: 1 BG1, 2 BG2's texels of priority 0, 3 those of 1; outside; the tiles' texels a pixel
    i[2].w: the palette's version; i[3].z: direct colour
+   i[7].x: 1 if the plane in colour is given, with its smaller levels (tc1), and tile 0 (tc2)
    ti0: the plane; ti1: its tiles */
 #include "common.glsl"
 layout(location = 0) out vec2 v_t;

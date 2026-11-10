@@ -1,12 +1,14 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-/* list: a draw list's triangles or lines, seven words a vertex: x, y, z, w,
+/* list: a draw list's triangles, seven words a vertex: x, y, z, w,
    u, v (floats) and 0xAARRGGBB. Its vertex shader is also the game's
    shaders' (tools/nshvc-shaders), whose inputs match these outputs.
    f[2]: the rectangle it is kept to (the draw's scissor); f[3].x: alpha written
    f[4], f[5]: the material's eight inputs
    f[6]: screen pixels a list pixel across and down, the depth of z 0 and of z 1
-   i[0]: the first vertex's word, the image's width and height, 1 if it has an image (tc0) */
+   i[0]: the first vertex's word, the image's width and height, 1 if it has an image
+   i[1]: 1 if the image is indexed (ti0, through the palette tc1), the palette's version
+   tc0: a full-colour image */
 #include "common.glsl"
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_colour;

@@ -22,9 +22,10 @@ The engine is at API 6.0. `docs/native-engine-plan.md` opens with what has and h
 - **The picture, drawn natively on the GPU.** Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic,
   Mode 7, hires, direct colour and offset-per-tile, as the SNES had them, at any screen size, with per-line changes from a
   table of values. Each becomes native geometry and GPU state at the window's own resolution: tile layers and sprites are
-  instanced quads, Mode 7 a textured plane, priorities depth, windows stencil, colour maths and brightness blend state,
-  per-line changes strips of rows. Texels stay sharp, with only the pixel an edge falls in mixed, and edges are smoothed
-  by 4 samples a pixel. Nothing renders a console-sized picture. Backends: Vulkan, Metal and Direct3D 12.
+  instanced quads, Mode 7 a textured plane (filtered through its smaller levels where it shrinks), priorities depth,
+  windows stencil, per-line changes strips of rows; the colour maths combine the drawn screens exactly as the SNES
+  defines them. Texels stay sharp, with only the pixel an edge falls in mixed, and edges are smoothed by 4 samples a
+  pixel. Nothing renders a console-sized picture. Backends: Vulkan, Metal and Direct3D 12.
 - **The picture's shape in the window.** 4:3 by default, centred with black margins. A game can name another shape, such as
   8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
   say which part of it is shown.

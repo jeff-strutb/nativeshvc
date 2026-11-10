@@ -7,24 +7,30 @@
  *                 stage (program tiles); offset-per-tile moves each column's
  *   mosaic        an instance for each block, of the one texel it shows (blocks)
  *   Mode 7        a quad textured through the matrix (mode7), from a plane drawn
- *                 into a texture from its map and tiles when they change (plane)
+ *                 into a texture from its map and tiles when they change
+ *                 (plane); where it is smaller than its texels, the plane in
+ *                 colour with its smaller levels, filtered (tint)
  *   sprites       an instance for each, in pieces where the limits or the wrap
  *                 cut it (sprites); the first sprite in priority order that
  *                 shows a pixel keeps it: a stencil bit
- *   images        a quad (image); draw lists: their own triangles and lines (list)
+ *   images        a quad (image); draw lists: their own triangles, and lines
+ *                 as quads a list pixel wide (list, lines)
  *   priorities    depth and the depth test
  *   windows       stencil bits, set from rectangles made from the window edges
  *   by line       strips: the rows (and columns) where a capability's values
- *                 are the same are drawn together, with those values
- *   colour maths  the sub screen drawn into its own target, then laid onto the
- *                 main screen by blend state; the main screen's alpha says
- *                 which pixels take part
+ *                 are the same are drawn together, with those values; a draw
+ *                 list's or the sprites' strips of one state are drawn once,
+ *                 kept to them by a stencil bit
+ *   colour maths  the main screen drawn into the frame, the sub screen into a
+ *                 target of its own; one pass over the picture combines the
+ *                 two already drawn, exactly as the capability defines it, with
+ *                 brightness and blanking (combine)
  *   hires         the sub screen in the main's even half-columns: a stencil bit
- *   brightness    blend state
+ *   interlace     the picture keeps the other field's half-rows
  *
  * Pixels texels cover are drawn whole; only the pixel an edge falls in is
- * mixed (common.glsl, and the frame's samples at geometry's edges). Nothing is
- * worked out per pixel but the texels a pixel shows. */
+ * mixed (common.glsl, and the frame's samples at geometry's edges). Nothing
+ * of a layer is worked out per pixel but the texels the pixel shows. */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,12 +197,6 @@ static void colour_of(uint32_t bgra, float *c)
     c[2] = (float)(bgra & 255) / 255.0f;
 }
 
-static void bgr15_of(uint32_t v, float *c)
-{
-    uint32_t r = v & 31, g = (v >> 5) & 31, b = (v >> 10) & 31;
-    colour_of((r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2), c);
-}
-
 static uint32_t pal0(const eng_state *s) { return P->palettes[(size_t)s->pal * 256]; }
 
 /* ---- views: a screen drawn into a target ---- */
@@ -227,13 +227,12 @@ static int view_on(int v, const eng_state *s)
 static int enabled(const nshvc_layer *l, int v) { return sub_screen(v) ? l->enabled_sub != 0 : l->enabled_main != 0; }
 
 /* the alpha a layer (0-3 BG, 4 sprites, 5 backdrop) writes: in the frame,
-   whether it takes part in the colour maths, halved when the maths halve;
-   elsewhere 1, that a layer is there */
+   1 if it takes part in the colour maths; elsewhere 1, that a layer is there */
 static float flag_of(int v, const eng_state *s, int bit)
 {
     if (!in_frame(v))
         return 1.0f;
-    return (s->b.layers >> bit) & 1 ? (s->b.half ? 0.5f : 1.0f) : 0.0f;
+    return (s->b.layers >> bit) & 1 ? 1.0f : 0.0f;
 }
 
 /* whether layer L (0-4) is hidden inside its window on this view's screen */
@@ -323,6 +322,80 @@ static void strips(const Ctx *c, eq_fn eq, emit_fn emit)
         }
         nopen = ncur;
     }
+}
+
+/* ---- groups: the strips of one state, drawn once ---- */
+typedef struct { const eng_state *s; int x0, y0, x1, y1, done; } Strip;
+static Strip *gs;
+static size_t ngs, cap_gs;
+
+static void gather(const eng_state *st, int x0, int y0, int x1, int y1)
+{
+    gs = (Strip *)grow(gs, &cap_gs, ngs + 1, sizeof *gs);
+    gs[ngs].s = st;
+    gs[ngs].x0 = x0;
+    gs[ngs].y0 = y0;
+    gs[ngs].x1 = x1;
+    gs[ngs].y1 = y1;
+    gs[ngs].done = 0;
+    ngs++;
+}
+
+/* the gathered strips, in sets that eq holds between: each set drawn once by
+   fn, kept to the set's strips by the stencil's SB_GROUP bit, set over them
+   before and cleared after; box their bounds */
+typedef void (*group_fn)(const Ctx *c, const eng_state *s, const float *box);
+static void groups(const Ctx *c, eq_fn eq, group_fn fn)
+{
+    size_t i, j;
+    for (i = 0; i < ngs; i++) {
+        float box[4];
+        size_t n;
+        uint32_t at;
+        rr_uniform *u;
+        rr_cmd *d;
+        if (gs[i].done)
+            continue;
+        box[0] = (float)gs[i].x0;
+        box[1] = (float)gs[i].y0;
+        box[2] = (float)gs[i].x1;
+        box[3] = (float)gs[i].y1;
+        nrects = 0;
+        for (j = i; j < ngs; j++) {
+            if (gs[j].done || !eq(c, gs[i].s, gs[j].s))
+                continue;
+            gs[j].done = 1;
+            rect_add((float)gs[j].x0, (float)gs[j].y0, (float)gs[j].x1, (float)gs[j].y1);
+            if ((float)gs[j].x0 < box[0]) box[0] = (float)gs[j].x0;
+            if ((float)gs[j].y0 < box[1]) box[1] = (float)gs[j].y0;
+            if ((float)gs[j].x1 > box[2]) box[2] = (float)gs[j].x1;
+            if ((float)gs[j].y1 > box[3]) box[3] = (float)gs[j].y1;
+        }
+        n = nrects;
+        d = fill_rects(&u);
+        at = (uint32_t)u->i[0][0];
+        d->blend = RR_BLEND_NOCOLOUR;
+        d->stencil = RR_STENCIL_SET;
+        d->write_mask = SB_GROUP;
+        d->ref = 0xFF;
+        fn(c, gs[i].s, box);
+        d = draw(P_FILL, &u);
+        u->i[0][0] = (int32_t)at;
+        d->instances = (uint32_t)n;
+        d->blend = RR_BLEND_NOCOLOUR;
+        d->stencil = RR_STENCIL_SET;
+        d->write_mask = SB_GROUP;
+        d->ref = 0;
+    }
+    ngs = 0;
+}
+
+/* a draw kept to its group's strips */
+static void in_group(rr_cmd *d)
+{
+    d->stencil = d->stencil == RR_STENCIL_OFF ? RR_STENCIL_EQUAL : d->stencil;
+    d->read_mask |= SB_GROUP;
+    d->ref |= SB_GROUP;
 }
 
 /* ---- windows: stencil bits ---- */
@@ -514,10 +587,10 @@ static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
     if (k != kind_of(b, n) || a->m != b->m || a->b3 != b->b3 || hires_of(a) != hires_of(b) || flag_of(v, a, n) != flag_of(v, b, n) ||
         masked(a, n, v) != masked(b, n, v))
         return 0;
-    if (k == K_LIST)
-        return p->draw_list.id == q->draw_list.id;
     if (a->pal != b->pal)
         return 0;
+    if (k == K_LIST)
+        return p->draw_list.id == q->draw_list.id;
     if (k == K_IMAGE)
         return p->image.id == q->image.id;
     if (p->tiles.id != q->tiles.id || p->map.id != q->map.id || (p->tile_size == 16) != (q->tile_size == 16) || p->scroll_x != q->scroll_x ||
@@ -556,8 +629,8 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
     u->i[3][1] = s->m == 0 ? n * 32 : 0;
     u->i[3][2] = bpp == 8 && a->direct_colour;
     d->tex[0] = (int32_t)P->palette_tex;
-    d->tex[2] = (int32_t)t->tex;
-    d->tex[3] = (int32_t)m->tex;
+    d->tex[3] = (int32_t)t->tex;
+    d->tex[4] = (int32_t)m->tex;
     if (opt_on(s, n)) {
         const eng_map *o = &eng_maps_of[a->offset_per_tile.id], *m3 = &eng_maps_of[s->l[2].map.id];
         u->i[3][3] = s->m == 4 ? 2 : 1;
@@ -569,7 +642,7 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
         u->i[5][1] = a->scroll_x;
         u->i[5][2] = a->scroll_y;
         u->i[5][3] = lhires;
-        d->tex[4] = (int32_t)o->tex;
+        d->tex[5] = (int32_t)o->tex;
     }
     u->f[3][1] = depth_of(zbg(s, n, 0));
     u->f[3][2] = depth_of(zbg(s, n, 1));
@@ -635,7 +708,7 @@ static void emit_image(int v, const eng_state *s, int n, int x0, int y0, int x1,
     u->i[0][2] = rgba;
     u->i[0][3] = s->pal;
     d->tex[0] = (int32_t)P->palette_tex;
-    d->tex[rgba ? 1 : 2] = (int32_t)im->tex;
+    d->tex[rgba ? 1 : 3] = (int32_t)im->tex;
     d->depth = RR_DEPTH_LEQUAL;
     stencil_of(d, v, s, n);
 }
@@ -644,8 +717,10 @@ static void emit_image(int v, const eng_state *s, int n, int x0, int y0, int x1,
 static uint32_t list_at[ENG_LISTS];
 static uint8_t list_put[ENG_LISTS];
 
-static void emit_list(int v, const eng_state *s, int n, int x0, int y0, int x1, int y1)
+/* a list's commands, once for its group of strips */
+static void emit_list(const Ctx *c, const eng_state *s, const float *box)
 {
+    int v = c->view, n = c->n;
     uint32_t id = s->l[n].draw_list.id, k;
     const eng_list *l = &eng_lists_of[id];
     float z = depth_of(zbg(s, n, 0));
@@ -668,8 +743,8 @@ static void emit_list(int v, const eng_state *s, int n, int x0, int y0, int x1, 
     for (k = 0; k < l->nc; k++) {
         const eng_list_cmd *cm = &l->cmd[k];
         rr_uniform *u;
-        rr_cmd *d = draw(P_LIST, &u);
-        rect_of(u, (float)x0, (float)y0, (float)x1, (float)y1);
+        rr_cmd *d = draw(cm->lines ? P_LINES : P_LIST, &u);
+        rect_of(u, box[0], box[1], box[2], box[3]);
         u->f[3][0] = flag_of(v, s, n);
         memcpy(u->f[4], cm->inputs, 32);
         u->f[6][0] = (float)P->w / (float)l->w;
@@ -679,17 +754,24 @@ static void emit_list(int v, const eng_state *s, int n, int x0, int y0, int x1, 
         u->f[6][3] = z;
         u->i[0][0] = (int32_t)(list_at[id] + cm->first * 7);
         if (cm->image) {
-            u->i[0][1] = (int32_t)eng_images_of[cm->image].w;
-            u->i[0][2] = (int32_t)eng_images_of[cm->image].h;
+            const eng_image *im = &eng_images_of[cm->image];
+            u->i[0][1] = (int32_t)im->w;
+            u->i[0][2] = (int32_t)im->h;
             u->i[0][3] = 1;
-            d->tex[0] = (int32_t)eng_images_of[cm->image].tex;
+            if (im->format == NSHVC_IMAGE_RGBA) {
+                d->tex[0] = (int32_t)im->tex;
+            } else {
+                u->i[1][0] = 1;
+                u->i[1][1] = s->pal;
+                d->tex[1] = (int32_t)P->palette_tex;
+                d->tex[3] = (int32_t)im->tex;
+            }
         }
         d->shader = (uint16_t)cm->shader;
-        d->topology = cm->lines ? RR_LINES : RR_TRIANGLES;
-        d->vertices = cm->count;
-        d->scissor = 1;
+        d->vertices = cm->lines ? cm->count / 2 * 6 : cm->count;
         d->depth = RR_DEPTH_LEQUAL;
         stencil_of(d, v, s, n);
+        in_group(d);
     }
 }
 
@@ -701,7 +783,7 @@ static void emit_bg(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
     switch (kind_of(s, n)) {
     case K_TILES: emit_tiles(v, s, n, x0, y0, x1, y1); break;
     case K_IMAGE: emit_image(v, s, n, x0, y0, x1, y1); break;
-    default: emit_list(v, s, n, x0, y0, x1, y1); break;
+    default: gather(s, x0, y0, x1, y1); break;
     }
 }
 
@@ -774,10 +856,12 @@ static void m7_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int kind)
     u->i[6][1] = s->m7.outside & 3;
     u->i[6][2] = (int32_t)t->tpp;
     d->tex[0] = (int32_t)P->palette_tex;
-    d->tex[2] = (int32_t)plane_tex;
-    d->tex[3] = (int32_t)t->tex;
+    d->tex[3] = (int32_t)plane_tex;
+    d->tex[4] = (int32_t)t->tex;
     d->depth = RR_DEPTH_LEQUAL;
 }
+
+static int tint_textures(const eng_state *s, int kind, uint32_t *plane, uint32_t *tile0);
 
 static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
 {
@@ -814,8 +898,15 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
         for (k = n ? 2 : 1; k <= (n ? 3 : 1); k++) {
             rr_uniform *u;
             rr_cmd *d = draw(P_MODE7, &u);
+            uint32_t plane, tile0;
             m7_affine(u, s, y0);
             m7_fields(u, d, s, k);
+            if (tint_textures(s, k, &plane, &tile0)) {
+                /* where it is drawn smaller than its texels: the plane in colour, filtered */
+                u->i[7][0] = 1;
+                d->tex[1] = (int32_t)plane;
+                d->tex[2] = (int32_t)tile0;
+            }
             rect_of(u, (float)a, (float)b, (float)e, (float)f);
             u->f[3][0] = flag_of(v, s, n);
             u->f[3][1] = depth_of(n ? 1 : 3);
@@ -1012,10 +1103,15 @@ static int eq_spr(const Ctx *c, const eng_state *a, const eng_state *b)
 
 static void emit_spr(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
 {
+    if (spr_on(c->view, s) && clip_layer(4, &x0, &y0, &x1, &y1))
+        gather(s, x0, y0, x1, y1);
+}
+
+/* the sprites, once for each group of strips with their settings */
+static void spr_group(const Ctx *c, const eng_state *s, const float *box)
+{
     int v = c->view, p;
     size_t k;
-    if (!spr_on(v, s) || !clip_layer(4, &x0, &y0, &x1, &y1))
-        return;
     for (k = 0; k < nruns; k++) {
         const eng_tiles *t = &eng_tiles_of[runs[k].tiles];
         rr_uniform *u;
@@ -1023,7 +1119,7 @@ static void emit_spr(const Ctx *c, const eng_state *s, int x0, int y0, int x1, i
         if (!runs[k].count)
             continue;
         d = draw(P_SPRITES, &u);
-        rect_of(u, (float)x0, (float)y0, (float)x1, (float)y1);
+        rect_of(u, box[0], box[1], box[2], box[3]);
         u->f[3][0] = flag_of(v, s, 4);
         u->f[3][1] = in_frame(v) ? 0.0f : 1.0f;
         for (p = 0; p < 4; p++)
@@ -1033,7 +1129,7 @@ static void emit_spr(const Ctx *c, const eng_state *s, int x0, int y0, int x1, i
         u->i[0][2] = (int32_t)t->tpp;
         u->i[0][3] = s->pal;
         d->tex[0] = (int32_t)P->palette_tex;
-        d->tex[2] = (int32_t)t->tex;
+        d->tex[3] = (int32_t)t->tex;
         d->instances = runs[k].count;
         d->depth = RR_DEPTH_LEQUAL;
         stencil_of(d, v, s, 4);
@@ -1041,6 +1137,7 @@ static void emit_spr(const Ctx *c, const eng_state *s, int x0, int y0, int x1, i
         d->stencil = RR_STENCIL_EQUAL_INC;
         d->read_mask |= SB_SPRITE;
         d->write_mask = SB_SPRITE;
+        in_group(d);
     }
 }
 
@@ -1051,11 +1148,14 @@ static void screen_draws(int v)
     c.view = v;
     c.n = 0;
     strips(&c, eq_backdrop, emit_backdrop);
-    for (c.n = 0; c.n < 4; c.n++)
+    for (c.n = 0; c.n < 4; c.n++) {
         strips(&c, eq_bg, emit_bg);
+        groups(&c, eq_bg, emit_list);
+    }
     c.n = 0;
     strips(&c, eq_m7, emit_m7);
     strips(&c, eq_spr, emit_spr);
+    groups(&c, eq_spr, spr_group);
 }
 
 /* whether any row needs a test of `pred` */
@@ -1080,11 +1180,6 @@ static int masks1(const eng_state *s) { return masks_layer(s, 1); }
 static int masks2(const eng_state *s) { return masks_layer(s, 2); }
 static int masks3(const eng_state *s) { return masks_layer(s, 3); }
 static int masks4(const eng_state *s) { return masks_layer(s, 4); }
-static int colour_window(const eng_state *s)
-{
-    return !s->blank && (s->b.clip == 1 || s->b.clip == 2 || ((s->b.prevent == 1 || s->b.prevent == 2) && maths_of(s))) &&
-           (s->w.layer_use[5] & (NSHVC_WIN1 | NSHVC_WIN2));
-}
 static int (*const masks_of[5])(const eng_state *) = { masks0, masks1, masks2, masks3, masks4 };
 
 /* a target's pass: the windows' bits, then its screen */
@@ -1099,8 +1194,6 @@ static void target_pass(int target, int v)
         Ctx c = { V_MAIN, 0 };
         rr_uniform *u;
         rr_cmd *d;
-        if (any_state(colour_window))
-            window_bits(5, SB_COLOUR);
         if (any_state(hires_of)) {
             strips(&c, eq_hires, emit_stripes);
             if ((d = fill_rects(&u))) {
@@ -1115,161 +1208,157 @@ static void target_pass(int target, int v)
     } else {
         screen_draws(v);
     }
+    pass_end();
 }
 
-/* ---- the colour maths ---- */
-
-/* the stencil test that keeps a draw to a colour window region: mode 0
-   never, 1 outside, 2 inside, 3 always; `not` its complement. 0: nowhere */
-static int region(int mode, int not, uint8_t *rm, uint8_t *ref)
-{
-    mode &= 3;
-    if (not)
-        mode = 3 - mode;
-    if (mode == 0)
-        return 0;
-    if (mode == 1) {
-        *rm |= SB_COLOUR;
-    } else if (mode == 2) {
-        *rm |= SB_COLOUR;
-        *ref |= SB_COLOUR;
-    }
-    return 1;
-}
-
-static int maths_on(const eng_state *s) { return !s->blank && (maths_of(s) || (s->b.clip & 3)); }
-
-static int eq_maths(const Ctx *c, const eng_state *a, const eng_state *b)
+/* ---- the picture: the colour maths, brightness and blanking ---- */
+static int eq_combine(const eng_state *a, const eng_state *b)
 {
     const nshvc_blend *p = &a->b, *q = &b->b;
-    int on = maths_on(a);
-    (void)c;
-    if (on != maths_on(b))
+    if (a->blank != b->blank)
         return 0;
-    if (!on)
+    if (a->blank)
         return 1;
-    return p->subtract == q->subtract && p->half == q->half && p->use_fixed == q->use_fixed && p->layers == q->layers && p->clip == q->clip &&
-           p->prevent == q->prevent && p->fixed_bgr15 == q->fixed_bgr15 && hires_of(a) == hires_of(b);
+    return p->subtract == q->subtract && p->half == q->half && p->use_fixed == q->use_fixed && maths_of(a) == maths_of(b) &&
+           (p->clip & 3) == (q->clip & 3) && (p->prevent & 3) == (q->prevent & 3) && (p->fixed_bgr15 & 0x7FFF) == (q->fixed_bgr15 & 0x7FFF) &&
+           a->bright == b->bright && hires_of(a) == hires_of(b);
 }
 
-/* one step over the rectangle, kept to its half-columns and region */
-static rr_cmd *maths_step(int program, int blend, uint8_t rm, uint8_t ref, int x0, int y0, int x1, int y1, rr_uniform **u)
+typedef struct { int x0, x1, inside, y0; const eng_state *s; } CSeg;
+typedef struct { const eng_state *s; float r[4]; int inside, done; } CRect;
+static CSeg *copen, *ccur;
+static size_t cap_copen, cap_ccur;
+static CRect *crects;
+static size_t ncrects, cap_crects;
+
+static void crect_add(const eng_state *s, float x0, float y0, float x1, float y1, int in)
 {
-    rr_cmd *d;
-    if (program == P_FILL) {
-        d = fill((float)x0, (float)y0, (float)x1, (float)y1, u);
-    } else {
-        d = draw(program, u);
-        rect_of(*u, (float)x0, (float)y0, (float)x1, (float)y1);
+    crects = (CRect *)grow(crects, &cap_crects, ncrects + 1, sizeof *crects);
+    crects[ncrects].s = s;
+    crects[ncrects].r[0] = x0;
+    crects[ncrects].r[1] = y0;
+    crects[ncrects].r[2] = x1;
+    crects[ncrects].r[3] = y1;
+    crects[ncrects].inside = in;
+    crects[ncrects].done = 0;
+    ncrects++;
+}
+
+/* the picture's pixels: every row in runs, each run inside or outside the
+   colour window, with its row's settings; an interlaced picture this
+   field's half of each row only */
+static void combine(int field)
+{
+    size_t nopen = 0, ncur, k, i, j;
+    int r;
+    ncrects = 0;
+    for (r = 0; r <= P->h; r++) {
+        int same;
+        ncur = 0;
+        if (r < P->h) {
+            const eng_row *row = &P->rows[r];
+            uint32_t pi;
+            for (pi = 0; pi < row->count; pi++) {
+                const eng_part *pt = &P->parts[row->first + pi];
+                const eng_state *s = &P->states[pt->state];
+                int x0 = pt->x0, x1 = pi + 1 < row->count ? P->parts[row->first + pi + 1].x0 : P->w, b[6], nb = 0, use = s->w.layer_use[5];
+                if (x0 < 0) x0 = 0;
+                if (x1 > P->w) x1 = P->w;
+                if (x1 <= x0)
+                    continue;
+                b[nb++] = x0;
+                if (use & (NSHVC_WIN1 | NSHVC_WIN2)) {
+                    if (s->w.w[0].left > x0 && s->w.w[0].left < x1) b[nb++] = s->w.w[0].left;
+                    if (s->w.w[0].right + 1 > x0 && s->w.w[0].right + 1 < x1) b[nb++] = s->w.w[0].right + 1;
+                    if (s->w.w[1].left > x0 && s->w.w[1].left < x1) b[nb++] = s->w.w[1].left;
+                    if (s->w.w[1].right + 1 > x0 && s->w.w[1].right + 1 < x1) b[nb++] = s->w.w[1].right + 1;
+                    qsort(b, (size_t)nb, sizeof *b, cmp_int);
+                }
+                b[nb] = x1;
+                for (k = 0; k < (size_t)nb; k++) {
+                    int in = inside(&s->w, use, b[k]);
+                    if (b[k + 1] <= b[k])
+                        continue;
+                    if (ncur && ccur[ncur - 1].x1 == b[k] && ccur[ncur - 1].inside == in && eq_combine(ccur[ncur - 1].s, s)) {
+                        ccur[ncur - 1].x1 = b[k + 1];
+                        continue;
+                    }
+                    ccur = (CSeg *)grow(ccur, &cap_ccur, ncur + 1, sizeof *ccur);
+                    ccur[ncur].x0 = b[k];
+                    ccur[ncur].x1 = b[k + 1];
+                    ccur[ncur].inside = in;
+                    ccur[ncur].s = s;
+                    ncur++;
+                }
+            }
+        }
+        same = !field && r < P->h && ncur == nopen;
+        for (k = 0; same && k < ncur; k++)
+            same = ccur[k].x0 == copen[k].x0 && ccur[k].x1 == copen[k].x1 && ccur[k].inside == copen[k].inside && eq_combine(copen[k].s, ccur[k].s);
+        if (same)
+            continue;
+        for (k = 0; k < nopen; k++) {
+            float y0 = (float)copen[k].y0, y1 = (float)r;
+            if (field) {
+                /* this field's half of the row */
+                y0 += field == 2 ? 0.5f : 0.0f;
+                y1 = y0 + 0.5f;
+            }
+            crect_add(copen[k].s, (float)copen[k].x0, y0, (float)copen[k].x1, y1, copen[k].inside);
+        }
+        copen = (CSeg *)grow(copen, &cap_copen, ncur + 1, sizeof *copen);
+        for (k = 0; k < ncur; k++) {
+            copen[k] = ccur[k];
+            copen[k].y0 = r;
+        }
+        nopen = ncur;
     }
-    d->blend = (uint8_t)blend;
-    d->stencil = rm ? RR_STENCIL_EQUAL : RR_STENCIL_OFF;
-    d->read_mask = rm;
-    d->ref = ref;
-    return d;
-}
-
-static void emit_maths(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
-{
-    const nshvc_blend *b = &s->b;
-    int half, hires = hires_of(s), maths = maths_of(s), sub = !b->use_fixed;
-    int add = b->subtract ? RR_BLEND_RSUB_BY_A : RR_BLEND_ADD_BY_A, mix = b->subtract ? RR_BLEND_RMIX_BY_A : RR_BLEND_MIX_BY_A;
-    float fixed[3];
-    (void)c;
-    if (!maths_on(s))
-        return;
-    bgr15_of(b->fixed_bgr15, fixed);
-    for (half = 0; half < (hires ? 2 : 1); half++) {
-        /* odd half-columns (or a whole row) take the sub screen; a hires row's even ones the main */
-        uint8_t srm = hires ? SB_STRIPE : 0, sref = half ? SB_STRIPE : 0, rm, ref;
-        int other = half ? RR_TEX_EXTRA1 : RR_TEX_EXTRA0, k;
+    /* a draw for each set of settings, its rectangles its instances */
+    for (i = 0; i < ncrects; i++) {
+        const eng_state *s = crects[i].s;
+        const nshvc_blend *b = &s->b;
+        size_t n = 0;
+        uint32_t at;
         rr_uniform *u;
         rr_cmd *d;
-        /* where maths are prevented, nothing takes part */
-        rm = srm, ref = sref;
-        if (maths && region(b->prevent, 0, &rm, &ref)) {
-            d = maths_step(P_FILL, RR_BLEND_A_ZERO, rm, ref, x0, y0, x1, y1, &u);
-            (void)d;
-        }
-        /* where clipped, the main screen is black and the maths don't halve */
-        rm = srm, ref = sref;
-        if (region(b->clip, 0, &rm, &ref)) {
-            d = maths_step(P_FILL, RR_BLEND_RGB_ZERO_A_ADD, rm, ref, x0, y0, x1, y1, &u);
-            u->f[3][3] = 1.0f;
-        }
-        if (!maths)
+        if (crects[i].done)
             continue;
-        /* the other screen's colour, or the fixed colour, laid on by blend
-           state: added or taken away, halved or not */
-        for (k = 0; k < 5; k++) {
-            int blend = add, discard = 0, notclip = 0, clip = 0;
-            if (!b->half) {
-                if (k)
-                    break;
-            } else if (k == 0) {
-                /* the other screen's backdrop: the fixed colour, not halved */
-                if (!sub)
-                    continue;
-                blend = RR_BLEND_A_ADD;
-                discard = 1;
-            } else if (k == 1) {
-                blend = mix;
-                discard = sub ? 2 : 0;
-                notclip = 1;
-            } else if (k == 2) {
-                clip = 1;
-            } else if (k == 3) {
-                if (!sub)
-                    continue;
-                discard = 1;
-                notclip = 1;
-            } else {
-                break;
-            }
-            rm = srm, ref = sref;
-            if ((clip && !region(b->clip, 0, &rm, &ref)) || (notclip && !region(b->clip, 1, &rm, &ref)))
+        for (j = i; j < ncrects; j++)
+            n += !crects[j].done && eq_combine(s, crects[j].s);
+        at = words(n * 5);
+        n = 0;
+        for (j = i; j < ncrects; j++) {
+            if (crects[j].done || !eq_combine(s, crects[j].s))
                 continue;
-            d = maths_step(P_COMBINE, blend, rm, ref, x0, y0, x1, y1, &u);
-            u->f[3][0] = fixed[0];
-            u->f[3][1] = fixed[1];
-            u->f[3][2] = fixed[2];
-            u->i[0][0] = !sub;
-            u->i[0][1] = discard;
-            if (sub)
-                d->tex[0] = other;
+            crects[j].done = 1;
+            memcpy(&F->data[at + n * 5], crects[j].r, 16);
+            F->data[at + n * 5 + 4] = (uint32_t)crects[j].inside;
+            n++;
         }
+        d = draw(P_COMBINE, &u);
+        u->i[0][0] = (int32_t)at;
+        u->i[1][0] = b->subtract != 0;
+        u->i[1][1] = b->half != 0;
+        u->i[1][2] = b->use_fixed != 0;
+        u->i[1][3] = maths_of(s);
+        u->i[2][0] = b->clip & 3;
+        u->i[2][1] = b->prevent & 3;
+        u->i[2][2] = s->bright;
+        u->i[2][3] = s->blank;
+        u->i[3][0] = hires_of(s);
+        u->i[3][1] = b->fixed_bgr15 & 0x7FFF;
+        d->instances = (uint32_t)n;
+        d->tex[0] = RR_TEX_FRAME;
+        if (any_state(need_sub))
+            d->tex[1] = RR_TEX_EXTRA0;
+        if (any_state(need_aux))
+            d->tex[2] = RR_TEX_EXTRA1;
     }
 }
 
-/* ---- the finish: brightness, black ---- */
-static int eq_bright(const Ctx *c, const eng_state *a, const eng_state *b)
-{
-    (void)c;
-    return a->blank == b->blank && (a->blank || a->bright == b->bright) && hires_of(a) == hires_of(b);
-}
-
-static void emit_bright(const Ctx *c, const eng_state *s, int x0, int y0, int x1, int y1)
-{
-    rr_uniform *u;
-    rr_cmd *d;
-    (void)c;
-    if (s->blank) {
-        d = fill((float)x0, (float)y0, (float)x1, (float)y1, &u);
-        (void)d;
-        return;
-    }
-    /* a hires row's first half-column is black */
-    if (hires_of(s) && x0 == 0)
-        fill(0.0f, (float)y0, 0.5f, (float)y1, &u);
-    if (s->bright < 15) {
-        d = fill((float)x0, (float)y0, (float)x1, (float)y1, &u);
-        d->blend = RR_BLEND_RGB_SCALE;
-        d->constant = (float)s->bright / 15.0f;
-    }
-}
-
-/* ---- Mode 7's plane ---- */
+/* ---- Mode 7's plane, and in colour ---- */
 static int uses_m7(const eng_state *s) { return s->m == 7 && m7_valid(s) && !s->blank; }
+static uint32_t plane_version;
 
 static void plane_pass(void)
 {
@@ -1300,6 +1389,7 @@ static void plane_pass(void)
     plane_key[1] = t->gen;
     plane_key[2] = s->m7.map.id;
     plane_key[3] = m->gen;
+    plane_version++;
     pass_begin(RR_TARGET_TEXTURE, plane_tex);
     d = draw(P_PLANE, &u);
     u->f[1][0] = 1024.0f;
@@ -1308,35 +1398,148 @@ static void plane_pass(void)
     u->i[0][1] = (int32_t)m->h;
     u->i[0][2] = (int32_t)t->cols;
     u->i[0][3] = (int32_t)t->tpp;
-    d->tex[2] = (int32_t)m->tex;
-    d->tex[3] = (int32_t)t->tex;
+    d->tex[3] = (int32_t)m->tex;
+    d->tex[4] = (int32_t)t->tex;
     d->space = RR_SPACE_TARGET;
     d->instances = 128 * 128;
     pass_end();
 }
 
+/* The plane in colour, with every smaller level, for where it is drawn
+   smaller than its texels: one for each of BG1 (kind 1) and BG2's two
+   priorities (2, 3) and each palette they are drawn with, made again only
+   when the plane, its tiles or those colours change. */
+typedef struct { uint32_t key[7], plane, tile0; uint64_t used; } Tint;
+static Tint *tints;
+static size_t ntints, cap_tints;
+static int *tint_at;            /* by kind and palette version: a tint this frame, or -1 */
+static size_t cap_tint_at;
+static uint64_t frame_no;
+
+static void tint_pass(uint32_t tex, int size, int source, const eng_state *s, int kind)
+{
+    const eng_tiles *t = &eng_tiles_of[s->m7.tiles.id];
+    rr_uniform *u;
+    rr_cmd *d;
+    pass_begin(RR_TARGET_TEXTURE, tex);
+    F->passes[F->npasses - 1].mips = 1;
+    d = draw(P_TINT, &u);
+    u->f[1][0] = (float)size;
+    u->f[1][1] = (float)size;
+    u->i[0][0] = source;
+    u->i[0][1] = (int32_t)t->tpp;
+    u->i[2][3] = s->pal;
+    u->i[3][2] = kind == 1 && s->l[0].direct_colour;
+    u->i[6][0] = kind;
+    d->tex[0] = (int32_t)P->palette_tex;
+    d->tex[3] = (int32_t)plane_tex;
+    d->tex[4] = (int32_t)t->tex;
+    d->space = RR_SPACE_TARGET;
+    pass_end();
+}
+
+static void tint_need(const eng_state *s, int kind)
+{
+    const uint32_t *pal = P->palettes + (size_t)s->pal * 256;
+    const eng_tiles *t = &eng_tiles_of[s->m7.tiles.id];
+    uint32_t key[7], h = 2166136261u;
+    size_t i, at = (size_t)s->pal * 3 + (size_t)(kind - 1), pick = ntints;
+    int e;
+    if (tint_at[at] >= 0)
+        return;
+    for (e = 0; e < (kind == 1 ? 256 : 128); e++)
+        h = (h ^ pal[e]) * 16777619u;
+    key[0] = (uint32_t)kind;
+    key[1] = kind == 1 && s->l[0].direct_colour;
+    key[2] = h;
+    key[3] = plane_version;
+    key[4] = s->m7.tiles.id;
+    key[5] = t->gen;
+    key[6] = (uint32_t)s->pal;
+    for (i = 0; i < ntints; i++)
+        if (!memcmp(tints[i].key, key, 6 * 4)) {
+            tints[i].used = frame_no;
+            tint_at[at] = (int)i;
+            return;
+        }
+    /* made again in one this frame has not used, else a new one */
+    for (i = 0; i < ntints; i++)
+        if (tints[i].used != frame_no) {
+            pick = i;
+            break;
+        }
+    if (pick == ntints) {
+        tints = (Tint *)grow(tints, &cap_tints, ntints + 1, sizeof *tints);
+        tints[pick].plane = eng_texture_id();
+        tints[pick].tile0 = eng_texture_id();
+        eng_texture_create(F, tints[pick].plane, 1024, 1024, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
+        eng_texture_create(F, tints[pick].tile0, 8, 8, RR_BGRA8, RR_TEX_TARGET | RR_TEX_MIPS);
+        ntints++;
+    }
+    memcpy(tints[pick].key, key, sizeof key);
+    tints[pick].used = frame_no;
+    tint_at[at] = (int)pick;
+    tint_pass(tints[pick].plane, 1024, 0, s, kind);
+    tint_pass(tints[pick].tile0, 8, 1, s, kind);
+}
+
+static void tint_passes(void)
+{
+    int r, k;
+    size_t n = (size_t)P->npalettes * 3;
+    tint_at = (int *)grow(tint_at, &cap_tint_at, n, sizeof *tint_at);
+    for (k = 0; k < (int)n; k++)
+        tint_at[k] = -1;
+    for (r = 0; r < P->h; r++) {
+        uint32_t i;
+        for (i = 0; i < P->rows[r].count; i++) {
+            const eng_state *s = &P->states[P->parts[P->rows[r].first + i].state];
+            if (!uses_m7(s) || s->l[0].mosaic > 1)
+                continue;
+            if (s->l[0].enabled_main || s->l[0].enabled_sub)
+                tint_need(s, 1);
+            if (s->m7.extbg && (s->l[1].enabled_main || s->l[1].enabled_sub)) {
+                tint_need(s, 2);
+                tint_need(s, 3);
+            }
+        }
+    }
+}
+
+static int tint_textures(const eng_state *s, int kind, uint32_t *plane, uint32_t *tile0)
+{
+    int t = tint_at[(size_t)s->pal * 3 + (size_t)(kind - 1)];
+    if (t < 0)
+        return 0;
+    *plane = tints[t].plane;
+    *tile0 = tints[t].tile0;
+    return 1;
+}
+
 void eng_compose(rr_frame *f, const eng_picture *p)
 {
-    Ctx c = { V_MAIN, 0 };
+    static int field;
     rr_uniform *u;
     rr_cmd *d;
     int k;
     F = f;
     P = p;
+    frame_no++;
     memset(list_put, 0, sizeof list_put);
     sprite_pieces();
     plane_pass();
-    if (any_state(need_sub)) {
+    tint_passes();
+    if (any_state(need_sub))
         target_pass(RR_TARGET_EXTRA0, V_SUB);
-        pass_end();
-    }
-    if (any_state(need_aux)) {
+    if (any_state(need_aux))
         target_pass(RR_TARGET_EXTRA1, V_AUX);
-        pass_end();
-    }
     target_pass(RR_TARGET_FRAME, V_MAIN);
-    strips(&c, eq_maths, emit_maths);
-    strips(&c, eq_bright, emit_bright);
+
+    /* the picture: an interlaced one keeps the other field's half-rows from the picture before */
+    field = p->interlace ? (field == 1 ? 2 : 1) : 0;
+    pass_begin(RR_TARGET_PICTURE, 0);
+    F->passes[F->npasses - 1].load = field != 0;
+    combine(field);
     /* outside the part shown: black */
     if (p->show_t > 0)
         rect_add(0.0f, 0.0f, (float)p->w, (float)p->show_t);
@@ -1346,11 +1549,15 @@ void eng_compose(rr_frame *f, const eng_picture *p)
         rect_add(0.0f, (float)p->show_t, (float)p->show_l, (float)p->show_b);
     if (p->show_r < p->w)
         rect_add((float)p->show_r, (float)p->show_t, (float)p->w, (float)p->show_b);
-    fill_rects(&u);
+    if ((d = fill_rects(&u)))
+        u->f[3][3] = 1.0f;
     pass_end();
 
-    /* the overlays, over the window */
+    /* the output: the picture, then the overlays over the window */
     pass_begin(RR_TARGET_OUTPUT, 0);
+    d = draw(RR_SHOW, &u);
+    d->space = RR_SPACE_TARGET;
+    d->tex[0] = RR_TEX_PICTURE;
     for (k = 0; k < NSHVC_OVERLAYS; k++) {
         const eng_overlay *o = &p->overlays[k];
         const eng_image *im;

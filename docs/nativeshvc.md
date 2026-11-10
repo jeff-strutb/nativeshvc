@@ -20,8 +20,9 @@ each finished picture, the audio thread mixes voices and runs the game's music c
 texels that changed since the last. `draw` sets the whole picture and nothing carries over but those objects, the palette
 and the overlays. `compose.c` turns what `draw` set into a frame for the renderer: its passes and their draws, the words
 the draws read, and their uniforms. The screens are drawn into multisampled targets with depth and stencil at the window's
-size: the sub screen into its own when the colour maths need it, then the main screen into the frame, which is resolved
-into the window's picture; the overlays are drawn over that.
+size: the sub screen into its own when the colour maths need it, then the main screen into the frame. One pass combines
+them into the picture (the colour maths, brightness and blanking, done exactly), which keeps the other field when
+interlaced; the output is the picture with the overlays over it.
 
 **The picture's shape.** The viewport places the picture in the window (`rr_view`): 4:3 by default, centred with black
 margins, or the shape `nshvc_screen.aspect` names. Everything is drawn at the window's pixels. Overlays are placed in

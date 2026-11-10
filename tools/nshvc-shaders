@@ -8,20 +8,28 @@ A shader is a fragment-only subset of GLSL 4.5 that defines
 vec4 shade(vec2 uv): the colour of a draw list's pixel at the material's
 texture coordinate uv, its alpha how much of the pixel it covers (0 none).
 It takes the place of the fragment stage of the engine's draw-list program
-(src/engine/shaders/list.*), so it reads that program's uniforms and inputs:
-the engine provides nshvc_image(ivec2), the material's image's texel (the
-vertices' colour without an image), and nshvc_input(int), its eight inputs."""
+(src/engine/shaders/list_fs.glsl), so it reads that program's uniforms and inputs:
+the engine provides nshvc_image(ivec2), the material's image's texel (an
+indexed image's through the palette, 0 see-through; the vertices' colour
+without an image), and nshvc_input(int), its eight inputs."""
 import os, shutil, subprocess, sys, tempfile
 
 PRE = '''#version 450
 layout(std140, binding = 0) uniform D { vec4 f[8]; ivec4 i[8]; } nshvc_u;
 layout(binding = 2) uniform sampler2D nshvc_tex;
+layout(binding = 3) uniform sampler2D nshvc_palette;
+layout(binding = 5) uniform usampler2D nshvc_index;
 layout(location = 0) in vec2 nshvc_uv;
 layout(location = 1) in vec4 nshvc_colour;
 layout(location = 0) out vec4 nshvc_out;
 vec4 nshvc_image(ivec2 p) {
     if (nshvc_u.i[0].w == 0) return nshvc_colour;
-    return texelFetch(nshvc_tex, clamp(p, ivec2(0), nshvc_u.i[0].yz - 1), 0);
+    p = clamp(p, ivec2(0), nshvc_u.i[0].yz - 1);
+    if (nshvc_u.i[1].x != 0) {
+        uint x = texelFetch(nshvc_index, p, 0).r;
+        return x != 0u ? vec4(texelFetch(nshvc_palette, ivec2(int(x), nshvc_u.i[1].y), 0).rgb, 1.0) : vec4(0.0);
+    }
+    return texelFetch(nshvc_tex, p, 0);
 }
 float nshvc_input(int i) { return nshvc_u.f[4 + i / 4][i % 4]; }
 #line 1
@@ -62,7 +70,7 @@ def main():
                 f.write(PRE + body + POST)
             spv = os.path.join(out, name + '.spv')
             run('glslangValidator', '-V', '-o', spv, frag)
-            # the bindings as the engine's programs have them: buffer 0, texture and sampler 2
+            # the bindings as the engine's programs have them: buffer 0, textures and samplers 2, 3 and 5
             with open(os.path.join(out, name + '.metal'), 'w') as f:
                 f.write(run('spirv-cross', spv, '--msl', '--msl-version', '20100', '--msl-decoration-binding'))
             if not dxc:

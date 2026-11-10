@@ -37,11 +37,12 @@ static id<MTLCommandQueue> queue;
 static dispatch_semaphore_t inflight;
 static id<MTLFunction> vfn[RR_PROGRAMS], ffn[RR_PROGRAMS], game_fns[MAX_SHADERS];
 static id<MTLTexture> tex[MAX_TEXTURES];
-static uint8_t tex_format[MAX_TEXTURES];
+static uint8_t tex_format[MAX_TEXTURES], tex_fresh[MAX_TEXTURES];
 static id<MTLTexture> none_colour, none_index;
-static id<MTLTexture> screen_ms[3], screen_ds[3], extra_res[2], output;
+static id<MTLTexture> screen_ms[3], screen_ds[3], screen_res[3], picture, output;
+static int picture_fresh;
 static id<MTLBuffer> ubuf, dbuf, rbuf;
-static id<MTLSamplerState> sampler;
+static id<MTLSamplerState> sampler, filtered;
 static int last_w, last_h, ever;
 
 /* pipelines by program (and game shader), blend and pass kind; depth-stencil states by their settings */
@@ -82,6 +83,12 @@ int rr_open(void)
             sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterNearest;
             sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
             sampler = [dev newSamplerStateWithDescriptor:sd];
+            sd = [MTLSamplerDescriptor new];
+            sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+            sd.mipFilter = MTLSamplerMipFilterLinear;
+            sd.maxAnisotropy = 16;
+            sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeRepeat;
+            filtered = [dev newSamplerStateWithDescriptor:sd];
         }
         {
             MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:1 height:1 mipmapped:NO];
@@ -126,12 +133,14 @@ static void apply_texops(const rr_frame *f)
             continue;
         }
         if (o->op == RR_TEX_CREATE) {
-            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format_of(o->format) width:o->w height:o->h mipmapped:NO];
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format_of(o->format) width:o->w height:o->h
+                                                                                         mipmapped:(o->flags & RR_TEX_MIPS) != 0];
             td.usage = MTLTextureUsageShaderRead | (o->flags & RR_TEX_TARGET ? MTLTextureUsageRenderTarget : 0);
             if (o->flags & RR_TEX_TARGET)
                 td.storageMode = MTLStorageModePrivate;
             tex[o->id] = [dev newTextureWithDescriptor:td];
             tex_format[o->id] = o->format;
+            tex_fresh[o->id] = 1;
         } else if (tex[o->id]) {
             [tex[o->id] replaceRegion:MTLRegionMake2D(o->x, o->y, o->w, o->h) mipmapLevel:0 withBytes:f->upload + o->at
                           bytesPerRow:(NSUInteger)o->w * (NSUInteger)bytes_of(tex_format[o->id])];
@@ -159,56 +168,11 @@ static MTLPixelFormat kind_format(int kind) { return kind == KIND_INDEX ? MTLPix
 
 static void blend_of(MTLRenderPipelineColorAttachmentDescriptor *a, int blend)
 {
-    a.blendingEnabled = blend != RR_BLEND_REPLACE && blend != RR_BLEND_NOCOLOUR;
-    a.writeMask = MTLColorWriteMaskAll;
+    a.blendingEnabled = blend == RR_BLEND_OVER;
+    a.writeMask = blend == RR_BLEND_NOCOLOUR ? MTLColorWriteMaskNone : MTLColorWriteMaskAll;
     a.rgbBlendOperation = a.alphaBlendOperation = MTLBlendOperationAdd;
     a.sourceRGBBlendFactor = a.sourceAlphaBlendFactor = MTLBlendFactorOne;
-    a.destinationRGBBlendFactor = a.destinationAlphaBlendFactor = MTLBlendFactorZero;
-    switch (blend) {
-    case RR_BLEND_NOCOLOUR:
-        a.writeMask = MTLColorWriteMaskNone;
-        break;
-    case RR_BLEND_ADD_BY_A:
-    case RR_BLEND_RSUB_BY_A:
-        a.writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;
-        a.sourceRGBBlendFactor = MTLBlendFactorDestinationAlpha;
-        a.destinationRGBBlendFactor = MTLBlendFactorOne;
-        a.rgbBlendOperation = blend == RR_BLEND_ADD_BY_A ? MTLBlendOperationAdd : MTLBlendOperationReverseSubtract;
-        break;
-    case RR_BLEND_MIX_BY_A:
-    case RR_BLEND_RMIX_BY_A:
-        a.writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;
-        a.sourceRGBBlendFactor = MTLBlendFactorDestinationAlpha;
-        a.destinationRGBBlendFactor = MTLBlendFactorOneMinusDestinationAlpha;
-        a.rgbBlendOperation = blend == RR_BLEND_MIX_BY_A ? MTLBlendOperationAdd : MTLBlendOperationReverseSubtract;
-        break;
-    case RR_BLEND_A_ZERO:
-        a.writeMask = MTLColorWriteMaskAlpha;
-        a.sourceAlphaBlendFactor = MTLBlendFactorZero;
-        a.destinationAlphaBlendFactor = MTLBlendFactorZero;
-        break;
-    case RR_BLEND_RGB_ZERO_A_ADD:
-        a.sourceRGBBlendFactor = MTLBlendFactorZero;
-        a.destinationRGBBlendFactor = MTLBlendFactorZero;
-        a.sourceAlphaBlendFactor = MTLBlendFactorDestinationAlpha;
-        a.destinationAlphaBlendFactor = MTLBlendFactorOne;
-        break;
-    case RR_BLEND_A_ADD:
-        a.writeMask = MTLColorWriteMaskAlpha;
-        a.sourceAlphaBlendFactor = MTLBlendFactorDestinationAlpha;
-        a.destinationAlphaBlendFactor = MTLBlendFactorOne;
-        break;
-    case RR_BLEND_RGB_SCALE:
-        a.writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;
-        a.sourceRGBBlendFactor = MTLBlendFactorZero;
-        a.destinationRGBBlendFactor = MTLBlendFactorBlendColor;
-        break;
-    case RR_BLEND_OVER:
-        a.destinationRGBBlendFactor = a.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        break;
-    default:
-        break;
-    }
+    a.destinationRGBBlendFactor = a.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 }
 
 static id<MTLRenderPipelineState> pipe_of(const rr_cmd *c, int kind)
@@ -295,11 +259,15 @@ static id<MTLDepthStencilState> ds_of(const rr_cmd *c, int kind)
 
 static id<MTLTexture> slot_texture(int32_t t, int slot)
 {
+    if (t == RR_TEX_FRAME)
+        return screen_res[0];
     if (t == RR_TEX_EXTRA0 || t == RR_TEX_EXTRA1)
-        return extra_res[t == RR_TEX_EXTRA0 ? 0 : 1];
+        return screen_res[t == RR_TEX_EXTRA0 ? 1 : 2];
+    if (t == RR_TEX_PICTURE)
+        return picture;
     if (t > 0 && t < MAX_TEXTURES && tex[t])
         return tex[t];
-    return slot < 2 ? none_colour : none_index;
+    return slot < 3 ? none_colour : none_index;
 }
 
 static id<MTLBuffer> buffer_fit(id<MTLBuffer> b, size_t bytes)
@@ -354,8 +322,13 @@ int rr_draw(rr_frame *f)
             screen_ms[k] = target(screen_ms[k], MTLPixelFormatBGRA8Unorm, ow, oh, RR_SAMPLES, MTLTextureUsageRenderTarget);
             screen_ds[k] = target(screen_ds[k], DEPTH_FORMAT, ow, oh, RR_SAMPLES, MTLTextureUsageRenderTarget);
         }
-        for (k = 0; k < 2; k++)
-            extra_res[k] = target(extra_res[k], MTLPixelFormatBGRA8Unorm, ow, oh, 1, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+        for (k = 0; k < 3; k++)
+            screen_res[k] = target(screen_res[k], MTLPixelFormatBGRA8Unorm, ow, oh, 1, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+        {
+            id<MTLTexture> was = picture;
+            picture = target(picture, MTLPixelFormatBGRA8Unorm, ow, oh, 1, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+            picture_fresh |= picture != was;
+        }
         output = target(output, MTLPixelFormatBGRA8Unorm, ow, oh, 1, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
         last_w = ow;
         last_h = oh;
@@ -399,7 +372,7 @@ int rr_draw(rr_frame *f)
                 rp.colorAttachments[0].loadAction = MTLLoadActionClear;
                 rp.colorAttachments[0].clearColor = MTLClearColorMake(ps->clear[0], ps->clear[1], ps->clear[2], ps->clear[3]);
                 rp.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
-                rp.colorAttachments[0].resolveTexture = t == RR_TARGET_FRAME ? output : extra_res[t - 1];
+                rp.colorAttachments[0].resolveTexture = screen_res[t];
                 rp.depthAttachment.texture = screen_ds[t];
                 rp.depthAttachment.loadAction = MTLLoadActionClear;
                 rp.depthAttachment.clearDepth = 1.0;
@@ -408,20 +381,30 @@ int rr_draw(rr_frame *f)
                 rp.stencilAttachment.loadAction = MTLLoadActionClear;
                 rp.stencilAttachment.clearStencil = 0;
                 rp.stencilAttachment.storeAction = MTLStoreActionDontCare;
-            } else if (ps->target == RR_TARGET_TEXTURE) {
-                if (ps->texture >= MAX_TEXTURES || !tex[ps->texture])
-                    continue;
-                kind = KIND_INDEX;
-                tw = (int)tex[ps->texture].width;
-                th = (int)tex[ps->texture].height;
-                rp.colorAttachments[0].texture = tex[ps->texture];
-                rp.colorAttachments[0].loadAction = MTLLoadActionClear;
-                rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
-                rp.colorAttachments[0].storeAction = MTLStoreActionStore;
             } else {
-                kind = KIND_COLOUR;
-                rp.colorAttachments[0].texture = output;
-                rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+                id<MTLTexture> to;
+                int fresh = 0;
+                if (ps->target == RR_TARGET_TEXTURE) {
+                    if (ps->texture >= MAX_TEXTURES || !tex[ps->texture])
+                        continue;
+                    to = tex[ps->texture];
+                    kind = tex_format[ps->texture] == RR_R8U ? KIND_INDEX : KIND_COLOUR;
+                    fresh = tex_fresh[ps->texture];
+                    tex_fresh[ps->texture] = 0;
+                } else if (ps->target == RR_TARGET_PICTURE) {
+                    to = picture;
+                    kind = KIND_COLOUR;
+                    fresh = picture_fresh;
+                    picture_fresh = 0;
+                } else {
+                    to = output;
+                    kind = KIND_COLOUR;
+                }
+                tw = (int)to.width;
+                th = (int)to.height;
+                rp.colorAttachments[0].texture = to;
+                rp.colorAttachments[0].loadAction = ps->load && !fresh ? MTLLoadActionLoad : MTLLoadActionClear;
+                rp.colorAttachments[0].clearColor = MTLClearColorMake(ps->clear[0], ps->clear[1], ps->clear[2], ps->clear[3]);
                 rp.colorAttachments[0].storeAction = MTLStoreActionStore;
             }
             e = [cb renderCommandEncoderWithDescriptor:rp];
@@ -435,7 +418,6 @@ int rr_draw(rr_frame *f)
                 [e setRenderPipelineState:pl];
                 [e setDepthStencilState:ds_of(c, kind)];
                 [e setStencilReferenceValue:c->ref];
-                [e setBlendColorRed:c->constant green:c->constant blue:c->constant alpha:c->constant];
                 if (c->space == RR_SPACE_VIEW && kind != KIND_INDEX)
                     vp = (MTLViewport){ vx, vy, vw, vh, 0, 1 };
                 else
@@ -458,13 +440,18 @@ int rr_draw(rr_frame *f)
                     id<MTLTexture> t = slot_texture(c->tex[k], k);
                     [e setVertexTexture:t atIndex:(NSUInteger)(2 + k)];
                     [e setFragmentTexture:t atIndex:(NSUInteger)(2 + k)];
-                    [e setVertexSamplerState:sampler atIndex:(NSUInteger)(2 + k)];
-                    [e setFragmentSamplerState:sampler atIndex:(NSUInteger)(2 + k)];
+                    [e setVertexSamplerState:k == 1 || k == 2 ? filtered : sampler atIndex:(NSUInteger)(2 + k)];
+                    [e setFragmentSamplerState:k == 1 || k == 2 ? filtered : sampler atIndex:(NSUInteger)(2 + k)];
                 }
-                [e drawPrimitives:c->topology == RR_LINES ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle vertexStart:0
-                      vertexCount:c->vertices instanceCount:c->instances];
+                [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:c->vertices instanceCount:c->instances];
             }
             [e endEncoding];
+            if (ps->target == RR_TARGET_TEXTURE && ps->mips && tex[ps->texture].mipmapLevelCount > 1) {
+                /* its smaller levels, from the first */
+                id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+                [b generateMipmapsForTexture:tex[ps->texture]];
+                [b endEncoding];
+            }
         }
         if (ml) {
             dr = [ml nextDrawable];

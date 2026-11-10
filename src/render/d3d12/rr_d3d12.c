@@ -38,7 +38,8 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 enum { KIND_SCREEN, KIND_INDEX, KIND_COLOUR, KINDS };
 
 typedef struct { ID3D12Resource *r; void *at; UINT64 size; } Buf;
-typedef struct { ID3D12Resource *r; int w, h, format, rtv; D3D12_RESOURCE_STATES state; } Tex;
+/* a texture: rtv its first level's render-target view, the rest after it */
+typedef struct { ID3D12Resource *r; int w, h, format, rtv, levels, fresh; D3D12_RESOURCE_STATES state; } Tex;
 typedef struct { const void *code; size_t size; } Code;
 
 static ID3D12Device *dev;
@@ -59,7 +60,7 @@ static UINT rtv_step, dsv_step, srv_step;
 static int rtv_next;
 static Tex tex[MAX_TEXTURES];
 static Tex none_colour, none_index;
-static Tex screen_ms[3], screen_ds[3], extra_res[2], output;
+static Tex screen_ms[3], screen_ds[3], screen_res[3], picture, output;
 static Buf ubuf, dbuf, staging, readback;
 static Code game_ps[MAX_SHADERS];
 static UINT64 pipe_key[MAX_PIPES];
@@ -67,7 +68,8 @@ static ID3D12PipelineState *pipe_obj[MAX_PIPES];
 static size_t npipes;
 static int targets_w, targets_h, last_w, last_h, ever;
 
-/* RTV slots: 0-2 the screens, 3 the output, 4.. the swapchain's, then textures drawn into */
+/* RTV slots: 0-2 the screens, 3 the output, 4 the picture, 5.. the swapchain's, then textures drawn into */
+#define RTVS 4096
 static D3D12_CPU_DESCRIPTOR_HANDLE rtv(int i)
 {
     D3D12_CPU_DESCRIPTOR_HANDLE h;
@@ -128,6 +130,19 @@ static void buf_fit(Buf *b, UINT64 size)
     buf_make(b, size * 2, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
 }
 
+/* one level of a texture, from and back to the state the whole is in */
+static void transition_level(ID3D12Resource *r, UINT level, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+{
+    D3D12_RESOURCE_BARRIER b;
+    memset(&b, 0, sizeof b);
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = r;
+    b.Transition.Subresource = level;
+    b.Transition.StateBefore = from;
+    b.Transition.StateAfter = to;
+    ID3D12GraphicsCommandList_ResourceBarrier(list, 1, &b);
+}
+
 static void transition(ID3D12Resource *r, D3D12_RESOURCE_STATES *state, D3D12_RESOURCE_STATES to)
 {
     D3D12_RESOURCE_BARRIER b;
@@ -150,8 +165,19 @@ static void tex_free(Tex *t)
     t->r = NULL;
 }
 
-/* a texture; samples > 1 or flags make it a target: RT (colour), DS (depth) */
-static void tex_make(Tex *t, DXGI_FORMAT f, int w, int h, int samples, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state)
+static int levels_of(int w, int h)
+{
+    int n = 1;
+    while ((w > 1 || h > 1) && n < 16) {
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+        n++;
+    }
+    return n;
+}
+
+/* a texture of `levels` levels; samples > 1 or flags make it a target: RT (colour), DS (depth) */
+static void tex_make_levels(Tex *t, DXGI_FORMAT f, int w, int h, int samples, int levels, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state)
 {
     D3D12_HEAP_PROPERTIES hp;
     D3D12_RESOURCE_DESC d;
@@ -164,7 +190,8 @@ static void tex_make(Tex *t, DXGI_FORMAT f, int w, int h, int samples, D3D12_RES
     d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     d.Width = (UINT64)w;
     d.Height = (UINT)h;
-    d.DepthOrArraySize = d.MipLevels = 1;
+    d.DepthOrArraySize = 1;
+    d.MipLevels = (UINT16)levels;
     d.Format = f;
     d.SampleDesc.Count = (UINT)samples;
     d.Flags = flags;
@@ -179,7 +206,14 @@ static void tex_make(Tex *t, DXGI_FORMAT f, int w, int h, int samples, D3D12_RES
     }
     t->w = w;
     t->h = h;
+    t->levels = levels;
+    t->fresh = 1;
     t->state = state;
+}
+
+static void tex_make(Tex *t, DXGI_FORMAT f, int w, int h, int samples, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state)
+{
+    tex_make_levels(t, f, w, h, samples, 1, flags, state);
 }
 
 static DXGI_FORMAT format_of(int f) { return f == RR_R8U ? DXGI_FORMAT_R8_UINT : f == RR_R32U ? DXGI_FORMAT_R32_UINT : COLOUR; }
@@ -216,10 +250,10 @@ int rr_open(void)
 
     memset(&hd, 0, sizeof hd);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    hd.NumDescriptors = 256;
+    hd.NumDescriptors = RTVS;
     ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&rtv_heap);
     rtv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    rtv_next = 4 + FRAMES;
+    rtv_next = 5 + FRAMES;
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     hd.NumDescriptors = 3;
     ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&dsv_heap);
@@ -231,7 +265,8 @@ int rr_open(void)
     srv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     {
-        /* b0 the draw's uniforms, t1 the frame's words, t2-t6 its textures, s2-s6 their samplers */
+        /* b0 the draw's uniforms, t1 the frame's words, t2-t7 its textures, s2-s7 their samplers:
+           s3 and s4 filtered, anisotropic and repeating, the rest at texels */
         D3D12_ROOT_PARAMETER p[3];
         D3D12_DESCRIPTOR_RANGE r;
         D3D12_STATIC_SAMPLER_DESC s[RR_TEX_SLOTS];
@@ -254,8 +289,10 @@ int rr_open(void)
         p[2].DescriptorTable.pDescriptorRanges = &r;
         p[0].ShaderVisibility = p[1].ShaderVisibility = p[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         for (k = 0; k < RR_TEX_SLOTS; k++) {
-            s[k].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-            s[k].AddressU = s[k].AddressV = s[k].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            int f = k == 1 || k == 2;
+            s[k].Filter = f ? D3D12_FILTER_ANISOTROPIC : D3D12_FILTER_MIN_MAG_MIP_POINT;
+            s[k].MaxAnisotropy = f ? 16 : 1;
+            s[k].AddressU = s[k].AddressV = s[k].AddressW = f ? D3D12_TEXTURE_ADDRESS_MODE_WRAP : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
             s[k].MaxLOD = D3D12_FLOAT32_MAX;
             s[k].ShaderRegister = (UINT)(2 + k);
             s[k].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -315,57 +352,12 @@ const char *rr_shader_ext(void) { return "dxil"; }
 static void blend_of(D3D12_RENDER_TARGET_BLEND_DESC *a, int blend)
 {
     memset(a, 0, sizeof *a);
-    a->RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    a->BlendEnable = blend != RR_BLEND_REPLACE && blend != RR_BLEND_NOCOLOUR;
+    a->RenderTargetWriteMask = blend == RR_BLEND_NOCOLOUR ? 0 : D3D12_COLOR_WRITE_ENABLE_ALL;
+    a->BlendEnable = blend == RR_BLEND_OVER;
     a->LogicOp = D3D12_LOGIC_OP_NOOP;
     a->BlendOp = a->BlendOpAlpha = D3D12_BLEND_OP_ADD;
     a->SrcBlend = a->SrcBlendAlpha = D3D12_BLEND_ONE;
-    a->DestBlend = a->DestBlendAlpha = D3D12_BLEND_ZERO;
-    switch (blend) {
-    case RR_BLEND_NOCOLOUR:
-        a->RenderTargetWriteMask = 0;
-        break;
-    case RR_BLEND_ADD_BY_A:
-    case RR_BLEND_RSUB_BY_A:
-        a->RenderTargetWriteMask = 7;
-        a->SrcBlend = D3D12_BLEND_DEST_ALPHA;
-        a->DestBlend = D3D12_BLEND_ONE;
-        a->BlendOp = blend == RR_BLEND_ADD_BY_A ? D3D12_BLEND_OP_ADD : D3D12_BLEND_OP_REV_SUBTRACT;
-        break;
-    case RR_BLEND_MIX_BY_A:
-    case RR_BLEND_RMIX_BY_A:
-        a->RenderTargetWriteMask = 7;
-        a->SrcBlend = D3D12_BLEND_DEST_ALPHA;
-        a->DestBlend = D3D12_BLEND_INV_DEST_ALPHA;
-        a->BlendOp = blend == RR_BLEND_MIX_BY_A ? D3D12_BLEND_OP_ADD : D3D12_BLEND_OP_REV_SUBTRACT;
-        break;
-    case RR_BLEND_A_ZERO:
-        a->RenderTargetWriteMask = 8;
-        a->SrcBlendAlpha = D3D12_BLEND_ZERO;
-        a->DestBlendAlpha = D3D12_BLEND_ZERO;
-        break;
-    case RR_BLEND_RGB_ZERO_A_ADD:
-        a->SrcBlend = D3D12_BLEND_ZERO;
-        a->DestBlend = D3D12_BLEND_ZERO;
-        a->SrcBlendAlpha = D3D12_BLEND_DEST_ALPHA;
-        a->DestBlendAlpha = D3D12_BLEND_ONE;
-        break;
-    case RR_BLEND_A_ADD:
-        a->RenderTargetWriteMask = 8;
-        a->SrcBlendAlpha = D3D12_BLEND_DEST_ALPHA;
-        a->DestBlendAlpha = D3D12_BLEND_ONE;
-        break;
-    case RR_BLEND_RGB_SCALE:
-        a->RenderTargetWriteMask = 7;
-        a->SrcBlend = D3D12_BLEND_ZERO;
-        a->DestBlend = D3D12_BLEND_BLEND_FACTOR;
-        break;
-    case RR_BLEND_OVER:
-        a->DestBlend = a->DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        break;
-    default:
-        break;
-    }
+    a->DestBlend = a->DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
 }
 
 static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind)
@@ -373,7 +365,7 @@ static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind)
     int depth = kind == KIND_SCREEN ? c->depth : 0, stencil = kind == KIND_SCREEN ? c->stencil : 0;
     int shader = c->shader < MAX_SHADERS ? c->shader : 0;
     UINT64 key = (UINT64)c->program | (UINT64)shader << 4 | (UINT64)c->blend << 13 | (UINT64)depth << 17 | (UINT64)stencil << 19 |
-                 (UINT64)c->topology << 22 | (UINT64)kind << 23 | (UINT64)(stencil ? c->read_mask : 0) << 32 |
+                 (UINT64)kind << 23 | (UINT64)(stencil ? c->read_mask : 0) << 32 |
                  (UINT64)(stencil ? c->write_mask : 0) << 40;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
     D3D12_DEPTH_STENCILOP_DESC so;
@@ -395,7 +387,7 @@ static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind)
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     d.RasterizerState.DepthClipEnable = TRUE;
-    d.PrimitiveTopologyType = c->topology == RR_LINES ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     d.NumRenderTargets = 1;
     d.RTVFormats[0] = kind == KIND_INDEX ? DXGI_FORMAT_R8_UINT : COLOUR;
     d.SampleDesc.Count = kind == KIND_SCREEN ? RR_SAMPLES : 1;
@@ -436,14 +428,19 @@ static UINT ntables;
 
 static const Tex *slot_tex(int32_t t, int slot)
 {
+    if (t == RR_TEX_FRAME)
+        return &screen_res[0];
     if (t == RR_TEX_EXTRA0 || t == RR_TEX_EXTRA1)
-        return &extra_res[t == RR_TEX_EXTRA0 ? 0 : 1];
+        return &screen_res[t == RR_TEX_EXTRA0 ? 1 : 2];
+    if (t == RR_TEX_PICTURE)
+        return &picture;
     if (t > 0 && t < MAX_TEXTURES && tex[t].r)
         return &tex[t];
-    return slot < 2 ? &none_colour : &none_index;
+    return slot < 3 ? &none_colour : &none_index;
 }
 
-static void srv_put(UINT at, const Tex *t)
+/* t's view at descriptor `at`: every level, or level `only` alone (>= 0) */
+static void srv_put_level(UINT at, const Tex *t, int only)
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC sv;
     D3D12_CPU_DESCRIPTOR_HANDLE h;
@@ -451,11 +448,14 @@ static void srv_put(UINT at, const Tex *t)
     sv.Format = format_of(t->format);
     sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    sv.Texture2D.MipLevels = 1;
+    sv.Texture2D.MostDetailedMip = only >= 0 ? (UINT)only : 0;
+    sv.Texture2D.MipLevels = only >= 0 ? 1 : (UINT)(t->levels > 0 ? t->levels : 1);
     srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(srv_heap, &h);
     h.ptr += (SIZE_T)at * srv_step;
     ID3D12Device_CreateShaderResourceView(dev, t->r, &sv, h);
 }
+
+static void srv_put(UINT at, const Tex *t) { srv_put_level(at, t, -1); }
 
 static D3D12_GPU_DESCRIPTOR_HANDLE table_of(const int32_t *ids)
 {
@@ -483,6 +483,22 @@ static D3D12_GPU_DESCRIPTOR_HANDLE table_of(const int32_t *ids)
     return g;
 }
 
+/* a table whose first view is level `level` of t alone, for making the next */
+static D3D12_GPU_DESCRIPTOR_HANDLE table_level(const Tex *t, int level)
+{
+    D3D12_GPU_DESCRIPTOR_HANDLE g;
+    UINT i = ntables < MAX_TABLES ? ntables++ : MAX_TABLES - 1;
+    int k;
+    memset(tables[i].t, 0, sizeof tables[i].t);
+    tables[i].at = i * RR_TEX_SLOTS;
+    srv_put_level(tables[i].at, t, level);
+    for (k = 1; k < RR_TEX_SLOTS; k++)
+        srv_put(tables[i].at + (UINT)k, k < 3 ? &none_colour : &none_index);
+    srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(srv_heap, &g);
+    g.ptr += (UINT64)tables[i].at * srv_step;
+    return g;
+}
+
 /* ---- a frame ---- */
 static void targets_fit(int w, int h)
 {
@@ -498,14 +514,17 @@ static void targets_fit(int w, int h)
         tex_make(&screen_ds[k], DEPTH, w, h, RR_SAMPLES, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_STATE_DEPTH_WRITE);
         ID3D12Device_CreateRenderTargetView(dev, screen_ms[k].r, NULL, rtv(k));
         ID3D12Device_CreateDepthStencilView(dev, screen_ds[k].r, &dv, dsv(k));
-    }
-    for (k = 0; k < 2; k++) {
-        tex_make(&extra_res[k], COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
-        extra_res[k].format = RR_BGRA8;
+        tex_make(&screen_res[k], COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
+        screen_res[k].format = RR_BGRA8;
     }
     tex_make(&output, COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, SHADER_READ);
     output.format = RR_BGRA8;
+    output.rtv = 3;
     ID3D12Device_CreateRenderTargetView(dev, output.r, NULL, rtv(3));
+    tex_make(&picture, COLOUR, w, h, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, SHADER_READ);
+    picture.format = RR_BGRA8;
+    picture.rtv = 4;
+    ID3D12Device_CreateRenderTargetView(dev, picture.r, NULL, rtv(4));
     targets_w = w;
     targets_h = h;
 }
@@ -531,13 +550,30 @@ static void apply_texops(const rr_frame *f)
         }
         t = &tex[o->id];
         if (o->op == RR_TEX_CREATE) {
-            tex_make(t, format_of(o->format), (int)o->w, (int)o->h, 1,
-                     o->flags & RR_TEX_TARGET ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
+            int levels = o->flags & RR_TEX_MIPS ? levels_of((int)o->w, (int)o->h) : 1, lv;
+            int rtv0 = t->rtv, had = t->levels;
+            tex_make_levels(t, format_of(o->format), (int)o->w, (int)o->h, 1, levels,
+                            o->flags & RR_TEX_TARGET ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
             t->format = o->format;
             if (o->flags & RR_TEX_TARGET) {
-                if (!t->rtv)
-                    t->rtv = rtv_next < 256 ? rtv_next++ : 255;
-                ID3D12Device_CreateRenderTargetView(dev, t->r, NULL, rtv(t->rtv));
+                /* a render-target view for each level: made again in place when there are as many */
+                if (!rtv0 || had < levels) {
+                    if (rtv_next + levels > RTVS) {
+                        fprintf(stderr, "rr: d3d12: more than %d textures' levels drawn into\n", RTVS);
+                        exit(70);
+                    }
+                    rtv0 = rtv_next;
+                    rtv_next += levels;
+                }
+                t->rtv = rtv0;
+                for (lv = 0; lv < levels; lv++) {
+                    D3D12_RENDER_TARGET_VIEW_DESC rv;
+                    memset(&rv, 0, sizeof rv);
+                    rv.Format = format_of(o->format);
+                    rv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+                    rv.Texture2D.MipSlice = (UINT)lv;
+                    ID3D12Device_CreateRenderTargetView(dev, t->r, &rv, rtv(rtv0 + lv));
+                }
             }
         } else if (t->r) {
             D3D12_TEXTURE_COPY_LOCATION to, from;
@@ -567,6 +603,7 @@ static void apply_texops(const rr_frame *f)
 
 int rr_draw(rr_frame *f)
 {
+    size_t mip_blocks, mip_at;
     int ow = f->width, oh = f->height, paced = 0, back = 0, show = 0, vx, vy, vw, vh;
     float aspect = f->aspect;
     size_t i, p;
@@ -620,7 +657,12 @@ int rr_draw(rr_frame *f)
     /* the words and the uniforms, each block given its target's size and samples */
     buf_fit(&dbuf, (f->data_words + 1) * 4);
     memcpy(dbuf.at, f->data, f->data_words * 4);
-    buf_fit(&ubuf, (f->nuniforms + 1) * 256);
+    /* past the frame's blocks, one for each level the mips make */
+    mip_blocks = 0;
+    for (p = 0; p < f->npasses; p++)
+        if (f->passes[p].target == RR_TARGET_TEXTURE && f->passes[p].mips && f->passes[p].texture < MAX_TEXTURES)
+            mip_blocks += (size_t)(tex[f->passes[p].texture].levels > 1 ? tex[f->passes[p].texture].levels - 1 : 0);
+    buf_fit(&ubuf, (f->nuniforms + mip_blocks + 1) * 256);
     for (p = 0; p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
         int tw = ow, th = oh, samples = ps->target <= RR_TARGET_EXTRA1 ? RR_SAMPLES : 1;
@@ -638,6 +680,7 @@ int rr_draw(rr_frame *f)
         }
     }
     ntables = 0;
+    mip_at = 0;
 
     ID3D12CommandAllocator_Reset(alloc);
     ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
@@ -659,31 +702,30 @@ int rr_draw(rr_frame *f)
                 ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, ps->clear, 0, NULL);
                 ID3D12GraphicsCommandList_ClearDepthStencilView(list, ds, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, NULL);
             }
-        } else if (ps->target == RR_TARGET_TEXTURE) {
-            static const FLOAT zero[4] = { 0, 0, 0, 0 };
-            if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].r || !tex[ps->texture].rtv)
-                continue;
-            kind = KIND_INDEX;
-            to = &tex[ps->texture];
+        } else {
+            if (ps->target == RR_TARGET_TEXTURE) {
+                if (ps->texture >= MAX_TEXTURES || !tex[ps->texture].r || !tex[ps->texture].rtv)
+                    continue;
+                to = &tex[ps->texture];
+            } else {
+                to = ps->target == RR_TARGET_PICTURE ? &picture : &output;
+            }
+            kind = to->format == RR_R8U && ps->target == RR_TARGET_TEXTURE ? KIND_INDEX : KIND_COLOUR;
             tw = to->w;
             th = to->h;
             transition(to->r, &to->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
             rt = rtv(to->rtv);
             ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, NULL);
-            ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, zero, 0, NULL);
-        } else {
-            kind = KIND_COLOUR;
-            to = &output;
-            transition(output.r, &output.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            rt = rtv(3);
-            ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, NULL);
+            /* kept, unless just made: then cleared */
+            if (!ps->load || to->fresh)
+                ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, ps->clear, 0, NULL);
+            to->fresh = 0;
         }
         for (i = ps->first; i < ps->first + ps->count; i++) {
             const rr_cmd *c = &f->cmds[i];
             ID3D12PipelineState *pl = pipe_of(c, kind);
             D3D12_VIEWPORT vp;
             D3D12_RECT sc;
-            FLOAT bf[4];
             if (!pl || !c->vertices || !c->instances)
                 continue;
             if (c->space == RR_SPACE_VIEW && kind != KIND_INDEX) {
@@ -712,20 +754,18 @@ int rr_draw(rr_frame *f)
                 sc.right = x1;
                 sc.bottom = y1;
             }
-            bf[0] = bf[1] = bf[2] = bf[3] = c->constant;
             ID3D12GraphicsCommandList_SetPipelineState(list, pl);
             ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) + (UINT64)c->uniform * 256);
             ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table_of(c->tex));
             ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
             ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
-            ID3D12GraphicsCommandList_OMSetBlendFactor(list, bf);
             ID3D12GraphicsCommandList_OMSetStencilRef(list, c->ref);
-            ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, c->topology == RR_LINES ? D3D_PRIMITIVE_TOPOLOGY_LINELIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             ID3D12GraphicsCommandList_DrawInstanced(list, c->vertices, c->instances, 0, 0);
         }
         if (screen) {
-            /* resolved: the frame into the output, an extra target into its texture */
-            Tex *dst = ps->target == RR_TARGET_FRAME ? &output : &extra_res[ps->target - 1];
+            /* resolved into its texture */
+            Tex *dst = &screen_res[ps->target];
             Tex *src = &screen_ms[ps->target];
             transition(src->r, &src->state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
             transition(dst->r, &dst->state, D3D12_RESOURCE_STATE_RESOLVE_DEST);
@@ -734,6 +774,49 @@ int rr_draw(rr_frame *f)
             transition(dst->r, &dst->state, SHADER_READ);
         } else if (to) {
             transition(to->r, &to->state, SHADER_READ);
+            if (ps->mips && to->levels > 1) {
+                /* its smaller levels, each the mean of the one before (the renderer's own program) */
+                rr_cmd mc;
+                ID3D12PipelineState *pl;
+                int lv, w = to->w, h = to->h;
+                memset(&mc, 0, sizeof mc);
+                mc.program = RR_MIPS;
+                pl = pipe_of(&mc, KIND_COLOUR);
+                for (lv = 1; pl && lv < to->levels; lv++) {
+                    D3D12_CPU_DESCRIPTOR_HANDLE lr = rtv(to->rtv + lv);
+                    D3D12_VIEWPORT vp;
+                    D3D12_RECT sc;
+                    rr_uniform u;
+                    w = w > 1 ? w / 2 : 1;
+                    h = h > 1 ? h / 2 : 1;
+                    memset(&u, 0, sizeof u);
+                    u.f[0][0] = (float)w;
+                    u.f[0][1] = (float)h;
+                    u.f[0][2] = 1.0f;
+                    u.f[0][3] = -1.0f;
+                    memcpy((char *)ubuf.at + (f->nuniforms + mip_at) * 256, &u, sizeof u);
+                    vp.TopLeftX = vp.TopLeftY = 0;
+                    vp.Width = (FLOAT)w;
+                    vp.Height = (FLOAT)h;
+                    vp.MinDepth = 0;
+                    vp.MaxDepth = 1;
+                    sc.left = sc.top = 0;
+                    sc.right = w;
+                    sc.bottom = h;
+                    transition_level(to->r, (UINT)lv, SHADER_READ, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &lr, FALSE, NULL);
+                    ID3D12GraphicsCommandList_SetPipelineState(list, pl);
+                    ID3D12GraphicsCommandList_SetGraphicsRootConstantBufferView(list, 0, ID3D12Resource_GetGPUVirtualAddress(ubuf.r) +
+                                                                                    (UINT64)(f->nuniforms + mip_at) * 256);
+                    ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, 2, table_level(to, lv - 1));
+                    ID3D12GraphicsCommandList_RSSetViewports(list, 1, &vp);
+                    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1, &sc);
+                    ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    ID3D12GraphicsCommandList_DrawInstanced(list, 6, 1, 0, 0);
+                    transition_level(to->r, (UINT)lv, D3D12_RESOURCE_STATE_RENDER_TARGET, SHADER_READ);
+                    mip_at++;
+                }
+            }
         }
     }
     if (show) {

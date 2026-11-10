@@ -60,7 +60,6 @@
  * (the frame being run counted from 1), to stderr with the S-CPU's
  * instruction that made it (a DMA's: the last instruction before it).
  */
-#include <dlfcn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -68,9 +67,26 @@
 #include <string.h>
 #include <dirent.h>
 #include <errno.h>
+#include <unistd.h>
+#ifdef _WIN32
+/* Windows: the core is a DLL; a load runs the oracle again (spawn_load) */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void *dl_open(const char *path) { return (void *)LoadLibraryA(path); }
+static void *dlsym(void *lib, const char *name) { return (void *)(uintptr_t)GetProcAddress((HMODULE)lib, name); }
+static const char *dl_error(void)
+{
+    static char b[64];
+    snprintf(b, sizeof b, "Windows error %lu", (unsigned long)GetLastError());
+    return b;
+}
+#else
+#include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
-#include <unistd.h>
+static void *dl_open(const char *path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+static const char *dl_error(void) { return dlerror(); }
+#endif
 
 /* the parts of the libretro interface used here */
 struct retro_game_info { const char *path; const void *data; size_t size; const char *meta; };
@@ -607,6 +623,36 @@ static void list_load(List *l, const char *path)
 static void script_load(const char *path) { list_load(&main_list, path); }
 
 /* ---- the processes (src/front/script.c's) ---- */
+#ifdef _WIN32
+/* Windows has no fork. A load runs the oracle again from power-on, as a new
+   process told (NSHVC_ORACLE_LOAD=NAME:STEP) to replay the play that saved
+   NAME up to that save, then go on from step STEP of this one: the same
+   frames in the same order as a forked process makes. Its status is ours. */
+static int spawn_load(const char *name, int resume)
+{
+    static char env[300];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    DWORD code = 1;
+    char *line = strdup(GetCommandLineA());
+    if (!line)
+        die("no memory for the command line", NULL);
+    snprintf(env, sizeof env, "NSHVC_ORACLE_LOAD=%s:%d", name, resume);
+    if (_putenv(env))
+        die("cannot set NSHVC_ORACLE_LOAD", NULL);
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    fflush(NULL);
+    if (!CreateProcessA(NULL, line, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+        die("cannot run the oracle again for a load: ", dl_error());
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    free(line);
+    return (int)code;
+}
+#else
 static pid_t fork_run(void)
 {
     pid_t p;
@@ -626,6 +672,8 @@ static int child_status(pid_t p)
         return WEXITSTATUS(st);
     return 128 + (WIFSIGNALED(st) ? WTERMSIG(st) : 0);
 }
+
+#endif
 
 static char replay_name[128];
 static int replay_resume;
@@ -680,6 +728,7 @@ static void begin_replay(const char *name, int resume)
     step_left = 0;
 }
 
+#ifndef _WIN32
 static void hold(const char *have, int at)
 {
     char replay[128] = "";
@@ -711,10 +760,27 @@ static void hold(const char *have, int at)
     }
 }
 
+#endif
+
 static void takes(const char *dir)
 {
     static int started;
     if (!started) {
+#ifdef _WIN32
+        /* run again for a load: replay the play that saved it */
+        const char *load = getenv("NSHVC_ORACLE_LOAD");
+        started = 1;
+        if (load && *load) {
+            char name[128];
+            const char *colon = strrchr(load, ':');
+            size_t k = colon ? (size_t)(colon - load) : 0;
+            if (!colon || k >= sizeof name)
+                die("NSHVC_ORACLE_LOAD: ", load);
+            memcpy(name, load, k);
+            name[k] = 0;
+            begin_replay(name, atoi(colon + 1));
+        }
+#else
         int i, needed = 0;
         started = 1;
         for (i = 0; i < main_list.n; i++)
@@ -725,6 +791,7 @@ static void takes(const char *dir)
                 die("mmap failed", NULL);
             hold("", 0);
         }
+#endif
     }
     while (step_at < cur->n) {
         Step *st = &cur->s[step_at];
@@ -733,7 +800,14 @@ static void takes(const char *dir)
             return;
         if (cur == &replay_list) {
             if (st->kind == S_SAVE && !strcmp(st->name, replay_name)) {
+#ifdef _WIN32
+                /* the state is reached: on with the play that loaded it */
+                cur = &main_list;
+                step_at = replay_resume;
+                step_left = 0;
+#else
                 hold(replay_name, replay_resume);
+#endif
                 continue;
             }
             if (st->kind == S_LOAD)
@@ -754,18 +828,29 @@ static void takes(const char *dir)
             write_mem(dir, st->name, ".wram", "wram");
             break;
         case S_SAVE:
+#ifdef _WIN32
+            /* a load of it runs again and replays to here */
+            break;
+#else
             hold(st->name, step_at + 1);
             continue;
+#endif
         case S_LOAD: {
             const char *b = strrchr(st->name, '/');
+            char name[128];
             size_t k;
-            snprintf(shared->name, sizeof shared->name, "%s", b ? b + 1 : st->name);
-            k = strlen(shared->name);
-            if (k > 6 && !strcmp(shared->name + k - 6, ".state"))
-                shared->name[k - 6] = 0;
+            snprintf(name, sizeof name, "%s", b ? b + 1 : st->name);
+            k = strlen(name);
+            if (k > 6 && !strcmp(name + k - 6, ".state"))
+                name[k - 6] = 0;
+#ifdef _WIN32
+            exit(spawn_load(name, step_at + 1));
+#else
+            snprintf(shared->name, sizeof shared->name, "%s", name);
             shared->resume = step_at + 1;
             fflush(NULL);
             _exit(EXIT_WANT);
+#endif
         }
         case S_INPUT: input_step(st->text); break;
         }
@@ -1076,9 +1161,9 @@ int main(int argc, char **argv)
     if (!corepath || !rom)
         die("--core and --rom are needed", NULL);
     snprintf(sysdir, sizeof sysdir, "%s", out);
-    core = dlopen(corepath, RTLD_NOW | RTLD_LOCAL);
+    core = dl_open(corepath);
     if (!core)
-        die("cannot load the core: ", dlerror());
+        die("cannot load the core: ", dl_error());
     LOAD(p_init, "retro_init");
     LOAD(p_set_environment, "retro_set_environment");
     LOAD(p_set_video_refresh, "retro_set_video_refresh");

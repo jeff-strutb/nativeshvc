@@ -13,8 +13,8 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
-- **Feature scenes:** removed in 6.0. They held each picture feature to bsnes byte for byte; a native renderer blends with
-  the GPU's 8-bit arithmetic and draws at the window's resolution, and an emulator's picture is not its standard.
+- **Feature scenes:** removed in 6.0. They held each picture feature to bsnes byte for byte; a native renderer draws at the
+  window's resolution, and an emulator's picture is not its standard.
 - **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
 - **A full game, zelda3, converted to the API** with no imitation hardware left. See the conversion guide. Attract frames that line up match the ROM in bsnes byte for byte; dungeons, the world map, game over, boss scenes and the credits match its previous renderer apart from the timing of its 3D polygons. One scene, save and quit, ended differently from that reference, in the game's logic, and was not explained. A run gives the same picture on macOS, Linux, D3D12 headless and the Windows host under Wine, and in real time on macOS, Linux, Android and iOS.
 - **Sound:** the voices match the old mixer, itself held to bsnes, on 1.28 million samples with echo writes switching, and on 1.9 million before that. zelda3's music is not aligned with the ROM's, so it is compared only in loudness.
@@ -201,9 +201,11 @@ an iPhone 15 Pro Max once a draw-list layer existed). It is gone. In its place:
 2. **The engine's standard capabilities on it** (`src/engine/compose.c`, programs in `src/engine/shaders`): tile layers as
    instanced tile quads with the map read in the vertex stage; mosaic as instanced blocks; Mode 7 as a plane textured
    through its matrix, the plane drawn into a texture from its map; sprites as instanced quads; priorities as depth;
-   windows as stencil from the window edges; per-line changes as strips of rows drawn with their own values; colour maths
-   as the sub screen drawn into its own target and laid on by blend state; hires by a stencil bit; brightness by blend
-   state. All at the window's resolution, texels sharp, edges smoothed by 4 samples a pixel.
+   windows as stencil from the window edges; per-line changes as strips of rows drawn with their own values (a draw list's
+   or the sprites' strips of one state drawn once, kept to them by stencil); colour maths, brightness and blanking as one
+   pass that combines the screens already drawn, exactly as the SNES defines them; hires by a stencil bit; interlace by a
+   picture that keeps the other field. Mode 7 is filtered through the plane's colours and their smaller levels where it
+   shrinks. All at the window's resolution, texels sharp, edges smoothed by 4 samples a pixel.
 3. **Custom work through the lower API:** draw lists, materials and game shaders, drawn straight into the frame in their
    layer's place, with depth.
 
