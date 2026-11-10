@@ -132,13 +132,16 @@ static int removed(HRESULT hr) { return hr == DXGI_ERROR_DEVICE_REMOVED || hr ==
 static void wait_gpu(void)
 {
     int k;
-    for (k = 0; k < 10; k++) {
+    for (k = 0; k <= 10; k++) {
+        /* checked once more after the tenth second's wait, so work done in it is not called lost */
         if (ID3D12Fence_GetCompletedValue(fence) >= fence_at) {
             HRESULT why = ID3D12Device_GetDeviceRemovedReason(dev);
             if (FAILED(why))
                 lost("the GPU's work", why);
             return;
         }
+        if (k == 10)
+            break;
         check("ID3D12Fence_SetEventOnCompletion", ID3D12Fence_SetEventOnCompletion(fence, fence_at, fence_event));
         WaitForSingleObject(fence_event, 1000);
     }

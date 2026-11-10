@@ -431,6 +431,10 @@ void nshvc_lines(uint32_t first, uint32_t count, nshvc_line_field f, const int32
     uint32_t i, bad = 0, at = 0;
     if (!IN_DRAW("nshvc_lines") || !v)
         return;
+    if ((uint64_t)first + count > (uint64_t)UINT32_MAX + 1) {
+        eng_report("nshvc_lines", "first %u, count %u", first, count);   /* lines past the last there is: none wrap to the top */
+        return;
+    }
     for (i = 0; i < count; i++)
         if (!add_change(first + i, 0, (int)f, v[i]) && !bad++)
             at = first + i;
@@ -556,6 +560,11 @@ static void list_add(eng_list *l, const nshvc_vertex *v, uint32_t count, uint32_
 {
     eng_list_cmd *c;
     size_t k;
+    if (count > SIZE_MAX / 2 / sizeof *l->v - l->nv) {
+        /* more than memory can index (a 32-bit size_t's): none wraps, none taken */
+        eng_report("nativeshvc", "a draw list of %zu vertices, and %u more", l->nv, count);
+        return;
+    }
     l->v = (nshvc_vertex *)grow(l->v, &l->cap_v, l->nv + count, sizeof *l->v);
     l->cmd = (eng_list_cmd *)grow(l->cmd, &l->cap_c, l->nc + 1, sizeof *l->cmd);
     memcpy(l->v + l->nv, v, count * sizeof *v);

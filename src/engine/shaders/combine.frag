@@ -57,7 +57,7 @@ void main()
             z = min(z, uvec3(248u));
         }
         if (bright != 15)
-            z = mix(((((z >> 3u) * uint(bright) + 7u) * 4370u) >> 16u) << 3u, ((z * uint(bright) + 7u) * 4370u) >> 16u, notEqual(z & 7u, uvec3(0u)));
+            z = mix(((((z >> 3u) * uint(bright) + 7u) * 4370u) >> 16u) << 3u, ((z * uint(bright) + 7u) * 4370u) >> 16u, fine);
         r = z + (z >> 5u);
     }
     o = vec4(vec3(r) / 255.0, 1.0);

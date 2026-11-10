@@ -39,7 +39,7 @@
  * loop (the console's waits stand for those) and is left out, as is a gap
  * past 1,024 clocks (a branch to itself). And a line a frame: "F frame",
  * then for reads and for writes of work RAM, ROM, cartridge RAM and I/O
- * (nshvc.h NSHVC_KIND_*: the same addresses), each the accesses and their
+ * (in that order, 0 to 3), each the accesses and their
  * gaps' clocks, then the accesses' own bus clocks. And for the SPC700 a
  * line a frame, "S frame", then for reads and writes of its RAM and of its
  * registers ($F0-$FF) each the data accesses and their gaps in half cycles
@@ -954,8 +954,7 @@ static uint32_t pending_bus[65];
 static uint64_t frame_n[8], frame_gap[8], frame_bus;
 static uint32_t access_kind, access_bus;     /* the access being counted */
 
-/* the access kinds of nshvc.h (NSHVC_KIND_*): work RAM 0, ROM 1,
-   cartridge RAM 2, I/O 3 */
+/* the access kinds: work RAM 0, ROM 1, cartridge RAM 2, I/O 3 */
 static int region(uint32_t addr)
 {
     uint8_t bank = (uint8_t)(addr >> 16), b = bank & 0x7F;

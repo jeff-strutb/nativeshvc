@@ -175,7 +175,7 @@ other than 0, 1 or 2 is reported and not taken: `nshvc_mode7_set` takes the rest
 change to it is left out. Each line's own rounding of the matrix, as the console's, holds on every row.
 
 Where it is filtered, the plane in colour is kept full size with its smaller levels: for each layer's (BG1's, and BG2's
-two priorities) its rows' most common colouring (the base), and the four other colourings (palette, direct colour, tile
+two priorities) the most common colouring among its rows drawn smaller than their texels (the base), and the four other colourings (palette, direct colour, tile
 set) whose rows are nearest; a row in one of those reads it in one read, exactly. Past those, each colouring has the plane
 at a quarter of the size in its own colours, and its rows read the base plus that less the base at the same size, exact
 wherever a pixel spans four texels or more, only the finest detail of the difference lost nearer. With tile 0 outside,
