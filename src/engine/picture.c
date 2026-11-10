@@ -141,6 +141,8 @@ nshvc_tiles nshvc_tiles_create(uint8_t bpp, uint32_t count, uint8_t tpp)
     o->bpp = bpp;
     o->tpp = tpp;
     o->gen = 0;
+    o->tile0_gen = 0;
+    memset(o->tile0, 0, sizeof o->tile0);   /* a new texture reads 0 */
     eng_texture_create(&frames[cur], o->tex, o->cols * s, rows * s, RR_R8U, 0);
     return r;
 }
@@ -183,6 +185,18 @@ void nshvc_tiles_write(nshvc_tiles t, uint32_t first, const void *data, uint32_t
                     tmp[n * 64 + y * 8 + x] = (uint8_t)v;
                 }
             in += o->bpp * 8u;
+        }
+    }
+    if (first == 0) {
+        /* tile 0 as Mode 7 reads it outside the plane: the texel at each pixel's centre */
+        uint8_t t0[64];
+        uint32_t x, y;
+        for (y = 0; y < 8; y++)
+            for (x = 0; x < 8; x++)
+                t0[y * 8 + x] = tmp[(size_t)(y * o->tpp + o->tpp / 2) * s + x * o->tpp + o->tpp / 2];
+        if (memcmp(t0, o->tile0, sizeof t0)) {
+            memcpy(o->tile0, t0, sizeof t0);
+            o->tile0_gen++;
         }
     }
     /* a write for each run of tiles along a row of the atlas */
@@ -326,7 +340,17 @@ void nshvc_image_write(nshvc_image i, const void *texels)
 void nshvc_screen_set(const nshvc_screen *s) { if (IN_DRAW("nshvc_screen_set") && s) { screen = *s; screen_set = 1; } }
 void nshvc_limits_set(const nshvc_limits *l) { if (IN_DRAW("nshvc_limits_set") && l) limits = *l; }
 void nshvc_mode_set(uint8_t m, uint8_t b3, uint8_t h) { if (IN_DRAW("nshvc_mode_set")) { mode = m & 7; bg3 = b3 != 0; mode_hires = h != 0; } }
-void nshvc_mode7_set(const nshvc_mode7 *m) { if (IN_DRAW("nshvc_mode7_set") && m) m7 = *m; }
+void nshvc_mode7_set(const nshvc_mode7 *m)
+{
+    if (!IN_DRAW("nshvc_mode7_set") || !m)
+        return;
+    if (m->outside > 2) {
+        /* 0 repeat, 1 transparent, 2 tile 0: no other */
+        eng_report("nshvc_mode7_set", "outside %u", m->outside);
+        return;
+    }
+    m7 = *m;
+}
 void nshvc_windows_set(const nshvc_windows *w) { if (IN_DRAW("nshvc_windows_set") && w) windows = *w; }
 void nshvc_blend_set(const nshvc_blend *b) { if (IN_DRAW("nshvc_blend_set") && b) blend = *b; }
 
@@ -365,8 +389,13 @@ void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first)
     sprite_first = count ? first % count : 0;
 }
 
-static void add_change(uint32_t line, int32_t column, int field, int32_t value)
+static void add_change(const char *call, uint32_t line, int32_t column, int field, int32_t value)
 {
+    if (field == NSHVC_LINE_M7_OUTSIDE && (value < 0 || value > 2)) {
+        /* 0 repeat, 1 transparent, 2 tile 0: no other */
+        eng_report(call, "line %u, Mode 7 outside %d", line, (int)value);
+        return;
+    }
     changes = (Change *)grow(changes, &cap_changes, nchanges + 1, sizeof *changes);
     changes[nchanges].line = line;
     changes[nchanges].column = column;
@@ -376,15 +405,15 @@ static void add_change(uint32_t line, int32_t column, int field, int32_t value)
     nchanges++;
 }
 
-void nshvc_line(uint32_t line, nshvc_line_field f, int32_t v) { if (IN_DRAW("nshvc_line")) add_change(line, 0, (int)f, v); }
-void nshvc_line_from(uint32_t line, int32_t c, nshvc_line_field f, int32_t v) { if (IN_DRAW("nshvc_line_from")) add_change(line, c, (int)f, v); }
+void nshvc_line(uint32_t line, nshvc_line_field f, int32_t v) { if (IN_DRAW("nshvc_line")) add_change("nshvc_line", line, 0, (int)f, v); }
+void nshvc_line_from(uint32_t line, int32_t c, nshvc_line_field f, int32_t v) { if (IN_DRAW("nshvc_line_from")) add_change("nshvc_line_from", line, c, (int)f, v); }
 void nshvc_lines(uint32_t first, uint32_t count, nshvc_line_field f, const int32_t *v)
 {
     uint32_t i;
     if (!IN_DRAW("nshvc_lines") || !v)
         return;
     for (i = 0; i < count; i++)
-        add_change(first + i, 0, (int)f, v[i]);
+        add_change("nshvc_lines", first + i, 0, (int)f, v[i]);
 }
 
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha)

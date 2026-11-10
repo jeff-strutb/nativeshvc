@@ -97,7 +97,8 @@ int  host_windowed(void);
    gives the window to draw into now (NULL: none, nothing is shown) and that
    window's size in pixels, read with it (w and h may be NULL), and keeps it
    as it is until give; give says which window the renderer still keeps
-   anything of its own on (a surface), NULL none. A host whose window can go
+   anything of its own on (a surface, or its record of having tried one),
+   NULL none. A host whose window can go
    (Android's, iOS's to the background) waits, before letting it go, until
    the renderer has given it back keeping nothing on it. */
 void *host_window_take(int *w, int *h);

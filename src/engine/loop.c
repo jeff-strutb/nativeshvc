@@ -183,20 +183,24 @@ static void render_thread(void *arg)
     host_thread_interactive();
     for (;;) {
         rr_frame *p;
-        uint64_t drawn;
+        uint64_t drawn, began;
         int paced;
         host_mutex_lock(hs_lock);
+        /* the next picture asked for once; the game may be drawing it already */
         hs_want = 1;
         host_cond_broadcast(game_wake);
-        while (!hs_ready && !hs_quit && !hs_window)
-            host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
-        if (!hs_ready && !hs_quit) {
-            /* the window went or came between pictures (during the game's
-               init, say): anything kept on one that went let go now */
+        for (;;) {
+            while (!hs_ready && !hs_quit && !hs_window)
+                host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
+            if (hs_ready || hs_quit)
+                break;
+            /* the window went or came while waiting for it (during the game's
+               init, say): anything kept on one that went let go now, the
+               picture still asked for */
             hs_window = 0;
             host_mutex_unlock(hs_lock);
             rr_window();
-            continue;
+            host_mutex_lock(hs_lock);
         }
         if (!hs_ready) {
             host_mutex_unlock(hs_lock);
@@ -207,16 +211,21 @@ static void render_thread(void *arg)
         p = hs_packet;
         drawn = p->update;
         host_mutex_unlock(hs_lock);
+        began = host_ticks_ns();
         paced = show(p);
         host_mutex_lock(hs_lock);
         hs_busy = 0;
         host_cond_broadcast(game_wake);
-        /* nothing shown it and nothing paced it (no window, or one minimised):
-           the next picture once the game has moved on or the window changes,
-           not as fast as pictures can be drawn */
-        if (!paced && !headless)
-            while (hs_updates == drawn && !hs_window && !hs_quit)
-                host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
+        /* nothing showed it and nothing paced it (no window, one minimised, a
+           host that shows nothing): the next picture once the game has moved
+           on, the window has changed, or a game update's time has passed since
+           this one began, so pictures go on while paused at the game's own
+           rate, never faster */
+        if (!paced && !headless) {
+            uint64_t until = began + NS_PER_S / game.update_hz, now;
+            while (hs_updates == drawn && !hs_window && !hs_quit && (now = host_ticks_ns()) < until)
+                host_cond_wait(render_wake, hs_lock, until - now);
+        }
         host_mutex_unlock(hs_lock);
     }
 }

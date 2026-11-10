@@ -829,7 +829,10 @@ static void window_drop(void)
 
 /* a surface on a window come (back): one this device's queue can show to,
    else none, and the window kept as the one tried, not tried again until
-   another comes (or it goes and comes back) */
+   another comes (or it goes and comes back). The tried window is given back
+   as kept like one with a surface, so a host whose window goes waits for
+   the renderer to forget it: one made again at the same address is tried
+   anew */
 static void window_make(void *window)
 {
     VkBool32 ok = VK_FALSE;
@@ -1034,7 +1037,7 @@ void rr_window(void)
     wnd = host_window_take(NULL, NULL);
     if (wnd != sc_window)
         window_drop();
-    host_window_give(surface ? sc_window : NULL);
+    host_window_give(sc_window);
 }
 
 /* ---- opening ---- */
@@ -1901,7 +1904,7 @@ int rr_draw(rr_frame *f)
             sc_ok = 0;
     }
     if (windowed)
-        host_window_give(surface ? sc_window : NULL);
+        host_window_give(sc_window);    /* kept: a surface on it, or its having been tried */
     ever = 1;
     last_w = ow;
     last_h = oh;

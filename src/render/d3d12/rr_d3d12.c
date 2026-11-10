@@ -353,7 +353,7 @@ int rr_open(void)
         return open_failed();
 
     {
-        /* b0 the draw's uniforms, t1 the frame's words, t2-t9 its textures, s2-s9 their samplers:
+        /* b0 the draw's uniforms, t1 the frame's words, t2-t10 its textures, s2-s10 their samplers:
            s3, s4 and s8-s10 filtered and anisotropic, s3 and s8 repeating, s4, s9 and s10
            transparent outside the texture; the rest at texels */
         D3D12_ROOT_PARAMETER p[3];

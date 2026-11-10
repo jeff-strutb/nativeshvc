@@ -11,7 +11,9 @@
 #define ENG_RGB 0x1000000u      /* a palette entry past 15 bits: ENG_RGB | 0xRRGGBB */
 
 /* objects, each a texture */
-typedef struct { uint32_t tex, count, bpp, tpp, cols, gen; } eng_tiles;   /* R8U: `cols` tiles a row, 8 * tpp texels a side */
+/* R8U: `cols` tiles a row, 8 * tpp texels a side; tile0 the texel at each of
+   tile 0's 8 x 8 pixels' centres (Mode 7's outside), changed with tile0_gen */
+typedef struct { uint32_t tex, count, bpp, tpp, cols, gen, tile0_gen; uint8_t tile0[64]; } eng_tiles;
 typedef struct { uint32_t tex, w, h, gen; } eng_map;                      /* R32U: tile | palette << 16 | priority << 19 | hflip << 20 | vflip << 21 */
 typedef struct { uint32_t tex, w, h, format; } eng_image;                 /* BGRA8, or R8U indexed */
 extern eng_tiles eng_tiles_of[ENG_OBJECTS];

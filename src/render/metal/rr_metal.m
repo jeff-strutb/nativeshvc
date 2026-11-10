@@ -588,16 +588,43 @@ int rr_draw(rr_frame *f)
                 [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:c->vertices instanceCount:c->instances];
             }
             [e endEncoding];
-            if (ps->target == RR_TARGET_TEXTURE && ps->mips && to.mipmapLevelCount > 1) {
-                /* its smaller levels (that layer's), from the first */
-                id<MTLTexture> t = to;
-                id<MTLBlitCommandEncoder> b;
-                if (t.textureType == MTLTextureType2DArray)
-                    t = [t newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureType2DArray
-                                                  levels:NSMakeRange(0, t.mipmapLevelCount) slices:NSMakeRange(ps->layer, 1)];
-                b = [cb blitCommandEncoder];
-                [b generateMipmapsForTexture:t];
-                [b endEncoding];
+            if (ps->target == RR_TARGET_TEXTURE && ps->mips && to.mipmapLevelCount > 1 && kind == KIND_COLOUR) {
+                /* its smaller levels (that layer's), each texel the mean of the 2 x 2 of
+                   the level before, by the renderer's own program: the same box on every
+                   backend (Metal's own mipmaps leave the filter to the GPU) */
+                int array = to.textureType == MTLTextureType2DArray;
+                NSUInteger lv, layer = array ? ps->layer : 0;
+                id<MTLRenderPipelineState> pl;
+                rr_cmd mc;
+                memset(&mc, 0, sizeof mc);
+                mc.program = array ? RR_MIPS_LAYER : RR_MIPS;
+                mc.blend = RR_BLEND_REPLACE;
+                pl = pipe_of(&mc, KIND_COLOUR);
+                for (lv = 1; pl && lv < to.mipmapLevelCount; lv++) {
+                    MTLRenderPassDescriptor *mp = [MTLRenderPassDescriptor renderPassDescriptor];
+                    id<MTLTexture> from = [to newTextureViewWithPixelFormat:to.pixelFormat textureType:array ? MTLTextureType2DArray : MTLTextureType2D
+                                                                     levels:NSMakeRange(lv - 1, 1) slices:NSMakeRange(layer, 1)];
+                    id<MTLRenderCommandEncoder> me;
+                    rr_uniform mu;
+                    memset(&mu, 0, sizeof mu);
+                    mu.f[0][0] = (float)(to.width >> lv ? to.width >> lv : 1);
+                    mu.f[0][1] = (float)(to.height >> lv ? to.height >> lv : 1);
+                    mu.f[0][2] = 1.0f;
+                    mu.f[0][3] = -1.0f;
+                    mp.colorAttachments[0].texture = to;
+                    mp.colorAttachments[0].level = lv;
+                    mp.colorAttachments[0].slice = layer;
+                    mp.colorAttachments[0].loadAction = MTLLoadActionDontCare;   /* every texel drawn */
+                    mp.colorAttachments[0].storeAction = MTLStoreActionStore;
+                    me = [cb renderCommandEncoderWithDescriptor:mp];
+                    [me setRenderPipelineState:pl];
+                    [me setVertexBytes:&mu length:sizeof mu atIndex:0];
+                    [me setFragmentBytes:&mu length:sizeof mu atIndex:0];
+                    [me setFragmentTexture:from atIndex:2];
+                    [me setFragmentSamplerState:sampler atIndex:2];
+                    [me drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+                    [me endEncoding];
+                }
             }
         }
         /* shown only when a drawable of this size is there; paced only when shown */

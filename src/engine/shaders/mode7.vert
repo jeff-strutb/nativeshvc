@@ -12,7 +12,7 @@
          plane (ta2's layer i[5].z). i[7].y: -1, or past the full-size planes: those the base
          palette's, and this palette's planes at a quarter's side in the arrays (ta0 when
          outside repeats, else ta1): the plane in layer i[7].y, the base's in layer i[6].x - 1;
-         tile 0 repeated in layer i[5].x (-1 none), the base's in i[6].x + 2;
+         tile 0 repeated in layer i[5].x (-1: the base's colouring), the base's in i[6].x + 2;
          this palette's tile 0 in ta0's layer i[7].y
    f[6], f[7]: the texel step from the row above the strip's first row (i[7].z) to it, and from
          its last row (before i[6].w) to the row below, each by those rows' own matrices: the
