@@ -13,7 +13,10 @@
 /* objects, each a texture */
 /* R8U: `cols` tiles a row, 8 * tpp texels a side; tile0 the texel at each of
    tile 0's 8 x 8 pixels' centres (Mode 7's outside), changed with tile0_gen */
-typedef struct { uint32_t tex, count, bpp, tpp, cols, gen, tile0_gen; uint8_t tile0[64]; } eng_tiles;
+typedef struct { uint32_t tex, count, bpp, tpp, cols, gen, tile0_gen; uint8_t tile0[64]; uint32_t *cls; } eng_tiles;
+/* cls: each tile's class, two bits a tile, 16 a word, kept when the tile is written (once, never per
+   picture): ENG_TILE_BLANK every texel 0, ENG_TILE_SOLID none 0, ENG_TILE_MIXED both; a tile never written is blank */
+enum { ENG_TILE_BLANK, ENG_TILE_SOLID, ENG_TILE_MIXED };
 typedef struct { uint32_t tex, w, h, gen; } eng_map;                      /* R32U: tile | palette << 16 | priority << 19 | hflip << 20 | vflip << 21 */
 typedef struct { uint32_t tex, w, h, format; } eng_image;                 /* BGRA8, or R8U indexed */
 extern eng_tiles eng_tiles_of[ENG_OBJECTS];

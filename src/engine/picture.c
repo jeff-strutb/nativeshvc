@@ -148,6 +148,11 @@ nshvc_tiles nshvc_tiles_create(uint8_t bpp, uint32_t count, uint8_t tpp)
     o->gen = 0;
     o->tile0_gen = 0;
     memset(o->tile0, 0, sizeof o->tile0);   /* a new texture reads 0 on every backend (rr.h) */
+    free(o->cls);
+    if (!(o->cls = (uint32_t *)calloc((count + 15) / 16, sizeof *o->cls))) {
+        eng_report(call, "no memory for %u tiles' classes", count);
+        exit(70);
+    }
     eng_texture_create(&frames[cur], o->tex, o->cols * s, rows * s, RR_R8U, 0);
     return r;
 }
@@ -193,6 +198,14 @@ void nshvc_tiles_write(nshvc_tiles t, uint32_t first, const void *data, uint32_t
                 }
             in += o->bpp * 8u;
         }
+    }
+    /* each tile's class over all its texels, for the layers that draw only the tiles that need it */
+    for (n = 0; n < count; n++) {
+        const uint8_t *tx = tmp + (size_t)n * tb;
+        uint32_t i, nz = 0, at = first + n;
+        for (i = 0; i < tb; i++)
+            nz += tx[i] != 0;
+        o->cls[at >> 4] = (o->cls[at >> 4] & ~(3u << ((at & 15) * 2))) | (nz == 0 ? 0u : nz == tb ? 1u : 2u) << ((at & 15) * 2);
     }
     if (first == 0) {
         /* tile 0 as Mode 7 reads it outside the plane: the texel at each pixel's centre */

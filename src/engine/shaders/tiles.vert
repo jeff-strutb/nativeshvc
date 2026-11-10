@@ -10,6 +10,10 @@
    i[3]: bits a texel, mode 0's palette group, direct colour, offset-per-tile (1 modes 2 and 6, 2 mode 4)
    i[4]: offset-per-tile: its map's width and height, BG3's scroll x and y
    i[5]: offset-per-tile: this layer's bit in an entry, its own scroll x and y, hires
+   i[6]: the class of tile the draw is for (1 solid, 2 mixed: tiles_solid.frag, tiles.frag), the frame's
+         word where the set's classes start (two bits a tile, 16 a word: 0 blank, 1 solid, 2 mixed),
+         and the set's tile count; an instance whose tile is another class is put nowhere, a blank
+         tile (or one past the set's count) is in neither draw
    ti0: the tiles; ti1: the map; ti2: the offset-per-tile map */
 #include "common.glsl"
 layout(location = 0) out vec2 v_t;
@@ -84,5 +88,12 @@ void main()
     v_t = t * float(u.i[2].x);
     v_p = p;
     v_e = uvec2((e & 0xFFFFu) + uint(subx) + 16u * uint(suby), (e >> 16) & 7u);
+    {
+        uint tile = v_e.x, cl = tile < uint(u.i[6].z) ? (word(u.i[6].y + int(tile >> 4)) >> ((tile & 15u) * 2u)) & 3u : 0u;
+        if (int(cl) != u.i[6].x) {
+            gl_Position = NOWHERE;
+            return;
+        }
+    }
     gl_Position = clip_at(p, ((e >> 19) & 1u) != 0u ? u.f[3].z : u.f[3].y);
 }

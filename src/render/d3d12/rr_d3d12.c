@@ -83,6 +83,8 @@ static Tex none_colour, none_index, none_array;
    sample is drawn into its screen_res and has no screen_ms */
 static Tex screen_ms[SCREENS], screen_ds[SCREENS], screen_res[SCREENS], picture;
 static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS];
+static int draw_all;                    /* RR_DRAW, read at rr_open: with no window, the window's pass is run too, into draw_tex (never read or shown) */
+static Tex draw_tex;
 static int pass_samples, samples_have;  /* the screens' samples a pixel; the counts the device has (a bit each) */
 static uint64_t screen_used[SCREENS], picture_used, frame_no;
 static const rr_frame *last_frame;      /* the last frame run, for rr_read: its owner leaves it whole until a later one is run */
@@ -353,6 +355,10 @@ int rr_open(void)
     D3D12_COMMAND_QUEUE_DESC qd;
     D3D12_DESCRIPTOR_HEAP_DESC hd;
     HWND hwnd;
+    {
+        const char *e = getenv("RR_DRAW");
+        draw_all = e && *e && strcmp(e, "0");
+    }
 
     if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory)))
         return open_failed();
@@ -1283,7 +1289,7 @@ static void record_passes(const rr_frame *f, int ow, int oh, float aspect, int w
 int rr_draw(rr_frame *f)
 {
     size_t i, p;
-    int ow = f->width, oh = f->height, paced = 0, back = 0, show = 0, others;
+    int ow = f->width, oh = f->height, paced = 0, back = 0, show = 0, others, sink, window;
     float aspect = f->aspect;
     ID3D12CommandList *lists[1];
 
@@ -1349,8 +1355,15 @@ int rr_draw(rr_frame *f)
 
     /* everything this frame makes, made before anything reads a size */
     show = show && has_window(f);           /* a frame with no window pass shows nothing */
-    others = show || has_picture(f);        /* an interlaced picture builds up: its passes but the window's always run */
-    targets_fit(f, ow, oh, show, others);
+    /* with no window at all and RR_DRAW, the window's pass runs into a texture kept for it, never read or shown */
+    sink = draw_all && !swapchain && has_window(f);
+    if (sink && (!draw_tex.r || draw_tex.w != ow || draw_tex.h != oh))
+        tex_make(&draw_tex, COLOUR, ow, oh, 1, D3D12_RESOURCE_FLAG_NONE, SHADER_READ);
+    else if (!sink && draw_tex.r)
+        tex_free(&draw_tex);
+    window = show || sink;
+    others = window || has_picture(f);      /* an interlaced picture builds up: its passes but the window's always run */
+    targets_fit(f, ow, oh, window, others);
     make_textures(f);
 
     /* the words and the uniforms, each block given its target's size and samples */
@@ -1381,7 +1394,7 @@ int rr_draw(rr_frame *f)
         }
     }
     /* a table for each different set of textures, and for each level made */
-    tables_prepare(f, ow, oh, show);
+    tables_prepare(f, ow, oh, window);
 
     ID3D12CommandAllocator_Reset(alloc);
     ID3D12GraphicsCommandList_Reset(list, alloc, NULL);
@@ -1389,7 +1402,8 @@ int rr_draw(rr_frame *f)
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(list, root);
     ID3D12GraphicsCommandList_SetGraphicsRootShaderResourceView(list, 1, ID3D12Resource_GetGPUVirtualAddress(dbuf.r));
     record_texops(f);
-    record_passes(f, ow, oh, aspect, show, others, 0, show ? sc_img[back] : NULL, show ? &sc_state[back] : NULL, D3D12_RESOURCE_STATE_PRESENT);
+    record_passes(f, ow, oh, aspect, window, others, 0, show ? sc_img[back] : sink ? draw_tex.r : NULL, show ? &sc_state[back] : sink ? &draw_tex.state : NULL,
+                  show ? D3D12_RESOURCE_STATE_PRESENT : SHADER_READ);
     check("ID3D12GraphicsCommandList_Close", ID3D12GraphicsCommandList_Close(list));
     lists[0] = (ID3D12CommandList *)list;
     ID3D12CommandQueue_ExecuteCommandLists(queue, 1, lists);
@@ -1490,6 +1504,7 @@ void rr_close(void)
     for (k = 0; k < SCREENS; k++)
         screen_free(k);
     tex_free(&picture);
+    tex_free(&draw_tex);
     tex_free(&none_colour);
     tex_free(&none_index);
     tex_free(&none_array);
@@ -1554,7 +1569,8 @@ void rr_close(void)
     memset(screen_w, 0, sizeof screen_w);
     memset(screen_h, 0, sizeof screen_h);
     memset(screen_samp, 0, sizeof screen_samp);
-    pass_samples = samples_have = 0;
+    pass_samples = samples_have = draw_all = 0;
+    memset(&draw_tex, 0, sizeof draw_tex);
     memset(sc_img, 0, sizeof sc_img);
     sc_w = sc_h = 0;
     last_w = last_h = ever = 0;

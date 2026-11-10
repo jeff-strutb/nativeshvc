@@ -5,7 +5,7 @@
 #define ENGINE_PROGRAMS_H
 
 #define P_FILL 0        /* rectangles of one colour */
-#define P_TILES 1       /* a tile layer: an instance a tile's 8 x 8 texels */
+#define P_TILES 1       /* a tile layer's mixed tiles (some texels 0): an instance a tile's 8 x 8 texels */
 #define P_BLOCKS 2      /* a layer under mosaic: an instance a block of one texel */
 #define P_MODE7 3       /* Mode 7's plane, textured through its matrix */
 #define P_SPRITES 4     /* sprites: an instance each */
@@ -17,6 +17,7 @@
 #define P_TINT 10       /* Mode 7's plane (or its tile 0) in colour, with its smaller levels */
 #define P_OVERLAY 11    /* an overlay in window pixels */
 #define P_PLACED 12     /* a draw list drawn into a side target, placed where its layer is */
+#define P_TILES_SOLID 13 /* a tile layer's solid tiles (no texel 0): tiles.vert, a fragment stage that rejects nothing */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */

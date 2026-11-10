@@ -124,6 +124,11 @@ static Image none_colour, none_index, none_array;
    into screen_res, or a side target at one sample drawn into it */
 #define SCREENS (3 + RR_SIDES)
 static Image screen_ms[SCREENS], screen_ds[SCREENS], screen_res[SCREENS], picture;   /* and the picture */
+/* RR_DRAW (read at rr_open): with no window, the window's pass is run too, into draw_img (never read or shown) */
+static int draw_all;
+static Image draw_ms, draw_ds, draw_img;
+static VkFramebuffer draw_fb;
+static void sink_free(void);
 static Image win_ms, win_ds;            /* the window's multisampled colour (the swapchain's format) and depth, with the swapchain */
 static VkFramebuffer screen_fb[SCREENS];
 static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS];
@@ -1187,6 +1192,10 @@ int rr_open(void)
     /* drawn on a window even when none is there now (Android's comes and
        goes): one is made a surface whenever it comes */
     windowed = host_windowed();
+    {
+        const char *e = getenv("RR_DRAW");
+        draw_all = e && *e && strcmp(e, "0");
+    }
     app.apiVersion = VK_API_VERSION_1_0;
     ii.pApplicationInfo = &app;
     ii.enabledExtensionCount = windowed && iext[1] ? 2 : 0;
@@ -1388,6 +1397,7 @@ void rr_close(void)
             image_free(&tex[k]);
     for (k = 0; k < SCREENS; k++)
         screen_free(k);
+    sink_free();
     image_free(&picture);
     image_free(&none_colour);
     image_free(&none_index);
@@ -1462,7 +1472,7 @@ instance:
     windowed = 0;
     rp_screen = rp_window = VK_NULL_HANDLE;
     memset(rp_side, 0, sizeof rp_side);
-    pass_samples = samples_have = 0;
+    pass_samples = samples_have = draw_all = 0;
     memset(rp_colour, 0, sizeof rp_colour);
     memset(rp_index, 0, sizeof rp_index);
     memset(rp_index32, 0, sizeof rp_index32);
@@ -1974,9 +1984,37 @@ static void record_passes(const rr_frame *f, int ow, int oh, int turns, int mirr
     }
 }
 
+/* the image RR_DRAW's window pass resolves into, w x h, and what it is drawn with */
+static void sink_free(void)
+{
+    if (draw_fb)
+        vkDestroyFramebuffer(dev, draw_fb, NULL);
+    draw_fb = VK_NULL_HANDLE;
+    image_free(&draw_ms);
+    image_free(&draw_ds);
+    image_free(&draw_img);
+}
+
+static void sink_fit(int w, int h)
+{
+    VkImageView v[3];
+    if (draw_img.i && draw_img.w == w && draw_img.h == h)
+        return;
+    sink_free();
+    image_make(&draw_ms, COLOUR, w, h, pass_samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+               VK_IMAGE_ASPECT_COLOR_BIT);
+    image_make(&draw_ds, depth_format, w, h, pass_samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    image_make(&draw_img, COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    v[0] = draw_ms.v;
+    v[1] = draw_ds.v;
+    v[2] = draw_img.v;
+    draw_fb = framebuffer(rp_screen, v, 3, w, h);
+}
+
 int rr_draw(rr_frame *f)
 {
-    int ow = f->width, oh = f->height, paced = 0, show = 0, others, k, turns = 0, mirror = 0, iw, ih;
+    int ow = f->width, oh = f->height, paced = 0, show = 0, others, k, turns = 0, mirror = 0, iw, ih, sink, window;
     float aspect = f->aspect;
     uint32_t image = 0;
     size_t i;
@@ -2055,8 +2093,15 @@ int rr_draw(rr_frame *f)
     iw = image_w(ow, oh, turns);            /* the window-sized targets' own size: the display's orientation */
     ih = image_h(ow, oh, turns);
     show = show && has_window(f);           /* a frame with no window pass shows nothing */
-    others = show || has_picture(f);        /* an interlaced picture builds up: its passes but the window's always run */
+    /* with no window at all and RR_DRAW, the window's pass runs into an image kept for it, never read or shown */
+    sink = draw_all && !windowed && has_window(f);
+    window = show || sink;
+    others = window || has_picture(f);      /* an interlaced picture builds up: its passes but the window's always run */
     targets_fit(f, iw, ih, others);
+    if (sink)
+        sink_fit(iw, ih);
+    else if (draw_img.i)
+        sink_free();
     make_textures(f);
     buf_fit(&staging, f->upload_bytes + 16, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     memcpy(staging.at, f->upload, f->upload_bytes);
@@ -2114,7 +2159,8 @@ int rr_draw(rr_frame *f)
             own[k]->unready = 0;
     }
     record_texops(f);
-    record_passes(f, ow, oh, turns, mirror, aspect, show, others, 0, show ? sc_fb[image] : VK_NULL_HANDLE, rp_window, KIND_WINDOW);
+    record_passes(f, ow, oh, turns, mirror, aspect, window, others, 0, show ? sc_fb[image] : sink ? draw_fb : VK_NULL_HANDLE,
+                  show ? rp_window : rp_screen, show ? KIND_WINDOW : KIND_SCREEN);
     vkEndCommandBuffer(cmd);
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;

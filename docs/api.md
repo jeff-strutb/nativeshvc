@@ -73,7 +73,7 @@ natively on the GPU, at the window's own resolution, with nothing emulated and n
 
 | Capability | Drawn as |
 |---|---|
-| Tile layers | An instance for each 8 x 8 texels of a tile the screen shows, placed by the scroll, its map entry read by the vertex stage, its texels from the tile set's texture |
+| Tile layers | An instance for each 8 x 8 texels of a tile the screen shows, placed by the scroll, its map entry read by the vertex stage, its texels from the tile set's texture; the engine keeps whether each tile written is blank (every texel 0), solid (none) or mixed, and draws the solid tiles and the mixed tiles separately, a blank tile not at all, so a layer's cost follows what its tiles hold |
 | Mosaic | An instance for each block, of the one texel it shows |
 | Mode 7 | A plane textured through the matrix: the plane is drawn into a texture from its map and tiles when they change |
 | Sprites | An instance each (in pieces where the line limits or the wrap cut one); the first in priority order to show a pixel keeps it, by a stencil bit |
@@ -419,7 +419,7 @@ FILE`. The devices are replayed by update number (section 7), so a run repeats e
 renderer drew it, at the window's size with its overlays (headless, at the screen's size, a pixel for a pixel), read
 back from the GPU, for checks and screenshots, or for a game's own use (from `update`, `draw` or shutdown; it waits for
 a picture being drawn to finish, a picture sent and not yet drawn waits for it, the run ending or not, and it costs a
-readback, so a game calls it when it needs one). `--shots` writes the same.
+readback, so a game calls it when it needs one). `--shots` writes the same. A headless picture is drawn only when it is read; the environment variable `RR_DRAW=1` makes a run with no window draw every picture, into a texture nothing reads, to time the drawing without a display (`RR_SIZE=WxH` sets the size).
 
 ## 11. Stability rules
 

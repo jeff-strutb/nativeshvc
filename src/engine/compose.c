@@ -4,7 +4,12 @@
  *
  *   tile layers   an instance for each 8 x 8 texels of a tile the screen
  *                 shows, placed by scroll, its map entry read by the vertex
- *                 stage (program tiles); offset-per-tile moves each column's
+ *                 stage, which also reads the tile's class (kept when the game
+ *                 writes the tile: blank, solid or mixed) and keeps only the
+ *                 instances a draw is for: one draw for the solid tiles
+ *                 (tiles_solid, whose fragment stage rejects nothing, so the
+ *                 GPU skips what they hide), one for the mixed (tiles), none
+ *                 for the blank; offset-per-tile moves each column's
  *   mosaic        an instance for each block, of the one texel it shows (blocks)
  *   Mode 7        a quad textured through the matrix (mode7), from a plane drawn
  *                 into a texture from its map and tiles when they change
@@ -746,6 +751,25 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
 
 static int floordiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 
+/* each tile set's classes in this frame's words, once (as a list's vertices are): two bits a tile, 16 a word */
+static uint32_t cls_at[ENG_OBJECTS];
+static uint8_t cls_put[ENG_OBJECTS];
+
+static uint32_t class_words(uint32_t set)
+{
+    const eng_tiles *t = &eng_tiles_of[set];
+    size_t n = (t->count + 15) / 16;
+    if (!cls_put[set]) {
+        cls_at[set] = words(n);
+        memcpy(&F->data[cls_at[set]], t->cls, n * 4);
+        cls_put[set] = 1;
+    }
+    return cls_at[set];
+}
+
+/* a tile layer over a rectangle: its solid tiles by tiles_solid, then its mixed tiles by tiles (a blank
+   tile draws nothing), each a draw of the same rectangle, uniforms, depth, stencil, colour settings and
+   palette; under mosaic, one draw of blocks */
 static void emit_tiles(int v, const eng_state *s, int n, int x0, int y0, int x1, int y1)
 {
     const nshvc_layer *a = &s->l[n];
@@ -767,20 +791,33 @@ static void emit_tiles(int v, const eng_state *s, int n, int x0, int y0, int x1,
         u->i[0][3] = by1 - by0 + 1;
         d->instances = (uint32_t)((bx1 - bx0 + 1) * (by1 - by0 + 1));
     } else {
-        int sxs, sys, offx, offy, c0, c1, rows;
-        d = draw(P_TILES, &u);
-        tile_fields(u, d, s, n);
-        sxs = (int)u->f[4][0];
-        sys = (int)u->f[4][1];
-        offx = (int)u->f[4][2];
-        offy = (int)u->f[4][3];
-        c0 = floordiv(sxs * x0 + offx, 8);
-        c1 = floordiv(sxs * x1 + offx - 1, 8);
-        rows = opt_on(s, n) ? (sys * (y1 - y0) + 7) / 8 + 1 : floordiv(sys * y1 + offy - 1, 8) - floordiv(sys * y0 + offy, 8) + 1;
-        u->i[0][0] = c0;
-        u->i[0][2] = c1 - c0 + 1;
-        u->i[0][3] = rows;
-        d->instances = (uint32_t)((c1 - c0 + 1) * rows);
+        int pass;
+        for (pass = 0; pass < 2; pass++) {
+            int sxs, sys, offx, offy, c0, c1, rows;
+            d = draw(pass ? P_TILES : P_TILES_SOLID, &u);
+            tile_fields(u, d, s, n);
+            sxs = (int)u->f[4][0];
+            sys = (int)u->f[4][1];
+            offx = (int)u->f[4][2];
+            offy = (int)u->f[4][3];
+            c0 = floordiv(sxs * x0 + offx, 8);
+            c1 = floordiv(sxs * x1 + offx - 1, 8);
+            rows = opt_on(s, n) ? (sys * (y1 - y0) + 7) / 8 + 1 : floordiv(sys * y1 + offy - 1, 8) - floordiv(sys * y0 + offy, 8) + 1;
+            u->i[0][0] = c0;
+            u->i[0][2] = c1 - c0 + 1;
+            u->i[0][3] = rows;
+            u->i[6][0] = pass ? ENG_TILE_MIXED : ENG_TILE_SOLID;
+            u->i[6][1] = (int32_t)class_words(s->l[n].tiles.id);
+            u->i[6][2] = (int32_t)eng_tiles_of[s->l[n].tiles.id].count;
+            d->instances = (uint32_t)((c1 - c0 + 1) * rows);
+            rect_of(u, (float)x0, (float)y0, (float)x1, (float)y1);
+            u->f[3][0] = flag_of(v, s, n);
+            colour_set(u, d, v, s);
+            pal_set(u, x0, y0, x1, y1);
+            d->depth = RR_DEPTH_LEQUAL;
+            stencil_of(d, v, s, n);
+        }
+        return;
     }
     rect_of(u, (float)x0, (float)y0, (float)x1, (float)y1);
     u->f[3][0] = flag_of(v, s, n);
@@ -2381,6 +2418,7 @@ void eng_compose(rr_frame *f, const eng_picture *p)
     }
     window_table();
     memset(list_put, 0, sizeof list_put);
+    memset(cls_put, 0, sizeof cls_put);
     sprite_pieces();
     plane_pass();
     tint_passes();

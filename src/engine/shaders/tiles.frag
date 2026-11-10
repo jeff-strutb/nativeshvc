@@ -1,20 +1,14 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+/* tiles: a tile layer's tiles with some texels 0 (mixed), the instances the vertex stage kept for them
+   (tiles.vert, i[6].x 2): a texel 0 is see-through, covering the pixel by what the others cover */
 #include "common.glsl"
 layout(location = 0) in vec2 v_t;
 layout(location = 1) flat in uvec2 v_e;
 layout(location = 2) in vec2 v_p;
 layout(location = 0) out vec4 o;
+#include "tiles_colour.glsl"
 
-vec3 colour(uint c, uint pal, int prow)
-{
-    int bpp = u.i[3].x;
-    if (bpp == 8)
-        return u.i[3].z != 0 ? direct(c, pal) : palette(c, prow);
-    if (bpp == 4)
-        return palette(pal * 16u + c, prow);
-    return palette(uint(u.i[3].y) + pal * 4u + c, prow);
-}
 
 void main()
 {

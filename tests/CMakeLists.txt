@@ -9,3 +9,6 @@ set_target_properties(scene_player PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_B
 add_executable(feature scenes/feature.c)
 target_link_libraries(feature PRIVATE nshvc)
 set_target_properties(feature PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(cost scenes/cost.c)
+target_link_libraries(cost PRIVATE nshvc)
+set_target_properties(cost PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

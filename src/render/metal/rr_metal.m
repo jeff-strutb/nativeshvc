@@ -53,6 +53,8 @@ static id<MTLTexture> none_colour, none_index, none_array;
 #define SCREENS (4 + RR_SIDES)
 static id<MTLTexture> screen_ms[SCREENS], screen_ds[SCREENS], screen_res[SCREENS], picture, read_tex;
 static int screen_samples[SCREENS];     /* the samples a side target was made with */
+static int draw_all;                    /* RR_DRAW, read at rr_open: with no window, the window's pass is run too, into draw_tex */
+static id<MTLTexture> draw_tex;
 static int pass_samples, samples_have;  /* the screens' samples a pixel; the counts the device has (a bit each) */
 static int picture_fresh, memoryless;
 static int windowed;                    /* drawn for a window's layer, not headless */
@@ -97,6 +99,10 @@ int rr_open(void)
         memoryless = 0;
         if (@available(macOS 11.0, iOS 13.0, *))
             memoryless = [dev supportsFamily:MTLGPUFamilyApple1];
+        {
+            const char *e = getenv("RR_DRAW");
+            draw_all = e && *e && strcmp(e, "0");
+        }
         /* the samples the screens have: 8 where the device has them, else 4 */
         samples_have = 1;
         for (k = 2; k <= 16; k *= 2)
@@ -166,7 +172,7 @@ void rr_close(void)
         game_fns[k] = nil;
     for (k = 0; k < RR_PROGRAMS; k++)
         vfn[k] = ffn[k] = nil;
-    picture = read_tex = nil;
+    picture = read_tex = draw_tex = nil;
     none_colour = none_index = none_array = nil;
     ubuf = dbuf = rbuf = nil;
     pipes = dss = nil;
@@ -178,7 +184,7 @@ void rr_close(void)
     memset(tex_format, 0, sizeof tex_format);
     memset(screen_used, 0, sizeof screen_used);
     memset(screen_samples, 0, sizeof screen_samples);
-    pass_samples = samples_have = 0;
+    pass_samples = samples_have = draw_all = 0;
     picture_fresh = memoryless = windowed = 0;
     picture_used = 0;
     last_frame = NULL;
@@ -503,6 +509,15 @@ static int pass_target(const rr_pass *ps, id<MTLTexture> win, int *kind, id<MTLT
 void rr_window(void) {}
 
 /* whether the frame has a pass into the picture target: an interlaced picture */
+static int has_window(const rr_frame *f)
+{
+    size_t p;
+    for (p = 0; p < f->npasses; p++)
+        if (f->passes[p].target == RR_TARGET_WINDOW)
+            return 1;
+    return 0;
+}
+
 static int has_picture(const rr_frame *f)
 {
     size_t p;
@@ -673,7 +688,7 @@ int rr_draw(rr_frame *f)
         CAMetalLayer *ml = windowed ? (__bridge CAMetalLayer *)host_window_take(NULL, NULL) : nil;
         id<CAMetalDrawable> dr = nil;
         id<MTLCommandBuffer> cb;
-        int ow = 0, oh = 0, show, others;
+        int ow = 0, oh = 0, show, window, others;
         float aspect = f->aspect;
         size_t i, p;
         dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
@@ -721,8 +736,14 @@ int rr_draw(rr_frame *f)
             ow = oh = 1;
         /* the window's passes run only where a drawable of this size can be had */
         show = ml && CGSizeEqualToSize([ml drawableSize], CGSizeMake(ow, oh));
-        others = show || has_picture(f);        /* an interlaced picture builds up: its passes but the window's always run */
-        targets_fit(f, ow, oh, show, others);
+        /* with no window at all and RR_DRAW, the window's pass runs into a texture kept for it, never read or shown */
+        if (draw_all && !windowed && has_window(f))
+            draw_tex = target(draw_tex, MTLPixelFormatBGRA8Unorm, ow, oh, 1, MTLTextureUsageRenderTarget, 0);
+        else
+            draw_tex = nil;
+        window = show || draw_tex != nil;
+        others = window || has_picture(f);      /* an interlaced picture builds up: its passes but the window's always run */
+        targets_fit(f, ow, oh, window, others);
         last_w = ow;
         last_h = oh;
         last_aspect = aspect;
@@ -756,7 +777,7 @@ int rr_draw(rr_frame *f)
             dispatch_semaphore_t s = inflight;
             [cb addCompletedHandler:^(id<MTLCommandBuffer> b) { (void)b; dispatch_semaphore_signal(s); }];
         }
-        encode(cb, f, ow, oh, aspect, show, others, 0, show ? ml : nil, nil, &dr);
+        encode(cb, f, ow, oh, aspect, window, others, 0, show ? ml : nil, draw_tex, &dr);
         if (dr) {
             [cb presentDrawable:dr];
             paced = 1;
