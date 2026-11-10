@@ -1502,9 +1502,10 @@ static void plane_pass(void)
    its tiles and their writes; then each plane value's colour */
 typedef struct { uint32_t key[5]; int32_t colours[256]; } Look;
 typedef struct { Look look; uint32_t plane, tile0; uint8_t made, ok, claimed; int q; } Full;   /* q: its tile 0 repeated in qpool's layer, or -1 */
-typedef struct { uint32_t plane, tile0; int layers; Look look[M7_LAYERS]; uint8_t ok[M7_LAYERS], claimed[M7_LAYERS]; } Small;
+/* hash: each layer's look's (look_hash), compared before the look itself */
+typedef struct { uint32_t plane, tile0; int layers; Look look[M7_LAYERS]; uint32_t hash[M7_LAYERS]; uint8_t ok[M7_LAYERS], claimed[M7_LAYERS]; } Small;
 /* a plane wanted past the bases': q its tile 0 repeated, an array's layer, or -1 (none, or the same as the base's) */
-typedef struct { const eng_state *s; int kind, tile0_out, qneed, q; double rank; int32_t place; Look look; } Want;
+typedef struct { const eng_state *s; int kind, tile0_out, qneed, q; double rank; int32_t place; uint32_t hash; Look look; } Want;   /* hash: look's */
 /* what Mode 7 shows for a kind on some rows: one look (palette version,
    direct colour, tile set) and the place it is read from, found from a state
    by its palette version through a chain (next) */
@@ -1712,25 +1713,40 @@ static int small_free(const Small *a)
     return -1;
 }
 
-static int small_find(const Small *a, const Look *look)
+/* a layer of array a showing look (hash its look_hash), past the bases': one
+   no one has this frame, or (any) one already had, which can be shared; -1 none */
+static int small_find(const Small *a, const Look *look, uint32_t hash, int any)
 {
     int l;
     for (l = M7_KEEP; l < a->layers; l++)
-        if (!a->claimed[l] && a->ok[l] && look_eq(&a->look[l], look))
+        if ((any || !a->claimed[l]) && a->ok[l] && a->hash[l] == hash && look_eq(&a->look[l], look))
             return l;
     return -1;
 }
 
+/* layer l of array a set to show look, drawn from s for kind (source 0 the plane, 1 tile 0 repeated) */
+static void small_make(Small *a, int l, const Look *look, uint32_t hash, int source, const eng_state *s, int kind)
+{
+    a->claimed[l] = 1;
+    a->look[l] = *look;
+    a->hash[l] = hash;
+    a->ok[l] = 1;
+    tint_pass(a->plane, M7_SMALL, source, l, s, kind);
+    if (!source)
+        tint_pass(a->tile0, 8, 1, l, s, kind);
+}
+
 /* the wants past the full-size ones at a quarter's side: each its plane in a
    layer, and, where tile 0 is outside and its colours are not the base's,
-   its tile 0 repeated in another of the same array. Every layer already
-   showing what a want needs is kept before any is made, so none is made
-   over one still wanted */
+   its tile 0 repeated in another of the same array, shared by the wants
+   there with the same colouring. Every layer already showing what a want
+   needs is kept before any is made, so none is made over one still wanted */
 static void small_places(Want *wants, size_t nw, const eng_state *const *base_of)
 {
     size_t k, c, need = 0, room;
     int l;
     Look q, bq;
+    uint32_t qh;
     for (k = 0; k < nw; k++) {
         wants[k].qneed = 0;
         if (wants[k].tile0_out) {
@@ -1767,35 +1783,37 @@ static void small_places(Want *wants, size_t nw, const eng_state *const *base_of
         wants[k].q = -1;
         for (c = 0; c < nsmalls; c++) {
             Small *a = smalls[c];
-            if ((l = small_find(a, &wants[k].look)) < 0)
+            if ((l = small_find(a, &wants[k].look, wants[k].hash, 0)) < 0)
                 continue;
             a->claimed[l] = 1;
             wants[k].place = (int32_t)(M7_SMALLS + c * M7_LAYERS + (size_t)l);
             if (wants[k].qneed) {
                 tile0_look(&q, wants[k].s, wants[k].kind);
-                if ((wants[k].q = small_find(a, &q)) >= 0)
+                if ((wants[k].q = small_find(a, &q, look_hash(&q), 1)) >= 0)
                     a->claimed[wants[k].q] = 1;
             }
             break;
         }
     }
-    /* a kept plane whose tile 0 repeated is not beside it: made there in a
-       layer no one keeps, or, with none, both made elsewhere */
+    /* a kept plane whose tile 0 repeated is not beside it: one made there by
+       another want shared, else made there in a layer no one keeps, or, with
+       none, both made elsewhere */
     for (k = 0; k < nw; k++) {
         Small *a;
         if (wants[k].place < 0 || !wants[k].qneed || wants[k].q >= 0)
             continue;
         c = (size_t)(wants[k].place - M7_SMALLS) / M7_LAYERS;
         a = smalls[c];
-        if ((l = small_free(a)) < 0) {
+        tile0_look(&q, wants[k].s, wants[k].kind);
+        qh = look_hash(&q);
+        if ((l = small_find(a, &q, qh, 1)) < 0 && (l = small_free(a)) >= 0)
+            small_make(a, l, &q, qh, 1, wants[k].s, wants[k].kind);
+        if (l < 0) {
             a->claimed[(wants[k].place - M7_SMALLS) % M7_LAYERS] = 0;
             wants[k].place = -1;
             continue;
         }
         a->claimed[l] = 1;
-        tile0_look(&a->look[l], wants[k].s, wants[k].kind);
-        a->ok[l] = 1;
-        tint_pass(a->plane, M7_SMALL, 1, l, wants[k].s, wants[k].kind);
         wants[k].q = l;
     }
     /* made: the rest, in an array with room for all its layers */
@@ -1813,19 +1831,17 @@ static void small_places(Want *wants, size_t nw, const eng_state *const *base_of
             }
         }
         l = small_free(a);
-        a->claimed[l] = 1;
-        a->look[l] = wants[k].look;
-        a->ok[l] = 1;
-        tint_pass(a->plane, M7_SMALL, 0, l, wants[k].s, wants[k].kind);
-        tint_pass(a->tile0, 8, 1, l, wants[k].s, wants[k].kind);
+        small_make(a, l, &wants[k].look, wants[k].hash, 0, wants[k].s, wants[k].kind);
         wants[k].place = (int32_t)(M7_SMALLS + c * M7_LAYERS + (size_t)l);
         wants[k].q = -1;
         if (wants[k].qneed) {
-            l = small_free(a);
+            tile0_look(&q, wants[k].s, wants[k].kind);
+            qh = look_hash(&q);
+            if ((l = small_find(a, &q, qh, 1)) < 0) {
+                l = small_free(a);
+                small_make(a, l, &q, qh, 1, wants[k].s, wants[k].kind);
+            }
             a->claimed[l] = 1;
-            tile0_look(&a->look[l], wants[k].s, wants[k].kind);
-            a->ok[l] = 1;
-            tint_pass(a->plane, M7_SMALL, 1, l, wants[k].s, wants[k].kind);
             wants[k].q = l;
         }
     }
@@ -2055,6 +2071,7 @@ static void tint_passes(void)
             wants[nw].qneed = 0;
             wants[nw].q = -1;
             wants[nw].look = vs[i].look;
+            wants[nw].hash = vs[i].hash;
             vs[i].want = (int32_t)nw;
             nw++;
         }

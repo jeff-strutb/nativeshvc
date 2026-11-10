@@ -21,7 +21,9 @@
  * made with RR_TEX_MIPS has its smaller levels made from the first when a
  * pass into it asks (`mips`). A
  * texture made with RR_TEX_ARRAY has `layers` layers; a pass draws into one
- * of them (`layer`), and makes that layer's smaller levels.
+ * of them (`layer`), and makes that layer's smaller levels. A texture just
+ * made reads 0 in every texel, level and layer until it is written or drawn
+ * into, on every backend; so does a binding with no texture.
  *
  * Spaces. A draw in RR_SPACE_VIEW is in the frame's own units (width x
  * height), shown at its aspect, centred in the target and as large as fits

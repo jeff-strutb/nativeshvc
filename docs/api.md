@@ -20,7 +20,7 @@
 typedef struct nshvc_game {
     const char *title;          /* window and app name */
     const char *id;             /* save folder name: letters, digits, dashes */
-    uint32_t    update_hz;      /* the fixed rate of update(), e.g. 60 */
+    uint32_t    update_hz;      /* the fixed rate of update(), e.g. 60; at most 1000000000, a nanosecond each */
     void (*init)(void);                         /* once, before the first update */
     void (*update)(const nshvc_input *input);   /* game thread, update_hz times a second */
     void (*draw)(float between);                /* game thread, once per picture */
@@ -120,7 +120,8 @@ void nshvc_limits_set(const nshvc_limits *l);   /* the default is no limits */
 ```c
 nshvc_tiles nshvc_tiles_create(uint8_t bpp, uint32_t count, uint8_t texels_per_pixel);  /* 2, 4 or 8 bpp; texels_per_pixel 1, or more for high-resolution art */
 void nshvc_tiles_write(nshvc_tiles t, uint32_t first, const void *data, uint32_t count, nshvc_tile_format f);
-                                        /* f: the SNES's planar formats, or packed indices, or Mode 7's */
+                                        /* f: the SNES's planar formats, or packed indices, or Mode 7's;
+                                           count 0 writes nothing; a tile never written reads 0 */
 typedef struct nshvc_map_entry { uint16_t tile; uint8_t palette, priority, hflip, vflip; } nshvc_map_entry;
 nshvc_map nshvc_map_create(uint32_t width, uint32_t height);   /* in tiles, any size */
 void nshvc_map_write(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const nshvc_map_entry *entries);
@@ -159,7 +160,7 @@ void nshvc_layer_set(uint8_t layer, const nshvc_layer *l);                /* lay
 typedef struct nshvc_mode7 {
     int16_t a, b, c, d;             /* the matrix, 8.8 fixed point, as the SNES's */
     int16_t centre_x, centre_y, scroll_x, scroll_y;
-    uint8_t outside;                /* repeat, transparent, or tile 0 */
+    uint8_t outside;                /* 0 repeat, 1 transparent, 2 tile 0 */
     uint8_t flip_x, flip_y, extbg;
     nshvc_tiles tiles; nshvc_map map;
 } nshvc_mode7;
@@ -168,8 +169,10 @@ void nshvc_mode7_set(const nshvc_mode7 *m);
 
 Drawn as a plane at the window's resolution, its texture coordinates from the matrix: the console's own pixel shows
 the texel the console shows there, and the window's pixels between show the plane between. Where a pixel covers more than
-a texel, the plane is filtered from its colours and their smaller levels along the pixel's footprint, the same way on
-every GPU. The levels finer than a quarter of the plane's size are worked out from the plane in the row's own palette.
+a texel, the GPU filters the plane in colour along the pixel's footprint (anisotropic, between its smaller levels), and a
+footprint across the plane's edge mixes the plane and what is outside it by how much of each it covers. An `outside`
+other than 0, 1 or 2 is reported and not taken: `nshvc_mode7_set` takes the rest and keeps `outside` as it was; a line
+change to it is left out.
 The rest are kept, made in the palette most of its rows have, and a row whose palette differs adds its differences, each
 weighted by how much of the footprint has that value, filtered the same way. Neither the cost nor the memory grows with
 palette changes: at most three planes in colour a picture, made again only when they change, and coverage for at most 255

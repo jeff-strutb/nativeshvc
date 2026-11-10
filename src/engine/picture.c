@@ -142,7 +142,7 @@ nshvc_tiles nshvc_tiles_create(uint8_t bpp, uint32_t count, uint8_t tpp)
     o->tpp = tpp;
     o->gen = 0;
     o->tile0_gen = 0;
-    memset(o->tile0, 0, sizeof o->tile0);   /* a new texture reads 0 */
+    memset(o->tile0, 0, sizeof o->tile0);   /* a new texture reads 0 on every backend (rr.h) */
     eng_texture_create(&frames[cur], o->tex, o->cols * s, rows * s, RR_R8U, 0);
     return r;
 }
@@ -161,6 +161,8 @@ void nshvc_tiles_write(nshvc_tiles t, uint32_t first, const void *data, uint32_t
         eng_report(call, "tile set %u, first %u, count %u", t.id, first, count);
         return;
     }
+    if (!count)
+        return;                         /* no tiles: nothing written */
     o = &eng_tiles_of[t.id];
     if (f == NSHVC_TILES_PLANAR && o->tpp != 1) {
         eng_report(call, "the SNES's planar format has one texel a pixel");
@@ -345,8 +347,12 @@ void nshvc_mode7_set(const nshvc_mode7 *m)
     if (!IN_DRAW("nshvc_mode7_set") || !m)
         return;
     if (m->outside > 2) {
-        /* 0 repeat, 1 transparent, 2 tile 0: no other */
-        eng_report("nshvc_mode7_set", "outside %u", m->outside);
+        /* 0 repeat, 1 transparent, 2 tile 0: no other. The rest is taken;
+           outside stays as it was */
+        uint8_t keep = m7.outside;
+        eng_report("nshvc_mode7_set", "outside %u: kept at %u", m->outside, keep);
+        m7 = *m;
+        m7.outside = keep;
         return;
     }
     m7 = *m;
@@ -389,13 +395,12 @@ void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first)
     sprite_first = count ? first % count : 0;
 }
 
-static void add_change(const char *call, uint32_t line, int32_t column, int field, int32_t value)
+/* a change from a line on; 0 (and nothing changed) for a value the field
+   cannot take: Mode 7's outside is 0 repeat, 1 transparent, 2 tile 0 */
+static int add_change(uint32_t line, int32_t column, int field, int32_t value)
 {
-    if (field == NSHVC_LINE_M7_OUTSIDE && (value < 0 || value > 2)) {
-        /* 0 repeat, 1 transparent, 2 tile 0: no other */
-        eng_report(call, "line %u, Mode 7 outside %d", line, (int)value);
-        return;
-    }
+    if (field == NSHVC_LINE_M7_OUTSIDE && (value < 0 || value > 2))
+        return 0;
     changes = (Change *)grow(changes, &cap_changes, nchanges + 1, sizeof *changes);
     changes[nchanges].line = line;
     changes[nchanges].column = column;
@@ -403,17 +408,29 @@ static void add_change(const char *call, uint32_t line, int32_t column, int fiel
     changes[nchanges].field = field;
     changes[nchanges].value = value;
     nchanges++;
+    return 1;
 }
 
-void nshvc_line(uint32_t line, nshvc_line_field f, int32_t v) { if (IN_DRAW("nshvc_line")) add_change("nshvc_line", line, 0, (int)f, v); }
-void nshvc_line_from(uint32_t line, int32_t c, nshvc_line_field f, int32_t v) { if (IN_DRAW("nshvc_line_from")) add_change("nshvc_line_from", line, c, (int)f, v); }
+void nshvc_line(uint32_t line, nshvc_line_field f, int32_t v)
+{
+    if (IN_DRAW("nshvc_line") && !add_change(line, 0, (int)f, v))
+        eng_report("nshvc_line", "line %u, field %d, value %d: not taken", line, (int)f, (int)v);
+}
+void nshvc_line_from(uint32_t line, int32_t c, nshvc_line_field f, int32_t v)
+{
+    if (IN_DRAW("nshvc_line_from") && !add_change(line, c, (int)f, v))
+        eng_report("nshvc_line_from", "line %u, field %d, value %d: not taken", line, (int)f, (int)v);
+}
 void nshvc_lines(uint32_t first, uint32_t count, nshvc_line_field f, const int32_t *v)
 {
-    uint32_t i;
+    uint32_t i, bad = 0, at = 0;
     if (!IN_DRAW("nshvc_lines") || !v)
         return;
     for (i = 0; i < count; i++)
-        add_change("nshvc_lines", first + i, 0, (int)f, v[i]);
+        if (!add_change(first + i, 0, (int)f, v[i]) && !bad++)
+            at = first + i;
+    if (bad)
+        eng_report("nshvc_lines", "field %d: %u values not taken, the first at line %u", (int)f, bad, at);   /* one report a call */
 }
 
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha)

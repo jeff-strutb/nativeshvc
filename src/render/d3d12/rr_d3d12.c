@@ -916,6 +916,23 @@ static void record_texops(const rr_frame *f)
     }
     if (need)
         buf_fit(&staging, need);
+    /* a texture made reads 0 until written (rr.h): a committed one is made
+       zeroed, but one drawn into must be cleared before its first use */
+    for (i = 0; i < f->ntexops; i++) {
+        const rr_tex_op *o = &f->texops[i];
+        static const FLOAT zero[4] = { 0, 0, 0, 0 };
+        Tex *t;
+        int k;
+        if (o->op != RR_TEX_CREATE || o->id >= MAX_TEXTURES || !tex[o->id].r || !tex[o->id].target)
+            continue;
+        t = &tex[o->id];
+        if (t->made_frame != frame_no || t->made_at != i)
+            continue;                   /* made again later this frame: that one is cleared */
+        transition(t->r, &t->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        for (k = 0; k < t->rtvs; k++)
+            ID3D12GraphicsCommandList_ClearRenderTargetView(list, rtv(t->rtv + k), zero, 0, NULL);
+        transition(t->r, &t->state, SHADER_READ);
+    }
     for (i = 0; i < f->ntexops; i++) {
         const rr_tex_op *o = &f->texops[i];
         Tex *t;

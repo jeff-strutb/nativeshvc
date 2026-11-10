@@ -42,7 +42,8 @@ static uint64_t paused_at, paused_total;
 static host_mutex *hs_lock;
 static host_cond *game_wake, *render_wake;
 static int hs_want, hs_ready, hs_quit;
-static int hs_busy;          /* the render thread is drawing a picture */
+static int hs_busy;          /* the render thread is using the renderer: drawing a picture, or letting go of a window */
+static int hs_reading;       /* the game thread is reading the last picture from the renderer */
 static int hs_window;        /* the window went, came or changed since the render thread last looked */
 static uint64_t hs_updates;  /* the game's updates so far */
 static rr_frame *hs_packet;
@@ -190,17 +191,21 @@ static void render_thread(void *arg)
         hs_want = 1;
         host_cond_broadcast(game_wake);
         for (;;) {
-            while (!hs_ready && !hs_quit && !hs_window)
+            /* the renderer is the game thread's while it reads the picture: the window waits for that */
+            while (!hs_ready && !hs_quit && (!hs_window || hs_reading))
                 host_cond_wait(render_wake, hs_lock, HOST_WAIT_FOREVER);
             if (hs_ready || hs_quit)
                 break;
             /* the window went or came while waiting for it (during the game's
                init, say): anything kept on one that went let go now, the
-               picture still asked for */
+               picture still asked for; a read waits meanwhile */
             hs_window = 0;
+            hs_busy = 1;
             host_mutex_unlock(hs_lock);
             rr_window();
             host_mutex_lock(hs_lock);
+            hs_busy = 0;
+            host_cond_broadcast(game_wake);
         }
         if (!hs_ready) {
             host_mutex_unlock(hs_lock);
@@ -222,7 +227,7 @@ static void render_thread(void *arg)
            this one began, so pictures go on while paused at the game's own
            rate, never faster */
         if (!paced && !headless) {
-            uint64_t until = began + NS_PER_S / game.update_hz, now;
+            uint64_t until = began + NS_PER_S / game.update_hz, now;   /* at least 1 ns: nshvc_run takes no faster rate */
             while (hs_updates == drawn && !hs_window && !hs_quit && (now = host_ticks_ns()) < until)
                 host_cond_wait(render_wake, hs_lock, until - now);
         }
@@ -306,23 +311,33 @@ const uint32_t *nshvc_picture_read(int *width, int *height)
     int w = 0, h = 0;
     if (!eng_on("nshvc_picture_read", ENG_GAME))
         return NULL;
-    /* the last finished picture: once a picture being drawn is done. The
-       render thread then waits for the game's next one, which this thread
-       sends, so it stays idle while the picture is read (from update, draw
-       or shutdown alike) */
+    /* the last finished picture: once the render thread is done with the
+       renderer (a picture, or a window let go). It then waits for the game's
+       next picture, which this thread sends, and holds any window change
+       until the read is done (hs_reading), so the renderer is this thread's
+       alone meanwhile (from update, draw or shutdown alike) */
     host_mutex_lock(hs_lock);
     while (hs_busy && !hs_quit)
         host_cond_wait(game_wake, hs_lock, HOST_WAIT_FOREVER);
+    hs_reading = 1;
     host_mutex_unlock(hs_lock);
-    if (!rr_read(NULL, &w, &h) || !w || !h)
-        return NULL;
-    if ((size_t)w * h > cap) {
-        free(px);
-        cap = (size_t)w * h;
-        if (!(px = (uint32_t *)malloc(cap * 4)))
-            exit(70);
+    if (rr_read(NULL, &w, &h) && w && h) {
+        if ((size_t)w * h > cap) {
+            free(px);
+            cap = (size_t)w * h;
+            if (!(px = (uint32_t *)malloc(cap * 4)))
+                exit(70);
+        }
+        if (!rr_read(px, &w, &h))
+            w = h = 0;
+    } else {
+        w = h = 0;
     }
-    if (!rr_read(px, &w, &h))
+    host_mutex_lock(hs_lock);
+    hs_reading = 0;
+    host_cond_broadcast(render_wake);
+    host_mutex_unlock(hs_lock);
+    if (!w || !h)
         return NULL;
     if (width)
         *width = w;
@@ -492,8 +507,8 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
     int i;
 
     eng_role = ENG_SYSTEM;
-    if (!g || !g->update || !g->draw || !g->update_hz || !id_ok(g->id)) {
-        fprintf(stderr, "nativeshvc: %s: a game needs update, draw, update_hz and an id of letters, digits and dashes\n",
+    if (!g || !g->update || !g->draw || !g->update_hz || g->update_hz > NS_PER_S || !id_ok(g->id)) {
+        fprintf(stderr, "nativeshvc: %s: a game needs update, draw, update_hz (1 to 1000000000) and an id of letters, digits and dashes\n",
                 call);
         return 2;
     }

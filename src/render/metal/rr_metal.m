@@ -174,6 +174,30 @@ const char *rr_shader_ext(void) { return "metal"; }
 static MTLPixelFormat format_of(int f) { return f == RR_R8U ? MTLPixelFormatR8Uint : f == RR_R32U ? MTLPixelFormatR32Uint : MTLPixelFormatBGRA8Unorm; }
 static int bytes_of(int f) { return f == RR_R8U ? 1 : 4; }
 
+/* a texture just made reads 0 until written (rr.h): every level and layer
+   written with zeros (it is the CPU's to write, as every write here is) */
+static void zero_new(id<MTLTexture> t, int format)
+{
+    static uint8_t *zero;
+    static size_t cap;
+    size_t row = t.width * (size_t)bytes_of(format), need = row * t.height;
+    NSUInteger lv, sl;
+    int array = t.textureType == MTLTextureType2DArray;
+    if (need > cap) {
+        free(zero);
+        if (!(zero = (uint8_t *)calloc(need, 1)))
+            exit(70);
+        cap = need;
+    }
+    for (sl = 0; sl < (array ? t.arrayLength : 1); sl++)
+        for (lv = 0; lv < t.mipmapLevelCount; lv++) {
+            NSUInteger w = t.width >> lv ? t.width >> lv : 1, h = t.height >> lv ? t.height >> lv : 1;
+            /* the stride between images an array's only, 0 otherwise */
+            [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:lv slice:sl withBytes:zero bytesPerRow:w * (NSUInteger)bytes_of(format)
+                bytesPerImage:array ? w * h * (NSUInteger)bytes_of(format) : 0];
+        }
+}
+
 static void apply_texops(const rr_frame *f)
 {
     size_t i;
@@ -195,6 +219,8 @@ static void apply_texops(const rr_frame *f)
             }
             tex[o->id] = [dev newTextureWithDescriptor:td];
             tex_format[o->id] = o->format;
+            if (tex[o->id])
+                zero_new(tex[o->id], o->format);
             free(tex_fresh[o->id]);
             tex_fresh[o->id] = (uint8_t *)malloc(layers);
             if (!tex_fresh[o->id])

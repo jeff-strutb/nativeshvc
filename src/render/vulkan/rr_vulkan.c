@@ -34,7 +34,7 @@ void *host_vulkan_loader(void);
     X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCreateCommandPool) X(vkDestroyCommandPool) \
     X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkResetCommandBuffer) X(vkCmdBeginRenderPass) \
     X(vkCmdEndRenderPass) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdDraw) \
-    X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdBlitImage) \
+    X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdBlitImage) X(vkCmdClearColorImage) \
     X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdPipelineBarrier) X(vkQueueSubmit) X(vkQueueWaitIdle) \
     X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) X(vkCreateSemaphore) X(vkDestroySemaphore) \
     X(vkDeviceWaitIdle) X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
@@ -366,6 +366,25 @@ static void barrier(VkImage i, VkImageLayout from, VkImageLayout to, VkAccessFla
 }
 
 #define SHADER_STAGES (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+
+/* a texture just made reads 0 until written (rr.h): every level and layer
+   cleared, then readable */
+static void clear_new(VkImage i)
+{
+    VkClearColorValue z;
+    VkImageSubresourceRange r;
+    memset(&z, 0, sizeof z);
+    memset(&r, 0, sizeof r);
+    r.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    r.levelCount = VK_REMAINING_MIP_LEVELS;
+    r.layerCount = VK_REMAINING_ARRAY_LAYERS;
+    barrier(i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT);
+    vkCmdClearColorImage(cmd, i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &r);
+    barrier(i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, SHADER_STAGES);
+}
+
 #define ALL_WRITES (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)
 #define ALL_READS (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | \
                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT)
@@ -1502,8 +1521,7 @@ static void record_texops(const rr_frame *f)
             if (f->texops[order[j]].op == RR_TEX_CREATE)
                 first = j;          /* writes before the last making went to the texture it replaced */
         if (f->texops[order[first]].op == RR_TEX_CREATE) {
-            barrier(t->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
+            clear_new(t->i);            /* reads 0 until written */
             first++;
         }
         for (k = first; k < j; k++) {
@@ -1723,12 +1741,17 @@ int rr_draw(rr_frame *f)
     vkResetCommandBuffer(cmd, 0);
     vkBeginCommandBuffer(cmd, &begin);
     {
-        /* the renderer's own textures made since the last frame, readable from the start (the frame's are below) */
+        /* the renderer's own textures made since the last frame, readable from the start (the frame's are
+           below): the ones read where there is no texture read 0; the targets are drawn before they are read */
         Image *own[8] = { &none_colour, &none_index, &none_array, &picture, &output, &screen_res[0], &screen_res[1], &screen_res[2] };
         for (k = 0; k < 8; k++)
-            if (own[k]->i && own[k]->unready)
-                barrier(own[k]->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
-                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
+            if (own[k]->i && own[k]->unready) {
+                if (k < 3)
+                    clear_new(own[k]->i);
+                else
+                    barrier(own[k]->i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, VK_ACCESS_SHADER_READ_BIT,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, SHADER_STAGES);
+            }
         for (k = 0; k < 8; k++)
             own[k]->unready = 0;
     }
