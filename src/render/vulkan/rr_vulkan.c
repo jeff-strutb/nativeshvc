@@ -56,7 +56,8 @@ static VkImage sc_img[8];
 static VkImageView sc_view[8];
 static VkFramebuffer sc_fb[8];
 static uint32_t sc_n;
-static int sc_w, sc_h;
+static int sc_w, sc_h;       /* the window's size the swapchain was made for */
+static int sc_ew, sc_eh;     /* the swapchain's own size */
 static VkRenderPass rp_pic, rp_pic_keep, rp_win;
 static int pic_fresh;
 static VkPipelineLayout layout;
@@ -76,6 +77,13 @@ static VkPipeline game_pipes[256][2];
 static VkShaderModule list_vert;
 static int last_w, last_h, ever;
 
+/* a call that must work, failed: said in the log, then the end */
+static void fail(const char *what, VkResult r)
+{
+    fprintf(stderr, "rr: vulkan: %s failed (VkResult %d)\n", what, (int)r);
+    exit(70);
+}
+
 static uint32_t mem_type(uint32_t bits, VkMemoryPropertyFlags want)
 {
     VkPhysicalDeviceMemoryProperties p;
@@ -91,17 +99,18 @@ static uint32_t mem_type(uint32_t bits, VkMemoryPropertyFlags want)
 static void buf_make(Buf *b, VkDeviceSize size, VkBufferUsageFlags usage)
 {
     VkBufferCreateInfo ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkResult e;
     VkMemoryRequirements r;
     VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     ci.size = size;
     ci.usage = usage;
-    if (vkCreateBuffer(dev, &ci, NULL, &b->b) != VK_SUCCESS)
-        exit(70);
+    if ((e = vkCreateBuffer(dev, &ci, NULL, &b->b)) != VK_SUCCESS)
+        fail("vkCreateBuffer", e);
     vkGetBufferMemoryRequirements(dev, b->b, &r);
     ai.allocationSize = r.size;
     ai.memoryTypeIndex = mem_type(r.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(dev, &ai, NULL, &b->m) != VK_SUCCESS)
-        exit(70);
+    if ((e = vkAllocateMemory(dev, &ai, NULL, &b->m)) != VK_SUCCESS)
+        fail("vkAllocateMemory (a buffer)", e);
     vkBindBufferMemory(dev, b->b, b->m, 0);
     vkMapMemory(dev, b->m, 0, VK_WHOLE_SIZE, 0, &b->at);
     b->size = size;
@@ -237,6 +246,7 @@ static VkPipeline pipeline(VkRenderPass rp, VkShaderModule vs, VkShaderModule fs
 static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, VkImageUsageFlags usage)
 {
     VkImageCreateInfo ci = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    VkResult e;
     VkImageViewCreateInfo vi = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
     VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
     VkMemoryRequirements r;
@@ -258,13 +268,13 @@ static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, Vk
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
-    if (vkCreateImage(dev, &ci, NULL, &t->i) != VK_SUCCESS)
-        exit(70);
+    if ((e = vkCreateImage(dev, &ci, NULL, &t->i)) != VK_SUCCESS)
+        fail("vkCreateImage", e);
     vkGetImageMemoryRequirements(dev, t->i, &r);
     ai.allocationSize = r.size;
     ai.memoryTypeIndex = mem_type(r.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (vkAllocateMemory(dev, &ai, NULL, &t->m) != VK_SUCCESS)
-        exit(70);
+    if ((e = vkAllocateMemory(dev, &ai, NULL, &t->m)) != VK_SUCCESS)
+        fail("vkAllocateMemory (an image)", e);
     vkBindImageMemory(dev, t->i, t->m, 0);
     vi.image = t->i;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -355,14 +365,30 @@ static int make_surface(void)
 #endif
 }
 
-static void swapchain_make(int w, int h)
+/* the swapchain for a window of w x h pixels, at the size the surface allows
+   (its current extent when it has one, else w x h within its limits): 0 when
+   that size is nothing (minimised) */
+static int swapchain_make(int w, int h)
 {
     VkSurfaceCapabilitiesKHR c;
     VkSwapchainCreateInfoKHR ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     VkSwapchainKHR old = swapchain;
+    VkResult e;
     uint32_t i, n;
+    int ask_w = w, ask_h = h;
     vkDeviceWaitIdle(dev);
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface, &c);
+    if (c.currentExtent.width != UINT32_MAX) {
+        w = (int)c.currentExtent.width;
+        h = (int)c.currentExtent.height;
+    } else {
+        if ((uint32_t)w < c.minImageExtent.width) w = (int)c.minImageExtent.width;
+        if ((uint32_t)w > c.maxImageExtent.width) w = (int)c.maxImageExtent.width;
+        if ((uint32_t)h < c.minImageExtent.height) h = (int)c.minImageExtent.height;
+        if ((uint32_t)h > c.maxImageExtent.height) h = (int)c.maxImageExtent.height;
+    }
+    if (w < 1 || h < 1)
+        return 0;
     n = c.minImageCount + 1;
     if (c.maxImageCount && n > c.maxImageCount)
         n = c.maxImageCount;
@@ -381,8 +407,8 @@ static void swapchain_make(int w, int h)
     ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = old;
-    if (vkCreateSwapchainKHR(dev, &ci, NULL, &swapchain) != VK_SUCCESS)
-        exit(70);
+    if ((e = vkCreateSwapchainKHR(dev, &ci, NULL, &swapchain)) != VK_SUCCESS)
+        fail("vkCreateSwapchainKHR", e);
     for (i = 0; i < sc_n; i++) {
         vkDestroyFramebuffer(dev, sc_fb[i], NULL);
         vkDestroyImageView(dev, sc_view[i], NULL);
@@ -408,8 +434,11 @@ static void swapchain_make(int w, int h)
         fi.layers = 1;
         vkCreateFramebuffer(dev, &fi, NULL, &sc_fb[i]);
     }
-    sc_w = w;
-    sc_h = h;
+    sc_w = ask_w;
+    sc_h = ask_h;
+    sc_ew = w;
+    sc_eh = h;
+    return 1;
 }
 
 /* ---- opening ---- */
@@ -719,8 +748,10 @@ int rr_draw(eng_packet *p)
         host_window_pixels(&ow, &oh);
         if (ow < 1 || oh < 1)
             return 1;       /* minimised: nothing to draw on */
-        if (ow != sc_w || oh != sc_h)
-            swapchain_make(ow, oh);
+        if ((ow != sc_w || oh != sc_h) && !swapchain_make(ow, oh))
+            return 1;       /* the surface has no size: nothing to draw on */
+        ow = sc_ew;
+        oh = sc_eh;
     }
     rr_window_words(p->desc, ow, oh);
     memcpy(descb.at, p->desc, (size_t)db);

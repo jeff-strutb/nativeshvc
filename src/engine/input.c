@@ -14,8 +14,9 @@
 
 static const uint16_t bit_of[BUTTONS] = { NSHVC_B, NSHVC_Y, NSHVC_SELECT, NSHVC_START, NSHVC_UP, NSHVC_DOWN, NSHVC_LEFT,
                                           NSHVC_RIGHT, NSHVC_A, NSHVC_X, NSHVC_L, NSHVC_R };
-/* the controller's bit for each of those */
+/* the controller's button (its bit) for each of those, by default */
 static const int8_t pad_bit[BUTTONS] = { 0, 2, 6, 7, 12, 14, 15, 13, 1, 3, 4, 5 };
+static const int vk_default[BUTTONS] = { 'Z', 'A', 0x10, 0x0D, 0x26, 0x28, 0x25, 0x27, 'X', 'S', 'Q', 'W' };
 
 static host_mutex *lock;
 
@@ -37,14 +38,24 @@ static nshvc_device devices[PLAYERS];
 static uint32_t nplayers = 1;
 static host_pad pads[PLAYERS];
 static int pad_on[PLAYERS];
+/* each player's controller button for each SNES button: its bit, -1 none */
+static int8_t ctl_of[PLAYERS][BUTTONS];
 static nshvc_source sources[PLAYERS];
 static FILE *replay;
 static uint64_t replay_next = UINT64_MAX;
 static uint16_t replay_pads[PLAYERS], replay_held[PLAYERS];
 
+static void ctl_defaults(uint32_t player)
+{
+    memcpy(ctl_of[player], pad_bit, sizeof pad_bit);
+}
+
 void eng_input_start(const char *replay_path)
 {
+    uint32_t p;
     lock = host_mutex_new();
+    for (p = 0; p < PLAYERS; p++)
+        ctl_defaults(p);
     if (replay_path && !(replay = fopen(replay_path, "r")))
         fprintf(stderr, "nativeshvc: cannot read %s\n", replay_path);
 }
@@ -171,12 +182,14 @@ void eng_input_event(const host_event *e)
     host_mutex_unlock(lock);
 }
 
-static uint16_t pad_bits(const host_pad *p)
+/* player's controller p on the SNES pad, through the player's bindings; the
+   left stick always steers */
+static uint16_t pad_bits(uint32_t player, const host_pad *p)
 {
     uint16_t b = 0;
     int i;
     for (i = 0; i < BUTTONS; i++)
-        if (p->buttons >> pad_bit[i] & 1u)
+        if (ctl_of[player][i] >= 0 && (p->buttons >> ctl_of[player][i] & 1u))
             b |= bit_of[i];
     if (p->y < -0.5f) b |= NSHVC_UP;
     if (p->y > 0.5f) b |= NSHVC_DOWN;
@@ -263,11 +276,11 @@ void eng_input_sample(nshvc_input *in, uint64_t n, int headless)
         return;
     for (p = 0; p < PLAYERS; p++) {
         host_pad now;
-        uint16_t was = pad_on[p] ? pad_bits(&pads[p]) : 0;
+        uint16_t was = pad_on[p] ? pad_bits(p, &pads[p]) : 0;
         pad_on[p] = host_pad_read((int)p, &now);
         if (pad_on[p]) {
             pads[p] = now;
-            in->pad[p] = pad_bits(&now);
+            in->pad[p] = pad_bits(p, &now);
             if (in->pad[p] & ~was)
                 set_source(p, NSHVC_SOURCE_CONTROLLER, &now);
             in->controller[p].on = 1;
@@ -408,7 +421,9 @@ const char *nshvc_control_name(uint32_t player, uint32_t button)
     if (!eng_on("nshvc_control_name", ENG_GAME) || i < 0 || player >= PLAYERS)
         return "";
     if (sources[player].kind == NSHVC_SOURCE_CONTROLLER && pad_on[player]) {
-        int b = pad_bit[i];
+        int b = ctl_of[player][i];
+        if (b < 0)
+            return "";
         const char *const *t = pads[player].style == HOST_PAD_XBOX ? xbox : pads[player].style == HOST_PAD_PLAYSTATION ? ps
                                : pads[player].style == HOST_PAD_NINTENDO ? nin : gen;
         return pads[player].label[b][0] ? pads[player].label[b] : t[b];
@@ -442,6 +457,42 @@ void nshvc_control_bind(uint32_t player, uint32_t button, nshvc_key key)
             vk_of[k] = 0;
     vk_of[i] = key;
     host_mutex_unlock(lock);
+}
+
+void nshvc_control_bind_controller(uint32_t player, uint32_t button, uint32_t ctl)
+{
+    int i = index_of(button), b = -1, k;
+    if (!eng_on("nshvc_control_bind_controller", ENG_GAME))
+        return;
+    if (ctl) {
+        for (b = 0; b < 16 && ctl != 1u << b; b++)
+            ;
+    }
+    if (i < 0 || player >= PLAYERS || b == 16) {
+        eng_report("nshvc_control_bind_controller", "player %u, button %u, ctl 0x%x", player, button, ctl);
+        return;
+    }
+    if (b >= 0)
+        for (k = 0; k < BUTTONS; k++)
+            if (ctl_of[player][k] == b)
+                ctl_of[player][k] = -1;
+    ctl_of[player][i] = (int8_t)b;
+}
+
+void nshvc_control_defaults(uint32_t player)
+{
+    if (!eng_on("nshvc_control_defaults", ENG_GAME))
+        return;
+    if (player >= PLAYERS) {
+        eng_report("nshvc_control_defaults", "player %u", player);
+        return;
+    }
+    ctl_defaults(player);
+    if (player == 0) {
+        host_mutex_lock(lock);
+        memcpy(vk_of, vk_default, sizeof vk_of);
+        host_mutex_unlock(lock);
+    }
 }
 
 uint32_t nshvc_text_read(char *buffer, uint32_t max)

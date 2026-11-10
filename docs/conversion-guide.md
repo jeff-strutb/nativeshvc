@@ -59,8 +59,12 @@ cmake_minimum_required(VERSION 3.20)
 project(mygame C)
 add_subdirectory(${NSHVC_ROOT} nshvc)
 include(${NSHVC_ROOT}/cmake/NshvcGame.cmake)
-nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data SHADERS shaders TITLE "My Game")
+nshvc_game(mygame SOURCES src/a.c src/b.c ASSETS data SHADERS shaders ICON icon.png TITLE "My Game")
 ```
+
+`ICON` is one square PNG. The build makes each platform's icon from it: an `.icns` on macOS, an asset catalog on iOS
+(compiled by Xcode's `actool`; iOS shows no transparency), an `.ico` linked into the program on Windows, the window's icon
+and a PNG for a desktop file beside the program on Linux, and the launcher's on Android. It needs Python 3.
 
 Building a game with shaders needs `glslangValidator` and `spirv-cross` on the build machine, and `dxc` for D3D12; without `dxc` other builds leave the D3D12 shaders out, with a warning.
 

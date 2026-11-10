@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""nshvc-icons IMAGE OUT_DIR PLATFORM [IOS_SDK]: a game's icon, from one square
+PNG, in the form PLATFORM uses, into OUT_DIR:
+  macos    AppIcon.icns (16 to 512 at 1x and 2x; CFBundleIconFile AppIcon)
+  ios      Assets.car, an app icon catalog compiled by Xcode's actool for
+           IOS_SDK (iphoneos, the default, or iphonesimulator); the app's
+           Info.plist names it AppIcon. iOS shows no transparency: alpha is
+           laid on black
+  windows  icon.ico (16 to 256) and icon.rc, the resource script that links
+           it in as icon 1, the icon the window class loads
+  linux    icon.png (256, for a desktop file's Icon=) and icon.argb (16 to
+           256, the window's _NET_WM_ICON, read by the host from beside the
+           program)
+Each size is the image averaged over the area each of its pixels covers.
+Needs only Python, and actool for iOS."""
+import os, shutil, struct, subprocess, sys, tempfile, zlib
+
+
+def fail(why):
+    sys.exit('nshvc-icons: ' + why)
+
+
+# ---- PNG in -----------------------------------------------------------------
+def read_png(path):
+    """the image as (w, h, rows), each row a list of floats R, G, B, A (0..1),
+    alpha premultiplied"""
+    data = open(path, 'rb').read()
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        fail(path + ' is not a PNG')
+    at, idat, palette, trans = 8, b'', None, None
+    while at < len(data):
+        n, kind = struct.unpack('>I4s', data[at:at + 8])
+        body = data[at + 8:at + 8 + n]
+        at += 12 + n
+        if kind == b'IHDR':
+            w, h, depth, ctype, _, _, interlace = struct.unpack('>IIBBBBB', body)
+        elif kind == b'PLTE':
+            palette = body
+        elif kind == b'tRNS':
+            trans = body
+        elif kind == b'IDAT':
+            idat += body
+        elif kind == b'IEND':
+            break
+    if interlace:
+        fail(path + ': an interlaced PNG; save it without interlacing')
+    if depth not in (8, 16) and not (ctype == 3 and depth in (1, 2, 4)) and not (ctype == 0 and depth in (1, 2, 4)):
+        fail(path + ': bit depth %d' % depth)
+    chans = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ctype]
+    bits = depth * chans
+    stride = (w * bits + 7) // 8
+    bpp = max(1, bits // 8)
+    raw = zlib.decompress(idat)
+    prev = bytearray(stride)
+    rows = []
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        if f == 1:
+            for i in range(bpp, stride):
+                line[i] = (line[i] + line[i - bpp]) & 255
+        elif f == 2:
+            line = bytearray((a + b) & 255 for a, b in zip(line, prev))
+        elif f == 3:
+            for i in range(stride):
+                line[i] = (line[i] + ((line[i - bpp] if i >= bpp else 0) + prev[i]) // 2) & 255
+        elif f == 4:
+            for i in range(stride):
+                a = line[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                c = prev[i - bpp] if i >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        elif f != 0:
+            fail(path + ': a bad row filter')
+        prev = line
+        if depth == 16:
+            vals = list(line[0::2])
+        elif depth == 8:
+            vals = list(line)
+        else:
+            per = 8 // depth
+            mask = (1 << depth) - 1
+            vals = [(line[x // per] >> (8 - depth * (x % per + 1))) & mask for x in range(w)]
+            if ctype == 0:
+                vals = [v * 255 // mask for v in vals]
+        out = []
+        if ctype == 3:
+            for i in vals:
+                a = trans[i] if trans and i < len(trans) else 255
+                out += (palette[3 * i], palette[3 * i + 1], palette[3 * i + 2], a)
+        elif ctype == 0:
+            for v in vals:
+                out += (v, v, v, 255)
+        elif ctype == 4:
+            for i in range(0, len(vals), 2):
+                out += (vals[i], vals[i], vals[i], vals[i + 1])
+        elif ctype == 2:
+            for i in range(0, len(vals), 3):
+                out += (vals[i], vals[i + 1], vals[i + 2], 255)
+        else:
+            out = vals
+        s = 1 / 255
+        fl = []
+        for i in range(0, len(out), 4):
+            a = out[i + 3] * s
+            fl += (out[i] * s * a, out[i + 1] * s * a, out[i + 2] * s * a, a)
+        rows.append(fl)
+    return w, h, rows
+
+
+# ---- sizes ------------------------------------------------------------------
+def weights(src, dst):
+    """for each pixel of dst along one axis: the src pixels it covers, as
+    (index, share) with the shares adding to 1"""
+    scale = src / dst
+    out = []
+    for i in range(dst):
+        a, b = i * scale, (i + 1) * scale
+        taps, j = [], int(a)
+        while j < b and j < src:
+            over = min(b, j + 1) - max(a, j)
+            if over > 0:
+                taps.append((j, over / scale))
+            j += 1
+        out.append(taps)
+    return out
+
+
+def resize_rows(rows, src_w, dst_w):
+    table = weights(src_w, dst_w)
+    out = []
+    for r in rows:
+        line = []
+        for taps in table:
+            cr = cg = cb = ca = 0.0
+            for j, s in taps:
+                k = 4 * j
+                cr += r[k] * s
+                cg += r[k + 1] * s
+                cb += r[k + 2] * s
+                ca += r[k + 3] * s
+            line += (cr, cg, cb, ca)
+        out.append(line)
+    return out
+
+
+def resize(img, size):
+    w, h, rows = img
+    if w == size and h == size:
+        return rows
+    across = resize_rows(rows, w, size)
+    # down the columns: the same, on the image turned on its side
+    cols = [[v for y in range(h) for v in across[y][4 * x:4 * x + 4]] for x in range(size)]
+    down = resize_rows(cols, h, size)
+    return [[v for x in range(size) for v in down[x][4 * y:4 * y + 4]] for y in range(size)]
+
+
+def to_bytes(rows, alpha):
+    """8-bit RGBA (or RGB laid on black), alpha no longer premultiplied"""
+    out = []
+    for r in rows:
+        line = bytearray()
+        for i in range(0, len(r), 4):
+            a = r[i + 3]
+            if alpha:
+                d = 1 / a if a > 0 else 0
+                line += bytes(min(255, int(c * d * 255 + 0.5)) for c in r[i:i + 3])
+                line.append(min(255, int(a * 255 + 0.5)))
+            else:
+                line += bytes(min(255, int(c * 255 + 0.5)) for c in r[i:i + 3])
+        out.append(bytes(line))
+    return out
+
+
+# ---- PNG out ----------------------------------------------------------------
+def png(rows, alpha):
+    lines = to_bytes(rows, alpha)
+    size = len(lines)
+    def chunk(kind, body):
+        return struct.pack('>I', len(body)) + kind + body + struct.pack('>I', zlib.crc32(kind + body))
+    raw = b''.join(b'\0' + l for l in lines)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 6 if alpha else 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
+
+
+def write(path, data):
+    with open(path, 'wb') as f:
+        f.write(data)
+
+
+def main():
+    if len(sys.argv) not in (4, 5):
+        sys.exit(__doc__)
+    src, out, platform = sys.argv[1:4]
+    os.makedirs(out, exist_ok=True)
+    out = os.path.abspath(out)
+    img = read_png(src)
+    if img[0] != img[1]:
+        fail('%s is %d x %d; an icon is square' % (src, img[0], img[1]))
+    made = {}
+    def sized(n):
+        if n not in made:
+            made[n] = resize(img, n)
+        return made[n]
+
+    if platform == 'macos':
+        # each entry a PNG: icp4 16, icp5 32, icp6 64, ic07 128, ic08 256,
+        # ic09 512, ic10 1024 (512@2x), ic11 32 (16@2x), ic12 64 (32@2x),
+        # ic13 256 (128@2x), ic14 512 (256@2x)
+        kinds = [(b'icp4', 16), (b'icp5', 32), (b'icp6', 64), (b'ic07', 128), (b'ic08', 256), (b'ic09', 512),
+                 (b'ic10', 1024), (b'ic11', 32), (b'ic12', 64), (b'ic13', 256), (b'ic14', 512)]
+        pngs = {}
+        body = b''
+        for kind, n in kinds:
+            if n not in pngs:
+                pngs[n] = png(sized(n), True)
+            body += kind + struct.pack('>I', 8 + len(pngs[n])) + pngs[n]
+        write(os.path.join(out, 'AppIcon.icns'), b'icns' + struct.pack('>I', 8 + len(body)) + body)
+    elif platform == 'ios':
+        sdk = sys.argv[4] if len(sys.argv) == 5 else 'iphoneos'
+        if not shutil.which('xcrun'):
+            fail('the iOS icon needs Xcode (xcrun actool)')
+        with tempfile.TemporaryDirectory() as tmp:
+            cat = os.path.join(tmp, 'Assets.xcassets')
+            os.makedirs(os.path.join(cat, 'AppIcon.appiconset'))
+            write(os.path.join(cat, 'Contents.json'), b'{"info":{"version":1,"author":"xcode"}}')
+            write(os.path.join(cat, 'AppIcon.appiconset', 'icon-1024.png'), png(sized(1024), False))
+            write(os.path.join(cat, 'AppIcon.appiconset', 'Contents.json'),
+                  b'{"images":[{"filename":"icon-1024.png","idiom":"universal","platform":"ios","size":"1024x1024"}],'
+                  b'"info":{"version":1,"author":"xcode"}}')
+            built = os.path.join(tmp, 'built')
+            os.makedirs(built)
+            r = subprocess.run(['xcrun', 'actool', '--compile', built, '--platform', sdk, '--minimum-deployment-target', '15.0',
+                                '--target-device', 'iphone', '--target-device', 'ipad', '--app-icon', 'AppIcon',
+                                '--output-partial-info-plist', os.path.join(tmp, 'partial.plist'), cat],
+                               capture_output=True, text=True)
+            car = os.path.join(built, 'Assets.car')
+            if r.returncode or not os.path.exists(car):
+                fail('actool: ' + r.stdout + r.stderr)
+            shutil.copyfile(car, os.path.join(out, 'Assets.car'))
+    elif platform == 'windows':
+        sizes = [16, 32, 48, 64, 128, 256]
+        pngs = [png(sized(n), True) for n in sizes]
+        head = struct.pack('<HHH', 0, 1, len(pngs))
+        at, dirs = 6 + 16 * len(pngs), b''
+        for n, d in zip(sizes, pngs):
+            dirs += struct.pack('<BBBBHHII', n & 255, n & 255, 0, 0, 1, 32, len(d), at)
+            at += len(d)
+        ico = os.path.join(out, 'icon.ico')
+        write(ico, head + dirs + b''.join(pngs))
+        write(os.path.join(out, 'icon.rc'), ('1 ICON "%s"\n' % ico.replace('\\', '/')).encode())
+    elif platform == 'linux':
+        write(os.path.join(out, 'icon.png'), png(sized(256), True))
+        body = bytearray()
+        for n in (16, 32, 48, 64, 128, 256):
+            body += struct.pack('<II', n, n)
+            for line in to_bytes(sized(n), True):
+                for i in range(0, len(line), 4):
+                    r, g, b, a = line[i:i + 4]
+                    body += struct.pack('<I', a << 24 | r << 16 | g << 8 | b)
+        write(os.path.join(out, 'icon.argb'), body)
+    else:
+        fail('no platform ' + platform)
+
+
+main()

@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 4.5. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 4.6. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 
@@ -44,6 +44,7 @@ the engine. [examples/zelda3](examples/zelda3) is a full commercial-scale game c
 | `tools/nshvc-find-hardware` | Lists what a game's C must change |
 | `tools/nshvc-build PLATFORM GAME_DIR` | Builds and packages a game |
 | `tools/nshvc-shaders SRC OUT [RENDER]` | Compiles a game's shaders for every backend (`nshvc_game` runs it) |
+| `tools/nshvc-icons IMAGE OUT PLATFORM` | Makes a platform's icon from one square PNG (`nshvc_game` runs it for `ICON`) |
 | `tools/nshvc-check` | Compares a converted game with its ROM in bsnes, picture and sound |
 
 ```bash
@@ -77,7 +78,8 @@ game --headless --updates N           N updates, one picture each, no real time
 | Y | A | R | W |
 | X | S | | |
 
-Game controllers work without setup, and a game can rebind any key with `nshvc_control_bind`.
+Game controllers work without setup. A game can rebind any key with `nshvc_control_bind`, and any controller button with
+`nshvc_control_bind_controller`.
 
 ## The SNES's limits
 

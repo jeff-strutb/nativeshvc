@@ -61,6 +61,7 @@ static int (*pXConnectionNumber)(Display *);
 static int (*pXFlush)(Display *);
 static int (*pXDestroyWindow)(Display *, XWindow);
 static int (*pXkbSetDetectableAutoRepeat)(Display *, int, int *);
+static int (*pXChangeProperty)(Display *, XWindow, Atom, Atom, int, int, const unsigned char *, int);
 
 static Display *dpy;
 static XWindow win;
@@ -79,6 +80,7 @@ static int load_x11(void)
 #undef L
     /* a held key's repeats as presses alone, not a release and a press */
     pXkbSetDetectableAutoRepeat = (int (*)(Display *, int, int *))dlsym(h, "XkbSetDetectableAutoRepeat");
+    pXChangeProperty = (int (*)(Display *, XWindow, Atom, Atom, int, int, const unsigned char *, int))dlsym(h, "XChangeProperty");
     return 1;
 }
 
@@ -126,6 +128,40 @@ void host_shutdown(void) {}
 const char *host_save_dir(void) { return save_dir; }
 const char *host_resource_dir(void) { return res_dir; }
 
+/* the window's icon: icon.argb beside the program (nshvc_game's ICON), each
+   size its width, height and ARGB pixels as 32-bit little-endian words, set as
+   _NET_WM_ICON (which Xlib takes as longs) */
+static void window_icon(void)
+{
+    char path[1100];
+    FILE *f;
+    long size;
+    unsigned char *raw;
+    unsigned long *words;
+    long i, n;
+    if (!pXChangeProperty)
+        return;
+    snprintf(path, sizeof path, "%s/icon.argb", res_dir);
+    if (!(f = fopen(path, "rb")))
+        return;
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    n = size / 4;
+    raw = malloc((size_t)size + 1);
+    words = malloc(sizeof *words * (size_t)(n + 1));
+    if (raw && words && size > 8 && fread(raw, 1, (size_t)size, f) == (size_t)size) {
+        for (i = 0; i < n; i++)
+            words[i] = (unsigned long)raw[4 * i] | (unsigned long)raw[4 * i + 1] << 8 | (unsigned long)raw[4 * i + 2] << 16
+                       | (unsigned long)raw[4 * i + 3] << 24;
+        pXChangeProperty(dpy, win, pXInternAtom(dpy, "_NET_WM_ICON", 0), pXInternAtom(dpy, "CARDINAL", 0), 32, 0,
+                         (const unsigned char *)words, (int)n);
+    }
+    free(raw);
+    free(words);
+    fclose(f);
+}
+
 int host_window_open(int width, int height, const char *title)
 {
     int s;
@@ -141,6 +177,7 @@ int host_window_open(int width, int height, const char *title)
     pXStoreName(dpy, win, title ? title : app_title);
     wm_delete = pXInternAtom(dpy, "WM_DELETE_WINDOW", 0);
     pXSetWMProtocols(dpy, win, &wm_delete, 1);
+    window_icon();
     pXMapWindow(dpy, win);
     pXFlush(dpy);
     return 1;

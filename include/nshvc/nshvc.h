@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 5
+#define NSHVC_VERSION_MINOR 6
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -72,10 +72,20 @@ enum { NSHVC_STYLE_GENERIC, NSHVC_STYLE_XBOX, NSHVC_STYLE_PLAYSTATION, NSHVC_STY
 typedef struct nshvc_source { int kind, style; char name[64]; } nshvc_source;
 typedef int nshvc_key;          /* a Windows virtual key code, on every host */
 
-/* the control's name as the player's device labels it; button: NSHVC_B... */
+/* the control bound to button (NSHVC_B...) on the player's device, as that
+   device labels it (a controller's in its family's terms); "" when none */
 const char *nshvc_control_name(uint32_t player, uint32_t button);
 nshvc_source nshvc_control_source(uint32_t player);
+/* the keyboard's key that presses button (player 0; the key taken from
+   whichever button had it; 0 none) */
 void nshvc_control_bind(uint32_t player, uint32_t button, nshvc_key key);
+/* the controller button ctl (one NSHVC_CTL_* bit; 0 none) that presses button
+   on the player's controller, taken from whichever button had it; the left
+   stick always steers (4.6) */
+void nshvc_control_bind_controller(uint32_t player, uint32_t button, uint32_t ctl);
+/* the engine's own bindings back: the player's controller, and for player 0
+   the keyboard (4.6) */
+void nshvc_control_defaults(uint32_t player);
 /* what has been typed since the last read: 'A'-'Z', digits, space, 8, 13 */
 uint32_t nshvc_text_read(char *buffer, uint32_t max);
 
