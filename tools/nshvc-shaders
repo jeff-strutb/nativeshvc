@@ -2,32 +2,37 @@
 """nshvc-shaders SRC_DIR OUT_DIR [RENDER]: compiles a game's shaders (*.shade)
 for every backend, into OUT_DIR, as NAME.spv, NAME.metal and NAME.dxil. DXIL
 needs dxc: without it, the DXIL is left out with a warning, an error only when
-RENDER, the build's renderer, is d3d12. A shader is a
-fragment-only subset of GLSL 4.5 that defines vec4 shade(vec2 uv); the engine
-provides nshvc_image(ivec2) and nshvc_input(int). Alpha 0 leaves the pixel."""
-import os, re, shutil, subprocess, sys, tempfile
+RENDER, the build's renderer, is d3d12.
+
+A shader is a fragment-only subset of GLSL 4.5 that defines
+vec4 shade(vec2 uv): the colour of a draw list's pixel at the material's
+texture coordinate uv, its alpha how much of the pixel it covers (0 none).
+It takes the place of the fragment stage of the engine's draw-list program
+(src/engine/shaders/list.*), so it reads that program's uniforms and inputs:
+the engine provides nshvc_image(ivec2), the material's image's texel (the
+vertices' colour without an image), and nshvc_input(int), its eight inputs."""
+import os, shutil, subprocess, sys, tempfile
 
 PRE = '''#version 450
-layout(std430, binding = 1) readonly buffer TB { uint nshvc_store[]; };
+layout(std140, binding = 0) uniform D { vec4 f[8]; ivec4 i[8]; } nshvc_u;
+layout(binding = 2) uniform sampler2D nshvc_tex;
 layout(location = 0) in vec2 nshvc_uv;
-layout(location = 1) flat in uint nshvc_colour;
-layout(location = 0) out uint nshvc_out;
-layout(push_constant) uniform U { float w, h; uint base, tw, th, p0, p1, p2; vec4 inputs[2]; } nshvc_u;
+layout(location = 1) in vec4 nshvc_colour;
+layout(location = 0) out vec4 nshvc_out;
 vec4 nshvc_image(ivec2 p) {
-    if (nshvc_u.tw == 0u) return vec4(float((nshvc_colour >> 16) & 255u), float((nshvc_colour >> 8) & 255u), float(nshvc_colour & 255u), 255.0) / 255.0;
-    uint x = uint(clamp(p.x, 0, int(nshvc_u.tw) - 1)), y = uint(clamp(p.y, 0, int(nshvc_u.th) - 1));
-    uint c = nshvc_store[nshvc_u.base + y * nshvc_u.tw + x];
-    return vec4(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u), float(c >> 24)) / 255.0;
+    if (nshvc_u.i[0].w == 0) return nshvc_colour;
+    return texelFetch(nshvc_tex, clamp(p, ivec2(0), nshvc_u.i[0].yz - 1), 0);
 }
-float nshvc_input(int i) { return nshvc_u.inputs[i / 4][i % 4]; }
+float nshvc_input(int i) { return nshvc_u.f[4 + i / 4][i % 4]; }
 #line 1
 '''
 POST = '''
 void main() {
     vec4 c = shade(nshvc_uv);
-    if (c.a <= 0.0) discard;
-    uvec3 v = uvec3(clamp(c.rgb, 0.0, 1.0) * 255.0 + 0.5);
-    nshvc_out = 0xFF000000u | v.r << 16 | v.g << 8 | v.b;
+    int n = int(clamp(c.a, 0.0, 1.0) * nshvc_u.f[0].z + 0.5);
+    if (n <= 0) discard;
+    gl_SampleMask[0] = n >= 31 ? -1 : int((1u << uint(n)) - 1u);
+    nshvc_out = vec4(clamp(c.rgb, 0.0, 1.0), nshvc_u.f[3].x);
 }
 '''
 
@@ -44,7 +49,7 @@ def main():
     render = sys.argv[3] if len(sys.argv) == 4 else ''
     warned = False
     os.makedirs(out, exist_ok=True)
-    dxc = shutil.which('dxc') or shutil.which('dxc', path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'tools', 'dxc', 'bin'))
+    dxc = os.environ.get('DXC') or shutil.which('dxc') or shutil.which('dxc', path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'tools', 'dxc', 'bin'))
     with tempfile.TemporaryDirectory() as tmp:
         for n in sorted(os.listdir(src)):
             if not n.endswith('.shade'):
@@ -57,12 +62,9 @@ def main():
                 f.write(PRE + body + POST)
             spv = os.path.join(out, name + '.spv')
             run('glslangValidator', '-V', '-o', spv, frag)
-            msl = run('spirv-cross', spv, '--msl', '--msl-version', '20000')
-            # the engine binds the block at buffer 1 and the store at buffer 2
-            msl = re.sub(r'(constant U& \w+) \[\[buffer\(\d+\)\]\]', r'\1 [[buffer(1)]]', msl)
-            msl = re.sub(r'(const device TB& \w+) \[\[buffer\(\d+\)\]\]', r'\1 [[buffer(2)]]', msl)
+            # the bindings as the engine's programs have them: buffer 0, texture and sampler 2
             with open(os.path.join(out, name + '.metal'), 'w') as f:
-                f.write(msl)
+                f.write(run('spirv-cross', spv, '--msl', '--msl-version', '20100', '--msl-decoration-binding'))
             if not dxc:
                 if render == 'd3d12':
                     sys.exit('nshvc-shaders: dxc is not installed: the D3D12 shaders cannot be built')
@@ -72,8 +74,7 @@ def main():
                 continue
             hlsl = os.path.join(tmp, name + '.hlsl')
             with open(hlsl, 'w') as f:
-                # the engine's vertex stage outputs the position first: the pixel stage's inputs must line up with it
-                f.write(run('spirv-cross', spv, '--hlsl', '--shader-model', '60').replace('struct SPIRV_Cross_Input\n{\n', 'struct SPIRV_Cross_Input\n{\n    float4 nshvc_position : SV_Position;\n', 1))
+                f.write(run('spirv-cross', spv, '--hlsl', '--shader-model', '60'))
             run(dxc, '-T', 'ps_6_0', '-E', 'main', '-Fo', os.path.join(out, name + '.dxil'), hlsl)
 
 if __name__ == '__main__':

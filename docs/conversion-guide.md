@@ -76,7 +76,7 @@ tools/nshvc-build macos path/to/game
 
 ## 7. Check
 
-Run the game headless and compare what it shows and plays with the original running in bsnes:
+Run the game headless and compare what it plays with the original running in bsnes, and look at what it shows:
 
 ```bash
 game --headless --updates 600 --input keys.txt --sound out.raw
@@ -84,10 +84,10 @@ game --headless --updates 600 --input keys.txt --sound out.raw
 
 `keys.txt` gives the devices by update number (`docs/api.md` section 7), such as `120 key=0D` to hold Return from update 120.
 
-`tools/nshvc-check` does the comparison: it plays the ROM in bsnes and the game headless, and compares chosen frames pixel by pixel and, with `--sound`, the sound sample by sample. Its `inputs.txt` gives the original's buttons, one line per change: the update number, then each pad's buttons in hex. `--keys` names the key your controls map to each button, so the game is given those keys:
+`tools/nshvc-check` does the comparison: it plays the ROM in bsnes and the game headless for the same frames, and compares the sound sample by sample. Pictures are not compared with an emulator's: the engine draws natively at the window's resolution (`--shots` writes each picture to look at). Its `inputs.txt` gives the original's buttons, one line per change: the update number, then each pad's buttons in hex. `--keys` names the key your controls map to each button, so the game is given those keys:
 
 ```bash
-tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom game.sfc --game "build/game" --input inputs.txt --keys B=5A,A=58,START=0D --at 60,600,1800 --sound
+tools/nshvc-check --oracle build/tests/oracle --core bsnes_libretro.dylib --rom game.sfc --game "build/game" --input inputs.txt --keys B=5A,A=58,START=0D --frames 1800
 ```
 
 ## 8. Worked example: zelda3
@@ -128,6 +128,6 @@ The conversion removed the game's imitation PPU, DMA, DSP and APU, its SDL front
 
 **Widescreen.** The game sets a wider screen in `nshvc_screen`, moves sprites and windows into it, and uses `show_left` and `show_right` to black out what a room doesn't have. The status bar stays in the original columns through `layer_clip`. How to use the extra width is the game's decision.
 
-**How it was checked.** The attract sequence matches the ROM in bsnes byte for byte on the frames that line up. Dungeons, the world map, the item screen, game over, boss scenes and the credits match the game's previous renderer, apart from the timing of its 3D polygons. The same run gives identical pictures on macOS, Linux and D3D12 headless, and on macOS, Linux, Android and iOS in real time. Its frame timing differs from the ROM's, because the C does not model the original's slow frames, so its sound is the same music but not aligned sample for sample.
+**How it was checked.** Under API 5's renderer, since replaced, the attract sequence matched the ROM in bsnes byte for byte on the frames that lined up, and dungeons, the world map, the item screen, game over, boss scenes and the credits matched the game's previous renderer, apart from the timing of its 3D polygons. API 6.0's native renderer compiles with it for every platform and has not yet been run with it. Its frame timing differs from the ROM's, because the C does not model the original's slow frames, so its sound is the same music but not aligned sample for sample.
 
 The test found a real engine gap, sprites drawn on the sub-screen when the game had not asked. When your game shows a difference, find out whether the conversion or the engine is wrong, and fix it where it belongs. The engine is never changed for one game.

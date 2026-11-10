@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 5.0. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 6.0. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 
@@ -19,15 +19,17 @@ The engine is at API 5.0. `docs/native-engine-plan.md` opens with what has and h
   it is between two updates.
 - **Threads.** System, game, render and audio threads, and a job pool. Game state depends only on the updates run and their
   input.
-- **The picture on the GPU.** Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, direct
-  colour and offset-per-tile by the SNES's rules, at any screen size. Per-line changes come from a table of values. Mode 7 is
-  sampled and anti-aliased at the window's resolution, and draw lists' polygons are smooth at their edges (8 samples a
-  pixel unless the game sets otherwise). Backends: Vulkan, Metal and Direct3D 12.
+- **The picture, drawn natively on the GPU.** Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic,
+  Mode 7, hires, direct colour and offset-per-tile, as the SNES had them, at any screen size, with per-line changes from a
+  table of values. Each becomes native geometry and GPU state at the window's own resolution: tile layers and sprites are
+  instanced quads, Mode 7 a textured plane, priorities depth, windows stencil, colour maths and brightness blend state,
+  per-line changes strips of rows. Texels stay sharp, with only the pixel an edge falls in mixed, and edges are smoothed
+  by 4 samples a pixel. Nothing renders a console-sized picture. Backends: Vulkan, Metal and Direct3D 12.
 - **The picture's shape in the window.** 4:3 by default, centred with black margins. A game can name another shape, such as
   8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
   say which part of it is shown.
-- **A drawing pipeline.** Triangles, lines and images on the GPU, composed as a layer, with game shaders compiled for every
-  backend at build time.
+- **A drawing pipeline.** A game's own triangles, lines and images, such as its 3D, drawn straight into the frame in a
+  layer's place among the layers and sprites, with depth, and with game shaders compiled for every backend at build time.
 - **Sound.** Voices, envelopes, noise, pitch modulation and echo by the SNES's rules at 32,040 Hz, with the game's music code
   on the audio thread.
 - **Input.** Every keyboard key, controller button, stick and trigger, the pointer and every finger on a touch screen,
@@ -47,7 +49,7 @@ the engine. [examples/zelda3](examples/zelda3) is a full commercial-scale game c
 | `tools/nshvc-build PLATFORM GAME_DIR` | Builds and packages a game |
 | `tools/nshvc-shaders SRC OUT [RENDER]` | Compiles a game's shaders for every backend (`nshvc_game` runs it) |
 | `tools/nshvc-icons IMAGE OUT PLATFORM` | Makes a platform's icon from one square PNG (`nshvc_game` runs it for `ICON`) |
-| `tools/nshvc-check` | Compares a converted game with its ROM in bsnes, picture and sound |
+| `tools/nshvc-check` | Compares a converted game's sound with its ROM's in bsnes |
 
 ```bash
 tools/nshvc-build macos path/to/game
@@ -77,6 +79,7 @@ memory. By default there are none.
 
 ## Checks
 
-Build with `-DNSHVC_TESTS=ON`. `tests/scenes/scenes.py` makes each feature scene twice from one description, as a test ROM run
-in bsnes and through the API, and compares them byte for byte. `tests/scenes/feature.c` checks draw lists, shaders, overlays,
-saves, input replay and jobs.
+Build with `-DNSHVC_TESTS=ON`. `tests/scenes/feature.c` checks draw lists, shaders, images, overlays, saves, input replay
+and jobs against values worked out by hand. `tests/oracle` runs a ROM in bsnes for `tools/nshvc-check`, which compares a
+converted game's sound with the original's. Pictures are not compared with an emulator's: the engine draws natively at the
+window's resolution, and an emulator is not its standard.

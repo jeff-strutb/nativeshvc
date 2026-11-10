@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../render/rr_window.h"
+#include "rr_window.h"
 #include "engine.h"
 #include "host.h"
 
@@ -317,11 +317,13 @@ int nshvc_window_to_picture(float x, float y, int32_t *picture_x, int32_t *pictu
     host_window_pixels(&ww, &wh);
     eng_picture_size(&sw, &sh);
     if (ww <= 0 || wh <= 0) {
-        /* no window: the picture is the window */
-        ww = sw;
-        wh = sh;
+        /* no window: the picture is the window, a pixel for a pixel */
+        vx = vy = 0;
+        vw = sw;
+        vh = sh;
+    } else {
+        rr_view(eng_picture_aspect(), ww, wh, &vx, &vy, &vw, &vh);
     }
-    rr_view(eng_picture_aspect(), ww, wh, &vx, &vy, &vw, &vh);
     x -= (float)vx;
     y -= (float)vy;
     if (x < 0 || y < 0 || x >= (float)vw || y >= (float)vh || vw <= 0 || vh <= 0)

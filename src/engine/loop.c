@@ -21,7 +21,7 @@
 #include "engine.h"
 #include "host.h"
 #include "inspect.h"
-#include "packet.h"
+#include "picture.h"
 #include "rr.h"
 
 #define MAX_BACKLOG_NS 250000000ull
@@ -43,7 +43,7 @@ static host_mutex *hs_lock;
 static host_cond *game_wake, *render_wake;
 static int hs_want, hs_ready, hs_quit;
 static int hs_busy;          /* the render thread is drawing a picture */
-static eng_packet *hs_packet;
+static rr_frame *hs_packet;
 
 static atomic_int quit_asked;
 
@@ -128,8 +128,7 @@ static void write_shot(void)
     char path[1200];
     FILE *f;
     int w = 0, h = 0, x, y;
-    int window = getenv("NSHVC_SHOT_WINDOW") != NULL;
-    if (!(window ? rr_read_window(NULL, &w, &h) : rr_read(NULL, &w, &h)) || !w || !h)
+    if (!rr_read(NULL, &w, &h) || !w || !h)
         return;
     if ((size_t)w * h > cap) {
         free(px);
@@ -137,10 +136,7 @@ static void write_shot(void)
         if (!(px = (uint32_t *)malloc(cap * 4)))
             exit(70);
     }
-    if (window)
-        rr_read_window(px, &w, &h);
-    else
-        rr_read(px, &w, &h);
+    rr_read(px, &w, &h);
     snprintf(path, sizeof path, "%s/%06llu.ppm", shots_dir, (unsigned long long)shots++);
     if (!(f = fopen(path, "wb"))) {
         fprintf(stderr, "nativeshvc: cannot write %s\n", path);
@@ -157,7 +153,7 @@ static void write_shot(void)
     fclose(f);
 }
 
-static void show(eng_packet *p)
+static void show(rr_frame *p)
 {
     uint64_t t = host_ticks_ns();
     int paced = rr_draw(p);
@@ -176,7 +172,7 @@ static void render_thread(void *arg)
     eng_role = ENG_RENDER;
     host_thread_interactive();
     for (;;) {
-        eng_packet *p;
+        rr_frame *p;
         host_mutex_lock(hs_lock);
         hs_want = 1;
         host_cond_broadcast(game_wake);
@@ -313,7 +309,7 @@ static void one_update(void)
 
 static void one_draw(float between)
 {
-    eng_packet *p;
+    rr_frame *p;
     uint64_t t0, t1;
     eng_picture_begin();
     zone_clear();

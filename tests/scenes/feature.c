@@ -1,7 +1,7 @@
-/* feature.c: what the scenes against bsnes cannot reach, each checked against
- * values worked out by hand: draw lists, the exact fill, game shaders, images,
- * overlays, saves, input replay, jobs and pause. Prints FAIL and exits 1 on any
- * difference. Run with --headless --updates 4 --input FILE and PORT_RESDIR set
+/* feature.c: draw lists, the exact fill, game shaders, images, overlays,
+ * saves, input replay, jobs and pause, each checked against values worked out
+ * by hand. Headless, the picture is the screen's size, a pixel for a pixel.
+ * Prints FAIL and exits 1 on any difference. Run with --headless --updates 4 --input FILE and PORT_RESDIR set
  * to the folder holding shaders/tint.<backend>, FILE holding the two lines
  *   1 key=5A controller=0,1
  *   3 key=27 */
@@ -81,11 +81,11 @@ static void draw(float between)
     memset(&m, 0, sizeof m);
     memset(&a, 0, sizeof a);
     nshvc_draw_list_clear(list0, 256, 224);
-    /* a right triangle in palette red, exactly filled */
+    /* a right triangle in red, on whole pixels */
     nshvc_draw_rule(list0, NSHVC_FILL_EXACT);
-    v[0].x = 10; v[0].y = 10; v[0].colour = 5;
-    v[1].x = 60; v[1].y = 10; v[1].colour = 5;
-    v[2].x = 10; v[2].y = 60; v[2].colour = 5;
+    v[0].x = 10; v[0].y = 10; v[0].colour = 0xFFFF0000u;
+    v[1].x = 60; v[1].y = 10; v[1].colour = 0xFFFF0000u;
+    v[2].x = 10; v[2].y = 60; v[2].colour = 0xFFFF0000u;
     nshvc_draw_tris(list0, v, 3, NULL);
     nshvc_draw_image(list0, img, &r, NULL);
     /* the shader halves green over a rectangle */

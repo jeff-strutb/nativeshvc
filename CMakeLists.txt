@@ -9,7 +9,7 @@
 #   NSHVC_RENDER    none (no picture; the default with the null host) | metal | vulkan | d3d12
 #   NSHVC_EXAMPLES  build the examples (examples/)
 cmake_minimum_required(VERSION 3.16)
-project(nativeshvc VERSION 5.0.0 LANGUAGES C)
+project(nativeshvc VERSION 6.0.0 LANGUAGES C)
 
 if(APPLE)
   enable_language(OBJC)
@@ -37,6 +37,7 @@ add_library(nshvc STATIC
   src/engine/loop.c
   src/engine/jobs.c
   src/engine/picture.c
+  src/engine/compose.c
   src/engine/report.c
   src/engine/sound.c
   src/engine/input.c
@@ -96,15 +97,6 @@ elseif(NSHVC_HOST STREQUAL "windows")
 elseif(NOT NSHVC_HOST STREQUAL "none")
   message(FATAL_ERROR "nativeshvc: no host ${NSHVC_HOST}")
 endif()
-
-# the picture's rules as a string, for the backends that compile at run time
-set(_pb_src ${CMAKE_CURRENT_BINARY_DIR}/gen/rr_picture_src.h)
-add_custom_command(OUTPUT ${_pb_src}
-  COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/src/render/picture_body.h -DOUT=${_pb_src}
-    -DNAME=k_picture_body -P ${CMAKE_CURRENT_SOURCE_DIR}/src/render/embed.cmake
-  DEPENDS src/render/picture_body.h src/render/embed.cmake)
-target_sources(nshvc PRIVATE ${_pb_src})
-target_include_directories(nshvc PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen)
 
 # the renderer
 if(NSHVC_RENDER STREQUAL "none")

@@ -1,6 +1,9 @@
-/* picture.c: the game's picture calls. Objects (tiles, maps, images) live in
- * one store on the GPU; a write here logs only what changed, and a picture's
- * settings become the description the GPU draws from. No pixel is made here. */
+/* picture.c: the game's picture calls. Tiles, maps, images and the palette
+ * are textures on the GPU: a write here records only the texels that
+ * changed, as a write in the frame being filled. What draw sets, and the
+ * changes it makes by line, become the picture's states by row (each row a
+ * run of parts, each part a state), which compose.c turns into the
+ * renderer's draws. No pixel is made here. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,26 +12,23 @@
 #include "engine.h"
 #include "host.h"
 #include "inspect.h"
-#include "packet.h"
-#include "picture_defs.h"
+#include "picture.h"
 #include "rr.h"
 
-#define MAX_OBJECTS 4096
 #define MAX_SPRITES 65536
+#define MAX_SIDE 8192           /* a map's or image's width or height */
 
-typedef struct { uint32_t base, count, bpp, tpp; } Tiles;
-typedef struct { uint32_t base, w, h; } Map;
-typedef struct { uint32_t base, w, h, format; } Image;
+eng_tiles eng_tiles_of[ENG_OBJECTS];
+eng_map eng_maps_of[ENG_OBJECTS];
+eng_image eng_images_of[ENG_OBJECTS];
+uint32_t eng_ntiles = 1, eng_nmaps = 1, eng_nimages = 1;   /* 0: none */
+eng_list eng_lists_of[ENG_LISTS];
+uint32_t eng_nlists = 1;
 
-static Tiles tiles[MAX_OBJECTS];
-static Map maps[MAX_OBJECTS];
-static Image images[MAX_OBJECTS];
-static uint32_t ntiles = 1, nmaps = 1, nimages = 1;   /* 0: none */
-static size_t store_used = 1;       /* word 0 is never an object */
-
-/* two packets: one being filled, one the render thread may be reading */
-static eng_packet packets[2];
+/* two frames: one being filled, one the render thread may be running */
+static rr_frame frames[2];
 static int cur;
+static uint32_t ntextures = 1;
 
 /* ---- this picture's settings ---- */
 typedef struct { uint32_t line; int32_t column; uint32_t order; int field; int32_t value; } Change;
@@ -44,59 +44,64 @@ static nshvc_mode7 m7;
 static nshvc_windows windows;
 static nshvc_blend blend;
 static nshvc_sprite *sprites;
-static uint32_t nsprites, cap_sprites, sprite_first;
-static uint32_t palette[256];       /* kept between pictures */
-
-/* a draw list: filled by the game or by a job given it */
-typedef struct {
-    uint32_t w, h, rule, samples;
-    nshvc_vertex *v;
-    size_t nv, cap_v;
-    uint32_t *cmd;
-    size_t nc, cap_c;
-} List;
-#define MAX_LISTS 256
-static List lists[MAX_LISTS];
-static uint32_t nlists = 1;
-
-typedef struct { uint32_t image; float corners[6]; float alpha; } Overlay;
-static Overlay overlays[NSHVC_OVERLAYS];   /* kept between pictures */
+static uint32_t nsprites, sprite_first;
+static size_t cap_sprites;
+static uint32_t palette[256];       /* kept between pictures: 15-bit BGR, or ENG_RGB | 0xRRGGBB */
+static int show_main = 1, show_sub;
+static eng_overlay overlays[NSHVC_OVERLAYS];   /* kept between pictures */
 static int last_screen_w = 256, last_screen_h = 224;
 
-static void reserve(uint32_t **p, size_t *cap, size_t want)
+static void *grow(void *p, size_t *cap, size_t want, size_t size)
 {
+    size_t c;
+    void *n;
     if (want <= *cap)
-        return;
-    size_t c = *cap ? *cap : 4096;
+        return p;
+    c = *cap ? *cap : 1024;
     while (c < want)
         c *= 2;
-    uint32_t *n = (uint32_t *)realloc(*p, c * 4);
-    if (!n) {
-        eng_report("nativeshvc", "no memory for %zu words", c);
+    if (!(n = realloc(p, c * size))) {
+        eng_report("nativeshvc", "no memory for %zu items", c);
         exit(70);
     }
-    *p = n;
     *cap = c;
+    return n;
 }
 
-/* a run of words for the store, to be filled by the caller */
-static uint32_t *log_write(size_t at, size_t words)
+/* ---- textures ---- */
+uint32_t eng_texture_id(void) { return ntextures++; }
+
+void eng_texture_create(rr_frame *f, uint32_t id, uint32_t w, uint32_t h, int format, int flags)
 {
-    eng_packet *p = &packets[cur];
-    uint32_t *o;
-    reserve(&p->ops, &p->ops_cap, p->ops_words + 2 + words);
-    o = p->ops + p->ops_words;
-    o[0] = (uint32_t)at;
-    o[1] = (uint32_t)words;
-    p->ops_words += 2 + words;
-    return o + 2;
+    rr_tex_op *o;
+    f->texops = (rr_tex_op *)grow(f->texops, &f->cap_texops, f->ntexops + 1, sizeof *f->texops);
+    o = &f->texops[f->ntexops++];
+    memset(o, 0, sizeof *o);
+    o->id = id;
+    o->op = RR_TEX_CREATE;
+    o->format = (uint8_t)format;
+    o->flags = (uint8_t)flags;
+    o->w = w;
+    o->h = h;
 }
 
-static uint32_t store_alloc(size_t words)
+uint8_t *eng_texture_write(rr_frame *f, uint32_t id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, int bytes)
 {
-    size_t at = store_used;
-    store_used += words;
-    return (uint32_t)at;
+    rr_tex_op *o;
+    size_t n = (size_t)w * h * (size_t)bytes, at = (f->upload_bytes + 15) & ~(size_t)15;
+    f->texops = (rr_tex_op *)grow(f->texops, &f->cap_texops, f->ntexops + 1, sizeof *f->texops);
+    f->upload = (uint8_t *)grow(f->upload, &f->upload_cap, at + n, 1);
+    o = &f->texops[f->ntexops++];
+    memset(o, 0, sizeof *o);
+    o->id = id;
+    o->op = RR_TEX_WRITE;
+    o->x = x;
+    o->y = y;
+    o->w = w;
+    o->h = h;
+    o->at = at;
+    f->upload_bytes = at + n;
+    return f->upload + at;
 }
 
 /* ---- objects ---- */
@@ -104,118 +109,144 @@ nshvc_tiles nshvc_tiles_create(uint8_t bpp, uint32_t count, uint8_t tpp)
 {
     static const char call[] = "nshvc_tiles_create";
     nshvc_tiles r = { 0 };
+    eng_tiles *o;
+    uint32_t s, most_rows, rows;
     if (!eng_on(call, ENG_GAME))
         return r;
-    if ((bpp != 2 && bpp != 4 && bpp != 8) || !count || !tpp || ntiles == MAX_OBJECTS) {
+    if ((bpp != 2 && bpp != 4 && bpp != 8) || !count || !tpp || tpp > 16 || eng_ntiles == ENG_OBJECTS) {
         eng_report(call, "bpp %u, count %u, texels_per_pixel %u", bpp, count, tpp);
         return r;
     }
-    r.id = ntiles++;
-    tiles[r.id].base = store_alloc((size_t)count * 16u * tpp * tpp);
-    tiles[r.id].count = count;
-    tiles[r.id].bpp = bpp;
-    tiles[r.id].tpp = tpp;
+    /* the atlas: 16 tiles a row, more when it would be taller than MAX_SIDE */
+    s = 8u * tpp;
+    most_rows = MAX_SIDE / s;
+    o = &eng_tiles_of[eng_ntiles];
+    o->cols = count < 16 ? count : 16;
+    if ((count + o->cols - 1) / o->cols > most_rows)
+        o->cols = (count + most_rows - 1) / most_rows;
+    rows = (count + o->cols - 1) / o->cols;
+    if (o->cols * s > MAX_SIDE) {
+        eng_report(call, "%u tiles of %u texels a side", count, s);
+        return r;
+    }
+    r.id = eng_ntiles++;
+    o->tex = eng_texture_id();
+    o->count = count;
+    o->bpp = bpp;
+    o->tpp = tpp;
+    o->gen = 0;
+    eng_texture_create(&frames[cur], o->tex, o->cols * s, rows * s, RR_R8U, 0);
     return r;
 }
 
 void nshvc_tiles_write(nshvc_tiles t, uint32_t first, const void *data, uint32_t count, nshvc_tile_format f)
 {
     static const char call[] = "nshvc_tiles_write";
-    Tiles *o;
+    static uint8_t *tmp;
+    static size_t cap;
+    eng_tiles *o;
     const uint8_t *in = (const uint8_t *)data;
-    uint32_t *out, n, tw;
+    uint32_t s, tb, n, a;
     if (!eng_on(call, ENG_GAME))
         return;
-    if (!t.id || t.id >= ntiles || !data || first + count > tiles[t.id].count) {
+    if (!t.id || t.id >= eng_ntiles || !data || first + count > eng_tiles_of[t.id].count) {
         eng_report(call, "tile set %u, first %u, count %u", t.id, first, count);
         return;
     }
-    o = &tiles[t.id];
-    tw = 16u * o->tpp * o->tpp;
-    out = log_write(o->base + (size_t)first * tw, (size_t)count * tw);
-    if (f != NSHVC_TILES_PLANAR) {
-        memcpy(out, in, (size_t)count * tw * 4);
-        return;
-    }
-    if (o->tpp != 1) {
+    o = &eng_tiles_of[t.id];
+    if (f == NSHVC_TILES_PLANAR && o->tpp != 1) {
         eng_report(call, "the SNES's planar format has one texel a pixel");
-        memset(out, 0, (size_t)count * tw * 4);
         return;
     }
-    for (n = 0; n < count; n++) {
-        uint32_t y, x, p, bytes = o->bpp * 8u;
-        uint8_t b[64];
-        for (y = 0; y < 8; y++)
-            for (x = 0; x < 8; x++) {
-                uint32_t v = 0;
-                for (p = 0; p < o->bpp; p++) {
-                    /* planes in pairs: 16 bytes a pair, two bytes a row */
-                    uint8_t byte = in[(p / 2) * 16 + y * 2 + (p & 1)];
-                    v |= (uint32_t)((byte >> (7 - x)) & 1) << p;
+    s = 8u * o->tpp;
+    tb = s * s;
+    tmp = (uint8_t *)grow(tmp, &cap, (size_t)count * tb, 1);
+    if (f != NSHVC_TILES_PLANAR) {
+        memcpy(tmp, in, (size_t)count * tb);
+    } else {
+        for (n = 0; n < count; n++) {
+            uint32_t y, x, p;
+            for (y = 0; y < 8; y++)
+                for (x = 0; x < 8; x++) {
+                    uint32_t v = 0;
+                    for (p = 0; p < o->bpp; p++) {
+                        /* planes in pairs: 16 bytes a pair, two bytes a row */
+                        uint8_t byte = in[(p / 2) * 16 + y * 2 + (p & 1)];
+                        v |= (uint32_t)((byte >> (7 - x)) & 1) << p;
+                    }
+                    tmp[n * 64 + y * 8 + x] = (uint8_t)v;
                 }
-                b[y * 8 + x] = (uint8_t)v;
-            }
-        memcpy(out + n * tw, b, 64);
-        in += bytes;
+            in += o->bpp * 8u;
+        }
     }
+    /* a write for each run of tiles along a row of the atlas */
+    for (a = first; a < first + count;) {
+        uint32_t row = a / o->cols, b = (row + 1) * o->cols, k, y;
+        uint8_t *out;
+        if (b > first + count)
+            b = first + count;
+        out = eng_texture_write(&frames[cur], o->tex, (a % o->cols) * s, row * s, (b - a) * s, s, 1);
+        for (y = 0; y < s; y++)
+            for (k = a; k < b; k++)
+                memcpy(out + (size_t)y * (b - a) * s + (size_t)(k - a) * s, tmp + (size_t)(k - first) * tb + (size_t)y * s, s);
+        a = b;
+    }
+    o->gen++;
 }
 
 nshvc_map nshvc_map_create(uint32_t w, uint32_t h)
 {
     static const char call[] = "nshvc_map_create";
     nshvc_map r = { 0 };
+    eng_map *o;
     if (!eng_on(call, ENG_GAME))
         return r;
-    if (!w || !h || w > 0xFFFF || h > 0xFFFF || nmaps == MAX_OBJECTS) {
+    if (!w || !h || w > MAX_SIDE || h > MAX_SIDE || eng_nmaps == ENG_OBJECTS) {
         eng_report(call, "%u x %u", w, h);
         return r;
     }
-    r.id = nmaps++;
-    maps[r.id].base = store_alloc((size_t)w * h);
-    maps[r.id].w = w;
-    maps[r.id].h = h;
+    r.id = eng_nmaps++;
+    o = &eng_maps_of[r.id];
+    o->tex = eng_texture_id();
+    o->w = w;
+    o->h = h;
+    o->gen = 0;
+    eng_texture_create(&frames[cur], o->tex, w, h, RR_R32U, 0);
     return r;
 }
 
-static int map_args(const char *call, nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void *data)
+static uint32_t *map_args(const char *call, nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const void *data)
 {
+    eng_map *o;
     if (!eng_on(call, ENG_GAME))
-        return 0;
-    if (!m.id || m.id >= nmaps || !data || x + w > maps[m.id].w || y + h > maps[m.id].h) {
+        return NULL;
+    if (!m.id || m.id >= eng_nmaps || !data || !w || !h || x + w > eng_maps_of[m.id].w || y + h > eng_maps_of[m.id].h) {
         eng_report(call, "map %u, at %u,%u, %u x %u", m.id, x, y, w, h);
-        return 0;
+        return NULL;
     }
-    return 1;
+    o = &eng_maps_of[m.id];
+    o->gen++;
+    return (uint32_t *)(void *)eng_texture_write(&frames[cur], o->tex, x, y, w, h, 4);
 }
 
 void nshvc_map_write(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const nshvc_map_entry *e)
 {
-    Map *o;
-    uint32_t r, c;
-    if (!map_args("nshvc_map_write", m, x, y, w, h, e))
+    uint32_t *out = map_args("nshvc_map_write", m, x, y, w, h, e), k;
+    if (!out)
         return;
-    o = &maps[m.id];
-    for (r = 0; r < h; r++) {
-        uint32_t *out = log_write(o->base + (size_t)(y + r) * o->w + x, w);
-        for (c = 0; c < w; c++, e++)
-            out[c] = (uint32_t)e->tile | (uint32_t)(e->palette & 7) << 16 | (uint32_t)(e->priority != 0) << 19 |
-                     (uint32_t)(e->hflip != 0) << 20 | (uint32_t)(e->vflip != 0) << 21;
-    }
+    for (k = 0; k < w * h; k++, e++)
+        out[k] = (uint32_t)e->tile | (uint32_t)(e->palette & 7) << 16 | (uint32_t)(e->priority != 0) << 19 |
+                 (uint32_t)(e->hflip != 0) << 20 | (uint32_t)(e->vflip != 0) << 21;
 }
 
 void nshvc_map_write_snes(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *words)
 {
-    Map *o;
-    uint32_t r, c;
-    if (!map_args("nshvc_map_write_snes", m, x, y, w, h, words))
+    uint32_t *out = map_args("nshvc_map_write_snes", m, x, y, w, h, words), k;
+    if (!out)
         return;
-    o = &maps[m.id];
-    for (r = 0; r < h; r++) {
-        uint32_t *out = log_write(o->base + (size_t)(y + r) * o->w + x, w);
-        for (c = 0; c < w; c++, words++) {
-            uint32_t v = *words;
-            out[c] = (v & 0x3FF) | ((v >> 10) & 7) << 16 | ((v >> 13) & 1) << 19 | ((v >> 14) & 1) << 20 | ((v >> 15) & 1) << 21;
-        }
+    for (k = 0; k < w * h; k++) {
+        uint32_t v = words[k];
+        out[k] = (v & 0x3FF) | ((v >> 10) & 7) << 16 | ((v >> 13) & 1) << 19 | ((v >> 14) & 1) << 20 | ((v >> 15) & 1) << 21;
     }
 }
 
@@ -242,49 +273,45 @@ void nshvc_palette_write_rgb(uint32_t first, uint32_t count, const uint32_t *c)
         return;
     }
     for (i = 0; i < count; i++)
-        palette[first + i] = PB_RGB | (c[i] & 0xFFFFFFu);
+        palette[first + i] = ENG_RGB | (c[i] & 0xFFFFFFu);
 }
 
 nshvc_image nshvc_image_create(uint32_t w, uint32_t h, nshvc_image_format f)
 {
     static const char call[] = "nshvc_image_create";
     nshvc_image r = { 0 };
+    eng_image *o;
     if (!eng_on(call, ENG_GAME))
         return r;
-    if (!w || !h || w > 0xFFFF || h > 0xFFFF || nimages == MAX_OBJECTS) {
+    if (!w || !h || w > MAX_SIDE || h > MAX_SIDE || eng_nimages == ENG_OBJECTS || (f != NSHVC_IMAGE_INDEXED && f != NSHVC_IMAGE_RGBA)) {
         eng_report(call, "%u x %u", w, h);
         return r;
     }
-    r.id = nimages++;
-    images[r.id].base = store_alloc((size_t)w * h);
-    images[r.id].w = w;
-    images[r.id].h = h;
-    images[r.id].format = (uint32_t)f;
+    r.id = eng_nimages++;
+    o = &eng_images_of[r.id];
+    o->tex = eng_texture_id();
+    o->w = w;
+    o->h = h;
+    o->format = (uint32_t)f;
+    eng_texture_create(&frames[cur], o->tex, w, h, f == NSHVC_IMAGE_RGBA ? RR_BGRA8 : RR_R8U, 0);
     return r;
 }
 
 void nshvc_image_write(nshvc_image i, const void *texels)
 {
     static const char call[] = "nshvc_image_write";
-    Image *o;
-    size_t n, k;
-    uint32_t *out;
+    eng_image *o;
+    int rgba;
     if (!eng_on(call, ENG_GAME))
         return;
-    if (!i.id || i.id >= nimages || !texels) {
+    if (!i.id || i.id >= eng_nimages || !texels) {
         eng_report(call, "image %u", i.id);
         return;
     }
-    o = &images[i.id];
-    n = (size_t)o->w * o->h;
-    out = log_write(o->base, n);
-    if (o->format == NSHVC_IMAGE_RGBA) {
-        memcpy(out, texels, n * 4);
-    } else {
-        const uint8_t *b = (const uint8_t *)texels;
-        for (k = 0; k < n; k++)
-            out[k] = b[k];
-    }
+    o = &eng_images_of[i.id];
+    rgba = o->format == NSHVC_IMAGE_RGBA;
+    /* 0xAARRGGBB words are BGRA bytes */
+    memcpy(eng_texture_write(&frames[cur], o->tex, 0, 0, o->w, o->h, rgba ? 4 : 1), texels, (size_t)o->w * o->h * (rgba ? 4 : 1));
 }
 
 /* ---- settings for this picture ---- */
@@ -308,7 +335,6 @@ void nshvc_layer_set(uint8_t n, const nshvc_layer *l)
     layers[n] = *l;
 }
 
-static int show_main = 1, show_sub;
 void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen)
 {
     if (IN_DRAW("nshvc_sprites_show")) {
@@ -326,13 +352,7 @@ void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first)
         eng_report(call, "%u sprites", count);
         return;
     }
-    if (count > cap_sprites) {
-        nshvc_sprite *n = (nshvc_sprite *)realloc(sprites, count * sizeof *n);
-        if (!n)
-            exit(70);
-        sprites = n;
-        cap_sprites = count;
-    }
+    sprites = (nshvc_sprite *)grow(sprites, &cap_sprites, count, sizeof *sprites);
     if (count)
         memcpy(sprites, list, count * sizeof *sprites);
     nsprites = count;
@@ -341,14 +361,7 @@ void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first)
 
 static void add_change(uint32_t line, int32_t column, int field, int32_t value)
 {
-    if (nchanges == cap_changes) {
-        size_t c = cap_changes ? cap_changes * 2 : 1024;
-        Change *n = (Change *)realloc(changes, c * sizeof *n);
-        if (!n)
-            exit(70);
-        changes = n;
-        cap_changes = c;
-    }
+    changes = (Change *)grow(changes, &cap_changes, nchanges + 1, sizeof *changes);
     changes[nchanges].line = line;
     changes[nchanges].column = column;
     changes[nchanges].order = (uint32_t)nchanges;
@@ -373,7 +386,7 @@ void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float
     static const char call[] = "nshvc_overlay_set";
     if (!eng_on(call, ENG_GAME))
         return;
-    if (id >= NSHVC_OVERLAYS || (i.id && (i.id >= nimages || images[i.id].format != NSHVC_IMAGE_RGBA)) || (i.id && !corners)) {
+    if (id >= NSHVC_OVERLAYS || (i.id && (i.id >= eng_nimages || eng_images_of[i.id].format != NSHVC_IMAGE_RGBA)) || (i.id && !corners)) {
         eng_report(call, "overlay %u, image %u", id, i.id);
         return;
     }
@@ -392,29 +405,28 @@ nshvc_draw_list nshvc_draw_list_create(void)
     nshvc_draw_list r = { 0 };
     if (!eng_on(call, ENG_GAME))
         return r;
-    if (nlists == MAX_LISTS) {
-        eng_report(call, "more than %d lists", MAX_LISTS - 1);
+    if (eng_nlists == ENG_LISTS) {
+        eng_report(call, "more than %d lists", ENG_LISTS - 1);
         return r;
     }
-    r.id = nlists++;
-    lists[r.id].samples = 8;
+    r.id = eng_nlists++;
     return r;
 }
 
-static List *list_of(const char *call, nshvc_draw_list d)
+static eng_list *list_of(const char *call, nshvc_draw_list d)
 {
     if (!eng_on(call, LIST_ROLES))
         return NULL;
-    if (!d.id || d.id >= nlists) {
+    if (!d.id || d.id >= eng_nlists) {
         eng_report(call, "list %u", d.id);
         return NULL;
     }
-    return &lists[d.id];
+    return &eng_lists_of[d.id];
 }
 
 void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height)
 {
-    List *l = list_of("nshvc_draw_list_clear", d);
+    eng_list *l = list_of("nshvc_draw_list_clear", d);
     if (!l)
         return;
     if (!width || !height || width > 16384 || height > 16384) {
@@ -427,21 +439,9 @@ void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height)
     l->rule = NSHVC_FILL_SMOOTH;
 }
 
-void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples)
-{
-    List *l = list_of("nshvc_draw_samples", d);
-    if (!l)
-        return;
-    if (samples != 1 && samples != 2 && samples != 4 && samples != 8 && samples != 16) {
-        eng_report("nshvc_draw_samples", "%u samples", samples);
-        return;
-    }
-    l->samples = samples;
-}
-
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r)
 {
-    List *l = list_of("nshvc_draw_rule", d);
+    eng_list *l = list_of("nshvc_draw_rule", d);
     if (!l)
         return;
     l->rule = (uint32_t)r;
@@ -458,10 +458,10 @@ nshvc_shader nshvc_shader_load(const char *name)
     nshvc_asset a;
     uint8_t *code = NULL;
     size_t size = 0, cap = 0;
-    eng_packet *p = &packets[cur];
+    rr_frame *f = &frames[cur];
     if (!eng_on(call, ENG_GAME))
         return r;
-    if (!name || nshaders == MAX_SHADERS || p->nshaders == ENG_SHADER_LOADS) {
+    if (!name || nshaders == MAX_SHADERS || f->nshaders == RR_SHADER_LOADS) {
         eng_report(call, "shader %s", name ? name : "(none)");
         return r;
     }
@@ -487,65 +487,46 @@ nshvc_shader nshvc_shader_load(const char *name)
     }
     nshvc_asset_close(a);
     r.id = nshaders++;
-    p->shaders[p->nshaders].id = r.id;
-    p->shaders[p->nshaders].code = code;   /* kept: the backend owns it from here */
-    p->shaders[p->nshaders].size = size;
-    p->nshaders++;
+    f->shaders[f->nshaders].id = r.id;
+    f->shaders[f->nshaders].code = code;   /* kept: the backend owns it from here */
+    f->shaders[f->nshaders].size = size;
+    f->nshaders++;
     return r;
 }
 
-static void list_add(List *l, const nshvc_vertex *v, uint32_t count, uint32_t prim, const nshvc_material *m)
+static void list_add(eng_list *l, const nshvc_vertex *v, uint32_t count, uint32_t lines, const nshvc_material *m)
 {
-    uint32_t base = 0, w = 0, h = 0;
-    if (m && m->image.id && m->image.id < nimages) {
-        base = images[m->image.id].base;
-        w = images[m->image.id].w;
-        h = images[m->image.id].h;
-    }
-    if (l->nv + count > l->cap_v) {
-        size_t c = l->cap_v ? l->cap_v : 1024;
-        nshvc_vertex *n;
-        while (c < l->nv + count)
-            c *= 2;
-        n = (nshvc_vertex *)realloc(l->v, c * sizeof *n);
-        if (!n)
-            exit(70);
-        l->v = n;
-        l->cap_v = c;
-    }
-    reserve(&l->cmd, &l->cap_c, (l->nc + 1) * ENG_CMD_WORDS);
+    eng_list_cmd *c;
+    size_t k;
+    l->v = (nshvc_vertex *)grow(l->v, &l->cap_v, l->nv + count, sizeof *l->v);
+    l->cmd = (eng_list_cmd *)grow(l->cmd, &l->cap_c, l->nc + 1, sizeof *l->cmd);
     memcpy(l->v + l->nv, v, count * sizeof *v);
-    if (l->rule == NSHVC_FILL_EXACT) {
-        /* the exact rule: whole-pixel vertices, a small offset so that no
-           edge meets a pixel's centre, so every GPU fills the same spans */
-        size_t k;
+    if (l->rule == NSHVC_FILL_EXACT)
+        /* the exact rule: vertices on the list's whole pixels */
         for (k = 0; k < count; k++) {
             nshvc_vertex *o = &l->v[l->nv + k];
-            o->x = floorf(o->x + 0.5f) + 1.0f / 64.0f;
-            o->y = floorf(o->y + 0.5f) + 1.0f / 128.0f;
+            o->x = floorf(o->x + 0.5f);
+            o->y = floorf(o->y + 0.5f);
         }
-    }
-    {
-        uint32_t *c = l->cmd + l->nc * ENG_CMD_WORDS;
-        c[0] = (uint32_t)l->nv;
-        c[1] = count;
-        c[2] = prim;
-        c[3] = base;
-        c[4] = w;
-        c[5] = h;
-        c[6] = m ? m->shader.id : 0;
-        if (m)
-            memcpy(c + 7, m->inputs, 32);
-        else
-            memset(c + 7, 0, 32);
+    c = &l->cmd[l->nc++];
+    memset(c, 0, sizeof *c);
+    c->first = (uint32_t)l->nv;
+    c->count = count;
+    c->lines = lines;
+    if (m) {
+        if (m->image.id && m->image.id < eng_nimages && eng_images_of[m->image.id].format == NSHVC_IMAGE_RGBA)
+            c->image = m->image.id;
+        else if (m->image.id)
+            eng_report("nshvc_draw", "image %u: a list's image is full colour", m->image.id);
+        c->shader = m->shader.id;
+        memcpy(c->inputs, m->inputs, sizeof c->inputs);
     }
     l->nv += count;
-    l->nc++;
 }
 
 void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m)
 {
-    List *l = list_of("nshvc_draw_tris", d);
+    eng_list *l = list_of("nshvc_draw_tris", d);
     if (!l || !count)
         return;
     if (!v || count % 3) {
@@ -557,7 +538,7 @@ void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, c
 
 void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m)
 {
-    List *l = list_of("nshvc_draw_lines", d);
+    eng_list *l = list_of("nshvc_draw_lines", d);
     if (!l || !count)
         return;
     if (!v || count % 2) {
@@ -569,13 +550,14 @@ void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, 
 
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m)
 {
-    List *l = list_of("nshvc_draw_image", d);
+    eng_list *l = list_of("nshvc_draw_image", d);
     nshvc_material mm;
     nshvc_vertex q[6];
     float w, h;
+    int k;
     if (!l)
         return;
-    if (!i.id || i.id >= nimages || !to) {
+    if (!i.id || i.id >= eng_nimages || !to) {
         eng_report("nshvc_draw_image", "image %u", i.id);
         return;
     }
@@ -583,8 +565,8 @@ void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, co
         mm = *m;
     else
         memset(&mm, 0, sizeof mm);
-    w = (float)images[i.id].w;
-    h = (float)images[i.id].h;
+    w = (float)eng_images_of[i.id].w;
+    h = (float)eng_images_of[i.id].h;
     mm.image = i;
     memset(q, 0, sizeof q);
     q[0].x = to->x0; q[0].y = to->y0;
@@ -593,10 +575,14 @@ void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, co
     q[3] = q[2];
     q[4] = q[1];
     q[5].x = to->x1; q[5].y = to->y1; q[5].u = w; q[5].v = h;
+    for (k = 0; k < 6; k++) {
+        q[k].w = 1.0f;
+        q[k].colour = 0xFFFFFFFFu;
+    }
     list_add(l, q, 6, 0, &mm);
 }
 
-/* ---- the description ---- */
+/* ---- the picture's states ---- */
 static int change_cmp(const void *a, const void *b)
 {
     const Change *x = (const Change *)a, *y = (const Change *)b;
@@ -607,94 +593,7 @@ static int change_cmp(const void *a, const void *b)
     return x->order < y->order ? -1 : 1;
 }
 
-static uint32_t pack2(int32_t lo, int32_t hi) { return ((uint32_t)lo & 0xFFFFu) | (uint32_t)hi << 16; }
-
-static const uint8_t bpp_of[8][4] = {
-    { 2, 2, 2, 2 }, { 4, 4, 2, 0 }, { 4, 4, 0, 0 }, { 8, 4, 0, 0 }, { 8, 2, 0, 0 }, { 4, 2, 0, 0 }, { 4, 0, 0, 0 }, { 8, 0, 0, 0 }
-};
-
-static void layer_words(uint32_t *l, int n, const nshvc_layer *a, int m)
-{
-    uint32_t kind = 0, f;
-    uint32_t bpp = bpp_of[m & 7][n];
-    uint32_t mosaic = a->mosaic ? a->mosaic : 1;
-    memset(l, 0, PB_L * 4);
-    if (a->image.id && a->image.id < nimages) {
-        kind = 2;
-        l[PB_L_T] = images[a->image.id].base;
-        l[PB_L_M] = pack2((int32_t)images[a->image.id].w, (int32_t)images[a->image.id].h);
-    } else if (a->draw_list.id && a->draw_list.id < nlists && lists[a->draw_list.id].w) {
-        kind = 3;
-        l[PB_L_M] = pack2((int32_t)lists[a->draw_list.id].w, (int32_t)lists[a->draw_list.id].h);
-    } else if (a->tiles.id && a->tiles.id < ntiles && a->map.id && a->map.id < nmaps && bpp) {
-        kind = 1;
-        l[PB_L_T] = tiles[a->tiles.id].base;
-        l[PB_L_A] = tiles[a->tiles.id].tpp;
-        l[PB_L_M] = maps[a->map.id].base;
-        l[PB_L_S] = pack2((int32_t)maps[a->map.id].w, (int32_t)maps[a->map.id].h);
-        if (a->offset_per_tile.id && a->offset_per_tile.id < nmaps)
-            l[PB_L_O] = maps[a->offset_per_tile.id].base;
-    }
-    /* a layer that isn't drawn can still hold the map and scroll that
-       offset-per-tile reads */
-    if (!kind && a->map.id && a->map.id < nmaps)
-        l[PB_L_S] = pack2((int32_t)maps[a->map.id].w, (int32_t)maps[a->map.id].h);
-    f = (uint32_t)(a->enabled_main != 0) | (uint32_t)(a->enabled_sub != 0) << 1 | (uint32_t)(a->tile_size == 16) << 2 |
-        (mosaic - 1) << 4 | (uint32_t)(a->wrap != 0) << 9 | (uint32_t)(a->direct_colour != 0) << 10 | kind << 11 | bpp << 13;
-    l[PB_L_F] = f;
-    l[PB_L_X] = (uint32_t)a->scroll_x;
-    l[PB_L_Y] = (uint32_t)a->scroll_y;
-}
-
-/* the state as it stands */
-typedef struct {
-    int m, b3, hires, bright, blank, sprites_main, sprites_sub;
-    nshvc_layer l[4];
-    nshvc_mode7 m7;
-    nshvc_windows w;
-    nshvc_blend b;
-    int anchor[4];
-} Now;
-
-static void state_words(uint32_t *s, const Now *n, uint32_t pal_at)
-{
-    int i;
-    uint32_t mm = 0, ms = 0;
-    memset(s, 0, PB_ST * 4);
-    s[PB_S_MODE] = (uint32_t)n->m | (uint32_t)n->b3 << 3 | (uint32_t)n->hires << 4 | (uint32_t)n->bright << 8 | (uint32_t)n->blank << 12 |
-                  (uint32_t)(n->sprites_main != 0) << 13 | (uint32_t)(n->sprites_sub != 0) << 14;
-    s[PB_S_BLEND] = (uint32_t)n->b.fixed_bgr15 | (uint32_t)(n->b.subtract != 0) << 16 | (uint32_t)(n->b.half != 0) << 17 |
-                    (uint32_t)(n->b.use_fixed != 0) << 18 | (uint32_t)(n->b.layers & 63) << 20 |
-                    (uint32_t)(n->b.clip & 3) << 26 | (uint32_t)(n->b.prevent & 3) << 28;
-    s[PB_S_W] = (uint32_t)n->w.w[0].left;
-    s[PB_S_W + 1] = (uint32_t)n->w.w[0].right;
-    s[PB_S_W + 2] = (uint32_t)n->w.w[1].left;
-    s[PB_S_W + 3] = (uint32_t)n->w.w[1].right;
-    for (i = 0; i < 4; i++)
-        s[PB_S_USE] |= (uint32_t)n->w.layer_use[i] << (8 * i);
-    for (i = 0; i < 5; i++) {
-        mm |= (uint32_t)(n->w.mask_main[i] != 0) << i;
-        ms |= (uint32_t)(n->w.mask_sub[i] != 0) << i;
-    }
-    s[PB_S_USE2] = (uint32_t)n->w.layer_use[4] | (uint32_t)n->w.layer_use[5] << 8 | mm << 16 | ms << 24;
-    s[PB_S_M7] = pack2(n->m7.a, n->m7.b);
-    s[PB_S_M7 + 1] = pack2(n->m7.c, n->m7.d);
-    s[PB_S_M7 + 2] = pack2(n->m7.centre_x, n->m7.centre_y);
-    s[PB_S_M7 + 3] = pack2(n->m7.scroll_x, n->m7.scroll_y);
-    s[PB_S_M7F] = (uint32_t)(n->m7.outside & 3) | (uint32_t)(n->m7.flip_x != 0) << 2 | (uint32_t)(n->m7.flip_y != 0) << 3 |
-                  (uint32_t)(n->m7.extbg != 0) << 4;
-    if (n->m7.tiles.id && n->m7.tiles.id < ntiles)
-        s[PB_S_M7T] = tiles[n->m7.tiles.id].base;
-    if (n->m7.map.id && n->m7.map.id < nmaps)
-        s[PB_S_M7M] = maps[n->m7.map.id].base;
-    s[PB_S_PAL] = pal_at;
-    for (i = 0; i < 4; i++) {
-        layer_words(s + PB_S_L + i * PB_L, i, &n->l[i], n->m);
-        s[PB_S_L + i * PB_L + PB_L_A] |= (uint32_t)n->anchor[i] << 16;
-    }
-}
-
-static void apply(Now *n, uint32_t *pal, int field, int32_t v, uint32_t line, int *pal_changed)
+static void apply(eng_state *n, uint32_t *pal, int field, int32_t v, uint32_t line, int *pal_changed)
 {
     int i = field & 3;
     if (field >= NSHVC_LINE_PALETTE) {
@@ -761,46 +660,37 @@ static void apply(Now *n, uint32_t *pal, int field, int32_t v, uint32_t line, in
     }
 }
 
-/* a sprite's rows on the screen: with the wrap, kept to the original's 256 */
-static int sprite_rows(const nshvc_sprite *s)
+static uint32_t bgra_of(uint32_t e)
 {
-    int n = s->height * 8;
-    return limits.sprite_wrap && n > 256 ? 256 : n;
+    uint32_t r, g, b;
+    if (e & ENG_RGB)
+        return 0xFF000000u | (e & 0xFFFFFFu);
+    r = e & 31;
+    g = (e >> 5) & 31;
+    b = (e >> 10) & 31;
+    return 0xFF000000u | (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2);
 }
 
-static int sprite_row(const nshvc_sprite *s, int k, int oy, int h)
-{
-    int r = s->y + k;
-    if (limits.sprite_wrap)
-        r = oy + ((r - oy) & 255);
-    return r < 0 || r >= h ? -1 : r;
-}
+static eng_row *rows;
+static size_t cap_rows;
+static eng_part *parts;
+static size_t cap_parts_a;
+static eng_state *states;
+static size_t cap_states;
+static uint32_t *pals;          /* each version's 256 entries, as kept */
+static size_t cap_pals;
+static uint32_t *bgra;           /* the same, as the palette texture's rows */
+static size_t cap_bgra;
+static uint32_t palette_tex, palette_rows;
 
-static uint32_t sprite_words(uint32_t *o, const nshvc_sprite *s)
-{
-    uint32_t base = s->tiles.id && s->tiles.id < ntiles ? tiles[s->tiles.id].base : 0;
-    o[PB_P_X] = (uint32_t)s->x;
-    o[PB_P_Y] = (uint32_t)s->y;
-    o[PB_P_S] = pack2(s->width, s->height);
-    o[PB_P_T] = base;
-    o[PB_P_N] = (uint32_t)s->tile | (uint32_t)(s->palette & 7) << 16 | (uint32_t)(s->priority & 3) << 19 |
-                (uint32_t)(s->hflip != 0) << 21 | (uint32_t)(s->vflip != 0) << 22;
-    return base;
-}
-
-static void build(eng_packet *p)
+static void build(rr_frame *f)
 {
     int w = screen.width > 0 ? screen.width : 256, h = screen.height > 0 ? screen.height : 224;
-    int oy = screen.origin_y, ox = screen.origin_x, r, i, hires_any = 0, lines = screen.overscan ? 239 : 224;
-    size_t at, rows_at, parts_at, states_at, sprites_at, entries_at, nparts = 0, cap_parts;
-    uint32_t *d, pal_at;
+    int oy = screen.origin_y, r;
+    size_t c = 0, nparts = 0, nstates = 0, npal = 0;
+    eng_state n;
     uint32_t cur_pal[256];
-    Now n;
-    size_t c = 0;
-    static uint32_t *row_count;
-    static size_t row_cap;
-    size_t states = 0;
-    uint32_t total_entries = 0, si;
+    eng_picture p;
 
     memset(&n, 0, sizeof n);
     n.m = mode;
@@ -818,23 +708,13 @@ static void build(eng_packet *p)
     if (nchanges)
         qsort(changes, nchanges, sizeof *changes, change_cmp);
 
-    /* layout: an upper bound on parts is a part for each change plus each row */
-    cap_parts = (size_t)h + nchanges;
-    rows_at = PB_HEADER;
-    parts_at = rows_at + (size_t)h * 4;
-    states_at = parts_at + cap_parts * 2;
-    reserve(&p->desc, &p->desc_cap, states_at + PB_ST + 256);
-    d = p->desc;
-    /* the first state and palette */
-    at = states_at + (cap_parts + 1) * PB_ST;
-    reserve(&p->desc, &p->desc_cap, at + 256 * (cap_parts + 1));
-    d = p->desc;
-    pal_at = (uint32_t)at;
-    memcpy(d + at, cur_pal, sizeof cur_pal);
-    at += 256;
-    state_words(d + states_at, &n, pal_at);
-    states = 1;
-    hires_any = n.hires || n.m == 5 || n.m == 6;
+    rows = (eng_row *)grow(rows, &cap_rows, (size_t)h, sizeof *rows);
+    parts = (eng_part *)grow(parts, &cap_parts_a, (size_t)h * 2 + nchanges * 2 + 1, sizeof *parts);
+    states = (eng_state *)grow(states, &cap_states, nchanges + 1, sizeof *states);
+    pals = (uint32_t *)grow(pals, &cap_pals, (nchanges + 1) * 256, 4);
+    memcpy(pals, cur_pal, sizeof cur_pal);
+    npal = 1;
+    states[nstates++] = n;
 
     for (r = 0; r < h; r++) {
         uint32_t line = (uint32_t)(r - oy);
@@ -851,219 +731,85 @@ static void build(eng_packet *p)
                 c++;
             }
             if (pal_changed) {
-                pal_at = (uint32_t)at;
-                memcpy(d + at, cur_pal, sizeof cur_pal);
-                at += 256;
+                memcpy(pals + npal * 256, cur_pal, sizeof cur_pal);
+                n.pal = (int)npal++;
             }
-            if (states < cap_parts + 1) {
-                state_words(d + states_at + states * PB_ST, &n, pal_at);
-                states++;
-            }
-            hires_any |= n.hires || n.m == 5 || n.m == 6;
+            states[nstates++] = n;
             if (ln == line && col > 0) {
                 /* a split inside the row */
                 if (!have_part) {
-                    d[parts_at + nparts * 2] = 0;
-                    d[parts_at + nparts * 2 + 1] = (uint32_t)(states - 2);
+                    parts[nparts].x0 = 0;
+                    parts[nparts].state = (uint32_t)(nstates - 2);
                     nparts++;
                     cnt++;
                     have_part = 1;
                 }
-                d[parts_at + nparts * 2] = (uint32_t)(col + ox);
-                d[parts_at + nparts * 2 + 1] = (uint32_t)(states - 1);
+                parts[nparts].x0 = col + screen.origin_x;
+                parts[nparts].state = (uint32_t)(nstates - 1);
                 nparts++;
                 cnt++;
             }
         }
         if (!have_part) {
-            d[parts_at + nparts * 2] = 0;
-            d[parts_at + nparts * 2 + 1] = (uint32_t)(states - 1);
+            parts[nparts].x0 = 0;
+            parts[nparts].state = (uint32_t)(nstates - 1);
             nparts++;
             cnt++;
         }
-        d[rows_at + (size_t)r * 4] = first;
-        d[rows_at + (size_t)r * 4 + 1] = cnt;
+        rows[r].first = first;
+        rows[r].count = cnt;
     }
 
-    /* the sprites */
-    sprites_at = at;
-    reserve(&p->desc, &p->desc_cap, at + (size_t)nsprites * PB_SP);
-    d = p->desc;
-    for (si = 0; si < nsprites; si++)
-        sprite_words(d + sprites_at + (size_t)si * PB_SP, &sprites[si]);
-    at += (size_t)nsprites * PB_SP;
-
-    /* each sprite's rows, in priority order */
-    if ((size_t)h + 1 > row_cap) {
-        free(row_count);
-        row_count = (uint32_t *)malloc(((size_t)h + 1) * 4);
-        row_cap = row_count ? (size_t)h + 1 : 0;
-        if (!row_count)
-            exit(70);
+    /* the palette's versions: a row of the palette texture each */
+    if (!palette_tex)
+        palette_tex = eng_texture_id();
+    if ((uint32_t)npal > palette_rows) {
+        palette_rows = palette_rows ? palette_rows : 16;
+        while (palette_rows < (uint32_t)npal)
+            palette_rows *= 2;
+        eng_texture_create(f, palette_tex, 256, palette_rows, RR_BGRA8, 0);
     }
-    memset(row_count, 0, ((size_t)h + 1) * 4);
-    for (si = 0; si < nsprites; si++) {
-        const nshvc_sprite *s = &sprites[(sprite_first + si) % nsprites];
-        int k, n = sprite_rows(s);
-        for (k = 0; k < n; k++)
-            if ((r = sprite_row(s, k, oy, h)) >= 0)
-                row_count[r]++;
-    }
-    for (r = 0; r < h; r++) {
-        d[rows_at + (size_t)r * 4 + 2] = total_entries;
-        total_entries += row_count[r];
-    }
-    entries_at = at;
-    reserve(&p->desc, &p->desc_cap, at + total_entries);
-    d = p->desc;
-    at += total_entries;
-    memset(row_count, 0, (size_t)h * 4);
-    for (si = 0; si < nsprites; si++) {
-        uint32_t idx = (sprite_first + si) % nsprites;
-        const nshvc_sprite *s = &sprites[idx];
-        int k, n = sprite_rows(s);
-        for (k = 0; k < n; k++)
-            if ((r = sprite_row(s, k, oy, h)) >= 0)
-                d[entries_at + d[rows_at + (size_t)r * 4 + 2] + row_count[r]++] = idx;
-    }
-    /* the limits: past the first sprites_per_line the rest are dropped, then
-       tiles are spent from the last on the line backward */
-    if (limits.sprites_per_line || limits.sprite_tiles_per_line) {
-        for (r = oy; r < oy + lines && r < h; r++) {
-            uint32_t base, in_range = 0, out = 0, k;
-            int tiles_left;
-            if (r < 0)
-                continue;
-            base = (uint32_t)entries_at + d[rows_at + (size_t)r * 4 + 2];
-            for (k = 0; k < row_count[r]; k++) {
-                uint32_t e = d[base + k];
-                const nshvc_sprite *s = &sprites[e & 0xFFFFFFu];
-                int in_cols = s->x < ox + 256 && s->x + s->width * 8 > ox;
-                if (in_cols && limits.sprites_per_line && in_range >= limits.sprites_per_line)
-                    continue;
-                in_range += in_cols != 0;
-                d[base + out++] = e;
-            }
-            row_count[r] = out;
-            tiles_left = limits.sprite_tiles_per_line ? limits.sprite_tiles_per_line : 0x7FFFFFFF;
-            for (k = row_count[r]; k-- > 0;) {
-                uint32_t e = d[base + k] & 0xFFFFFFu;
-                const nshvc_sprite *s = &sprites[e];
-                int sx = s->x - ox, vis = s->width;
-                if (sx < 0)
-                    vis -= (-sx + 7) / 8;
-                if (sx + s->width * 8 > 256)
-                    vis -= (sx + s->width * 8 - 256) / 8;
-                if (vis < 0)
-                    vis = 0;
-                if (vis > tiles_left)
-                    vis = tiles_left;
-                tiles_left -= vis;
-                if (limits.sprite_tiles_per_line)
-                    d[base + k] = e | (uint32_t)(vis + 1) << 24;
-            }
-        }
-    }
-    for (r = 0; r < h; r++)
-        d[rows_at + (size_t)r * 4 + 3] = row_count[r];
-
-    /* the overlays: each window pixel's texel from the inverse of its corners */
     {
-        uint32_t ov_at = (uint32_t)at, count = 0;
-        reserve(&p->desc, &p->desc_cap, at + NSHVC_OVERLAYS * PB_OV);
-        d = p->desc;
-        for (si = 0; si < NSHVC_OVERLAYS; si++) {
-            const Overlay *o = &overlays[si];
-            if (o->image && o->alpha > 0) {
-                const float *q = o->corners;
-                const Image *im = &images[o->image];
-                float ax = q[2] - q[0], ay = q[3] - q[1], bx = q[4] - q[0], by = q[5] - q[1], det = ax * by - ay * bx;
-                float m[6];
-                uint32_t *e = d + at;
-                if (det == 0)
-                    continue;
-                m[0] = by / det * (float)im->w;
-                m[1] = -bx / det * (float)im->w;
-                m[2] = -(m[0] * q[0] + m[1] * q[1]);
-                m[3] = -ay / det * (float)im->h;
-                m[4] = ax / det * (float)im->h;
-                m[5] = -(m[3] * q[0] + m[4] * q[1]);
-                e[PB_V_T] = im->base;
-                e[PB_V_S] = pack2((int32_t)im->w, (int32_t)im->h);
-                memcpy(e + PB_V_M, m, sizeof m);
-                memcpy(e + PB_V_A, &o->alpha, 4);
-                at += PB_OV;
-                count++;
-            }
-        }
-        d[PB_OVERLAYS] = ov_at;
-        d[PB_OVCOUNT] = count;
+        size_t i;
+        bgra = (uint32_t *)grow(bgra, &cap_bgra, npal * 256, 4);
+        for (i = 0; i < npal * 256; i++)
+            bgra[i] = bgra_of(pals[i]);
+        memcpy(eng_texture_write(f, palette_tex, 0, 0, 256, (uint32_t)npal, 4), bgra, npal * 256 * 4);
     }
-    d[PB_W] = (uint32_t)w;
-    d[PB_H] = (uint32_t)h;
-    d[PB_OX] = (uint32_t)ox;
-    d[PB_OY] = (uint32_t)oy;
-    d[PB_ROWS] = (uint32_t)rows_at;
-    d[PB_PARTS] = (uint32_t)parts_at;
-    d[PB_STATES] = (uint32_t)states_at;
-    d[PB_SPRITES] = (uint32_t)sprites_at;
-    d[PB_ENTRIES] = (uint32_t)entries_at;
-    d[PB_CLIP] = 0;
-    for (i = 0; i < 5; i++)
-        d[PB_CLIP] |= (uint32_t)(limits.layer_clip[i] != 0) << i;
-    d[PB_CLIP] |= (uint32_t)(limits.sprite_wrap != 0) << 8;
-    if (screen.interlace) {
-        static uint32_t field;
-        field ^= 1;
-        d[PB_FIELD] = field + 1;
-    } else {
-        d[PB_FIELD] = 0;
-    }
-    d[PB_LINES] = (uint32_t)lines;
-    d[PB_PW] = (uint32_t)(hires_any ? 2 * w : w);
-    d[PB_SHOW_L] = (uint32_t)(screen.show_left > 0 ? screen.show_left : 0);
-    d[PB_SHOW_R] = (uint32_t)(screen.show_right > 0 && screen.show_right < w ? screen.show_right : w);
-    d[PB_SHOW_T] = (uint32_t)(screen.show_top > 0 ? screen.show_top : 0);
-    d[PB_SHOW_B] = (uint32_t)(screen.show_bottom > 0 && screen.show_bottom < h ? screen.show_bottom : h);
-    d[PB_LSAMPLES] = 0x01010101u;   /* the backend's, once it has filled the lists */
-    {
-        float a = eng_picture_aspect();
-        memcpy(&d[PB_ASPECT], &a, 4);
-    }
-    /* the draw lists the layers name */
-    p->list_words = 0;
-    for (i = 0; i < 4; i++) {
-        uint32_t id = layers[i].draw_list.id;
-        eng_list *e = &p->lists[i];
-        memset(e, 0, sizeof *e);
-        if (id && id < nlists && lists[id].w) {
-            const List *l = &lists[id];
-            size_t k, need = l->nv * ENG_DRAW_WORDS + l->nc * ENG_CMD_WORDS;
-            reserve(&p->list_data, &p->list_cap, p->list_words + need);
-            e->w = l->w;
-            e->h = l->h;
-            e->samples = l->samples;
-            e->verts = p->list_words;
-            e->nverts = l->nv;
-            for (k = 0; k < l->nv; k++) {
-                uint32_t *o = p->list_data + p->list_words + k * ENG_DRAW_WORDS;
-                memcpy(o, &l->v[k].x, 16);
-                o[4] = l->v[k].colour;
-            }
-            p->list_words += l->nv * ENG_DRAW_WORDS;
-            e->cmds = p->list_words;
-            e->ncmds = l->nc;
-            memcpy(p->list_data + p->list_words, l->cmd, l->nc * ENG_CMD_WORDS * 4);
-            p->list_words += l->nc * ENG_CMD_WORDS;
-        }
-    }
+
+    memset(&p, 0, sizeof p);
+    p.w = w;
+    p.h = h;
+    p.ox = screen.origin_x;
+    p.oy = oy;
+    p.lines = screen.overscan ? 239 : 224;
+    p.interlace = screen.interlace != 0;
+    p.show_l = screen.show_left > 0 ? screen.show_left : 0;
+    p.show_r = screen.show_right > 0 && screen.show_right < w ? screen.show_right : w;
+    p.show_t = screen.show_top > 0 ? screen.show_top : 0;
+    p.show_b = screen.show_bottom > 0 && screen.show_bottom < h ? screen.show_bottom : h;
+    p.limits = limits;
+    p.rows = rows;
+    p.parts = parts;
+    p.states = states;
+    p.palettes = bgra;
+    p.npalettes = (int)npal;
+    p.palette_tex = palette_tex;
+    p.sprites = sprites;
+    p.nsprites = nsprites;
+    p.sprite_first = sprite_first;
+    p.overlays = overlays;
+
+    f->width = w;
+    f->height = h;
+    f->aspect = eng_picture_aspect();
+    f->data_words = 0;
+    f->nuniforms = 0;
+    f->npasses = 0;
+    f->ncmds = 0;
+    eng_compose(f, &p);
     last_screen_w = w;
     last_screen_h = h;
-    p->desc_words = at;
-    p->store_words = store_used;
-    p->width = hires_any ? 2 * w : w;
-    p->height = screen.interlace ? 2 * h : h;
-    p->keep = screen.interlace != 0;
 }
 
 /* the shape the screen is shown at: the game's, else the original's pixels,
@@ -1084,7 +830,7 @@ void eng_picture_size(int *w, int *h)
 
 void eng_picture_init(void) { memset(palette, 0, sizeof palette); }
 
-/* draw sets the whole picture: nothing carries over but the objects and palette */
+/* draw sets the whole picture: nothing carries over but the objects, palette and overlays */
 void eng_picture_begin(void)
 {
     memset(&screen, 0, sizeof screen);
@@ -1124,21 +870,24 @@ static void inspect(FILE *f)
     fprintf(f, "  line changes %zu\n", nchanges);
     for (k = 0; k < nchanges; k++)
         fprintf(f, "    line %u column %d field %d value %d\n", changes[k].line, changes[k].column, changes[k].field, changes[k].value);
-    for (k = 1; k < nlists; k++)
-        fprintf(f, "  draw list %u: %u x %u, %zu vertices, %zu commands\n", k, lists[k].w, lists[k].h, lists[k].nv, lists[k].nc);
+    for (k = 1; k < eng_nlists; k++)
+        fprintf(f, "  draw list %u: %u x %u, %zu vertices, %zu commands\n", k, eng_lists_of[k].w, eng_lists_of[k].h, eng_lists_of[k].nv,
+                eng_lists_of[k].nc);
     eng_inspect_voices(f);
     fflush(f);
 }
 
-eng_packet *eng_picture_end(void)
+rr_frame *eng_picture_end(void)
 {
-    eng_packet *done = &packets[cur];
+    rr_frame *done = &frames[cur];
     FILE *f;
     if ((f = eng_inspect_take()))
         inspect(f);
     build(done);
     cur ^= 1;
-    packets[cur].ops_words = 0;
-    packets[cur].nshaders = 0;
+    /* the frame to fill next was drawn before the one just finished */
+    frames[cur].ntexops = 0;
+    frames[cur].upload_bytes = 0;
+    frames[cur].nshaders = 0;
     return done;
 }

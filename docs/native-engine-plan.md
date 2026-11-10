@@ -2,19 +2,25 @@
 
 **Status: decisions A to G settled; approved and under way (the maintainer, 2026-11-08).** The evidence the plan rests on is in appendix A.
 
-## Where the work stands (2026-11-09)
+## Where the work stands (2026-11-10)
 
-API 5.0, on `main`. Every stage is built.
+API 6.0. Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+at the window's resolution, and nothing of the earlier per-pixel renderer remains.
+
+- **6.0's renderer: compiled, not run.** It compiles for macOS, iOS, Windows (Vulkan and D3D12), Android and headless, with
+  zelda3, comet and the checks; no picture of it has been looked at, timed or checked on any platform. Every result below
+  about pictures, scenes or speed was of the renderer it replaced, and says nothing of this one.
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
-- **Feature scenes:** 39 match bsnes byte for byte on Metal and on Vulkan through MoltenVK. On D3D12 headless under Wine with vkd3d-proton and on Mesa's software Vulkan in a Linux VM they last ran before API 4.3's shader change.
+- **Feature scenes:** removed in 6.0. They held each picture feature to bsnes byte for byte; a native renderer blends with
+  the GPU's 8-bit arithmetic and draws at the window's resolution, and an emulator's picture is not its standard.
 - **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
 - **A full game, zelda3, converted to the API** with no imitation hardware left. See the conversion guide. Attract frames that line up match the ROM in bsnes byte for byte; dungeons, the world map, game over, boss scenes and the credits match its previous renderer apart from the timing of its 3D polygons. One scene, save and quit, ended differently from that reference, in the game's logic, and was not explained. A run gives the same picture on macOS, Linux, D3D12 headless and the Windows host under Wine, and in real time on macOS, Linux, Android and iOS.
 - **Sound:** the voices match the old mixer, itself held to bsnes, on 1.28 million samples with echo writes switching, and on 1.9 million before that. zelda3's music is not aligned with the ROM's, so it is compared only in loudness.
 - **Speed:** at most 7.9 us of engine work a picture on an Apple M4 Pro, against the 30 us target, which was set on another machine.
-- **Example and kit:** `examples/comet` builds with one command for every platform; on Linux that needs the shader tools installed. `tools/nshvc-check` compares a converted game with its ROM in bsnes.
-- **`dxc`:** Homebrew has none. `tools/nshvc-shaders` and `src/render/d3d12/build.sh` use `dxc` on the PATH, else `build/tools/dxc/bin/dxc` (not in git; build it from DirectXShaderCompiler source and place it there with its `lib/libdxcompiler`).
+- **Example and kit:** `examples/comet` builds with one command for every platform; on Linux that needs the shader tools installed. `tools/nshvc-check` compares a converted game's sound with its ROM's in bsnes.
+- **`dxc`:** Homebrew has none. `tools/nshvc-shaders` and `src/render/shaders/build.sh` use `DXC`, else `dxc` on the PATH, else `build/tools/dxc/bin/dxc` (not in git; build it from DirectXShaderCompiler source and place it there with its `lib/libdxcompiler`).
 - **Rules:** see the maintainer's standing instructions.
 - **Build on Windows:** MSYS2 UCRT64 with GCC, CMake and Ninja; `tools/nshvc-build windows path/to/game`.
 
@@ -69,7 +75,7 @@ for every platform it supports.
 | **Threads** | System, game, render and audio threads, and a job pool for the game's own work, joined in a fixed order | One thread |
 | **Picture** | Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, interlace, direct colour, offset-per-tile; any screen size; more layer and sprite space; high-resolution art; the SNES's limits as settings | PPU registers, VRAM ports, the line record, the extensions |
 | **Per-line changes** | A table of values by line, with an optional split at a column | HDMA, raster interrupts, mid-line writes |
-| **Drawing pipeline** | The way a game's chip work reaches the screen: polygons, lines and images, drawn on the GPU at the resolution the game chooses, with an exact-span fill for original-looking polygons. Composed with the rest of the picture like a layer | The chip connector, the lent GPU device, GPU canvases and handles |
+| **Drawing pipeline** | The way a game's own drawing, such as its chip work or 3D, reaches the screen: polygons, lines and images with depth, drawn natively straight into the frame at the window's resolution, in a layer's place among the layers and sprites | The chip connector, the lent GPU device, GPU canvases and handles |
 | **Shaders** | Games' own shaders in one engine shading language (decision B), compiled by the engine for every backend. Effects the SNES did not have, such as water, are the game's, written in that language | Games' own per-platform shaders |
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
 | **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |
@@ -186,11 +192,22 @@ varied thread timing give identical state.
 
 ### 3. Picture and display
 
-**Build:** every picture feature in section 4, video memory held on the GPU with only changes crossing, the Mode 7 plane and
-sampling on the GPU, and the description and submission on the render thread and jobs. Whether separate passes per layer are
-faster is decided here, by measuring.
+**Replaced in 6.0 (the maintainer, 2026-11-10).** The first build of this stage drew the console's picture by running its
+rules per pixel in a shader, and composed draw lists afterwards per window pixel: emulation, and slow (45-60 ms a frame on
+an iPhone 15 Pro Max once a draw-list layer existed). It is gone. In its place:
 
-**Keep and adapt:** `compose_body.h`'s rules, the backends, sharp bilinear and Mode 7 anti-aliasing.
+1. **A native renderer at the bottom** (`src/render/rr.h`): textures, render targets, depth, stencil, blend state,
+   instanced draws and programs, knowing nothing of any console, on Metal, Vulkan and D3D12.
+2. **The engine's standard capabilities on it** (`src/engine/compose.c`, programs in `src/engine/shaders`): tile layers as
+   instanced tile quads with the map read in the vertex stage; mosaic as instanced blocks; Mode 7 as a plane textured
+   through its matrix, the plane drawn into a texture from its map; sprites as instanced quads; priorities as depth;
+   windows as stencil from the window edges; per-line changes as strips of rows drawn with their own values; colour maths
+   as the sub screen drawn into its own target and laid on by blend state; hires by a stencil bit; brightness by blend
+   state. All at the window's resolution, texels sharp, edges smoothed by 4 samples a pixel.
+3. **Custom work through the lower API:** draw lists, materials and game shaders, drawn straight into the frame in their
+   layer's place, with depth.
+
+**Build:** every picture feature in section 4, video memory held on the GPU with only changes crossing.
 
 **Build also:** a D3D12 backend beside Vulkan and Metal (decision D).
 
@@ -198,8 +215,8 @@ faster is decided here, by measuring.
 `cgram_target`; `rr_image`, `rr_mode7`, `host_present`;
 `rr_m7_plane` and `rr_m7_tables`.
 
-**Done when:** no code in `src` makes a picture pixel on the CPU, the display cannot hold up the game, and every feature scene
-matches bsnes's picture on every backend (Vulkan, Metal and D3D12).
+**Done when:** no code in `src` makes a picture pixel on the CPU or works one out per pixel from console state, the display
+cannot hold up the game, and every capability is drawn natively on every backend (Vulkan, Metal and D3D12).
 
 ### 4. Drawing pipeline and shaders
 
@@ -209,7 +226,8 @@ GPU on every backend.
 
 **Delete:** the lent GPU device, GPU canvases, and overlay handles.
 
-**Done when:** test scenes match their definition on every backend (Vulkan, Metal and D3D12) with no CPU pixel.
+**Done when:** the feature check's draw lists, shaders, images and overlays match the values worked out by hand on every
+backend (Vulkan, Metal and D3D12) with no CPU pixel.
 
 ### 5. Sound
 
@@ -256,7 +274,8 @@ deleted above.
 
 **Build:**
 
-- Each feature scene through the API, against bsnes running the same scene as a test ROM.
+- The feature check (`tests/scenes/feature.c`), against values worked out by hand.
+- A converted game's sound, against bsnes running its ROM (`tools/nshvc-check`). Pictures are not held to an emulator's.
 
 Each check is shown able to fail first.
 

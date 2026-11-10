@@ -10,7 +10,7 @@
   <text x="60" y="158" fill="#1b2a41">Built and packaged for each platform by tools/nshvc-build</text>
 
   <rect x="40" y="186" width="880" height="44" rx="10" fill="#fdf0d5" stroke="#b7791f"/>
-  <text x="480" y="214" font-weight="bold" text-anchor="middle" fill="#1b2a41">The API  ·  nshvc/nshvc.h  ·  version 4.2  ·  docs/api.md</text>
+  <text x="480" y="214" font-weight="bold" text-anchor="middle" fill="#1b2a41">The API  ·  nshvc/nshvc.h  ·  version 6.0  ·  docs/api.md</text>
 
   <rect x="40" y="246" width="880" height="170" rx="10" fill="#edf7ed" stroke="#2f855a"/>
   <text x="60" y="274" font-weight="bold" fill="#1b2a41">The engine  ·  src/engine</text>
@@ -26,8 +26,8 @@
     <text x="72" y="358">audio, job pool</text>
     <text x="72" y="382">state depends only on input</text>
     <text x="282" y="314" font-weight="bold">Picture</text>
-    <text x="282" y="338">objects and change log</text>
-    <text x="282" y="358">per-line changes</text>
+    <text x="282" y="338">objects as textures, by line</text>
+    <text x="282" y="358">capabilities as native draws</text>
     <text x="282" y="382">draw lists, overlays</text>
     <text x="492" y="314" font-weight="bold">Sound</text>
     <text x="492" y="338">voices, envelopes, echo</text>
@@ -41,9 +41,9 @@
 
   <rect x="40" y="432" width="430" height="150" rx="10" fill="#f3e8fd" stroke="#6b46c1"/>
   <text x="60" y="460" font-weight="bold" fill="#1b2a41">Renderers  ·  src/render  ·  rr.h</text>
-  <text x="60" y="486" fill="#1b2a41">picture_body.h: the SNES's rules for a pixel,</text>
-  <text x="60" y="506" fill="#1b2a41">one source for every shading language</text>
-  <text x="60" y="530" fill="#1b2a41">Two passes: the picture, then the window</text>
+  <text x="60" y="486" fill="#1b2a41">textures, targets, depth, stencil, blend state,</text>
+  <text x="60" y="506" fill="#1b2a41">instanced draws, programs: nothing of a console</text>
+  <text x="60" y="530" fill="#1b2a41">drawn at the window's resolution</text>
   <text x="60" y="554" fill="#1b2a41">Metal, Vulkan, Direct3D 12</text>
 
   <rect x="490" y="432" width="430" height="150" rx="10" fill="#fde8ef" stroke="#b8336a"/>
@@ -53,5 +53,5 @@
   <text x="510" y="534" fill="#1b2a41">A new platform implements host.h,</text>
   <text x="510" y="554" fill="#1b2a41">and rr.h if it needs a new GPU API</text>
 
-  <text x="480" y="606" text-anchor="middle" fill="#555555">Checks live in tests/ and tools/nshvc-check, held to bsnes. No emulation runs in the engine.</text>
+  <text x="480" y="606" text-anchor="middle" fill="#555555">Checks live in tests/ and tools/nshvc-check. No emulation runs in the engine.</text>
 </svg>

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""nshvc-check: holds a converted game to its original running in bsnes.
+"""nshvc-check: holds a converted game's sound to its original running in bsnes.
 
 The original ROM plays in the oracle (tests/oracle, built with -DNSHVC_TESTS=ON)
-and the converted game runs headless, both given the same buttons. Chosen frames
-are compared pixel by pixel and, with --sound, the sound sample by sample.
+and the converted game runs headless, both given the same buttons for the same
+number of frames, and the sound is compared sample by sample. Pictures are not
+compared: the engine draws natively at the window's resolution, and an
+emulator's picture is not its standard.
 
   nshvc-check --oracle ORACLE --core BSNES_LIBRETRO --rom ROM --game "GAME ARGS"
-              --at 60,120,600 [--input INPUTS] [--keys MAP] [--offset N]
-              [--sound] [--sound-offset N] [--out DIR]
+              --frames N [--input INPUTS] [--keys MAP] [--sound-offset N] [--out DIR]
 
 INPUTS gives the original's buttons: one line per change, the update number,
 then each pad's buttons in hex (B 8000, Y 4000, Select 2000, Start 1000, Up
@@ -16,12 +17,10 @@ converted game reads devices, not buttons, so it is given the keys its own
 controls map to each button: MAP is BUTTON=VK pairs, VK a key's Windows
 virtual key code in hex, the second pad's buttons as 2.BUTTON (default: the
 zelda3 example's keyboard, B=5A,Y=41,SELECT=10,START=0D,UP=26,DOWN=28,
-LEFT=25,RIGHT=27,A=58,X=53,L=51,R=57). --at names frames of the original, counted from 1.
---offset says how the two line up: the game's picture for frame F is picture
-F + N, counted from 0 (default -1). --sound-offset N skips N samples of the
+LEFT=25,RIGHT=27,A=58,X=53,L=51,R=57). --sound-offset N skips N samples of the
 game's sound, or of the original's when negative.
 
-Exits 0 when everything compared is the same, 1 when not."""
+Exits 0 when the sound is the same, 1 when not."""
 import argparse, os, shlex, subprocess, sys, tempfile
 
 NAMES = [(0x8000, 'B'), (0x4000, 'Y'), (0x2000, 'SELECT'), (0x1000, 'START'), (0x0800, 'UP'), (0x0400, 'DOWN'),
@@ -66,9 +65,8 @@ def buttons(p0, p1):
     return '+'.join(n)
 
 
-def write_script(path, changes, shots):
+def write_script(path, changes, frames):
     """the oracle's script: frame F is update F - 1"""
-    last = max(shots)
     held, frame, out = (0, 0), 1, []
 
     def run_to(end):
@@ -78,13 +76,10 @@ def write_script(path, changes, shots):
             out.append(f'hold {b} {end - frame}' if b else f'wait {end - frame}')
             frame = end
 
-    stops = sorted(set(u + 1 for u in changes if u + 1 <= last) | set(f + 1 for f in shots))
-    for stop in stops:
+    for stop in sorted(u + 1 for u in changes if u + 1 <= frames):
         run_to(stop)
-        if stop - 1 in shots:
-            out.append(f'shot f{stop - 1}')
-        if stop - 1 in changes:
-            held = changes[stop - 1]
+        held = changes[stop - 1]
+    run_to(frames + 1)
     with open(path, 'w') as f:
         f.write('\n'.join(out) + '\n')
 
@@ -95,80 +90,47 @@ def run(cmd, what):
         sys.exit(f'nshvc-check: {what} failed ({r.returncode}):\n{r.stdout[-2000:]}')
 
 
-def compare_ppm(a, b):
-    """None if the same, else what differs"""
-    x, y = open(a, 'rb').read(), open(b, 'rb').read()
-    if x == y:
-        return None
-    hx, hy = x.split(b'\n', 3)[:3], y.split(b'\n', 3)[:3]
-    if hx != hy:
-        return f'sizes {hx[1].decode()} and {hy[1].decode()}'
-    w = int(hx[1].split()[0])
-    start = sum(len(p) + 1 for p in hx)
-    bad = [i for i in range(0, len(x) - start, 3) if x[start + i:start + i + 3] != y[start + i:start + i + 3]]
-    return f'{len(bad)} pixels differ, the first at ({(bad[0] // 3) % w}, {(bad[0] // 3) // w})'
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--oracle', required=True)
     ap.add_argument('--core', required=True)
     ap.add_argument('--rom', required=True)
     ap.add_argument('--game', required=True)
-    ap.add_argument('--at', required=True)
+    ap.add_argument('--frames', type=int, required=True)
     ap.add_argument('--input', default='')
     ap.add_argument('--keys', default=DEFAULT_KEYS)
-    ap.add_argument('--offset', type=int, default=-1)
-    ap.add_argument('--sound', action='store_true')
     ap.add_argument('--sound-offset', type=int, default=0)
     ap.add_argument('--out', default='')
     a = ap.parse_args()
 
     out = a.out or tempfile.mkdtemp(prefix='nshvc-check')
-    original, converted = os.path.join(out, 'original'), os.path.join(out, 'game')
-    os.makedirs(original, exist_ok=True)
-    os.makedirs(converted, exist_ok=True)
-    shots = sorted(int(f) for f in a.at.split(','))
+    os.makedirs(out, exist_ok=True)
     script = os.path.join(out, 'script.txt')
     changes = read_inputs(a.input)
-    write_script(script, changes, shots)
+    write_script(script, changes, a.frames)
 
-    cmd = [a.oracle, '--core', a.core, '--rom', a.rom, '--script', script, '--out', original]
-    game = shlex.split(a.game) + ['--headless', '--updates', str(max(max(shots) + a.offset + 1, 1)), '--shots', converted]
+    cmd = [a.oracle, '--core', a.core, '--rom', a.rom, '--script', script, '--out', out, '--sound', os.path.join(out, 'original.raw')]
+    game = shlex.split(a.game) + ['--headless', '--updates', str(a.frames), '--sound', os.path.join(out, 'game.raw')]
     if a.input:
         keys = os.path.join(out, 'keys.txt')
         write_keys(keys, changes, a.keys)
         game += ['--input', keys]
-    if a.sound:
-        cmd += ['--sound', os.path.join(out, 'original.raw')]
-        game += ['--sound', os.path.join(out, 'game.raw')]
     run(cmd, 'the original')
     run(game, 'the game')
 
-    failed = 0
-    for f in shots:
-        why = compare_ppm(os.path.join(original, f'f{f}.ppm'), os.path.join(converted, f'{f + a.offset:06d}.ppm'))
-        if why:
-            failed += 1
-            print(f'FAIL frame {f}: {why}')
-        else:
-            print(f'ok   frame {f}')
-    if a.sound:
-        x = open(os.path.join(out, 'original.raw'), 'rb').read()
-        y = open(os.path.join(out, 'game.raw'), 'rb').read()
-        if a.sound_offset >= 0:
-            y = y[a.sound_offset * 4:]
-        else:
-            x = x[-a.sound_offset * 4:]
-        n = min(len(x), len(y)) // 4
-        bad = next((i for i in range(n) if x[i * 4:i * 4 + 4] != y[i * 4:i * 4 + 4]), None)
-        if bad is None:
-            print(f'ok   sound: {n} samples')
-        else:
-            failed += 1
-            print(f'FAIL sound: the first difference is at sample {bad} of {n}')
-    print(f'{len(shots) + a.sound - failed} same, {failed} different; files in {out}')
-    return 1 if failed else 0
+    x = open(os.path.join(out, 'original.raw'), 'rb').read()
+    y = open(os.path.join(out, 'game.raw'), 'rb').read()
+    if a.sound_offset >= 0:
+        y = y[a.sound_offset * 4:]
+    else:
+        x = x[-a.sound_offset * 4:]
+    n = min(len(x), len(y)) // 4
+    bad = next((i for i in range(n) if x[i * 4:i * 4 + 4] != y[i * 4:i * 4 + 4]), None)
+    if bad is None:
+        print(f'ok   sound: {n} samples; files in {out}')
+        return 0
+    print(f'FAIL sound: the first difference is at sample {bad} of {n}; files in {out}')
+    return 1
 
 
 if __name__ == '__main__':

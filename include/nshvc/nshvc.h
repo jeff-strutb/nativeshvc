@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define NSHVC_VERSION_MAJOR 5
+#define NSHVC_VERSION_MAJOR 6
 #define NSHVC_VERSION_MINOR 0
 #define NSHVC_VERSION_PATCH 0
 
@@ -165,9 +165,11 @@ void nshvc_profile_begin(const char *zone);
 void nshvc_profile_end(void);
 nshvc_profile nshvc_profile_frame(void);
 
-/* the last finished picture, 0xFFRRGGBB, top row first, read back from the
-   GPU (a stall: call it when needed); from update, draw or shutdown; NULL
-   when this renderer keeps none. Valid until the next call. */
+/* the last finished picture as the renderer drew it, at the window's size
+   (with no window, the screen's, a pixel for a pixel) with the overlays:
+   0xFFRRGGBB, top row first, read back from the GPU (a stall: call it when
+   needed); from update, draw or shutdown; NULL when this renderer keeps none.
+   Valid until the next call. */
 const uint32_t *nshvc_picture_read(int *width, int *height);
 
 /* ---- jobs --------------------------------------------------------------------- */
@@ -198,7 +200,8 @@ typedef enum { NSHVC_IMAGE_INDEXED, NSHVC_IMAGE_RGBA } nshvc_image_format;
 typedef struct nshvc_screen {
     int32_t width, height;      /* any size; 0: the original's 256 x 224 */
     int32_t origin_x, origin_y; /* where the original's 256 x 224 sits in it */
-    uint8_t overscan, interlace;
+    uint8_t overscan;
+    uint8_t interlace;          /* modes 5 and 6 show their layers' rows twice as fine, both fields at once */
     uint8_t brightness;         /* 0-15 */
     uint8_t blank;
     float   aspect;             /* the shape the screen is shown at, width over height, whatever the window's:
@@ -288,16 +291,20 @@ typedef struct nshvc_blend {
 } nshvc_blend;
 void nshvc_blend_set(const nshvc_blend *b);
 
-/* ---- the drawing pipeline: a game's chip work reaches the screen as a layer -------- */
+/* ---- the drawing pipeline: a game's own drawing, straight into the frame as a layer ---- */
 
 typedef struct nshvc_vertex {
     float x, y;                     /* in the list's pixels, with sub-pixel precision */
+    float z;                        /* depth in the list, 0 nearest to 1 farthest; the nearer is drawn, and of equal
+                                       depths the later (6.0) */
+    float w;                        /* what x, y and z were divided by in projecting them, for texture coordinates that
+                                       follow perspective; 0 or 1 none (6.0) */
     float u, v;                     /* in the material's image's texels */
-    uint32_t colour;                /* a palette index, or 0xFFRRGGBB */
+    uint32_t colour;                /* 0xAARRGGBB, without an image; alpha 0 draws nothing (6.0) */
 } nshvc_vertex;
 typedef struct nshvc_shader { uint32_t id; } nshvc_shader;
 typedef struct nshvc_material {
-    nshvc_image image;              /* no image: the vertices' colour */
+    nshvc_image image;              /* full colour; no image: the vertices' colour */
     nshvc_shader shader;            /* none: the image's or colour's value as it is */
     float inputs[8];                /* what the shader reads with nshvc_input */
 } nshvc_material;
@@ -311,12 +318,8 @@ void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height);
 void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m);
 void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m);
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m);
+/* smooth: vertices where given; exact: on the list's whole pixels (6.0) */
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);
-/* how many samples a pixel of the list has: 1, 2, 4, 8 (the default) or 16.
-   Each is composed as a pixel is and the colours averaged, so edges are
-   smooth; 1 gives hard edges. A GPU that can't fill so many uses the most it
-   can. Kept until changed (4.7) */
-void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);
 
 /* what a line can change; those with a layer add it (0-3), the palette an entry */
 typedef enum {
