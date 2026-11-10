@@ -1,4 +1,4 @@
-# The native engine's API, version 4.6
+# The native engine's API, version 4.7
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -204,12 +204,18 @@ void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, c
 void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m);
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m);
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);   /* smooth, or an exact span rule for original polygons */
+void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);  /* 1, 2, 4, 8 (the default) or 16 a pixel */
 ```
 
 - Vertices are screen positions with sub-pixel precision, plus a palette index, colour or texture coordinate. Drawing is
   in the order given, and a game sorts its own polygons, as the Super FX's code did.
 - A draw list becomes a layer (`nshvc_layer.draw_list`) and is composed by the SNES's rules: priority, windows and colour
   maths. Its pixels are drawn at the window's resolution, or at the original's for an exact look.
+- Each of a list's pixels has several samples, 8 unless the game sets otherwise with `nshvc_draw_samples`. Each sample is
+  composed as a pixel is (palette, see-through 0, priorities, windows, colour maths) and the colours are averaged, so
+  polygon edges are smooth and nothing else changes. 1 gives hard edges. A GPU that can't fill a list with so many uses
+  the most it can. The setting is the list's, kept until changed. The picture `nshvc_picture_read` returns is made the
+  same way.
 - Jobs may fill separate lists in parallel.
 
 ```c
@@ -358,7 +364,7 @@ waits for a picture being drawn to finish, and costs a readback, so a game calls
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.6. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input` (keys, pointer, touches, controllers), and keys that type kept off the SNES controls while text is taken; 4.6 `nshvc_control_bind_controller` and `nshvc_control_defaults`.
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 4.7. 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input` (keys, pointer, touches, controllers), and keys that type kept off the SNES controls while text is taken; 4.6 `nshvc_control_bind_controller` and `nshvc_control_defaults`; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
 - **Major (5.0):** the only release that may change or remove anything a game uses.
 - **Minor (4.1):** may only add calls, settings, or fields at the end of a struct that a zeroed struct leaves off. A 4.0 game
   builds and plays the same.

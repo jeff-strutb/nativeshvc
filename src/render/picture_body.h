@@ -8,6 +8,8 @@
  *   U_(x), I_(x) conversions to them
  *   D_(i)        word i of this picture's description
  *   T_(i)        word i of the store of tiles, maps and images on the GPU
+ *   L_(n, x, y)  draw list n's value at (x, y), when it has one sample
+ *   LM_(n, x, y, s)  its sample s, when it has several
  *
  * The description, in 32-bit words (picture.c writes it):
  *   header   PB_* below
@@ -47,7 +49,8 @@
 #define PB_SHOW_R (23 + 56)
 #define PB_SHOW_T (24 + 56)
 #define PB_SHOW_B (25 + 56)
-#define PB_HEADER (26 + 56)
+#define PB_LSAMPLES (26 + 56) /* each draw list's samples, a byte each by layer: what the backend filled it with */
+#define PB_HEADER (27 + 56)
 
 #define PB_RGB 0x1000000u
 
@@ -100,6 +103,7 @@ PB_VAR I32 pb_wx, pb_wy; /* the window pixel a composition is for; -1: the pictu
 PB_VAR U32 pb_s;         /* this pixel's state's first word */
 PB_VAR U32 pb_c;         /* a layer's or the sprites' colour */
 PB_VAR U32 pb_main, pb_sub, pb_mz, pb_sz, pb_ml, pb_sl;
+PB_VAR U32 pb_ls;        /* the sample the draw lists are read at */
 
 #define S_(k) D_(pb_s + U_(k))
 
@@ -128,6 +132,27 @@ PB_FN U32 pb_tile_colour(U32 c, U32 bpp, U32 pal, U32 n, U32 mode, U32 direct)
     return pb_pal((mode == 0u ? n * 32u : 0u) + pal * 4u + c);
 }
 
+PB_FN U32 pb_list_samples(U32 n) { return (D_(PB_LSAMPLES) >> (8u * n)) & 0xFFu; }
+
+/* draw list n's value for the screen's column x (twice as many on a hires
+   lineno) and row r, at sample pb_ls: at the window's pixels when composed for
+   one */
+PB_FN U32 pb_list_at(U32 n, U32 x, I32 r)
+{
+    U32 l = PB_S_L + n * PB_L, mode = S_(PB_S_MODE) & 7u, hires = mode == 5u || mode == 6u ? 1u : 0u;
+    U32 lw = S_(l + PB_L_M) & 0xFFFFu, lh = S_(l + PB_L_M) >> 16, ix, iy, ns = pb_list_samples(n);
+    if (pb_wx >= 0) {
+        ix = U_(pb_wx) * lw / D_(PB_WW);
+        iy = U_(pb_wy) * lh / D_(PB_WH);
+    } else {
+        ix = (hires != 0u ? x >> 1 : x) * lw / D_(PB_W);
+        iy = U_(r) * lh / D_(PB_H);
+    }
+    if (ns > 1u)
+        return LM_(n, ix, iy, pb_ls % ns);
+    return L_(n, ix, iy);
+}
+
 /* layer n's pixel at the screen's column x (twice as many on a hires lineno)
    and row r: pb_c its colour; opaque << 1 | priority */
 PB_FN U32 pb_bg(U32 n, U32 x, I32 r)
@@ -149,16 +174,7 @@ PB_FN U32 pb_bg(U32 n, U32 x, I32 r)
         y = anchor + pb_floor(y - anchor, I_(msize));
     }
     if (kind == 3u) {
-        /* a draw list: at the window's pixels when composed for one */
-        U32 lw = S_(l + PB_L_M) & 0xFFFFu, lh = S_(l + PB_L_M) >> 16, v, ix, iy;
-        if (pb_wx >= 0) {
-            ix = U_(pb_wx) * lw / D_(PB_WW);
-            iy = U_(pb_wy) * lh / D_(PB_WH);
-        } else {
-            ix = (hires != 0u ? x >> 1 : x) * lw / D_(PB_W);
-            iy = U_(r) * lh / D_(PB_H);
-        }
-        v = L_(n, ix, iy);
+        U32 v = pb_list_at(n, x, r);
         if (v == 0u)
             return 0u;
         pb_c = v >= PB_RGB ? PB_RGB | (v & 0xFFFFFFu) : pb_pal(v & 0xFFu);
@@ -603,12 +619,57 @@ PB_FN U32 pb_compose(U32 X, U32 R, U32 pix)
     return pb_finish(pb_main, pb_ml, pb_sub, pb_sl, I_(x));
 }
 
+/* draw list n's value at sample pb_ls, if layer n is a draw list */
+PB_FN U32 pb_list_key(U32 n, U32 x, U32 R)
+{
+    return ((S_(PB_S_L + n * PB_L + PB_L_F) >> 11) & 3u) == 3u ? pb_list_at(n, x, I_(R)) : 0u;
+}
+
+/* pb_compose with the draw lists' samples: each sample composed as a pixel is
+   (palette, see-through 0, priorities, windows, colour maths) and the colours
+   averaged, so only edges change. A sample whose lists hold what the one
+   before held has that one's colour. */
+PB_FN U32 pb_compose_samples(U32 X, U32 R, U32 pix)
+{
+    U32 scale = D_(PB_PW) == D_(PB_W) ? 1u : 2u, x = X >> (scale - 1u), ns = 1u, n, s;
+    U32 k0 = 0u, k1 = 0u, k2 = 0u, k3 = 0u, col = 0u, sr = 0u, sg = 0u, sb = 0u;
+    pb_ls = 0u;
+    pb_state(X, R);
+    for (n = 0u; n < 4u; n++)
+        if (((S_(PB_S_L + n * PB_L + PB_L_F) >> 11) & 3u) == 3u && pb_list_samples(n) > ns)
+            ns = pb_list_samples(n);
+    if (ns == 1u)
+        return pb_compose(X, R, pix);
+    for (s = 0u; s < ns; s++) {
+        U32 v0, v1, v2, v3;
+        pb_ls = s;
+        pb_state(X, R);
+        v0 = pb_list_key(0u, x, R);
+        v1 = pb_list_key(1u, x, R);
+        v2 = pb_list_key(2u, x, R);
+        v3 = pb_list_key(3u, x, R);
+        if (s == 0u || v0 != k0 || v1 != k1 || v2 != k2 || v3 != k3) {
+            col = pb_compose(X, R, pix);
+            k0 = v0;
+            k1 = v1;
+            k2 = v2;
+            k3 = v3;
+        }
+        sr += (col >> 16) & 0xFFu;
+        sg += (col >> 8) & 0xFFu;
+        sb += col & 0xFFu;
+    }
+    pb_ls = 0u;
+    pb_state(X, R);
+    return 0xFF000000u | ((sr + ns / 2u) / ns) << 16 | ((sg + ns / 2u) / ns) << 8 | ((sb + ns / 2u) / ns);
+}
+
 /* the picture's pixel */
 PB_FN U32 pb_pixel(U32 X, U32 Y)
 {
     pb_wx = -1;
     pb_wy = -1;
-    return pb_compose(X, D_(PB_FIELD) != 0u ? Y >> 1 : Y, 0x200u);
+    return pb_compose_samples(X, D_(PB_FIELD) != 0u ? Y >> 1 : Y, 0x200u);
 }
 
 /* whether target row Y is this picture's: an interlaced picture keeps the
@@ -673,7 +734,7 @@ PB_FN U32 pb_q(I32 i, I32 r, I32 u, I32 v)
     /* a draw list's layer is composed at the window's pixels */
     if (((ms >> 12) & 1u) == 0u && (((S_(PB_S_L + PB_L_F) >> 11) & 3u) == 3u || ((S_(PB_S_L + PB_L + PB_L_F) >> 11) & 3u) == 3u ||
                                     ((S_(PB_S_L + 2u * PB_L + PB_L_F) >> 11) & 3u) == 3u || ((S_(PB_S_L + 3u * PB_L + PB_L_F) >> 11) & 3u) == 3u))
-        return pb_compose(X, R, 0x200u);
+        return pb_compose_samples(X, R, 0x200u);
     /* Mode 7 is sampled at the window's pixels; all else is the picture's */
     if ((ms & 7u) != 7u || ((ms >> 12) & 1u) != 0u || ((f0 & 3u) == 0u && ((S_(PB_S_M7F) >> 4) & 1u) == 0u) ||
         ((f0 >> 4) & 31u) != 0u || ((f1 >> 4) & 31u) != 0u)

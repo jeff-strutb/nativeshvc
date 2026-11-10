@@ -12,6 +12,7 @@
 #define ENG_CMD_WORDS 15        /* first vertex, count, 0 tris / 1 lines, image store base, w, h, shader, 8 inputs */
 typedef struct {
     uint32_t w, h;
+    uint32_t samples;           /* asked for: 1, 2, 4, 8 or 16 */
     size_t verts, nverts, cmds, ncmds;  /* word offsets and counts in list_data */
 } eng_list;
 

@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 4
-#define NSHVC_VERSION_MINOR 6
+#define NSHVC_VERSION_MINOR 7
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -330,6 +330,11 @@ void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, c
 void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m);
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m);
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);
+/* how many samples a pixel of the list has: 1, 2, 4, 8 (the default) or 16.
+   Each is composed as a pixel is and the colours averaged, so edges are
+   smooth; 1 gives hard edges. A GPU that can't fill so many uses the most it
+   can. Kept until changed (4.7) */
+void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);
 
 /* what a line can change; those with a layer add it (0-3), the palette an entry */
 typedef enum {

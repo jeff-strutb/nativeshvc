@@ -49,7 +49,7 @@ static uint32_t palette[256];       /* kept between pictures */
 
 /* a draw list: filled by the game or by a job given it */
 typedef struct {
-    uint32_t w, h, rule;
+    uint32_t w, h, rule, samples;
     nshvc_vertex *v;
     size_t nv, cap_v;
     uint32_t *cmd;
@@ -399,6 +399,7 @@ nshvc_draw_list nshvc_draw_list_create(void)
         return r;
     }
     r.id = nlists++;
+    lists[r.id].samples = 8;
     return r;
 }
 
@@ -426,6 +427,18 @@ void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height)
     l->h = height;
     l->nv = l->nc = 0;
     l->rule = NSHVC_FILL_SMOOTH;
+}
+
+void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples)
+{
+    List *l = list_of("nshvc_draw_samples", d);
+    if (!l)
+        return;
+    if (samples != 1 && samples != 2 && samples != 4 && samples != 8 && samples != 16) {
+        eng_report("nshvc_draw_samples", "%u samples", samples);
+        return;
+    }
+    l->samples = samples;
 }
 
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r)
@@ -1014,6 +1027,7 @@ static void build(eng_packet *p)
     d[PB_SHOW_R] = (uint32_t)(screen.show_right > 0 && screen.show_right < w ? screen.show_right : w);
     d[PB_SHOW_T] = (uint32_t)(screen.show_top > 0 ? screen.show_top : 0);
     d[PB_SHOW_B] = (uint32_t)(screen.show_bottom > 0 && screen.show_bottom < h ? screen.show_bottom : h);
+    d[PB_LSAMPLES] = 0x01010101u;   /* the backend's, once it has filled the lists */
     {
         float a = eng_picture_aspect();
         memcpy(&d[PB_ASPECT], &a, 4);
@@ -1030,6 +1044,7 @@ static void build(eng_packet *p)
             reserve(&p->list_data, &p->list_cap, p->list_words + need);
             e->w = l->w;
             e->h = l->h;
+            e->samples = l->samples;
             e->verts = p->list_words;
             e->nverts = l->nv;
             for (k = 0; k < l->nv; k++) {

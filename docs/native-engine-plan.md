@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-09)
 
-API 4.6, on `main`. Every stage is built.
+API 4.7, on `main`. Every stage is built.
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.

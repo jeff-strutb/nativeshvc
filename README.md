@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 4.6. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 4.7. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 
@@ -21,7 +21,8 @@ The engine is at API 4.6. `docs/native-engine-plan.md` opens with what has and h
   input.
 - **The picture on the GPU.** Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, direct
   colour and offset-per-tile by the SNES's rules, at any screen size. Per-line changes come from a table of values. Mode 7 is
-  sampled and anti-aliased at the window's resolution. Backends: Vulkan, Metal and Direct3D 12.
+  sampled and anti-aliased at the window's resolution, and draw lists' polygons are smooth at their edges (8 samples a
+  pixel unless the game sets otherwise). Backends: Vulkan, Metal and Direct3D 12.
 - **The picture's shape in the window.** 4:3 by default, centred with black margins. A game can name another shape, such as
   8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
   say which part of it is shown.

@@ -23,7 +23,7 @@
 
 #define FRAMES 3
 typedef struct { ID3D12Resource *r; void *at; UINT64 size; } Buf;
-typedef struct { ID3D12Resource *r; int w, h; D3D12_RESOURCE_STATES state; } Target;
+typedef struct { ID3D12Resource *r; int w, h, samples; D3D12_RESOURCE_STATES state; } Target;
 
 static ID3D12Device *dev;
 static ID3D12CommandQueue *queue;
@@ -38,14 +38,20 @@ static ID3D12Resource *sc_img[FRAMES];
 static int sc_w, sc_h;
 static HWND hwnd;
 static ID3D12RootSignature *root;
-static ID3D12PipelineState *pso_pic, *pso_win, *pso_list, *pso_lines;
+static ID3D12PipelineState *pso_pic, *pso_win;
+/* the lists' pipelines, by log2 of the samples (made when first used) */
+static ID3D12PipelineState *pso_list[5], *pso_lines[5];
+static uint32_t list_samples[4];      /* each list's, as filled */
 static ID3D12DescriptorHeap *rtv_heap, *srv_heap;
 static UINT rtv_step;
 static Buf store, descb, readback;
 static Target pic, off, list_t[4], none_t;
 static Buf verts;
 static UINT srv_step;
-static ID3D12PipelineState *game_pso[256][2];
+typedef struct { const void *code; size_t size; } Code;
+#define CODE(k) ((Code){ k, sizeof k })
+static Code game_ps[256];
+static ID3D12PipelineState *game_pso[256][2][5];
 static int last_w, last_h;
 
 /* RTV slots: 0 the picture, 1 the offscreen window, 2.. the swapchain's */
@@ -91,10 +97,9 @@ static void buf_free(Buf *b)
     memset(b, 0, sizeof *b);
 }
 
-typedef struct { const void *code; size_t size; } Code;
-#define CODE(k) ((Code){ k, sizeof k })
+static int log2_of(uint32_t n) { return n >= 16 ? 4 : n >= 8 ? 3 : n >= 4 ? 2 : n >= 2 ? 1 : 0; }
 
-static ID3D12PipelineState *pso_v(Code vs, Code ps, DXGI_FORMAT f, int vertices, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo)
+static ID3D12PipelineState *pso_ms(Code vs, Code ps, DXGI_FORMAT f, int vertices, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo, uint32_t samples)
 {
     static const D3D12_INPUT_ELEMENT_DESC el[2] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -119,8 +124,57 @@ static ID3D12PipelineState *pso_v(Code vs, Code ps, DXGI_FORMAT f, int vertices,
     }
     d.NumRenderTargets = 1;
     d.RTVFormats[0] = f;
-    d.SampleDesc.Count = 1;
+    d.SampleDesc.Count = samples;
     return SUCCEEDED(ID3D12Device_CreateGraphicsPipelineState(dev, &d, &IID_ID3D12PipelineState, (void **)&p)) ? p : NULL;
+}
+
+static ID3D12PipelineState *pso_v(Code vs, Code ps, DXGI_FORMAT f, int vertices, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo)
+{
+    return pso_ms(vs, ps, f, vertices, topo, 1);
+}
+
+/* the most samples, up to n, this GPU fills an integer list with */
+static uint32_t samples_for(uint32_t n)
+{
+    static int known[5];        /* by log2: 0 not asked yet, 1 can, 2 can't */
+    uint32_t c;
+    for (c = 16; c > 1; c >>= 1) {
+        int s = log2_of(c);
+        if (c > n)
+            continue;
+        if (!known[s]) {
+            D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q;
+            memset(&q, 0, sizeof q);
+            q.Format = DXGI_FORMAT_R32_UINT;
+            q.SampleCount = c;
+            known[s] = SUCCEEDED(ID3D12Device_CheckFeatureSupport(dev, D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof q)) &&
+                       q.NumQualityLevels > 0 ? 1 : 2;
+        }
+        if (known[s] == 1)
+            return c;
+    }
+    return 1;
+}
+
+/* the pipeline that fills a list of `samples` samples: the game's shader's, or the engine's */
+static ID3D12PipelineState *list_pso(uint32_t shader, int lines, uint32_t samples)
+{
+    int s = log2_of(samples);
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE topo = lines ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    if (shader && shader < 256 && game_ps[shader].code) {
+        if (!game_pso[shader][lines][s])
+            game_pso[shader][lines][s] = pso_ms(CODE(k_list_vs), game_ps[shader], DXGI_FORMAT_R32_UINT, 1, topo, samples);
+        if (game_pso[shader][lines][s])
+            return game_pso[shader][lines][s];
+    }
+    if (lines) {
+        if (!pso_lines[s])
+            pso_lines[s] = pso_ms(CODE(k_list_vs), CODE(k_list_fs), DXGI_FORMAT_R32_UINT, 1, topo, samples);
+        return pso_lines[s];
+    }
+    if (!pso_list[s])
+        pso_list[s] = pso_ms(CODE(k_list_vs), CODE(k_list_fs), DXGI_FORMAT_R32_UINT, 1, topo, samples);
+    return pso_list[s];
 }
 
 static ID3D12PipelineState *pso(Code vs, Code ps, DXGI_FORMAT f)
@@ -163,7 +217,7 @@ int rr_open(void)
     rtv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     srv_step = ID3D12Device_GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.NumDescriptors = 5;
+    hd.NumDescriptors = 9;
     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     ID3D12Device_CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void **)&srv_heap);
 
@@ -181,7 +235,7 @@ int rr_open(void)
         p[0].Descriptor.ShaderRegister = 0;
         p[1].Descriptor.ShaderRegister = 1;
         r.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        r.NumDescriptors = 5;
+        r.NumDescriptors = 9;      /* t2 the picture, t3-t6 the lists of one sample, t7-t10 those of several */
         r.BaseShaderRegister = 2;
         p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         p[2].DescriptorTable.NumDescriptorRanges = 1;
@@ -201,9 +255,7 @@ int rr_open(void)
 
     pso_pic = pso(CODE(k_vs), CODE(k_picture_fs), DXGI_FORMAT_R32_UINT);
     pso_win = pso(CODE(k_vs), CODE(k_window_fs), DXGI_FORMAT_B8G8R8A8_UNORM);
-    pso_list = pso_v(CODE(k_list_vs), CODE(k_list_fs), DXGI_FORMAT_R32_UINT, 1, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
-    pso_lines = pso_v(CODE(k_list_vs), CODE(k_list_fs), DXGI_FORMAT_R32_UINT, 1, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
-    if (!pso_pic || !pso_win || !pso_list || !pso_lines)
+    if (!pso_pic || !pso_win || !list_pso(0, 0, 1) || !list_pso(0, 1, 1))
         return 0;
 
     hwnd = (HWND)host_window_handle();
@@ -242,11 +294,11 @@ void rr_close(void)
 const char *rr_name(void) { return "d3d12"; }
 const char *rr_shader_ext(void) { return "dxil"; }
 
-static void target_make(Target *t, DXGI_FORMAT f, int w, int h, UINT slot, D3D12_RESOURCE_STATES state)
+static void target_ms(Target *t, DXGI_FORMAT f, int w, int h, UINT slot, D3D12_RESOURCE_STATES state, uint32_t samples)
 {
     D3D12_HEAP_PROPERTIES hp;
     D3D12_RESOURCE_DESC d;
-    if (t->r && t->w == w && t->h == h)
+    if (t->r && t->w == w && t->h == h && t->samples == (int)samples)
         return;
     if (t->r)
         ID3D12Resource_Release(t->r);
@@ -258,14 +310,20 @@ static void target_make(Target *t, DXGI_FORMAT f, int w, int h, UINT slot, D3D12
     d.Height = (UINT)h;
     d.DepthOrArraySize = d.MipLevels = 1;
     d.Format = f;
-    d.SampleDesc.Count = 1;
+    d.SampleDesc.Count = samples;
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     if (FAILED(ID3D12Device_CreateCommittedResource(dev, &hp, D3D12_HEAP_FLAG_NONE, &d, state, NULL, &IID_ID3D12Resource, (void **)&t->r)))
         exit(70);
     ID3D12Device_CreateRenderTargetView(dev, t->r, NULL, rtv(slot));
     t->w = w;
     t->h = h;
+    t->samples = (int)samples;
     t->state = state;
+}
+
+static void target_make(Target *t, DXGI_FORMAT f, int w, int h, UINT slot, D3D12_RESOURCE_STATES state)
+{
+    target_ms(t, f, w, h, slot, state, 1);
 }
 
 static void transition(ID3D12Resource *r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
@@ -285,19 +343,23 @@ static void transition(ID3D12Resource *r, D3D12_RESOURCE_STATES from, D3D12_RESO
 /* slots 2 + FRAMES.. : the draw lists' targets; the empty one's the last */
 static UINT list_slot(int k) { return 2 + FRAMES + (UINT)k; }
 
-static void srv_put(UINT at, ID3D12Resource *r)
+/* r at descriptor `at`, as a multisampled texture if ms; r NULL: a view of nothing */
+static void srv_put_ms(UINT at, ID3D12Resource *r, int ms)
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC sv;
     D3D12_CPU_DESCRIPTOR_HANDLE h;
     memset(&sv, 0, sizeof sv);
     sv.Format = DXGI_FORMAT_R32_UINT;
-    sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sv.ViewDimension = ms ? D3D12_SRV_DIMENSION_TEXTURE2DMS : D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    sv.Texture2D.MipLevels = 1;
+    if (!ms)
+        sv.Texture2D.MipLevels = 1;
     srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(srv_heap, &h);
     h.ptr += (SIZE_T)at * srv_step;
     ID3D12Device_CreateShaderResourceView(dev, r, &sv, h);
 }
+
+static void srv_put(UINT at, ID3D12Resource *r) { srv_put_ms(at, r, 0); }
 
 static void draw_lists(const eng_packet *p)
 {
@@ -339,10 +401,8 @@ static void draw_lists(const eng_packet *p)
         for (i = 0; i < l->ncmds; i++) {
             const uint32_t *c = p->list_data + l->cmds + i * ENG_CMD_WORDS;
             struct { float w, h; uint32_t base, tw, th, p0, p1, p2; float inputs[8]; } u = { (float)l->w, (float)l->h, c[3], c[4], c[5], 0, 0, 0, { 0 } };
-            ID3D12PipelineState *chosen = c[2] ? pso_lines : pso_list;
+            ID3D12PipelineState *chosen = list_pso(c[6], c[2] != 0, list_samples[k]);
             memcpy(u.inputs, c + 7, 32);
-            if (c[6] && game_pso[c[6]][c[2] != 0])
-                chosen = game_pso[c[6]][c[2] != 0];
             ID3D12GraphicsCommandList_SetPipelineState(list, chosen);
             ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, c[2] ? D3D_PRIMITIVE_TOPOLOGY_LINELIST : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(list, 3, 16, &u, 0);
@@ -399,11 +459,14 @@ int rr_draw(eng_packet *p)
     {
         uint32_t k;
         for (k = 0; k < p->nshaders; k++) {
-            Code ps = { p->shaders[k].code, p->shaders[k].size };
-            game_pso[p->shaders[k].id][0] = pso_v(CODE(k_list_vs), ps, DXGI_FORMAT_R32_UINT, 1, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
-            game_pso[p->shaders[k].id][1] = pso_v(CODE(k_list_vs), ps, DXGI_FORMAT_R32_UINT, 1, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
-            if (!game_pso[p->shaders[k].id][0] || !game_pso[p->shaders[k].id][1])
-                fprintf(stderr, "rr: d3d12: shader %u could not be made\n", p->shaders[k].id);
+            /* kept: its pipelines are made for each list's samples as they are needed */
+            uint32_t id = p->shaders[k].id;
+            if (id < 256) {
+                game_ps[id].code = p->shaders[k].code;
+                game_ps[id].size = p->shaders[k].size;
+            }
+            if (id >= 256 || !list_pso(id, 0, 1) || !list_pso(id, 1, 1))
+                fprintf(stderr, "rr: d3d12: shader %u could not be made\n", id);
         }
     }
     if (store.size < sb) {
@@ -443,6 +506,15 @@ int rr_draw(eng_packet *p)
         back = (int)IDXGISwapChain3_GetCurrentBackBufferIndex(swapchain);
     }
     rr_window_words(p->desc, ow, oh);
+    {
+        /* each list's samples, as many as asked that this GPU can fill */
+        int k;
+        p->desc[PB_LSAMPLES] = 0;
+        for (k = 0; k < 4; k++) {
+            list_samples[k] = p->lists[k].w ? samples_for(p->lists[k].samples) : 1;
+            p->desc[PB_LSAMPLES] |= list_samples[k] << (8 * k);
+        }
+    }
     memcpy(descb.at, p->desc, (size_t)db);
 
     target_make(&pic, DXGI_FORMAT_R32_UINT, p->width, p->height, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -464,9 +536,12 @@ int rr_draw(eng_packet *p)
         UINT64 vbytes = 0, voff = 0;
         for (k = 0; k < 4; k++) {
             const eng_list *l = &p->lists[k];
+            int ms = l->w && list_samples[k] > 1;
             if (l->w)
-                target_make(&list_t[k], DXGI_FORMAT_R32_UINT, (int)l->w, (int)l->h, list_slot(k), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            srv_put((UINT)(1 + k), l->w ? list_t[k].r : none_t.r);
+                target_ms(&list_t[k], DXGI_FORMAT_R32_UINT, (int)l->w, (int)l->h, list_slot(k), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                          list_samples[k]);
+            srv_put((UINT)(1 + k), l->w && !ms ? list_t[k].r : none_t.r);
+            srv_put_ms((UINT)(5 + k), ms ? list_t[k].r : NULL, 1);
             vbytes += l->nverts * ENG_DRAW_WORDS * 4;
         }
         if (vbytes && verts.size < vbytes) {

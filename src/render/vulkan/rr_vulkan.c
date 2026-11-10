@@ -21,7 +21,7 @@ void *host_vulkan_loader(void);
 
 #define VK_FUNCS(X) \
     X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceQueueFamilyProperties) \
-    X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr) \
+    X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceImageFormatProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr) \
     X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) \
     X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkCreateImage) X(vkDestroyImage) \
     X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) X(vkCreateSampler) \
@@ -43,7 +43,7 @@ VK_FUNCS(X)
 #undef X
 
 typedef struct { VkBuffer b; VkDeviceMemory m; void *at; VkDeviceSize size; } Buf;
-typedef struct { VkImage i; VkDeviceMemory m; VkImageView v; VkFramebuffer f; int w, h; } Target;
+typedef struct { VkImage i; VkDeviceMemory m; VkImageView v; VkFramebuffer f; int w, h, samples; } Target;
 
 static VkInstance inst;
 static VkPhysicalDevice phys;
@@ -68,13 +68,17 @@ static VkCommandBuffer cmd;
 static VkFence fence;
 static VkSemaphore sem_acquire, sem_done;
 static Buf store, descb, readback;
-static Target pic, off, list_t[4], none_t;
+static Target pic, off, list_t[4], none_t, none_ms_t;
 static Buf verts;
-static VkRenderPass rp_list;
-static VkPipeline pipe_list, pipe_lines;
+/* the lists' passes and pipelines, by log2 of the samples (made when first used) */
+static VkRenderPass rp_list[5];
+static VkPipeline pipe_list[5], pipe_lines[5];
+static VkShaderModule list_vert, list_frag;
+static VkSampleCountFlags ms_counts;   /* what an integer list can have; 1 alone: no multisampled lists */
+static uint32_t list_samples[4];       /* each list's, as filled */
 static int layouts_done[4], none_done;
-static VkPipeline game_pipes[256][2];
-static VkShaderModule list_vert;
+static VkShaderModule game_mods[256];
+static VkPipeline game_pipes[256][2][5];
 static int last_w, last_h, ever;
 
 /* a call that must work, failed: said in the log, then the end */
@@ -134,7 +138,9 @@ static VkShaderModule shader(const uint32_t *code, size_t bytes)
     return vkCreateShaderModule(dev, &ci, NULL, &m) == VK_SUCCESS ? m : VK_NULL_HANDLE;
 }
 
-static VkRenderPass render_pass_op(VkFormat f, VkImageLayout final_layout, VkAttachmentLoadOp load)
+static int log2_of(uint32_t n) { return n >= 16 ? 4 : n >= 8 ? 3 : n >= 4 ? 2 : n >= 2 ? 1 : 0; }
+
+static VkRenderPass render_pass_ms(VkFormat f, VkImageLayout final_layout, VkAttachmentLoadOp load, uint32_t samples)
 {
     int keep = load == VK_ATTACHMENT_LOAD_OP_LOAD;
     VkAttachmentDescription a = { 0 };
@@ -144,7 +150,7 @@ static VkRenderPass render_pass_op(VkFormat f, VkImageLayout final_layout, VkAtt
     VkRenderPassCreateInfo ci = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
     VkRenderPass rp;
     a.format = f;
-    a.samples = VK_SAMPLE_COUNT_1_BIT;
+    a.samples = (VkSampleCountFlagBits)samples;
     a.loadOp = load;
     a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -176,12 +182,18 @@ static VkRenderPass render_pass_op(VkFormat f, VkImageLayout final_layout, VkAtt
     return vkCreateRenderPass(dev, &ci, NULL, &rp) == VK_SUCCESS ? rp : VK_NULL_HANDLE;
 }
 
+static VkRenderPass render_pass_op(VkFormat f, VkImageLayout final_layout, VkAttachmentLoadOp load)
+{
+    return render_pass_ms(f, final_layout, load, 1);
+}
+
 static VkRenderPass render_pass(VkFormat f, VkImageLayout final_layout)
 {
     return render_pass_op(f, final_layout, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
 }
 
-static VkPipeline pipeline_v(VkRenderPass rp, VkShaderModule vs, VkShaderModule fs, int vertices, VkPrimitiveTopology topo)
+static VkPipeline pipeline_ms(VkRenderPass rp, VkShaderModule vs, VkShaderModule fs, int vertices, VkPrimitiveTopology topo,
+                              uint32_t samples)
 {
     VkPipelineShaderStageCreateInfo st[2];
     VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
@@ -218,7 +230,7 @@ static VkPipeline pipeline_v(VkRenderPass rp, VkShaderModule vs, VkShaderModule 
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = VK_CULL_MODE_NONE;
     rs.lineWidth = 1;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = (VkSampleCountFlagBits)samples;
     ba.colorWriteMask = 0xF;
     cb.attachmentCount = 1;
     cb.pAttachments = &ba;
@@ -238,12 +250,17 @@ static VkPipeline pipeline_v(VkRenderPass rp, VkShaderModule vs, VkShaderModule 
     return vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
 }
 
+static VkPipeline pipeline_v(VkRenderPass rp, VkShaderModule vs, VkShaderModule fs, int vertices, VkPrimitiveTopology topo)
+{
+    return pipeline_ms(rp, vs, fs, vertices, topo, 1);
+}
+
 static VkPipeline pipeline(VkRenderPass rp, VkShaderModule vs, VkShaderModule fs)
 {
     return pipeline_v(rp, vs, fs, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 }
 
-static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, VkImageUsageFlags usage)
+static void target_ms(Target *t, VkFormat f, int w, int h, VkRenderPass rp, VkImageUsageFlags usage, uint32_t samples)
 {
     VkImageCreateInfo ci = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     VkResult e;
@@ -251,7 +268,7 @@ static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, Vk
     VkFramebufferCreateInfo fi = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
     VkMemoryRequirements r;
     VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    if (t->i && t->w == w && t->h == h)
+    if (t->i && t->w == w && t->h == h && t->samples == (int)samples)
         return;
     if (t->i) {
         vkDestroyFramebuffer(dev, t->f, NULL);
@@ -265,7 +282,7 @@ static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, Vk
     ci.extent.height = (uint32_t)h;
     ci.extent.depth = 1;
     ci.mipLevels = ci.arrayLayers = 1;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.samples = (VkSampleCountFlagBits)samples;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
     if ((e = vkCreateImage(dev, &ci, NULL, &t->i)) != VK_SUCCESS)
@@ -291,23 +308,71 @@ static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, Vk
     vkCreateFramebuffer(dev, &fi, NULL, &t->f);
     t->w = w;
     t->h = h;
+    t->samples = (int)samples;
+}
+
+static void target_make(Target *t, VkFormat f, int w, int h, VkRenderPass rp, VkImageUsageFlags usage)
+{
+    target_ms(t, f, w, h, rp, usage, 1);
+}
+
+/* the most samples, up to n, this GPU fills an integer list with */
+static uint32_t samples_for(uint32_t n)
+{
+    uint32_t c;
+    for (c = 16; c > 1; c >>= 1)
+        if (c <= n && (ms_counts & c))
+            return c;
+    return 1;
+}
+
+/* the pass that fills a list of `samples` samples */
+static VkRenderPass list_pass(uint32_t samples)
+{
+    int s = log2_of(samples);
+    if (!rp_list[s])
+        rp_list[s] = render_pass_ms(VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ATTACHMENT_LOAD_OP_CLEAR, samples);
+    return rp_list[s];
+}
+
+/* the pipeline that fills it: the game's shader's, or the engine's */
+static VkPipeline list_pipe(uint32_t shader, int lines, uint32_t samples)
+{
+    int s = log2_of(samples);
+    VkPrimitiveTopology topo = lines ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    if (shader && shader < 256 && game_mods[shader]) {
+        if (!game_pipes[shader][lines][s])
+            game_pipes[shader][lines][s] = pipeline_ms(list_pass(samples), list_vert, game_mods[shader], 1, topo, samples);
+        if (game_pipes[shader][lines][s])
+            return game_pipes[shader][lines][s];
+    }
+    if (lines) {
+        if (!pipe_lines[s])
+            pipe_lines[s] = pipeline_ms(list_pass(samples), list_vert, list_frag, 1, topo, samples);
+        return pipe_lines[s];
+    }
+    if (!pipe_list[s])
+        pipe_list[s] = pipeline_ms(list_pass(samples), list_vert, list_frag, 1, topo, samples);
+    return pipe_list[s];
 }
 
 static void update_set(void)
 {
     VkDescriptorBufferInfo b0 = { descb.b, 0, VK_WHOLE_SIZE }, b1 = { store.b, 0, VK_WHOLE_SIZE };
     VkDescriptorImageInfo ii = { sampler, pic.v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkDescriptorImageInfo li[4];
-    VkWriteDescriptorSet w[7];
-    int k;
+    VkDescriptorImageInfo li[8];
+    VkWriteDescriptorSet w[11];
+    int k, nw = ms_counts != VK_SAMPLE_COUNT_1_BIT ? 11 : 7;
     memset(w, 0, sizeof w);
-    for (k = 0; k < 7; k++) {
+    for (k = 0; k < 11; k++) {
         w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[k].dstSet = set;
     }
-    for (k = 0; k < 4; k++) {
+    for (k = 0; k < 8; k++) {
+        /* bindings 3-6 the lists of one sample, 7-10 those of several */
+        int n = k & 3, here = list_t[n].i && list_t[n].w && (list_t[n].samples > 1) == (k >= 4);
         li[k].sampler = sampler;
-        li[k].imageView = list_t[k].i && list_t[k].w ? list_t[k].v : none_t.v;
+        li[k].imageView = here ? list_t[n].v : k >= 4 ? none_ms_t.v : none_t.v;
         li[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         w[3 + k].dstBinding = (uint32_t)(3 + k);
         w[3 + k].descriptorCount = 1;
@@ -323,7 +388,7 @@ static void update_set(void)
     w[0].pBufferInfo = &b0;
     w[1].pBufferInfo = &b1;
     w[2].pImageInfo = &ii;
-    vkUpdateDescriptorSets(dev, 7, w, 0, NULL);
+    vkUpdateDescriptorSets(dev, (uint32_t)nw, w, 0, NULL);
 }
 
 /* ---- the window ---- */
@@ -507,29 +572,40 @@ int rr_open(void)
     if (vkCreateDevice(phys, &di, NULL, &dev) != VK_SUCCESS)
         return 0;
     vkGetDeviceQueue(dev, family, 0, &queue);
+    {
+        /* the samples a list of integers can be filled with and read at */
+        VkImageFormatProperties fp;
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceProperties(phys, &pp);
+        ms_counts = VK_SAMPLE_COUNT_1_BIT;
+        if (vkGetPhysicalDeviceImageFormatProperties(phys, VK_FORMAT_R32_UINT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &fp) == VK_SUCCESS)
+            ms_counts = fp.sampleCounts & pp.limits.sampledImageIntegerSampleCounts & pp.limits.framebufferColorSampleCounts;
+        ms_counts |= VK_SAMPLE_COUNT_1_BIT;
+    }
 
     rp_pic = render_pass(VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     rp_pic_keep = render_pass_op(VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ATTACHMENT_LOAD_OP_LOAD);
     rp_win = render_pass(VK_FORMAT_B8G8R8A8_UNORM, surface ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_GENERAL);
     {
-        VkDescriptorSetLayoutBinding b[7];
+        VkDescriptorSetLayoutBinding b[11];
         VkDescriptorSetLayoutCreateInfo li = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
         VkDescriptorSetLayout sl;
         VkPipelineLayoutCreateInfo pi = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5 } };
+        VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 }, { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9 } };
         VkDescriptorPoolCreateInfo dp = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         VkDescriptorPool pool;
         VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
         VkSamplerCreateInfo si = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         VkShaderModule vs, fp, fw;
         memset(b, 0, sizeof b);
-        for (i = 0; i < 7; i++) {
+        for (i = 0; i < 11; i++) {
             b[i].binding = i;
             b[i].descriptorCount = 1;
             b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             b[i].descriptorType = i < 2 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         }
-        li.bindingCount = 7;
+        li.bindingCount = 11;
         li.pBindings = b;
         vkCreateDescriptorSetLayout(dev, &li, NULL, &sl);
         {
@@ -550,20 +626,20 @@ int rr_open(void)
         vkAllocateDescriptorSets(dev, &ai, &set);
         vkCreateSampler(dev, &si, NULL, &sampler);
         vs = shader(k_quad_vert, sizeof k_quad_vert);
-        fp = shader(k_picture_frag, sizeof k_picture_frag);
-        fw = shader(k_window_frag, sizeof k_window_frag);
+        /* without multisampled lists, the shaders that read none */
+        if (ms_counts != VK_SAMPLE_COUNT_1_BIT) {
+            fp = shader(k_picture_frag, sizeof k_picture_frag);
+            fw = shader(k_window_frag, sizeof k_window_frag);
+        } else {
+            fp = shader(k_picture1_frag, sizeof k_picture1_frag);
+            fw = shader(k_window1_frag, sizeof k_window1_frag);
+        }
         pipe_pic = pipeline(rp_pic, vs, fp);
         pipe_win = pipeline(rp_win, vs, fw);
-        {
-            VkShaderModule lv = shader(k_list_vert, sizeof k_list_vert), lf = shader(k_list_frag, sizeof k_list_frag);
-            rp_list = render_pass_op(VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ATTACHMENT_LOAD_OP_CLEAR);
-            pipe_list = pipeline_v(rp_list, lv, lf, 1, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-            pipe_lines = pipeline_v(rp_list, lv, lf, 1, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
-            list_vert = lv;
-            vkDestroyShaderModule(dev, lf, NULL);
-            if (!pipe_list || !pipe_lines)
-                return 0;
-        }
+        list_vert = shader(k_list_vert, sizeof k_list_vert);
+        list_frag = shader(k_list_frag, sizeof k_list_frag);
+        if (!list_pipe(0, 0, 1) || !list_pipe(0, 1, 1))
+            return 0;
         vkDestroyShaderModule(dev, vs, NULL);
         vkDestroyShaderModule(dev, fp, NULL);
         vkDestroyShaderModule(dev, fw, NULL);
@@ -624,7 +700,7 @@ static void draw_lists(const eng_packet *p)
         sc.offset.x = sc.offset.y = 0;
         sc.extent.width = l->w;
         sc.extent.height = l->h;
-        bi.renderPass = rp_list;
+        bi.renderPass = list_pass(list_samples[k]);
         bi.framebuffer = list_t[k].f;
         bi.renderArea = sc;
         bi.clearValueCount = 1;
@@ -638,10 +714,8 @@ static void draw_lists(const eng_packet *p)
         for (i = 0; i < l->ncmds; i++) {
             const uint32_t *c = p->list_data + l->cmds + i * ENG_CMD_WORDS;
             struct { float w, h; uint32_t base, tw, th, p0, p1, p2; float inputs[8]; } u = { (float)l->w, (float)l->h, c[3], c[4], c[5], 0, 0, 0, { 0 } };
-            VkPipeline chosen = c[2] ? pipe_lines : pipe_list;
+            VkPipeline chosen = list_pipe(c[6], c[2] != 0, list_samples[k]);
             memcpy(u.inputs, c + 7, 32);
-            if (c[6] && game_pipes[c[6]][c[2] != 0])
-                chosen = game_pipes[c[6]][c[2] != 0];
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, chosen);
             vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 64, &u);
             vkCmdDraw(cmd, c[1], 1, c[0], 0);
@@ -711,12 +785,12 @@ int rr_draw(eng_packet *p)
     {
         uint32_t k;
         for (k = 0; k < p->nshaders; k++) {
+            /* kept: its pipelines are made for each list's samples as they are needed */
             VkShaderModule m = shader((const uint32_t *)p->shaders[k].code, p->shaders[k].size);
-            if (m) {
-                game_pipes[p->shaders[k].id][0] = pipeline_v(rp_list, list_vert, m, 1, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-                game_pipes[p->shaders[k].id][1] = pipeline_v(rp_list, list_vert, m, 1, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
-                vkDestroyShaderModule(dev, m, NULL);
-            }
+            if (m && p->shaders[k].id < 256)
+                game_mods[p->shaders[k].id] = m;
+            else
+                fprintf(stderr, "rr: vulkan: shader %u could not be made\n", p->shaders[k].id);
         }
     }
     if (store.size < sb) {
@@ -754,6 +828,15 @@ int rr_draw(eng_packet *p)
         oh = sc_eh;
     }
     rr_window_words(p->desc, ow, oh);
+    {
+        /* each list's samples, as many as asked that this GPU can fill */
+        int k;
+        p->desc[PB_LSAMPLES] = 0;
+        for (k = 0; k < 4; k++) {
+            list_samples[k] = p->lists[k].w ? samples_for(p->lists[k].samples) : 1;
+            p->desc[PB_LSAMPLES] |= list_samples[k] << (8 * k);
+        }
+    }
     memcpy(descb.at, p->desc, (size_t)db);
 
     if (!pic.i || pic.w != p->width || pic.h != p->height) {
@@ -765,11 +848,13 @@ int rr_draw(eng_packet *p)
     {
         int k;
         VkDeviceSize vbytes = 0, voff = 0;
-        target_make(&none_t, VK_FORMAT_R32_UINT, 1, 1, rp_list, LIST_USE);
+        target_make(&none_t, VK_FORMAT_R32_UINT, 1, 1, list_pass(1), LIST_USE);
+        if (ms_counts != VK_SAMPLE_COUNT_1_BIT)
+            target_ms(&none_ms_t, VK_FORMAT_R32_UINT, 1, 1, list_pass(samples_for(2)), LIST_USE, samples_for(2));
         for (k = 0; k < 4; k++) {
             const eng_list *l = &p->lists[k];
-            if (l->w && (list_t[k].w != (int)l->w || list_t[k].h != (int)l->h)) {
-                target_make(&list_t[k], VK_FORMAT_R32_UINT, (int)l->w, (int)l->h, rp_list, LIST_USE);
+            if (l->w && (list_t[k].w != (int)l->w || list_t[k].h != (int)l->h || list_t[k].samples != (int)list_samples[k])) {
+                target_ms(&list_t[k], VK_FORMAT_R32_UINT, (int)l->w, (int)l->h, list_pass(list_samples[k]), LIST_USE, list_samples[k]);
                 grew = 1;
             }
             if (!l->w && layouts_done[k]) {
@@ -817,20 +902,21 @@ int rr_draw(eng_packet *p)
     vkResetCommandBuffer(cmd, 0);
     vkBeginCommandBuffer(cmd, &begin);
     if (!none_done) {
-        /* the empty image, cleared once and held readable */
-        eng_packet none_p;
+        /* the empty images, cleared once and held readable */
         VkRenderPassBeginInfo nb = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         VkClearValue clr;
         VkRect2D sc = { { 0, 0 }, { 1, 1 } };
-        memset(&none_p, 0, sizeof none_p);
+        int e;
         memset(&clr, 0, sizeof clr);
-        nb.renderPass = rp_list;
-        nb.framebuffer = none_t.f;
         nb.renderArea = sc;
         nb.clearValueCount = 1;
         nb.pClearValues = &clr;
-        vkCmdBeginRenderPass(cmd, &nb, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdEndRenderPass(cmd);
+        for (e = 0; e < (ms_counts != VK_SAMPLE_COUNT_1_BIT ? 2 : 1); e++) {
+            nb.renderPass = list_pass(e ? (uint32_t)none_ms_t.samples : 1);
+            nb.framebuffer = e ? none_ms_t.f : none_t.f;
+            vkCmdBeginRenderPass(cmd, &nb, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdEndRenderPass(cmd);
+        }
         none_done = 1;
     }
     draw_lists(p);

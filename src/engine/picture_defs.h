@@ -17,6 +17,7 @@ static inline uint32_t pb_no_read(uint32_t i) { (void)i; return 0; }
 #define T_(i) pb_no_read(U_(i))
 #define P_(x, y) pb_no_read(U_(x) + U_(y))
 #define L_(n, x, y) pb_no_read(U_(n) + U_(x) + U_(y))
+#define LM_(n, x, y, s) pb_no_read(U_(n) + U_(x) + U_(y) + U_(s))
 static inline float pb_f_b(uint32_t b) { union { uint32_t u; float f; } c; c.u = b; return c.f; }
 #define F_B(x) pb_f_b(x)
 #include <math.h>
@@ -33,6 +34,7 @@ static inline float pb_f_b(uint32_t b) { union { uint32_t u; float f; } c; c.u =
 #undef T_
 #undef P_
 #undef L_
+#undef LM_
 #undef F_B
 #undef S_
 

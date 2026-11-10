@@ -36,11 +36,13 @@ static const char k_pre[] =
     "#define T_(i) pb_tb[i]\n"
     "#define P_(x, y) pb_img.read(uint2(x, y)).r\n"
     "#define L_(n, x, y) pb_list[n].read(uint2(x, y)).r\n"
+    "#define LM_(n, x, y, s) pb_list_ms[n].read(uint2(x, y), s).r\n"
     "struct PB {\n"
     "device const uint *pb_db;\n"
     "device const uint *pb_tb;\n"
     "texture2d<uint> pb_img;\n"
-    "array<texture2d<uint>, 4> pb_list;\n";
+    "array<texture2d<uint>, 4> pb_list;\n"
+    "array<texture2d_ms<uint>, 4> pb_list_ms;\n";
 static const char k_post[] =
     "};\n"
     "struct VO { float4 pos [[position]]; };\n"
@@ -48,13 +50,14 @@ static const char k_post[] =
     "  VO o; float2 p = float2(float((i << 1) & 2u), float(i & 2u));\n"
     "  o.pos = float4(p * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
     "fragment uint4 picture_fs(VO in [[stage_in]], device const uint *d [[buffer(0)]], device const uint *t [[buffer(1)]],\n"
-    "                          array<texture2d<uint>, 4> lists [[texture(1)]]) {\n"
-    "  PB b; b.pb_db = d; b.pb_tb = t; b.pb_list = lists;\n"
+    "                          array<texture2d<uint>, 4> lists [[texture(1)]], array<texture2d_ms<uint>, 4> lists_ms [[texture(5)]]) {\n"
+    "  PB b; b.pb_db = d; b.pb_tb = t; b.pb_list = lists; b.pb_list_ms = lists_ms;\n"
     "  if (b.pb_row_kept(uint(in.pos.y))) discard_fragment();\n"
     "  return uint4(b.pb_pixel(uint(in.pos.x), uint(in.pos.y))); }\n"
     "fragment float4 window_fs(VO in [[stage_in]], device const uint *d [[buffer(0)]], device const uint *t [[buffer(1)]],\n"
-    "                          texture2d<uint> pic [[texture(0)]], array<texture2d<uint>, 4> lists [[texture(1)]]) {\n"
-    "  PB b; b.pb_db = d; b.pb_tb = t; b.pb_img = pic; b.pb_list = lists;\n"
+    "                          texture2d<uint> pic [[texture(0)]], array<texture2d<uint>, 4> lists [[texture(1)]],\n"
+    "                          array<texture2d_ms<uint>, 4> lists_ms [[texture(5)]]) {\n"
+    "  PB b; b.pb_db = d; b.pb_tb = t; b.pb_img = pic; b.pb_list = lists; b.pb_list_ms = lists_ms;\n"
     "  uint c = b.pb_window(uint(in.pos.x), uint(in.pos.y));\n"
     "  return float4(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u), 255.0) / 255.0; }\n"
     /* a draw list's vertices and fill */
@@ -72,27 +75,47 @@ static const char k_post[] =
 static id<MTLLibrary> shared_lib;
 static id<MTLDevice> dev;
 static id<MTLCommandQueue> queue;
-static id<MTLRenderPipelineState> pipe_picture, pipe_window, pipe_list;
-static id<MTLTexture> list_tex[4], none_tex;
+static id<MTLRenderPipelineState> pipe_picture, pipe_window;
+static id<MTLRenderPipelineState> pipe_list[5];     /* by log2 of the samples */
+static id<MTLTexture> list_tex[4], none_tex, none_ms_tex;
+static uint32_t list_samples[4];                     /* each list's, as filled */
 static id<MTLBuffer> vert_buf;
 static id<MTLBuffer> store, descb;
 static id<MTLTexture> pic, offscreen;
 static dispatch_semaphore_t inflight;
 static int last_w, last_h;
 
+static int log2_of(uint32_t n) { return n >= 16 ? 4 : n >= 8 ? 3 : n >= 4 ? 2 : n >= 2 ? 1 : 0; }
+
+/* the most samples, up to n, this GPU fills an integer target with */
+static uint32_t samples_for(uint32_t n)
+{
+    uint32_t c;
+    for (c = 16; c > 1; c >>= 1)
+        if (c <= n && [dev supportsTextureSampleCount:c])
+            return c;
+    return 1;
+}
+
 static id<MTLRenderPipelineState> pipe_of(id<MTLLibrary> lib, NSString *fs, MTLPixelFormat f);
-static id<MTLRenderPipelineState> pipe_vs(id<MTLLibrary> lib, NSString *v, NSString *fs, MTLPixelFormat f)
+static id<MTLRenderPipelineState> pipe_fn(id<MTLFunction> v, id<MTLFunction> fs, MTLPixelFormat f, uint32_t samples)
 {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     NSError *err = nil;
     id<MTLRenderPipelineState> p;
-    d.vertexFunction = [lib newFunctionWithName:v];
-    d.fragmentFunction = [lib newFunctionWithName:fs];
+    d.vertexFunction = v;
+    d.fragmentFunction = fs;
     d.colorAttachments[0].pixelFormat = f;
+    d.rasterSampleCount = samples;
     p = [dev newRenderPipelineStateWithDescriptor:d error:&err];
     if (!p)
-        fprintf(stderr, "rr: metal pipeline %s: %s\n", [fs UTF8String], [[err description] UTF8String]);
+        fprintf(stderr, "rr: metal pipeline %s: %s\n", [[fs name] UTF8String], [[err description] UTF8String]);
     return p;
+}
+
+static id<MTLRenderPipelineState> pipe_vs(id<MTLLibrary> lib, NSString *v, NSString *fs, MTLPixelFormat f)
+{
+    return pipe_fn([lib newFunctionWithName:v], [lib newFunctionWithName:fs], f, 1);
 }
 
 static id<MTLRenderPipelineState> pipe_of(id<MTLLibrary> lib, NSString *fs, MTLPixelFormat f) { return pipe_vs(lib, @"vs", fs, f); }
@@ -116,8 +139,8 @@ int rr_open(void)
         pipe_picture = pipe_of(lib, @"picture_fs", MTLPixelFormatR32Uint);
         pipe_window = pipe_of(lib, @"window_fs", MTLPixelFormatBGRA8Unorm);
         shared_lib = lib;
-        pipe_list = pipe_vs(lib, @"list_vs", @"list_fs", MTLPixelFormatR32Uint);
-        if (!pipe_picture || !pipe_window || !pipe_list)
+        pipe_list[0] = pipe_vs(lib, @"list_vs", @"list_fs", MTLPixelFormatR32Uint);
+        if (!pipe_picture || !pipe_window || !pipe_list[0])
             return 0;
         inflight = dispatch_semaphore_create(1);
         ml = host_metal_layer();
@@ -163,15 +186,26 @@ static void apply_ops(const eng_packet *p)
     }
 }
 
-static id<MTLTexture> target_of(id<MTLTexture> t, MTLPixelFormat f, int w, int h, MTLTextureUsage u)
+/* a target of `samples` samples a pixel (several: the GPU's own memory) */
+static id<MTLTexture> target_ms(id<MTLTexture> t, MTLPixelFormat f, int w, int h, MTLTextureUsage u, uint32_t samples)
 {
     MTLTextureDescriptor *td;
-    if (t && (int)t.width == w && (int)t.height == h)
+    if (t && (int)t.width == w && (int)t.height == h && t.sampleCount == samples)
         return t;
     td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
     td.usage = u;
     td.storageMode = MTLStorageModeShared;
+    if (samples > 1) {
+        td.textureType = MTLTextureType2DMultisample;
+        td.sampleCount = samples;
+        td.storageMode = MTLStorageModePrivate;
+    }
     return [dev newTextureWithDescriptor:td];
+}
+
+static id<MTLTexture> target_of(id<MTLTexture> t, MTLPixelFormat f, int w, int h, MTLTextureUsage u)
+{
+    return target_ms(t, f, w, h, u, 1);
 }
 
 static void pass_load(id<MTLCommandBuffer> c, id<MTLTexture> to, id<MTLRenderPipelineState> p, id<MTLTexture> from, MTLLoadAction load)
@@ -189,8 +223,11 @@ static void pass_load(id<MTLCommandBuffer> c, id<MTLTexture> to, id<MTLRenderPip
         [e setFragmentTexture:from atIndex:0];
     {
         int k;
-        for (k = 0; k < 4; k++)
-            [e setFragmentTexture:list_tex[k] ? list_tex[k] : none_tex atIndex:(NSUInteger)(1 + k)];
+        for (k = 0; k < 4; k++) {
+            int ms = list_tex[k] && list_samples[k] > 1;
+            [e setFragmentTexture:list_tex[k] && !ms ? list_tex[k] : none_tex atIndex:(NSUInteger)(1 + k)];
+            [e setFragmentTexture:ms ? list_tex[k] : none_ms_tex atIndex:(NSUInteger)(5 + k)];
+        }
     }
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e endEncoding];
@@ -204,7 +241,24 @@ static void pass(id<MTLCommandBuffer> c, id<MTLTexture> to, id<MTLRenderPipeline
 /* the draw lists, each into its own target */
 typedef struct { float w, h; uint32_t base, tw, th, p0, p1, p2; float inputs[8]; } LU;
 #define MAX_SHADERS 256
-static id<MTLRenderPipelineState> game_pipes[MAX_SHADERS];
+static id<MTLFunction> game_fns[MAX_SHADERS];
+static id<MTLRenderPipelineState> game_pipes[MAX_SHADERS][5];
+
+/* the pipeline that fills a list of `samples` samples: the game's shader's, or the engine's */
+static id<MTLRenderPipelineState> list_pipe(uint32_t shader, uint32_t samples)
+{
+    int s = log2_of(samples);
+    if (shader && shader < MAX_SHADERS && game_fns[shader]) {
+        if (!game_pipes[shader][s])
+            game_pipes[shader][s] = pipe_fn([shared_lib newFunctionWithName:@"list_vs"], game_fns[shader], MTLPixelFormatR32Uint, samples);
+        if (game_pipes[shader][s])
+            return game_pipes[shader][s];
+    }
+    if (!pipe_list[s])
+        pipe_list[s] = pipe_fn([shared_lib newFunctionWithName:@"list_vs"], [shared_lib newFunctionWithName:@"list_fs"],
+                               MTLPixelFormatR32Uint, samples);
+    return pipe_list[s];
+}
 
 static void draw_lists(id<MTLCommandBuffer> c, const eng_packet *p)
 {
@@ -212,6 +266,8 @@ static void draw_lists(id<MTLCommandBuffer> c, const eng_packet *p)
     size_t bytes = 0, off = 0;
     if (!none_tex)
         none_tex = target_of(nil, MTLPixelFormatR32Uint, 1, 1, MTLTextureUsageShaderRead);
+    if (!none_ms_tex)
+        none_ms_tex = target_ms(nil, MTLPixelFormatR32Uint, 1, 1, MTLTextureUsageShaderRead, 4);
     for (k = 0; k < 4; k++)
         bytes += p->lists[k].nverts * ENG_DRAW_WORDS * 4;
     if (bytes && (!vert_buf || [vert_buf length] < bytes))
@@ -225,14 +281,15 @@ static void draw_lists(id<MTLCommandBuffer> c, const eng_packet *p)
             list_tex[k] = nil;
             continue;
         }
-        list_tex[k] = target_of(list_tex[k], MTLPixelFormatR32Uint, (int)l->w, (int)l->h, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+        list_tex[k] = target_ms(list_tex[k], MTLPixelFormatR32Uint, (int)l->w, (int)l->h,
+                                MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead, list_samples[k]);
         rp = [MTLRenderPassDescriptor renderPassDescriptor];
         rp.colorAttachments[0].texture = list_tex[k];
         rp.colorAttachments[0].loadAction = MTLLoadActionClear;
         rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         e = [c renderCommandEncoderWithDescriptor:rp];
-        [e setRenderPipelineState:pipe_list];
+        [e setRenderPipelineState:list_pipe(0, list_samples[k])];
         if (l->nverts) {
             memcpy((char *)[vert_buf contents] + off, p->list_data + l->verts, l->nverts * ENG_DRAW_WORDS * 4);
             [e setVertexBuffer:vert_buf offset:off atIndex:0];
@@ -242,7 +299,7 @@ static void draw_lists(id<MTLCommandBuffer> c, const eng_packet *p)
             const uint32_t *cm = p->list_data + l->cmds + i * ENG_CMD_WORDS;
             LU u = { (float)l->w, (float)l->h, cm[3], cm[4], cm[5] };
             memcpy(u.inputs, cm + 7, 32);
-            [e setRenderPipelineState:cm[6] && game_pipes[cm[6]] ? game_pipes[cm[6]] : pipe_list];
+            [e setRenderPipelineState:list_pipe(cm[6], list_samples[k])];
             [e setVertexBytes:&u length:sizeof u atIndex:1];
             [e setFragmentBytes:&u length:sizeof u atIndex:1];
             [e drawPrimitives:cm[2] ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle vertexStart:cm[0] vertexCount:cm[1]];
@@ -272,14 +329,9 @@ int rr_draw(eng_packet *p)
                 NSString *src = [[NSString alloc] initWithBytes:p->shaders[k].code length:p->shaders[k].size encoding:NSUTF8StringEncoding];
                 id<MTLLibrary> l = src ? [dev newLibraryWithSource:src options:nil error:&err] : nil;
                 id<MTLFunction> fn = l ? [l newFunctionWithName:@"main0"] : nil;
-                if (fn) {
-                    MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
-                    d.vertexFunction = [shared_lib newFunctionWithName:@"list_vs"];
-                    d.fragmentFunction = fn;
-                    d.colorAttachments[0].pixelFormat = MTLPixelFormatR32Uint;
-                    game_pipes[p->shaders[k].id] = [dev newRenderPipelineStateWithDescriptor:d error:&err];
-                }
-                if (!game_pipes[p->shaders[k].id])
+                if (fn && p->shaders[k].id < MAX_SHADERS)
+                    game_fns[p->shaders[k].id] = fn;
+                else
                     fprintf(stderr, "rr: metal game shader: %s\n", [[err description] UTF8String]);
             }
         }
@@ -294,6 +346,15 @@ int rr_draw(eng_packet *p)
             ml = nil;
         }
         rr_window_words(p->desc, ow, oh);
+        {
+            /* each list's samples, as many as asked that this GPU can fill */
+            int k;
+            p->desc[PB_LSAMPLES] = 0;
+            for (k = 0; k < 4; k++) {
+                list_samples[k] = p->lists[k].w ? samples_for(p->lists[k].samples) : 1;
+                p->desc[PB_LSAMPLES] |= list_samples[k] << (8 * k);
+            }
+        }
         if (!descb || [descb length] < bytes)
             descb = [dev newBufferWithLength:bytes * 2 options:MTLResourceStorageModeShared];
         memcpy([descb contents], p->desc, bytes);

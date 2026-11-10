@@ -24,3 +24,14 @@ uint pb_list_read(uint n, uint x, uint y) {
   if (n == 2u) return pb_l2.Load(p);
   return pb_l3.Load(p); }
 #define L_(n, x, y) pb_list_read(n, x, y)
+Texture2DMS<uint> pb_m0 : register(t7);
+Texture2DMS<uint> pb_m1 : register(t8);
+Texture2DMS<uint> pb_m2 : register(t9);
+Texture2DMS<uint> pb_m3 : register(t10);
+uint pb_list_ms(uint n, uint x, uint y, uint s) {
+  int2 p = int2(int(x), int(y));
+  if (n == 0u) return pb_m0.Load(p, int(s));
+  if (n == 1u) return pb_m1.Load(p, int(s));
+  if (n == 2u) return pb_m2.Load(p, int(s));
+  return pb_m3.Load(p, int(s)); }
+#define LM_(n, x, y, s) pb_list_ms(n, x, y, s)
