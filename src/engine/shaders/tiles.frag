@@ -6,6 +6,7 @@
 layout(location = 0) in vec2 v_t;
 layout(location = 1) flat in uvec2 v_e;
 layout(location = 2) in vec2 v_p;
+layout(location = 3) flat in ivec2 v_o;
 layout(location = 0) out vec4 o;
 #include "tiles_colour.glsl"
 
@@ -13,18 +14,29 @@ layout(location = 0) out vec4 o;
 void main()
 {
     vec2 hh = nshvc_half(v_p);    /* before anything discards */
-    int s = 8 * u.i[2].x, cols = u.i[2].y, prow = row_palette(v_p);
+    int s = 8 * u.i[2].x, prow = row_palette(v_p);
     ivec2 k;
     vec2 w;
     vec4 acc = vec4(0.0);
     sharp(v_t, k, w);
+    if ((w.x == 0.0 || w.x == 1.0) && (w.y == 0.0 || w.y == 1.0)) {
+        /* one texel carries the whole pixel, exactly: the loop below would add it with the weight 1.0
+           and divide by 1.0, so it is the colour itself */
+        ivec2 q = clamp(k - 1 + ivec2(int(w.x), int(w.y)), ivec2(0), ivec2(s - 1));
+        uint c = texelFetch(ti0, v_o + q, 0).r;
+        if (c == 0u)
+            discard;
+        gl_SampleMask[0] = cover_mask(1.0);
+        o = nshvc_maths(colour(c, v_e.y, prow), u.f[3].x, v_p, hh);
+        return;
+    }
     for (int j = 0; j < 2; j++)
         for (int i = 0; i < 2; i++) {
             float wt = share(w, i, j);
             if (wt <= 0.0)
                 continue;
             ivec2 q = clamp(k - 1 + ivec2(i, j), ivec2(0), ivec2(s - 1));
-            uint c = tile_texel(v_e.x, q.x, q.y, s, cols);
+            uint c = texelFetch(ti0, v_o + q, 0).r;
             if (c != 0u)
                 acc += vec4(colour(c, v_e.y, prow) * wt, wt);
         }

@@ -1403,6 +1403,17 @@ static void emit_spr(const Ctx *c, const eng_state *s, int x0, int y0, int x1, i
         gather(s, x0, y0, x1, y1);
 }
 
+/* log2 of n when it is a power of two, else -1 */
+static int32_t log2_of(int32_t n)
+{
+    int32_t l = 0;
+    if (n <= 0 || (n & (n - 1)))
+        return -1;
+    while ((1 << l) < n)
+        l++;
+    return l;
+}
+
 /* the sprites, once for each group of strips with their settings */
 static void spr_group(const Ctx *c, const eng_state *s, const float *box)
 {
@@ -1423,6 +1434,12 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         u->i[0][0] = (int32_t)(pieces_at + runs[k].first * 8);
         u->i[0][1] = (int32_t)t->cols;
         u->i[0][2] = (int32_t)t->tpp;
+        if (t->cols) {
+            int32_t side = 8 * (int32_t)t->tpp, ls = log2_of(side), lc = log2_of((int32_t)t->cols);
+            u->i[0][3] = (int32_t)((t->count + t->cols - 1) / t->cols) * side;    /* the atlas's height, as it was made */
+            u->i[1][0] = ls;
+            u->i[1][1] = lc;
+        }
         d->tex[0] = (int32_t)P->palette_tex;
         d->tex[3] = (int32_t)t->tex;
         d->instances = runs[k].count;

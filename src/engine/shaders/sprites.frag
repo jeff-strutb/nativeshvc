@@ -8,7 +8,8 @@ layout(location = 0) out vec4 o;
 void main()
 {
     vec2 hh = nshvc_half(v_p);    /* before anything discards */
-    int tpp = u.i[0].z, s = 8 * tpp, cols = u.i[0].y, prow = row_palette(v_p);
+    int tpp = u.i[0].z, s = 8 * tpp, cols = u.i[0].y, ah = u.i[0].w, ls = u.i[1].x, lc = u.i[1].y, prow = row_palette(v_p);
+    bool pow2 = ls >= 0 && lc >= 0;    /* texels a side and tiles a row both powers of two: shifts and masks for the divisions */
     uint n = v_s.x, tile = n & 0xFFFFu, pal = (n >> 16) & 7u;
     ivec2 last = ivec2(int(v_s.y & 0xFFFFu), int(v_s.y >> 16)) * s - 1;
     ivec2 k;
@@ -21,9 +22,12 @@ void main()
             if (wt <= 0.0)
                 continue;
             ivec2 q = clamp(k - 1 + ivec2(i, j), ivec2(0), last);
-            uint col = uint(q.x / s), row = uint(q.y / s);
+            uint col = pow2 ? uint(q.x >> ls) : uint(q.x / s), row = pow2 ? uint(q.y >> ls) : uint(q.y / s);
             uint t = (tile & 0xFF00u) | (((tile & 0xF0u) + row * 16u) & 0xF0u) | (((tile & 0xFFu) + col) & 0x0Fu);
-            uint c = tile_texel(t, q.x % s, q.y % s, s, cols);
+            int tx = pow2 ? int(t) & (cols - 1) : int(t) % cols, ty = pow2 ? int(t) >> lc : int(t) / cols;
+            int px = pow2 ? q.x & (s - 1) : q.x % s, py = pow2 ? q.y & (s - 1) : q.y % s;
+            /* a tile past the set's reads 0, as tile_texel's, the atlas's height from the uniform */
+            uint c = ty * s >= ah ? 0u : texelFetch(ti0, ivec2(tx * s + px, ty * s + py), 0).r;
             if (c != 0u)
                 acc += vec4(palette(128u + pal * 16u + (c & 15u), prow) * wt, wt);
         }

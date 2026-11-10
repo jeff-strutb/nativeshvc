@@ -5,7 +5,8 @@
    top left (x, y), the sprite's size in tiles (w | h << 16), and tile |
    palette << 16 | priority << 19 | hflip << 21 | vflip << 22.
    f[2]: the rectangle drawn; f[3]: alpha written by palettes 4-7, by 0-3; f[4]: depth at priorities 0-3
-   i[0]: the pieces' first word, the atlas's tiles a row, texels a pixel; the palette's version is the row's
+   i[0]: the pieces' first word, the atlas's tiles a row, texels a pixel, the atlas's height in texels;
+   i[1]: log2 of the texels a side and of the tiles a row, each -1 when not a power of two; the palette's version is the row's
    ti0: the tiles */
 #include "common.glsl"
 layout(location = 0) out vec2 v_t;

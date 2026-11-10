@@ -7,14 +7,27 @@
 API 6.0. Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
-- **6.0's renderer: compiled, not run.** It compiles for macOS, iOS, Windows (Vulkan and D3D12), Android and headless, with
-  the example games and the checks; no picture of it has been looked at, timed or checked on any platform. Every result below
-  about pictures, scenes or speed was of the renderer it replaced, and says nothing of this one.
+- **6.0's renderer, what has been run.** On Metal only, at the console's own size, 101 feature scenes (`tests/scenes`) are
+  drawn through the engine and compared byte for byte with the same scenes run in bsnes: 96 match, 3 are KNOWN (the Mode 7
+  scenes that are rotated or scaled, where the engine's anti-aliased picture is meant to differ), and 2 fail and are open
+  (Mode 7 with settings that change between lines). `m7check`'s reference proof (the console's one-point lookup against
+  bsnes) matches on every pixel of the three KNOWN scenes; its area figures put the engine a mean of 18 to 45 a colour
+  channel from the area mean of the console's lookup on random texels, and no tolerance is set. `tests/scenes/cost.c`,
+  Metal with the GPU kept busy at 5760 x 3240: four blank tile layers cost 0.31 ms a picture against the backdrop's 0.23,
+  and four solid layers 1.25 ms against one's 1.21; each mixed layer adds about 0.8 ms.
+- **Compiled, never run:** the Vulkan (Windows, Linux, Android) and Direct3D 12 backends, and iOS. No picture of them has
+  been looked at, timed or checked. The turned display (a phone held sideways) has not run on a device.
+  The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
+- **Not checked at all:** the picture's speed on any platform but that Metal run; hires, interlace and the turned display on
+  Vulkan and D3D12. Results below about speed or about whole games were of the renderer 6.0 replaced and say nothing of this one.
 
 - **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
-- **Feature scenes:** removed in 6.0. They held each picture feature to bsnes byte for byte; a native renderer draws at the
-  window's resolution, and an emulator's picture is not its standard.
+- **Feature scenes:** `tests/scenes/scenes.py` makes each scene twice from one description, a test ROM run in bsnes and
+  a scene file the engine plays headless at the console's size; they must match byte for byte. This is for the console's
+  rules (what a layer, a blend, a window or a line change produces), not for the window's resolution, where the engine
+  draws natively and no emulator exists to compare with. A scene that differs by design is listed KNOWN and reported so,
+  never as passing.
 - **Feature game:** passes on Metal, Vulkan, Linux, D3D12 headless, the Windows host on Vulkan under Wine, the Android emulator and the iOS Simulator.
 - **A full game converted to the API** (in `examples/`) with no imitation hardware left. See the conversion guide. Attract frames that line up match the ROM in bsnes byte for byte; dungeons, the world map, game over, boss scenes and the credits match its previous renderer apart from the timing of its 3D polygons. One scene, save and quit, ended differently from that reference, in the game's logic, and was not explained. A run gives the same picture on macOS, Linux, D3D12 headless and the Windows host under Wine, and in real time on macOS, Linux, Android and iOS.
 - **Sound:** the voices match the old mixer, itself held to bsnes, on 1.28 million samples with echo writes switching, and on 1.9 million before that. Its music is not aligned with the ROM's, so it is compared only in loudness.
@@ -111,7 +124,7 @@ How a decompiled game becomes a native game on the engine:
 3. **Convert sound and chips:** the music code drives voices, and the chip code feeds the drawing pipeline.
 4. **Clean up:** the register style goes from the game's internal code.
 5. **Check, after every area:** the checking setup compares what the game plays with the original running in bsnes; what
-   it shows is looked at, not held to an emulator's picture.
+   it shows is looked at, and the console's rules for a picture are held to bsnes by the feature scenes.
 
 The first game, once converted, is the worked example of every kind of change.
 
@@ -279,7 +292,9 @@ deleted above.
 **Build:**
 
 - The feature check (`tests/scenes/feature.c`), against values worked out by hand.
-- A converted game's sound, against bsnes running its ROM (`tools/nshvc-check`). Pictures are not held to an emulator's.
+- The feature scenes (`tests/scenes/scenes.py`), the engine's picture of each console rule at the console's size against
+  bsnes running the same scene, byte for byte; `m7check` and `cost` measure Mode 7's anti-aliasing and the drawing's cost.
+- A converted game's sound, against bsnes running its ROM (`tools/nshvc-check`). A game's pictures are looked at, not held to an emulator's.
 
 Each check is shown able to fail first.
 

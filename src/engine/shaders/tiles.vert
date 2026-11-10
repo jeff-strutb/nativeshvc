@@ -14,11 +14,13 @@
          word where the set's classes start (two bits a tile, 16 a word: 0 blank, 1 solid, 2 mixed),
          and the set's tile count; an instance whose tile is another class is put nowhere, a blank
          tile (or one past the set's count) is in neither draw
+   v_o: the tile's texels' top left in the atlas (ti0), for the fragment stages
    ti0: the tiles; ti1: the map; ti2: the offset-per-tile map */
 #include "common.glsl"
 layout(location = 0) out vec2 v_t;
 layout(location = 1) flat out uvec2 v_e;
 layout(location = 2) out vec2 v_p;
+layout(location = 3) flat out ivec2 v_o;      /* the tile's texels' top left in the atlas */
 void main()
 {
     int cols = u.i[0].z;
@@ -99,6 +101,10 @@ void main()
             gl_Position = NOWHERE;
             return;
         }
+        /* a drawn tile is in the set (the class of one past its count is blank), so its place in the atlas
+           is inside it: worked out once here, not for each texel of each pixel */
+        int ti = int(tile), ts = 8 * u.i[2].x, tc = u.i[2].y;
+        v_o = ivec2(ti % tc * ts, ti / tc * ts);
     }
     gl_Position = clip_at(p, ((e >> 19) & 1u) != 0u ? u.f[3].z : u.f[3].y);
 }

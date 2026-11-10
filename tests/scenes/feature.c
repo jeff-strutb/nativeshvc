@@ -1,6 +1,6 @@
 /* feature.c: draw lists, the exact fill, game shaders, images, overlays,
  * saves, input replay, jobs and pause, each checked against values worked out
- * by hand. Headless, the picture is the screen's size, a pixel for a pixel.
+ * by hand (the console's pictures are checked in scenes.py, against bsnes). Headless, the picture is the screen's size, a pixel for a pixel.
  * Prints FAIL and exits 1 on any difference. Run with --headless --updates 4 --input FILE and PORT_RESDIR set
  * to the folder holding shaders/tint.<backend>, FILE holding the two lines
  *   1 key=5A controller=0,1

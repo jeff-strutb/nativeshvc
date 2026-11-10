@@ -6,6 +6,9 @@ for bsnes (through tests/oracle) and a scene file for the engine's API
   scenes.py --oracle ORACLE --core CORE --player PLAYER --out DIR [--only A,B]
   scenes.py ... --prove         one scene changed on the engine's side only: must fail
 
+A scene listed in KNOWN differs by design and is reported so, never as passing. 101 scenes: on Metal, 96 match, 3 are KNOWN
+and 2 (Mode 7 settings that change between lines) fail and are open; no other backend has run them.
+
 The engine plays each scene headless with the picture at the console's own
 size, a window pixel for a picture pixel (RR_SIZE the oracle's shot's size,
 the screen filling the window), so nothing is filtered or mixed.
@@ -369,6 +372,11 @@ class Scene:
         self.t.w(0x212D, self.ts)
         self.t.show(self.screen | (0x80 if self.blank else 0))
         if self.hdma_mask:
+            # HDMA enabled in the middle of a frame starts on channel state the frame's start never loaded
+            # (the address and line count the console powers on with): its first lines send whatever bytes
+            # that points at to the channels' registers. Enabled in a vertical blank, it starts at the next
+            # frame's first line, set up as a table says.
+            self.t.wait_frames(1)
             self.t.w(0x420C, self.hdma_mask)
         if self.vblank:
             self.t.wait_frames(1)               # the start of a vertical blank: the writes go where the address says

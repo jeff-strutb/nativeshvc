@@ -83,5 +83,10 @@ memory. By default there are none.
 
 Build with `-DNSHVC_TESTS=ON`. `tests/scenes/feature.c` checks draw lists, shaders, images, overlays, saves, input replay
 and jobs against values worked out by hand. `tests/oracle` runs a ROM in bsnes for `tools/nshvc-check`, which compares a
-converted game's sound with the original's. Pictures are not compared with an emulator's: the engine draws natively at the
-window's resolution, and an emulator is not its standard.
+converted game's sound with the original's, and for `tests/scenes/scenes.py`, which makes each picture feature as a test ROM
+and as a scene for the engine and compares the two byte for byte at the console's size. `m7check` measures Mode 7's
+anti-aliasing against the console's lookup, and `cost` times the drawing case by case.
+
+What has been run: on Metal, 101 scenes, of which 96 match, 3 (rotated or scaled Mode 7) are listed as differing by design,
+and 2 (Mode 7 with settings that change between lines) fail and are open. Vulkan and Direct3D 12 compile and have not been
+run. A game's pictures at the window's resolution are not compared with an emulator's.
