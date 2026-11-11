@@ -25,45 +25,6 @@ vec2 row_step(vec2 p)
     return dot(up, up) <= dot(down, down) ? up : down;
 }
 
-/* where a pixel spans more than a texel: the plane in colour at plane point t,
-   filtered by the GPU along the footprint (dx, dy, in texels), one read of
-   it in this row's palette. Outside the plane (i[6].y): 0 it repeats, read
-   repeating (tc1); 1 it is see-through, read as transparent outside (tc2);
-   2 tile 0 repeats there: tile 0 repeated everywhere (tc1, 8 x 8), plus the
-   plane, less tile 0 repeated across the plane (layer i[5].z of ta2), both
-   transparent outside, so every footprint mixes the plane and tile 0 by how
-   much of it each has. Past the full-size planes: the base palette's (tc1,
-   tc2, ta2), plus this palette's at a quarter's side (layer i[7].y of ta0 or
-   ta1, as the plane is read), less the base's at that size (layer i[6].x - 1);
-   tile 0 this palette's (ta0's layer i[7].y), and the plane of tile 0
-   repeated corrected the same way (layers i[5].x and i[6].x + 2 of ta1) */
-vec4 filtered(vec2 t, vec2 dx, vec2 dy)
-{
-    int outside = u.i[6].y, over = u.i[7].y, kind = u.i[6].x;
-    vec2 p = t / 1024.0, gx = dx / 1024.0, gy = dy / 1024.0;
-    vec4 c;
-    if (outside == 0) {
-        c = textureGrad(tc1, p, gx, gy);
-        if (over >= 0)
-            c.rgb += textureGrad(ta0, vec3(p, float(over)), gx, gy).rgb - textureGrad(ta0, vec3(p, float(kind - 1)), gx, gy).rgb;
-    } else {
-        c = textureGrad(tc2, p, gx, gy);
-        if (over >= 0)
-            c.rgb += textureGrad(ta1, vec3(p, float(over)), gx, gy).rgb - textureGrad(ta1, vec3(p, float(kind - 1)), gx, gy).rgb;
-        if (outside == 2) {
-            vec2 q = t / 8.0, qx = dx / 8.0, qy = dy / 8.0;
-            vec4 t0 = over >= 0 ? textureGrad(ta0, vec3(q, float(over)), qx, qy) : textureGrad(tc1, q, qx, qy);
-            vec4 r = textureGrad(ta2, vec3(p, float(u.i[5].z)), gx, gy);
-            if (over >= 0 && u.i[5].x >= 0)
-                r.rgb += textureGrad(ta1, vec3(p, float(u.i[5].x)), gx, gy).rgb - textureGrad(ta1, vec3(p, float(kind + 2)), gx, gy).rgb;
-            c += t0 - r;
-        }
-    }
-    c.a = clamp(c.a, 0.0, 1.0);
-    c.rgb = clamp(c.rgb, vec3(0.0), vec3(c.a));
-    return c;
-}
-
 /* the plane's texel `cell` seen by weight wt of the pixel, added to acc as the layer draws it (premultiplied:
    rgb * wt, wt): nothing where see-through, as the kind (i[6].x: 1 BG1, 2 and 3 BG2's priorities) says */
 void add_texel(inout vec4 acc, ivec2 cell, float wt)
@@ -167,6 +128,168 @@ vec4 magnified(vec2 t, vec2 dx, vec2 dy)
         }
     }
     return total > 0.0 ? acc / total : acc;
+}
+
+/* Where a pixel's footprint is longer than a texel, the plane in colour is read by plain arithmetic, the same
+   on every GPU: no hardware filter, no hardware choice of level. The plane's levels are each the box mean of the
+   one below (premultiplied, 8 bits). The level k is the smallest at which no edge of the footprint is longer than
+   a texel (a texel of level k is 2^k of the plane's), chosen from the exponent of the longest edge by integer
+   operations (a footprint up to 1/64 over a texel still counts as one, so the choice does not flip on the noise of a
+   derivative at a power of two); then the footprint, a parallelogram of centre t and edges dx and dy, is
+   cut to the texels of level k it touches (at most 4 a side) exactly as in `magnified`, and each texel,
+   fetched from that level, counts by its share of the area. The result is the area mean over the footprint
+   except that a level-k texel the footprint covers in part is read as its whole mean: the error is how far
+   the plane varies inside that texel, at most one footprint (a level-k texel is at most twice the footprint's
+   longer edge), and nothing where the footprint covers whole texels or the plane is flat. */
+struct Cover { ivec2 c[16]; float w[16]; int n; int k; };
+
+/* the cover of the footprint (centre t, edges dx and dy, in the texels of a texture of side `size`, itself
+   a power of two) at its level k */
+void cover(vec2 t, vec2 dx, vec2 dy, int size, out Cover cv)
+{
+    float l = max(length(dx), length(dy)) * (64.0 / 65.0);
+    int k = 0, top = findMSB(size);
+    if (l > 1.0) {
+        int bits = floatBitsToInt(l);
+        k = ((bits >> 23) & 255) - 127 + ((bits & 0x7FFFFF) != 0 ? 1 : 0);
+    }
+    k = min(k, top);
+    float sc = 1.0 / float(1 << k);                 /* exact: a power of two */
+    vec2 c0 = t * sc, ex = dx * sc, ey = dy * sc;
+    vec2 hx = 0.5 * ex, hy = 0.5 * ey, e = abs(hx) + abs(hy);
+    ivec2 i0 = ivec2(floor(c0 - e)), i1 = ivec2(floor(c0 + e));
+    float area = abs(ex.x * ey.y - ex.y * ey.x);
+    cv.k = k;
+    cv.n = 0;
+    if (i0 == i1 || area < 1e-9) {
+        cv.c[0] = ivec2(floor(c0));
+        cv.w[0] = 1.0;
+        cv.n = 1;
+        return;
+    }
+    vec2 c = c0 - vec2(i0);                         /* from the first texel: a few units, as in magnified */
+    vec2 poly[8];
+    poly[0] = c - hx - hy;
+    poly[1] = c + hx - hy;
+    poly[2] = c + hx + hy;
+    poly[3] = c - hx + hy;
+    ivec2 n = min(i1 - i0 + 1, ivec2(4));
+    float inv = 1.0 / area;
+    for (int ci = 0; ci < n.x; ci++) {
+        vec2 q[8];
+        for (int j = 0; j < 4; j++)
+            q[j] = poly[j];
+        float xa = float(ci);
+        int nq = clip_side(q, 4, 0, xa, 1.0);
+        nq = clip_side(q, nq, 0, xa + 1.0, -1.0);
+        if (nq < 3)
+            continue;
+        for (int cj = 0; cj < n.y; cj++) {
+            vec2 r[8];
+            for (int j = 0; j < nq; j++)
+                r[j] = q[j];
+            float ya = float(cj);
+            int nr = clip_side(r, nq, 1, ya, 1.0);
+            nr = clip_side(r, nr, 1, ya + 1.0, -1.0);
+            if (nr < 3)
+                continue;
+            float wt = polygon_area(r, nr);
+            if (wt > 0.0 && cv.n < 16) {
+                cv.c[cv.n] = i0 + ivec2(ci, cj);
+                cv.w[cv.n] = wt * inv;
+                cv.n++;
+            }
+        }
+    }
+}
+
+/* the texels of a cover from a 2D texture (rep: repeating, else transparent outside it) or a layer of an array,
+   each at the cover's level */
+vec4 gather(sampler2D tex, Cover cv, bool rep)
+{
+    vec4 acc = vec4(0.0);
+    ivec2 sz = textureSize(tex, cv.k);
+    for (int i = 0; i < cv.n; i++) {
+        ivec2 c = cv.c[i];
+        if (rep)
+            c &= sz - 1;
+        else if (c.x < 0 || c.y < 0 || c.x >= sz.x || c.y >= sz.y)
+            continue;
+        acc += texelFetch(tex, c, cv.k) * cv.w[i];
+    }
+    return acc;
+}
+
+vec4 gather(sampler2DArray tex, int layer, Cover cv, bool rep)
+{
+    vec4 acc = vec4(0.0);
+    ivec2 sz = textureSize(tex, cv.k).xy;
+    for (int i = 0; i < cv.n; i++) {
+        ivec2 c = cv.c[i];
+        if (rep)
+            c &= sz - 1;
+        else if (c.x < 0 || c.y < 0 || c.x >= sz.x || c.y >= sz.y)
+            continue;
+        acc += texelFetch(tex, ivec3(c, layer), cv.k) * cv.w[i];
+    }
+    return acc;
+}
+
+/* the plane in colour over the footprint (centre t, edges dx, dy in plane texels), one read of it in this row's
+   palette. Outside the plane (i[6].y): 0 it repeats, read repeating (tc1); 1 it is see-through, read as
+   transparent outside (tc2); 2 tile 0 repeats there: tile 0 repeated everywhere (tc1, 8 x 8), plus the plane, less
+   tile 0 repeated across the plane (layer i[5].z of ta2), both transparent outside, so every footprint mixes the
+   plane and tile 0 by how much of it each has. Past the full-size planes: the base palette's (tc1, tc2, ta2), plus
+   this palette's at a quarter's side (layer i[7].y of ta0 or ta1, as the plane is read), less the base's at that
+   size (layer i[6].x - 1); tile 0 this palette's (ta0's layer i[7].y), and the plane of tile 0 repeated corrected
+   the same way (layers i[5].x and i[6].x + 2 of ta1). Each texture is read at its own level for its own texels:
+   the footprint in a quarter-size plane's texels is a quarter as long */
+vec4 filtered(vec2 t, vec2 dx, vec2 dy)
+{
+    int outside = u.i[6].y, over = u.i[7].y, kind = u.i[6].x;
+    vec4 c;
+    Cover cv;
+    if (outside == 0) {
+        cover(t, dx, dy, textureSize(tc1, 0).x, cv);
+        c = gather(tc1, cv, true);
+        if (over >= 0) {
+            int sz = textureSize(ta0, 0).x;
+            float sc = float(sz) / 1024.0;
+            cover(t * sc, dx * sc, dy * sc, sz, cv);
+            c.rgb += gather(ta0, over, cv, true).rgb - gather(ta0, kind - 1, cv, true).rgb;
+        }
+    } else {
+        cover(t, dx, dy, textureSize(tc2, 0).x, cv);
+        c = gather(tc2, cv, false);
+        if (over >= 0) {
+            int sz = textureSize(ta1, 0).x;
+            float sc = float(sz) / 1024.0;
+            cover(t * sc, dx * sc, dy * sc, sz, cv);
+            c.rgb += gather(ta1, over, cv, false).rgb - gather(ta1, kind - 1, cv, false).rgb;
+        }
+        if (outside == 2) {
+            vec4 t0, r;
+            if (over >= 0) {
+                cover(t, dx, dy, textureSize(ta0, 0).x, cv);
+                t0 = gather(ta0, over, cv, true);
+            } else {
+                cover(t, dx, dy, textureSize(tc1, 0).x, cv);
+                t0 = gather(tc1, cv, true);
+            }
+            cover(t, dx, dy, textureSize(ta2, 0).x, cv);
+            r = gather(ta2, u.i[5].z, cv, false);
+            if (over >= 0 && u.i[5].x >= 0) {
+                int sz = textureSize(ta1, 0).x;
+                float sc = float(sz) / 1024.0;
+                cover(t * sc, dx * sc, dy * sc, sz, cv);
+                r.rgb += gather(ta1, u.i[5].x, cv, false).rgb - gather(ta1, kind + 2, cv, false).rgb;
+            }
+            c += t0 - r;
+        }
+    }
+    c.a = clamp(c.a, 0.0, 1.0);
+    c.rgb = clamp(c.rgb, vec3(0.0), vec3(c.a));
+    return c;
 }
 
 void main()

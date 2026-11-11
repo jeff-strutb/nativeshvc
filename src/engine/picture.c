@@ -47,7 +47,7 @@ static nshvc_sprite *sprites;
 static uint32_t nsprites, sprite_first;
 static size_t cap_sprites;
 static uint32_t palette[256];       /* kept between pictures: 15-bit BGR, or ENG_RGB | 0xRRGGBB */
-static int show_main = 1, show_sub;
+static int show_main = 1, show_sub, sprite_interlace;
 static eng_overlay overlays[NSHVC_OVERLAYS];   /* kept between pictures */
 static int last_screen_w = 256, last_screen_h = 224;
 
@@ -395,6 +395,12 @@ void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen)
         show_main = main_screen != 0;
         show_sub = sub_screen != 0;
     }
+}
+
+void nshvc_sprites_interlace(uint8_t on)
+{
+    if (IN_DRAW("nshvc_sprites_interlace"))
+        sprite_interlace = on != 0;
 }
 
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first)
@@ -891,6 +897,7 @@ static void build(rr_frame *f)
     p.sprites = sprites;
     p.nsprites = nsprites;
     p.sprite_first = sprite_first;
+    p.obj_interlace = sprite_interlace;
     p.overlays = overlays;
 
     f->width = w;
@@ -937,6 +944,7 @@ void eng_picture_begin(void)
     nsprites = 0;
     show_main = 1;                      /* until set, main only: nothing carries over */
     show_sub = 0;
+    sprite_interlace = 0;
     nchanges = 0;
 }
 

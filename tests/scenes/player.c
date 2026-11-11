@@ -192,6 +192,8 @@ static void draw(float between)
             s->tiles = tiles[v[4]];
             s->tile = (uint16_t)v[5];
             s->palette = (uint8_t)v[6]; s->priority = (uint8_t)v[7]; s->hflip = (uint8_t)v[8]; s->vflip = (uint8_t)v[9];
+        } else if (!strcmp(cmd, "spriteinterlace")) {
+            nshvc_sprites_interlace((uint8_t)v[0]);
         } else if (!strcmp(cmd, "spritefirst")) {
             first = (uint32_t)v[0];
         } else if (!strcmp(cmd, "spriteshow")) {

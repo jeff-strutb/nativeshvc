@@ -38,7 +38,8 @@
  * window pixel's area.
  *
  * What it does not imitate, on purpose: the engine's own filter. The engine reads the plane in
- * colour through the GPU's anisotropic filter along each pixel's footprint, from a plane with
+ * colour at the level whose texels are no longer than each pixel's footprint, the texels of it
+ * under the footprint counted by their share of its area (no GPU filter), from a plane with
  * smaller levels each the box mean of the level before, in the palette most rows use (others
  * kept at a quarter's side as a difference), the footprint's down-step estimated from the rows'
  * own matrices; where a pixel's footprint is no more than a texel long it takes the exact area

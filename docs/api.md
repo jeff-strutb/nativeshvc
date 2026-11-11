@@ -1,4 +1,4 @@
-# The native engine's API, version 6.0
+# The native engine's API, version 6.1
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -86,8 +86,8 @@ natively on the GPU, at the window's own resolution, with nothing emulated and n
 | Interlace | The picture keeps the other field's half-rows from the picture before; only an interlaced picture is drawn through a kept picture, any other is one pass into the window |
 
 Texels are drawn sharp: a pixel a texel covers takes its colour whole, and only the pixel an edge between texels falls in
-mixes the two. Where Mode 7's plane is drawn smaller than its texels, it is filtered from the plane in colour and its
-smaller levels, so it does not shimmer. Edges of geometry are smoothed by the picture's samples a pixel (8 where the GPU has them, else 4). The cost follows
+mixes the two. Where Mode 7's plane is drawn smaller than its texels, it is read from the plane in colour and its
+smaller levels by arithmetic, the same on every GPU, so it does not shimmer. Edges of geometry are smoothed by the picture's samples a pixel (8 where the GPU has them, else 4). The cost follows
 what the game draws: a draw list's or the sprites' rows of one setting are drawn once, however the setting changes down
 the screen.
 
@@ -171,7 +171,9 @@ void nshvc_mode7_set(const nshvc_mode7 *m);
 
 Drawn as a plane at the window's resolution, its texture coordinates from the matrix: the console's own pixel shows
 the texel the console shows there, and the window's pixels between show the plane between. Where a pixel covers more than
-a texel, the GPU filters the plane in colour along the pixel's footprint (anisotropic, between its smaller levels), and a
+a texel, the plane in colour is read at the smaller level whose texels are no longer than the pixel's footprint and the texels
+that level has under the footprint, each by the share of the footprint's area inside it: the exact area mean wherever the
+footprint covers whole texels of that level and the plane is flat inside one where it does not, with no GPU filter in it. A
 footprint across the plane's edge mixes the plane and what is outside it by how much of each it covers. An `outside`
 other than 0, 1 or 2 is reported and not taken: `nshvc_mode7_set` takes the rest and keeps `outside` as it was; a line
 change to it is left out. Each line's own rounding of the matrix, as the console's, holds on every row.
@@ -199,9 +201,19 @@ typedef struct nshvc_sprite {
                                                    is the SNES's: each square half flips in place, the halves keep their places */
 } nshvc_sprite;
 void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen);   /* which screens the sprites are on; until set, main only */
+void nshvc_sprites_interlace(uint8_t on);   /* OBJ interlace (6.1): see below; off until set, each picture */
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
                                     /* in order; first_priority is the SNES's priority rotation */
 ```
+
+**OBJ interlace** (`nshvc_sprites_interlace`, 6.1) is a sprite-wide setting, so it sits with `nshvc_sprites_show` and, like it, is
+set in `draw` and off until set. On, each sprite is half as high on screen (`height` tiles cover `height * 4` rows) and shows
+every other row of itself: the even rows on the even field, the odd rows on the odd. With screen interlace (`nshvc_screen.interlace`)
+the picture's two fields are its half-rows, at the screen's finer rows, so a sprite shows all its rows, one to each of those rows.
+Without it the console's field alternates with each picture anyway, and so does the engine's: a sprite shows its even rows in one
+picture and its odd rows in the next, each row stretched over the picture row it covers. A sprite's vertical flip is taken before the
+field is. The SNES's size selects 6 and 7 give small sprites of 16 x 16, not 16 x 32, under OBJ interlace (a hardware quirk): a game
+that wants that gives the 16 x 16 size itself.
 
 ### 3.6 Windows, colour maths and brightness
 
@@ -426,7 +438,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.0. 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.1: it adds `nshvc_sprites_interlace`. 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.

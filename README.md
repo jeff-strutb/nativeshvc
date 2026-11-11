@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 6.0. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 6.1. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ## What it provides
 
@@ -22,7 +22,7 @@ The engine is at API 6.0. `docs/native-engine-plan.md` opens with what has and h
 - **The picture, drawn natively on the GPU.** Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic,
   Mode 7, hires, direct colour and offset-per-tile, as the SNES had them, at any screen size, with per-line changes from a
   table of values. Each becomes native geometry and GPU state at the window's own resolution: tile layers and sprites are
-  instanced quads, Mode 7 a textured plane (filtered through its smaller levels where it shrinks), priorities depth,
+  instanced quads, Mode 7 a textured plane (read through its smaller levels, by arithmetic, where it shrinks), priorities depth,
   windows stencil, per-line changes strips of rows; the colour maths are done where each layer's colour is written,
   exactly as the SNES defines them, so a picture is one pass into the window. Texels stay sharp, with only the pixel an
   edge falls in mixed, and edges are smoothed by 8 samples a pixel where the GPU has them, else 4 (`nshvc_draw_samples`
@@ -87,7 +87,7 @@ converted game's sound with the original's, and for `tests/scenes/scenes.py`, wh
 and as a scene for the engine and compares the two byte for byte at the console's size. `m7check` measures Mode 7's
 anti-aliasing against the console's lookup, and `cost` times the drawing case by case.
 
-What has been run: headless, at the console's size, 114 scenes on Metal, on Vulkan on Linux (dzn, AMD), on Direct3D 12 on Windows
-(AMD) and on Vulkan on Windows (AMD): on each, 110 match, 0 fail and 4 (rotated or scaled Mode 7, and Mode 7 whose scroll
+What has been run: headless, at the console's size, 116 scenes on Metal, on Vulkan on Linux (dzn, AMD), on Direct3D 12 on Windows
+(AMD) and on Vulkan on Windows (AMD): on each, 112 match, 0 fail and 4 (rotated or scaled Mode 7, and Mode 7 whose scroll
 changes by two texels a line) are listed as differing by design. Not run: the windowed path on Windows and Linux, Android, iOS
 and the turned display. There is no OBJ interlace setting and so no scene for it. A game's pictures at the window's resolution are not compared with an emulator's.

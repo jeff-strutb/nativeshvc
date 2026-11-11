@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 0
+#define NSHVC_VERSION_MINOR 1
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -272,6 +272,15 @@ typedef struct nshvc_sprite {
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
 /* whether the sprites are on the main and the sub screen; until set, main only */
 void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen);
+/* the SNES's OBJ interlace (6.1), per picture like the other sprite-wide settings and off until set: each sprite is
+   half as high on screen, a sprite of `height` tiles covering height * 4 rows, and shows every other row of
+   itself, the even rows on the picture's even field and the odd rows on its odd field. With screen interlace
+   the fields are the picture's own half-rows, each at the screen's finer rows, so the sprite shows all its
+   rows, one to a screen row. Without it the field still alternates with each picture, as on the SNES: a
+   sprite shows its even rows in one picture and its odd rows in the next, each stretched to the rows it
+   covers. A flipped sprite flips before the field is taken. The SNES's sizes 6 and 7 are 16 x 16 for the small
+   sprites under OBJ interlace (a hardware quirk): a game gives that size itself. */
+void nshvc_sprites_interlace(uint8_t on);
 
 typedef struct nshvc_window { int32_t left, right; } nshvc_window;
 

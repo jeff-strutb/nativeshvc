@@ -4,12 +4,12 @@
 
 ## Where the work stands (2026-11-10)
 
-API 6.0. Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.1 (6.0 replaced the renderer; 6.1 added OBJ interlace). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
-- **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 114 feature scenes
+- **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes
   (`tests/scenes`) are drawn through the engine and compared byte for byte with the same scenes run in bsnes, on four
-  paths: Metal; Vulkan on Linux (dzn, AMD); Direct3D 12 on Windows (AMD); Vulkan on Windows (AMD). On each, 110 match, 0 fail
+  paths: Metal; Vulkan on Linux (dzn, AMD); Direct3D 12 on Windows (AMD); Vulkan on Windows (AMD). On each, 112 match, 0 fail
   and 4 are KNOWN (the Mode 7 scenes that are rotated or scaled, and the one whose scroll changes by two texels a line,
   where the engine's anti-aliased picture is meant to differ). `m7check` on Metal, worst / mean difference a colour channel
   from the exact area mean of the console's lookup on random texels (no tolerance is set): rot 256 x 224 28 / 2.22; rot
@@ -17,8 +17,10 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   23 / 0.14; its reference proof (the console's one-point lookup against bsnes) matches on every pixel of the three rotated
   or scaled scenes. `tests/scenes/cost.c`, Metal with the GPU kept busy at 5760 x 3240, before the pixel clean-up, after
   it, after solid sprites: four mixed tile layers 4.08, 3.39, 3.41 ms; four solid 1.29, 1.13, 1.13; colour maths 2.82,
-  2.61, 2.60; see-through sprites 1.49, 1.58, 1.59 (about 6% more since the clean-up, its cause proposed and not changed);
-  solid sprites 1.70, 1.77, 1.02.
+  2.61, 2.60; see-through sprites 1.49, 1.58, 1.59, and 1.00 once each sheet kind has its own program; solid sprites 1.70, 1.77, 1.02,
+  then 0.68. Mode 7 smaller than its texels is plain arithmetic on the plane's levels: the Metal and AMD pictures of
+  the scroll-by-line scene differ by at most 2 of 255 a channel (the stored levels' rounding), where the GPUs' own
+  filters differed freely. On the iOS Simulator the example game starts and keeps running; its picture was not looked at.
 - **Not run:** the windowed path (a picture shown in a window) on Windows and on Linux; Vulkan on Android and iOS; the
   turned display (a phone held sideways) on any device. **No OBJ interlace:** the API has no setting for it, so there is no
   scene (sprites under screen interlace have one). The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
@@ -222,8 +224,8 @@ an iPhone 15 Pro Max once a draw-list layer existed). It is gone. In its place:
    windows as stencil from the window edges; per-line changes as strips of rows drawn with their own values (a draw list's
    or the sprites' strips of one state drawn once, kept to them by stencil); colour maths, brightness and blanking done where a layer's
    colour is written, from the other screen's pixel, exactly as the SNES defines them; hires by a stencil bit; interlace by a
-   picture that keeps the other field (the only picture drawn through a kept target; any other is one pass into the window). Mode 7 is filtered through the plane's colours and their smaller levels where it
-   shrinks, by the GPU's own anisotropic filter in one read: the plane in its most-used palette, and in the four other
+   picture that keeps the other field (the only picture drawn through a kept target; any other is one pass into the window). Mode 7 is read from the plane's colours and their smaller levels where it
+   shrinks, by arithmetic in the fragment stage (the level whose texels the footprint is no longer than, then each texel of it by its share of the footprint's area; no GPU filter): the plane in its most-used palette, and in the four other
    palettes with the nearest rows, full size; past those, a quarter-size plane in the row's palette adds its difference,
    so only that difference's finest detail is lost. All at the window's resolution, texels sharp, edges smoothed by the picture's samples a pixel (8 where the GPU has them, else 4).
 3. **Custom work through the lower API:** draw lists, materials and game shaders, drawn straight into the frame in their

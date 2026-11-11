@@ -19,6 +19,8 @@
 #define P_PLACED 12     /* a draw list drawn into a side target, placed where its layer is */
 #define P_TILES_SOLID 13 /* a tile layer's solid tiles (no texel 0): tiles.vert, a fragment stage that rejects nothing */
 #define P_SPRITES_SOLID 14 /* sprites all of whose tiles are solid: sprites.vert, a fragment stage that rejects nothing */
+#define P_SPRITES_P2 15 /* sprites from a tile set whose texels a side and tiles a row are powers of two: shifts for the divisions */
+#define P_SPRITES_SOLID_P2 16 /* both */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */

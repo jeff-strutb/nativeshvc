@@ -6,10 +6,10 @@ for bsnes (through tests/oracle) and a scene file for the engine's API
   scenes.py --oracle ORACLE --core CORE --player PLAYER --out DIR [--only A,B]
   scenes.py ... --prove         one scene changed on the engine's side only: must fail
 
-A scene listed in KNOWN differs by design and is reported so, never as passing. 114 scenes, 4 listed KNOWN
+A scene listed in KNOWN differs by design and is reported so, never as passing. 116 scenes, 4 listed KNOWN
 (rotated or scaled Mode 7, and Mode 7 whose scroll changes by two texels a line). Headless, each of Metal, Vulkan on Linux
-(dzn, AMD), Direct3D 12 on Windows (AMD) and Vulkan on Windows (AMD) gave 110 match, 0 fail, 4 KNOWN; the windowed path
-has not been run. OBJ interlace has no setting in the API, so no scene.
+(dzn, AMD), Direct3D 12 on Windows (AMD) and Vulkan on Windows (AMD) gave 112 match, 0 fail, 4 KNOWN; the windowed path
+has not been run. 
 
 The engine plays each scene headless with the picture at the console's own
 size, a window pixel for a picture pixel (RR_SIZE the oracle's shot's size,
@@ -717,6 +717,12 @@ def more_scenes():
     s.f.append(f"lines {LINE['NSHVC_LINE_TILE_SIZE'] + 1} 0 224 " + " ".join(str(8 + 8 * b) for b in big2)); yield s
     # ---- interlace ----
     s = Scene("interlace-sprites"); s.mode(5); s.bg(0); s.bg(1); s.sprites(32); s.t.w(0x2133, 1); s.interlaced = True; yield s
+    # OBJ interlace: each sprite half as high, every other row of it by field (the field alternates each picture, so
+    # the scene runs six pictures); on a screen that is not interlaced, and on one that is
+    s = Scene("obj-interlace"); s.mode(1); s.bg(0); s.bg(1); s.sprites(48, large=True); s.t.w(0x2133, 2)
+    s.f.append("spriteinterlace 1"); s.objint = True; yield s
+    s = Scene("obj-interlace-screen"); s.mode(5); s.bg(0); s.bg(1); s.sprites(48, large=True); s.t.w(0x2133, 3)
+    s.f.append("spriteinterlace 1"); s.interlaced = True; yield s
     s = Scene("overscan-interlace"); s.mode(5); s.bg(0, scroll=(11, 5)); s.bg(1, scroll=(70, 33)); s.sprites(32)
     s.t.w(0x2133, 5); s.interlaced = True; s.overscan = True; yield s
     # ---- modes ----
@@ -790,7 +796,7 @@ def main():
             with open(scene, "w") as f:
                 f.write(text + "lines 0 0 1 5\n")
         run([a.oracle, "--core", a.core, "--rom", rom, "--frames", "6", "--shot", "6", "--out", od] + (["--overscan"] if s.overscan else []))
-        updates = 6 if getattr(s, "interlaced", False) else 1
+        updates = 6 if getattr(s, "interlaced", False) or getattr(s, "objint", False) else 1
         w, h = ppm_size(os.path.join(od, "frame_6.ppm"))
         env = dict(os.environ, RR_SIZE=f"{w}x{h}", SCENE_ASPECT="-1")
         run([a.player, "--headless", "--updates", str(updates), "--scene", scene, "--shots", od], env=env)

@@ -71,6 +71,7 @@ typedef struct {
     uint32_t palette_tex;
     const nshvc_sprite *sprites;
     uint32_t nsprites, sprite_first;
+    int obj_interlace;          /* OBJ interlace: sprites half as high, every other row of each, by field */
     const eng_overlay *overlays;
 } eng_picture;
 

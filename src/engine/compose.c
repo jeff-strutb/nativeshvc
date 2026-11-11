@@ -1214,6 +1214,10 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
     }
 }
 
+/* the field of this picture, 1 even or 2 odd: it alternates with each picture, as the console's does (an interlaced
+   picture draws this field's half-rows; OBJ interlace takes each sprite's rows by it, interlaced or not) */
+static int field;
+
 /* ---- sprites ---- */
 typedef struct { int32_t x0, y0, x1, y1, lx, ly; uint32_t size, n; } Piece;
 typedef struct { uint32_t first, count, tiles, solid; } Run;
@@ -1245,8 +1249,8 @@ static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
         return;
     /* a sprite twice as high as wide, flipped vertically, as the console does: each square half flips in place,
        so a piece never spans the two (the vertex stage maps by the half the piece starts in) */
-    if (s->vflip && s->height == 2 * s->width && k0 < s->width * 8 && k1 > s->width * 8) {
-        int half = s->width * 8;
+    if (s->vflip && s->height == 2 * s->width && k0 < s->width * (P->obj_interlace ? 4 : 8) && k1 > s->width * (P->obj_interlace ? 4 : 8)) {
+        int half = s->width * (P->obj_interlace ? 4 : 8);       /* the screen row where texel row width * 8 is */
         piece_add(s, r0, k0, half, cols);
         piece_add(s, r0 + (half - k0), half, k1, cols);
         return;
@@ -1258,7 +1262,7 @@ static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
     p->x1 = s->x + cols * 8;
     p->y1 = r0 + (k1 - k0);
     p->lx = 0;
-    p->ly = k0;
+    p->ly = P->obj_interlace ? (P->interlace ? 2 * k0 : 2 * k0 + (field == 2)) : k0;   /* OBJ interlace: the texel row each screen row shows */
     p->size = (uint32_t)s->width | (uint32_t)s->height << 16;
     p->n = (uint32_t)s->tile | (uint32_t)(s->palette & 7) << 16 | (uint32_t)(s->priority & 3) << 19 | (uint32_t)(s->hflip != 0) << 21 |
            (uint32_t)(s->vflip != 0) << 22;
@@ -1266,7 +1270,7 @@ static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
 
 static int sprite_rows(const nshvc_sprite *s)
 {
-    int n = s->height * 8;
+    int n = s->height * (P->obj_interlace ? 4 : 8);      /* OBJ interlace: half as high on screen */
     return P->limits.sprite_wrap && n > 256 ? 256 : n;
 }
 
@@ -1378,7 +1382,8 @@ static void sprite_pieces(void)
         if (s->tiles.id && s->tiles.id < eng_ntiles && s->width && s->height) {
             for (k = 0; k <= rows; k++) {
                 int rr = k < rows ? sprite_row(s, k) : -1, c = k < rows ? cols_of[at + (size_t)k] : 0;
-                if (k0 >= 0 && rr >= 0 && rr == last + 1 && c == cols) {
+                /* without screen interlace, OBJ interlace puts a different texel row on each screen row: a piece a row */
+                if (k0 >= 0 && rr >= 0 && rr == last + 1 && c == cols && !(P->obj_interlace && !P->interlace)) {
                     last = rr;
                     continue;
                 }
@@ -1445,7 +1450,7 @@ static int32_t log2_of(int32_t n)
 /* the sprites, once for each group of strips with their settings */
 static void spr_group(const Ctx *c, const eng_state *s, const float *box)
 {
-    int v = c->view, p;
+    int v = c->view, p, p2;
     size_t k;
     for (k = 0; k < nruns; k++) {
         const eng_tiles *t = &eng_tiles_of[runs[k].tiles];
@@ -1453,10 +1458,13 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         rr_cmd *d;
         if (!runs[k].count)
             continue;
-        d = draw(runs[k].solid ? P_SPRITES_SOLID : P_SPRITES, &u);
+        /* the program says whether the tiles are all solid and whether the sheet's sizes are powers of two */
+        p2 = t->cols && log2_of(8 * (int32_t)t->tpp) >= 0 && log2_of((int32_t)t->cols) >= 0;
+        d = draw(runs[k].solid ? (p2 ? P_SPRITES_SOLID_P2 : P_SPRITES_SOLID) : (p2 ? P_SPRITES_P2 : P_SPRITES), &u);
         rect_of(u, box[0], box[1], box[2], box[3]);
         u->f[3][0] = flag_of(v, s, 4);
         u->f[3][1] = v == V_SUB ? 1.0f : 0.0f;
+        u->f[3][2] = P->obj_interlace && P->interlace ? 2.0f : 1.0f;    /* texel rows to a screen row */
         for (p = 0; p < 4; p++)
             u->f[4][p] = depth_of(zobj(s->m, p));
         u->i[0][0] = (int32_t)(pieces_at + runs[k].first * 8);
@@ -1726,10 +1734,11 @@ static void plane_pass(void)
     pass_end();
 }
 
-/* Where Mode 7's plane is drawn smaller than its texels, the GPU filters it
-   along each pixel's footprint (anisotropic, linear between texels and
-   levels): one read of the plane in colour, full size with every smaller
-   level. For each of BG1 (kind 1) and BG2's two priorities (2, 3) the base is
+/* Where Mode 7's plane is drawn smaller than its texels, it is read along
+   each pixel's footprint by the fragment stage's own arithmetic (the level
+   of the footprint's size, each texel of it by its share of the footprint's
+   area; mode7.frag): the plane in colour, full size with every smaller
+   level (each the box mean of the one below). For each of BG1 (kind 1) and BG2's two priorities (2, 3) the base is
    the plane, and its tile 0 for the outside, in the palette most of the rows
    drawing it have. A row whose palette gives a plane value another colour
    reads the plane in its own palette instead. The four such palettes whose
@@ -2432,11 +2441,11 @@ static int m7_filtered(const eng_state *s, int kind, rr_cmd *d, rr_uniform *u)
 
 void eng_compose(rr_frame *f, const eng_picture *p)
 {
-    static int field;
     rr_uniform *u;
     rr_cmd *d;
     F = f;
     P = p;
+    field = field == 1 ? 2 : 1;
     rows_at = 0;
     {
         /* each row's palette versions, by the column each starts at: what the
@@ -2484,7 +2493,6 @@ void eng_compose(rr_frame *f, const eng_picture *p)
     }
     if (!p->interlace) {
         /* the window itself: the main screen, the black outside the part shown, the overlays */
-        field = 0;
         target_pass(RR_TARGET_WINDOW, V_MAIN);
         show_rects();
         overlay_draws();
@@ -2493,7 +2501,6 @@ void eng_compose(rr_frame *f, const eng_picture *p)
     }
     /* an interlaced picture keeps the other field's half-rows from the picture
        before: the main screen into the frame, this field's half-rows of it into the picture, the picture into the window */
-    field = field == 1 ? 2 : 1;
     target_pass(RR_TARGET_FRAME, V_MAIN);
     pass_end();
     pass_begin(RR_TARGET_PICTURE, 0);
