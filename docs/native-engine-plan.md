@@ -20,7 +20,8 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   2.61, 2.60; see-through sprites 1.49, 1.58, 1.59, and 1.00 once each sheet kind has its own program; solid sprites 1.70, 1.77, 1.02,
   then 0.68. Mode 7 smaller than its texels is plain arithmetic on the plane's levels: the Metal and AMD pictures of
   the scroll-by-line scene differ by at most 2 of 255 a channel (the stored levels' rounding), where the GPUs' own
-  filters differed freely. On the iOS Simulator the example game starts and keeps running; its picture was not looked at.
+  filters differed freely. On the iOS Simulator the example game runs and its picture, looked at in both
+  landscape turns, is the one the Mac draws of the same game.
 - **Not run:** the windowed path (a picture shown in a window) on Windows and on Linux; Vulkan on Android and iOS; the
   turned display (a phone held sideways) on any device. **No OBJ interlace:** the API has no setting for it, so there is no
   scene (sprites under screen interlace have one). The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
