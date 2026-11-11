@@ -1,57 +1,135 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" font-family="Helvetica, Arial, sans-serif" font-size="14">
-  <title>How nativeshvc is built</title>
-  <rect width="960" height="620" fill="#ffffff"/>
-  <text x="480" y="34" font-size="22" font-weight="bold" text-anchor="middle" fill="#1b2a41">nativeshvc: a native engine for decompiled SNES games</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1120" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <title>How a game and nativeshvc fit together</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1b2a41"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="1120" fill="#ffffff"/>
+  <text x="500" y="34" font-size="22" font-weight="bold" text-anchor="middle" fill="#1b2a41">nativeshvc: a native engine for decompiled SNES games</text>
 
-  <rect x="40" y="60" width="880" height="110" rx="10" fill="#e8f1fb" stroke="#2b6cb0"/>
-  <text x="60" y="88" font-weight="bold" fill="#1b2a41">The game: its C, converted to call the API</text>
-  <text x="60" y="114" fill="#1b2a41">init, update (fixed rate), draw (once per picture), shutdown</text>
-  <text x="60" y="136" fill="#1b2a41">music tick (audio thread), shaders (*.shade), packaged data, its own chip logic feeding draw lists</text>
-  <text x="60" y="158" fill="#1b2a41">Built and packaged for each platform by tools/nshvc-build</text>
+  <!-- The game -->
+  <rect x="30" y="56" width="940" height="138" rx="10" fill="#e8f1fb" stroke="#2b6cb0"/>
+  <text x="50" y="82" font-size="15" font-weight="bold" fill="#1b2a41">The game, in its own project: its C, converted to call the API directly</text>
+  <g fill="#1b2a41">
+    <text x="50" y="108">nshvc_game: init, update(input) at update_hz, draw(between) once per picture, shutdown</text>
+    <text x="50" y="128">music code, run on the audio thread · shaders (*.shade) · packaged data · icon</text>
+    <text x="50" y="148">its own chip logic, drawn as draw lists · jobs for its own parallel work</text>
+    <text x="50" y="168">No bridge: no registers or addresses are translated. Built and packaged for each platform by tools/nshvc-build.</text>
+  </g>
 
-  <rect x="40" y="186" width="880" height="44" rx="10" fill="#fdf0d5" stroke="#b7791f"/>
-  <text x="480" y="214" font-weight="bold" text-anchor="middle" fill="#1b2a41">The API  ·  nshvc/nshvc.h  ·  version 6.0  ·  docs/api.md</text>
+  <!-- Calls in both directions -->
+  <line x1="300" y1="196" x2="300" y2="238" stroke="#1b2a41" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="310" y="222" fill="#1b2a41">the game calls nshvc_* (game, audio and job threads)</text>
+  <line x1="700" y1="238" x2="700" y2="196" stroke="#1b2a41" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="710" y="222" fill="#1b2a41">the engine owns the loop and calls the game</text>
 
-  <rect x="40" y="246" width="880" height="170" rx="10" fill="#edf7ed" stroke="#2f855a"/>
-  <text x="60" y="274" font-weight="bold" fill="#1b2a41">The engine  ·  src/engine</text>
+  <!-- The API -->
+  <rect x="30" y="242" width="940" height="40" rx="10" fill="#fdf0d5" stroke="#b7791f"/>
+  <text x="500" y="267" font-weight="bold" font-size="14" text-anchor="middle" fill="#1b2a41">The API  ·  nshvc/nshvc.h  ·  version 6.1  ·  docs/api.md  ·  the SNES's units, without its limits</text>
+
+  <!-- The engine -->
+  <rect x="30" y="298" width="940" height="152" rx="10" fill="#edf7ed" stroke="#2f855a"/>
+  <text x="50" y="322" font-size="15" font-weight="bold" fill="#1b2a41">The engine  ·  src/engine</text>
   <g fill="#ffffff" stroke="#2f855a">
-    <rect x="60" y="290" width="190" height="110" rx="6"/>
-    <rect x="270" y="290" width="190" height="110" rx="6"/>
-    <rect x="480" y="290" width="190" height="110" rx="6"/>
-    <rect x="690" y="290" width="210" height="110" rx="6"/>
+    <rect x="50" y="334" width="216" height="100" rx="6"/>
+    <rect x="278" y="334" width="216" height="100" rx="6"/>
+    <rect x="506" y="334" width="216" height="100" rx="6"/>
+    <rect x="734" y="334" width="216" height="100" rx="6"/>
   </g>
   <g fill="#1b2a41">
-    <text x="72" y="314" font-weight="bold">Loop and threads</text>
-    <text x="72" y="338">system, game, render,</text>
-    <text x="72" y="358">audio, job pool</text>
-    <text x="72" y="382">state depends only on input</text>
-    <text x="282" y="314" font-weight="bold">Picture</text>
-    <text x="282" y="338">objects as textures, by line</text>
-    <text x="282" y="358">capabilities as native draws</text>
-    <text x="282" y="382">draw lists, overlays</text>
-    <text x="492" y="314" font-weight="bold">Sound</text>
-    <text x="492" y="338">voices, envelopes, echo</text>
-    <text x="492" y="358">32,040 Hz</text>
-    <text x="492" y="382">game's music code</text>
-    <text x="702" y="314" font-weight="bold">Input, saves, data</text>
-    <text x="702" y="338">devices as they are</text>
-    <text x="702" y="358">native save files</text>
-    <text x="702" y="382">profiling, inspection</text>
+    <text x="62" y="356" font-weight="bold">Loop and threads</text>
+    <text x="62" y="378">loop.c, jobs.c</text>
+    <text x="62" y="396">system, game, render, audio,</text>
+    <text x="62" y="414">job pool; state from input only</text>
+    <text x="290" y="356" font-weight="bold">Picture</text>
+    <text x="290" y="378">picture.c: objects as textures</text>
+    <text x="290" y="396">compose.c: the picture as</text>
+    <text x="290" y="414">the renderer's passes and draws</text>
+    <text x="518" y="356" font-weight="bold">Sound</text>
+    <text x="518" y="378">sound.c, src/dsp</text>
+    <text x="518" y="396">voices, envelopes, echo,</text>
+    <text x="518" y="414">32,040 Hz, game's music code</text>
+    <text x="746" y="356" font-weight="bold">Input, files, inspection</text>
+    <text x="746" y="378">input.c: devices as they are</text>
+    <text x="746" y="396">files.c: saves, packaged data</text>
+    <text x="746" y="414">inspect.c, profiling</text>
   </g>
 
-  <rect x="40" y="432" width="430" height="150" rx="10" fill="#f3e8fd" stroke="#6b46c1"/>
-  <text x="60" y="460" font-weight="bold" fill="#1b2a41">Renderers  ·  src/render  ·  rr.h</text>
-  <text x="60" y="486" fill="#1b2a41">textures, targets, depth, stencil, blend state,</text>
-  <text x="60" y="506" fill="#1b2a41">instanced draws, programs: nothing of a console</text>
-  <text x="60" y="530" fill="#1b2a41">drawn at the window's resolution</text>
-  <text x="60" y="554" fill="#1b2a41">Metal, Vulkan, Direct3D 12</text>
+  <!-- Rendering -->
+  <rect x="30" y="466" width="940" height="482" rx="10" fill="#f3e8fd" stroke="#6b46c1"/>
+  <text x="50" y="490" font-size="15" font-weight="bold" fill="#1b2a41">The picture, drawn natively on the GPU at the window's own resolution</text>
 
-  <rect x="490" y="432" width="430" height="150" rx="10" fill="#fde8ef" stroke="#b8336a"/>
-  <text x="510" y="460" font-weight="bold" fill="#1b2a41">Hosts  ·  src/host  ·  host.h</text>
-  <text x="510" y="486" fill="#1b2a41">window, input, audio, files, threads, per platform</text>
-  <text x="510" y="510" fill="#1b2a41">macOS, iOS, Windows, Linux, Android, headless</text>
-  <text x="510" y="534" fill="#1b2a41">A new platform implements host.h,</text>
-  <text x="510" y="554" fill="#1b2a41">and rr.h if it needs a new GPU API</text>
+  <!-- Layer stack, front at the top -->
+  <text x="50" y="516" font-weight="bold" fill="#1b2a41">Its layers, front to back</text>
+  <g stroke="#6b46c1" stroke-width="1.2">
+    <polygon points="80,528 520,528 490,578 50,578" fill="#ffffff"/>
+    <polygon points="80,590 520,590 490,640 50,640" fill="#faf5ff"/>
+    <polygon points="80,652 520,652 490,702 50,702" fill="#f3e8fd"/>
+    <polygon points="80,714 520,714 490,764 50,764" fill="#e9d8fd"/>
+    <polygon points="80,776 520,776 490,826 50,826" fill="#d6bcfa"/>
+  </g>
+  <g fill="#1b2a41">
+    <text x="84" y="549" font-weight="bold">Overlays</text>
+    <text x="84" y="568">the game's UI, in window pixels, margins too</text>
+    <text x="84" y="611" font-weight="bold">Sprites</text>
+    <text x="84" y="630">instanced quads; the first to show a pixel keeps it</text>
+    <text x="84" y="673" font-weight="bold">BG1 to BG4, ordered by the mode</text>
+    <text x="84" y="692">tile layers: 8 x 8 instances · image: a quad · Mode 7: a plane</text>
+    <text x="84" y="735" font-weight="bold">Draw lists, in a layer's place</text>
+    <text x="84" y="754">the game's triangles, lines, images and shaders</text>
+    <text x="84" y="797" font-weight="bold">Backdrop</text>
+    <text x="84" y="816">palette colour 0, behind everything</text>
+  </g>
+  <g fill="#1b2a41">
+    <text x="50" y="852" font-weight="bold">On every layer, where its colour is written:</text>
+    <text x="50" y="870">priorities as depth · windows as stencil bits</text>
+    <text x="50" y="887">changes by line as strips of rows</text>
+    <text x="50" y="904">colour maths against the sub screen, then brightness</text>
+    <text x="50" y="921">mosaic, hires, interlace, direct colour, offset-per-tile</text>
+    <text x="50" y="938">texels sharp; edges smoothed by 8 samples a pixel, else 4</text>
+  </g>
 
-  <text x="480" y="606" text-anchor="middle" fill="#555555">Checks live in tests/ and tools/nshvc-check. No emulation runs in the engine.</text>
+  <!-- Pipeline flow -->
+  <text x="580" y="516" font-weight="bold" fill="#1b2a41">Each picture</text>
+  <g stroke="#6b46c1" stroke-width="1.2">
+    <rect x="580" y="528" width="370" height="46" rx="6" fill="#ffffff"/>
+    <rect x="580" y="596" width="370" height="46" rx="6" fill="#ffffff"/>
+    <rect x="580" y="664" width="370" height="112" rx="6" fill="#ffffff"/>
+    <rect x="580" y="798" width="370" height="46" rx="6" fill="#ffffff"/>
+    <rect x="580" y="866" width="370" height="64" rx="6" fill="#ffffff"/>
+  </g>
+  <g stroke="#1b2a41" stroke-width="1.4" marker-end="url(#arrow)">
+    <line x1="765" y1="574" x2="765" y2="594"/>
+    <line x1="765" y1="642" x2="765" y2="662"/>
+    <line x1="765" y1="776" x2="765" y2="796"/>
+    <line x1="765" y1="844" x2="765" y2="864"/>
+  </g>
+  <g fill="#1b2a41">
+    <text x="592" y="547" font-weight="bold">Game thread: draw(between) sets it all</text>
+    <text x="592" y="565">only texels that changed are uploaded</text>
+    <text x="592" y="615" font-weight="bold">Render thread: compose.c makes a frame</text>
+    <text x="592" y="633">its passes, draws, words and uniforms</text>
+    <text x="592" y="683" font-weight="bold">Passes</text>
+    <text x="592" y="702">sub screen target, only when the maths need it</text>
+    <text x="592" y="720">side targets for draw lists with fewer samples</text>
+    <text x="592" y="738">main: multisampled, depth and stencil, window size,</text>
+    <text x="592" y="756">resolved into the window with margins and overlays</text>
+    <text x="592" y="817" font-weight="bold">Renderer  ·  src/render  ·  rr.h</text>
+    <text x="592" y="835">Metal · Vulkan · Direct3D 12; knows no console</text>
+    <text x="592" y="885" font-weight="bold">The window</text>
+    <text x="592" y="903">the picture's shape: 4:3 by default, or the</text>
+    <text x="592" y="921">game's (8:7, fill), centred in black margins</text>
+  </g>
+
+  <!-- Hosts -->
+  <rect x="30" y="964" width="940" height="104" rx="10" fill="#fde8ef" stroke="#b8336a"/>
+  <text x="50" y="990" font-size="15" font-weight="bold" fill="#1b2a41">Hosts  ·  src/host  ·  host.h</text>
+  <g fill="#1b2a41">
+    <text x="50" y="1014">window, events, input devices, audio out, files and threads, for each platform</text>
+    <text x="50" y="1034">macOS, iOS, Android, Windows (Vulkan or Direct3D 12), Linux, headless</text>
+    <text x="50" y="1054">A new platform implements host.h, and rr.h if it needs a new GPU API. Nothing else changes.</text>
+  </g>
+
+  <text x="500" y="1100" text-anchor="middle" fill="#555555">Checks live in tests/ and tools/nshvc-check, outside the engine. No emulation runs in the engine.</text>
 </svg>

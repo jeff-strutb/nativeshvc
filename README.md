@@ -13,6 +13,8 @@ engine supports.
 
 The engine is at API 6.1. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
+![How a game and nativeshvc fit together: the game calls the API and the engine calls the game; the engine's parts; the picture's layers and how each picture reaches the window through the renderer and the host](docs/architecture.svg)
+
 ## What it provides
 
 - **A loop.** The engine calls the game's `update` at the rate it chooses and its `draw` once per picture, telling it how far
