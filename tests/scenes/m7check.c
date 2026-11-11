@@ -7,6 +7,17 @@
  *                          each the largest and the mean difference a colour channel (0-255)
  *   m7check --scene FILE --size WxH --headless --updates 1
  *                          one scene at one size (what --dir starts, one process each)
+ *   --out DIR              with either: also write the engine's picture, the reference's and their
+ *                          difference (4 times a channel's, to 255) as engine.ppm, reference.ppm and
+ *                          difference.ppm into DIR (with --dir, one folder NAME-WxH of it a run)
+ *
+ * What a run prints, for each picture: the largest and mean difference a channel (0-255); the
+ * pixels counted by their largest channel's difference (0, 1-8, 9-32, 33-96, more), for all of them
+ * and split by what the pixel is: wholly inside one texel (all 64 reference points in one texel),
+ * crossing a texel edge, at the plane's edge or outside it (any point off the 1024 x 1024 plane),
+ * or at the picture's edge (the outermost window pixels; checked first, then the plane's edge,
+ * then the texel count); the twenty worst pixels with the engine's colour, the reference's, and
+ * the texels (plane point, value, share of the 64 points) the reference averaged there.
  *   m7check --scene FILE --proof ORACLE.ppm
  *                          the reference proved first: it takes the console's own one point a pixel
  *                          and is compared byte for byte with the oracle's picture of the same scene
@@ -38,11 +49,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "nshvc/nshvc.h"
 
 static const char *scene_path;
 static int want_w = 256, want_h = 224;
+static const char *out_dir;             /* --out DIR: the pictures written there */
 
 static uint16_t pal[256];
 static uint8_t chars[256 * 64];
@@ -229,14 +242,82 @@ static int proof(const char *ppm)
     return differ ? 1 : 0;
 }
 
+/* what the reference averaged at one window pixel: the texels its N x N points fall in */
+typedef struct { int u, v, t, n; } Tex;
+#define MAX_TEX (N * N)
+
+/* the reference's colour at window pixel (X, Y) of a picture `scale` times the console's: acc the sum of the points'
+   colours, tx the distinct texels with how many points fell in each, *outside whether any point was off the 1024 x 1024 plane */
+static int sample_pixel(int X, int Y, int scale, const long long *ox, const long long *oy, double acc[3], Tex *tx, int *outside)
+{
+    int i, j, n = 0, k;
+    acc[0] = acc[1] = acc[2] = 0;
+    *outside = 0;
+    for (j = 0; j < N; j++)
+        for (i = 0; i < N; i++) {
+            double xs = ((double)X + (i + 0.5) / N) / scale, ys = ((double)Y + (j + 0.5) / N) / scale;
+            int row = (int)floor(ys), c[3], t, iu, iv;
+            double xp = m7[9] ? 256.0 - xs : xs, u, v;
+            /* down the pixel as across it: the line's origin is the pixel's top edge (its bottom, flipped), and the
+               point goes on from it by the matrix's b and d, so the mean is over the pixel's square, not a line */
+            double yp = m7[10] ? 1.0 - (ys - row) : ys - row;
+            u = ((double)ox[row] + (double)m7[0] * xp + (double)m7[1] * yp) / 256.0;
+            v = ((double)oy[row] + (double)m7[2] * xp + (double)m7[3] * yp) / 256.0;
+            iu = (int)floor(u);
+            iv = (int)floor(v);
+            if ((iu | iv) & ~1023)
+                *outside = 1;
+            t = texel(iu, iv);
+            rgb_of(t, c);
+            acc[0] += c[0]; acc[1] += c[1]; acc[2] += c[2];
+            for (k = 0; k < n; k++)
+                if (tx[k].u == iu && tx[k].v == iv)
+                    break;
+            if (k == n) {
+                tx[n].u = iu; tx[n].v = iv; tx[n].t = t; tx[n].n = 0;
+                n++;
+            }
+            tx[k].n++;
+        }
+    return n;
+}
+
+#define BUCKETS 5
+#define CLASSES 4
+#define WORST 20
+static const char *bucket_name[BUCKETS] = { "0", "1-8", "9-32", "33-96", "more" };
+static const char *class_name[CLASSES] = { "wholly inside one texel", "crossing a texel edge", "plane's edge or outside it", "picture's edge" };
+typedef struct { int x, y, e[3], r[3], most, sum; } Worst;
+
+static int bucket_of(int d) { return d == 0 ? 0 : d <= 8 ? 1 : d <= 32 ? 2 : d <= 96 ? 3 : 4; }
+
+static void write_ppm(const char *dir, const char *name, const unsigned char *rgb, int w, int h)
+{
+    char path[1024];
+    FILE *f;
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    if (!(f = fopen(path, "wb"))) {
+        printf("m7check: cannot write %s\n", path);
+        return;
+    }
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    fwrite(rgb, 3, (size_t)w * h, f);
+    fclose(f);
+}
+
 static void shutdown(void)
 {
-    int w = 0, h = 0, X, Y, k, i, j;
+    int w = 0, h = 0, X, Y, k, i;
     const uint32_t *p = nshvc_picture_read(&w, &h);
     double sum = 0.0;
     int most = 0;
     long long ox[224], oy[224];
     int scale;
+    static int count[CLASSES][BUCKETS];
+    static double csum[CLASSES];
+    static Worst worst[WORST];
+    int nworst = 0;
+    unsigned char *img = NULL, *ref = NULL, *dif = NULL;
     if (!p) {
         printf("m7check: %s: no picture\n", scene_path);
         return;
@@ -247,29 +328,101 @@ static void shutdown(void)
     }
     scale = w / 256;
     origins(ox, oy);
+    if (out_dir) {
+        img = (unsigned char *)malloc((size_t)w * h * 3);
+        ref = (unsigned char *)malloc((size_t)w * h * 3);
+        dif = (unsigned char *)malloc((size_t)w * h * 3);
+        if (!img || !ref || !dif)
+            out_dir = NULL;
+    }
     for (Y = 0; Y < h; Y++)
         for (X = 0; X < w; X++) {
-            double acc[3] = { 0, 0, 0 };
+            double acc[3];
+            Tex tx[MAX_TEX];
+            int ntx, outside, cls, pmost = 0, psum = 0, want[3], got[3];
             uint32_t e = p[Y * w + X];
-            for (j = 0; j < N; j++)
-                for (i = 0; i < N; i++) {
-                    double xs = ((double)X + (i + 0.5) / N) / scale, ys = ((double)Y + (j + 0.5) / N) / scale;
-                    int row = (int)floor(ys), c[3], t;
-                    double xp = m7[9] ? 256.0 - xs : xs, u, v;
-                    u = ((double)ox[row] + (double)m7[0] * xp) / 256.0;
-                    v = ((double)oy[row] + (double)m7[2] * xp) / 256.0;
-                    t = texel((int)floor(u), (int)floor(v));
-                    rgb_of(t, c);
-                    acc[0] += c[0]; acc[1] += c[1]; acc[2] += c[2];
-                }
+            ntx = sample_pixel(X, Y, scale, ox, oy, acc, tx, &outside);
             for (k = 0; k < 3; k++) {
-                int want = (int)floor(acc[k] / (N * N) + 0.5), got = (int)(e >> (16 - 8 * k) & 255), d = abs(want - got);
-                if (d > most)
-                    most = d;
-                sum += d;
+                int d;
+                want[k] = (int)floor(acc[k] / (N * N) + 0.5);
+                got[k] = (int)(e >> (16 - 8 * k) & 255);
+                d = abs(want[k] - got[k]);
+                if (d > pmost)
+                    pmost = d;
+                psum += d;
+                if (img) {
+                    img[(Y * w + X) * 3 + k] = (unsigned char)got[k];
+                    ref[(Y * w + X) * 3 + k] = (unsigned char)want[k];
+                    dif[(Y * w + X) * 3 + k] = (unsigned char)(d * 4 > 255 ? 255 : d * 4);
+                }
+            }
+            if (pmost > most)
+                most = pmost;
+            sum += psum;
+            cls = X == 0 || Y == 0 || X == w - 1 || Y == h - 1 ? 3 : outside ? 2 : ntx == 1 ? 0 : 1;
+            count[cls][bucket_of(pmost)]++;
+            csum[cls] += psum;
+            /* the worst pixels, kept in order: by the largest channel's difference, then the sum of the three */
+            if (nworst < WORST || pmost > worst[nworst - 1].most || (pmost == worst[nworst - 1].most && psum > worst[nworst - 1].sum)) {
+                Worst *q = &worst[nworst < WORST ? nworst++ : WORST - 1];
+                q->x = X; q->y = Y; q->most = pmost; q->sum = psum;
+                for (k = 0; k < 3; k++) { q->e[k] = got[k]; q->r[k] = want[k]; }
+                for (i = nworst - 1; i > 0 && (worst[i].most > worst[i - 1].most || (worst[i].most == worst[i - 1].most && worst[i].sum > worst[i - 1].sum)); i--) {
+                    Worst t = worst[i];
+                    worst[i] = worst[i - 1];
+                    worst[i - 1] = t;
+                }
             }
         }
     printf("m7check: %s at %d x %d: largest difference %d, mean %.3f a channel\n", scene_path, w, h, most, sum / ((double)w * h * 3));
+    printf("  pixels by their largest channel's difference:\n    %-28s", "");
+    for (i = 0; i < BUCKETS; i++)
+        printf("%9s", bucket_name[i]);
+    printf("%10s%10s\n", "pixels", "mean");
+    for (k = 0; k <= CLASSES; k++) {
+        int b, n = 0, row[BUCKETS];
+        double cs = 0;
+        for (b = 0; b < BUCKETS; b++) {
+            row[b] = 0;
+            if (k == CLASSES) {
+                int c;
+                for (c = 0; c < CLASSES; c++)
+                    row[b] += count[c][b];
+            } else {
+                row[b] = count[k][b];
+            }
+            n += row[b];
+        }
+        for (b = 0; b < CLASSES; b++)
+            cs += k == CLASSES || k == b ? csum[b] : 0;
+        printf("    %-28s", k == CLASSES ? "all" : class_name[k]);
+        for (b = 0; b < BUCKETS; b++)
+            printf("%9d", row[b]);
+        printf("%10d%10.3f\n", n, n ? cs / ((double)n * 3) : 0.0);
+    }
+    printf("  the %d worst pixels (window x, y; engine rgb; reference rgb; the texels the reference averaged: plane point (u, v) texel value, share of the %d points):\n",
+           nworst, N * N);
+    for (k = 0; k < nworst; k++) {
+        double acc[3];
+        Tex tx[MAX_TEX];
+        int outside, n = sample_pixel(worst[k].x, worst[k].y, scale, ox, oy, acc, tx, &outside), t;
+        printf("    %d, %d: engine %02x%02x%02x, reference %02x%02x%02x (largest %d)%s:", worst[k].x, worst[k].y, worst[k].e[0], worst[k].e[1], worst[k].e[2],
+               worst[k].r[0], worst[k].r[1], worst[k].r[2], worst[k].most, outside ? " off the plane" : "");
+        for (t = 0; t < n && t < 12; t++)
+            printf(" (%d,%d) %d x%.3f", tx[t].u, tx[t].v, tx[t].t, tx[t].n / (double)(N * N));
+        if (n > 12)
+            printf(" and %d more", n - 12);
+        printf("\n");
+    }
+    if (img) {
+        write_ppm(out_dir, "engine.ppm", img, w, h);
+        write_ppm(out_dir, "reference.ppm", ref, w, h);
+        write_ppm(out_dir, "difference.ppm", dif, w, h);     /* 4 times the difference a channel, to 255 */
+        printf("  wrote engine.ppm, reference.ppm and difference.ppm (4 x the difference, to 255) in %s\n", out_dir);
+    }
+    free(img);
+    free(ref);
+    free(dif);
     fflush(stdout);
 }
 
@@ -285,6 +438,8 @@ int main(int argc, char **argv)
             dir = argv[i + 1];
         else if (!strcmp(argv[i], "--proof"))
             proof_ppm = argv[i + 1];
+        else if (!strcmp(argv[i], "--out"))
+            out_dir = argv[i + 1];
         else if (!strcmp(argv[i], "--size"))
             sscanf(argv[i + 1], "%dx%d", &want_w, &want_h);
     }
@@ -293,10 +448,16 @@ int main(int argc, char **argv)
         int n, s;
         for (n = 0; n < 3; n++)
             for (s = 1; s <= 3; s += 2) {
-                char cmd[2048], line[512];
+                char cmd[3072], line[1024], sub[1024] = "", where[1024];
                 FILE *p;
-                snprintf(cmd, sizeof cmd, "'%s' --headless --updates 1 --scene '%s/%s/%s.scene' --size %dx%d", argv[0], dir, names[n], names[n], 256 * s,
-                         224 * s);
+                if (out_dir) {
+                    mkdir(out_dir, 0777);
+                    snprintf(where, sizeof where, "%s/%s-%dx%d", out_dir, names[n], 256 * s, 224 * s);
+                    mkdir(where, 0777);
+                    snprintf(sub, sizeof sub, " --out '%s'", where);
+                }
+                snprintf(cmd, sizeof cmd, "'%s' --headless --updates 1 --scene '%s/%s/%s.scene' --size %dx%d%s", argv[0], dir, names[n], names[n], 256 * s,
+                         224 * s, sub);
                 if (!(p = popen(cmd, "r"))) {
                     fprintf(stderr, "m7check: cannot start %s\n", cmd);
                     return 2;

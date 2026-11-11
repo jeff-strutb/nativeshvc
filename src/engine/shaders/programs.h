@@ -18,6 +18,7 @@
 #define P_OVERLAY 11    /* an overlay in window pixels */
 #define P_PLACED 12     /* a draw list drawn into a side target, placed where its layer is */
 #define P_TILES_SOLID 13 /* a tile layer's solid tiles (no texel 0): tiles.vert, a fragment stage that rejects nothing */
+#define P_SPRITES_SOLID 14 /* sprites all of whose tiles are solid: sprites.vert, a fragment stage that rejects nothing */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */

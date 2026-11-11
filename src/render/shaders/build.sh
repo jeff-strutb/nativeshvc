@@ -18,7 +18,7 @@ have_dxc=1
 command -v "$DXC" >/dev/null || have_dxc=
 [ -n "$have_dxc" ] || echo "shaders/build.sh: warning: dxc is not installed: $here/../d3d12/rr_dxil.h is left as it was, out of date" >&2
 # in rr.h's order: the engine's programs (engine/shaders/programs.h), then the renderer's own
-programs="$engine/fill $engine/tiles $engine/blocks $engine/mode7 $engine/sprites $engine/image $engine/list $engine/lines $engine/field $engine/plane $engine/tint $engine/overlay $engine/placed $engine/tiles_solid $here/show $here/mips $here/mips_layer"
+programs="$engine/fill $engine/tiles $engine/blocks $engine/mode7 $engine/sprites $engine/image $engine/list $engine/lines $engine/field $engine/plane $engine/tint $engine/overlay $engine/placed $engine/tiles_solid $engine/sprites_solid $here/show $here/mips $here/mips_layer"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 spv=$here/../vulkan/rr_spv.h
@@ -32,7 +32,7 @@ for p in $programs; do
   name=$(basename "$p")
   for st in vert frag; do
     src=$p.$st
-    # a program with no vertex stage of its own (tiles_solid) shares its parent's, named before the last underscore
+    # a program with no vertex stage of its own (tiles_solid, sprites_solid) shares its parent's, named before the last underscore
     [ -f "$src" ] || src=${p%_*}.$st
     s=vs; t=vs_6_0; d=
     [ $st = frag ] && { s=fs; t=ps_6_0; d=-DFRAG; }

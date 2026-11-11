@@ -6,8 +6,8 @@ for bsnes (through tests/oracle) and a scene file for the engine's API
   scenes.py --oracle ORACLE --core CORE --player PLAYER --out DIR [--only A,B]
   scenes.py ... --prove         one scene changed on the engine's side only: must fail
 
-A scene listed in KNOWN differs by design and is reported so, never as passing. 101 scenes: on Metal, 96 match, 3 are KNOWN
-and 2 (Mode 7 settings that change between lines) fail and are open; no other backend has run them.
+A scene listed in KNOWN differs by design and is reported so, never as passing. 103 scenes: on Metal, 99 match and 4 are KNOWN
+(rotated or scaled Mode 7, and Mode 7 whose scroll changes by two texels a line); none fail; no other backend has run them.
 
 The engine plays each scene headless with the picture at the console's own
 size, a window pixel for a picture pixel (RR_SIZE the oracle's shot's size,
@@ -495,6 +495,32 @@ def first_sprite_scene():
     return s
 
 
+def solid_order_scene(name, big):
+    """labelled content: 32 pairs of sprites on one spot, one of each pair all solid and one with texel 0 in
+    it (a checker), over a solid layer: every pair of priorities with the solid sprite first in OAM and
+    with it second. The first sprite to show a pixel keeps it, so a see-through sprite after a solid one
+    is hidden where they overlap and one before it shows the solid sprite through its texel 0.
+    big: each sprite 16 x 16, the see-through one with only one tile of its four a checker"""
+    s = Scene(name)
+    s.mode(1)
+    s.bg_labelled(0, solid_tile(4, 1) * 2, lambda x, y: 1 | ((x // 3 + y // 3) & 1) << 13, 2)
+    sheet = bytearray()
+    for t in range(256):
+        sheet += checker_tile(4, 2) if t % 16 == 5 else solid_tile(4, 1)
+    sprites = []
+    step = 32 if big else 30
+    for i in range(32):
+        combo, solid_first = i >> 1, (i & 1) == 0
+        pa, pb = combo // 4, combo % 4
+        x, y = 8 + (i % 8) * step, 8 + (i // 8) * 52
+        see = 4 if big else 5       # tile 5 is the checker (and 16 x 16 from tile 4 reaches it)
+        first, second = (0, see) if solid_first else (see, 0)
+        sprites.append((x, y, int(big), first, i % 8, pa, 0, 0))
+        sprites.append((x + 5, y + 3, int(big), second, (i + 3) % 8, pb, 0, 0))
+    s.sprites_given(bytes(sheet), 256, sprites)
+    return s
+
+
 def more_scenes():
     # ---- colour maths ----
     for c in range(4):
@@ -589,6 +615,8 @@ def more_scenes():
     yield priority_scene("sprite-priority-mode1", 1)
     yield priority_scene("sprite-priority-mode1-bg3", 1, 1)
     yield first_sprite_scene()
+    yield solid_order_scene("sprite-solid-order", False)
+    yield solid_order_scene("sprite-solid-order-big", True)
     # ---- modes ----
     yield opt_scene(6, sub=True)
     s = Scene("direct-colour-mode4"); s.mode(4); s.bg(0, direct=True); s.bg(1); s.direct = 1; s.t.w(0x2130, 1); yield s
@@ -632,7 +660,9 @@ def compare(a, b):
 # starts to match is reported, so the list is kept true.
 AA = ("Mode 7 is anti-aliased at every window size: a pixel that straddles texels mixes them, "
       "where the console takes one texel; not held by any check yet")
-KNOWN = {"mode7-rot": AA, "mode7-clear": AA, "mode7-tile0": AA}
+SCROLL_AA = ("Mode 7 whose scroll changes by two texels every line: both neighbouring rows' steps are long, "
+             "so each row stays anti-aliased where the console takes one texel")
+KNOWN = {"mode7-rot": AA, "mode7-clear": AA, "mode7-tile0": AA, "mode7-line-scroll": SCROLL_AA}
 
 
 def main():

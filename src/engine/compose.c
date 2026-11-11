@@ -1115,8 +1115,9 @@ static const eng_state *state_at(int r, int x)
    row is drawn by another matrix (the perspective of a matrix by line): from
    the row above (ra) to the first (y0) in f[6], from the last to the row
    below (rb) in f[7], each the step's start and its change by column, from
-   the rows' centres by their own matrices. Within the strip the step is the
-   strip's own. */
+   the rows' centres by their own matrices (1e30 where that row is no Mode 7
+   or off the picture). Within the strip the step is the strip's own. The
+   shader's row step is the shorter, by length, of the two sides'. */
 static void m7_steps(rr_uniform *u, const eng_state *s, int x0, int y0, int y1)
 {
     double t[6], n[6];
@@ -1129,8 +1130,8 @@ static void m7_steps(rr_uniform *u, const eng_state *s, int x0, int y0, int y1)
         const eng_state *o = r >= 0 && r < P->h ? state_at(r, x0) : NULL;
         float *f = u->f[6 + e];
         if (!o || o->m != 7 || o->blank || !m7_valid(o)) {
-            f[0] = (float)t[1];
-            f[1] = (float)t[4];
+            /* no row to step to: 1e30 says so, and the shader takes the other side's step */
+            f[0] = f[1] = 1e30f;
             f[2] = f[3] = 0.0f;
             continue;
         }
@@ -1215,12 +1216,27 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
 
 /* ---- sprites ---- */
 typedef struct { int32_t x0, y0, x1, y1, lx, ly; uint32_t size, n; } Piece;
-typedef struct { uint32_t first, count, tiles; } Run;
+typedef struct { uint32_t first, count, tiles, solid; } Run;
 static Piece *pieces;
 static size_t npieces, cap_pieces;
 static Run *runs;
 static size_t nruns, cap_runs;
 static uint32_t pieces_at;
+
+/* whether every tile a sprite can show is solid (no texel 0), by the classes the tile set keeps: the
+   tiles the sprite's width and height reach from its first, as the fragment stage steps them */
+static uint32_t sprite_solid(const nshvc_sprite *s)
+{
+    const eng_tiles *t = &eng_tiles_of[s->tiles.id];
+    int row, col;
+    for (row = 0; row < s->height; row++)
+        for (col = 0; col < s->width; col++) {
+            uint32_t n = ((uint32_t)s->tile & 0xFF00u) | ((((uint32_t)s->tile & 0xF0u) + (uint32_t)row * 16u) & 0xF0u) | ((((uint32_t)s->tile & 0xFFu) + (uint32_t)col) & 0x0Fu);
+            if (n >= t->count || ((t->cls[n >> 4] >> ((n & 15) * 2)) & 3u) != ENG_TILE_SOLID)
+                return 0;
+        }
+    return 1;
+}
 
 static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
 {
@@ -1350,6 +1366,7 @@ static void sprite_pieces(void)
         const nshvc_sprite *s = &P->sprites[(P->sprite_first + i) % n];
         int k, rows = sprite_rows(s), k0 = -1, r0 = 0, last = -2, cols = 0;
         size_t before = npieces;
+        uint32_t solid;
         if (s->tiles.id && s->tiles.id < eng_ntiles && s->width && s->height) {
             for (k = 0; k <= rows; k++) {
                 int rr = k < rows ? sprite_row(s, k) : -1, c = k < rows ? cols_of[at + (size_t)k] : 0;
@@ -1368,13 +1385,16 @@ static void sprite_pieces(void)
         at += (size_t)rows;
         if (npieces == before)
             continue;
-        if (nruns && runs[nruns - 1].tiles == s->tiles.id) {
+        /* a run is consecutive pieces of one tile set and one class: sprites keep their own order, the first to show a pixel keeping it */
+        solid = sprite_solid(s);
+        if (nruns && runs[nruns - 1].tiles == s->tiles.id && runs[nruns - 1].solid == solid) {
             runs[nruns - 1].count += (uint32_t)(npieces - before);
         } else {
             runs = (Run *)grow(runs, &cap_runs, nruns + 1, sizeof *runs);
             runs[nruns].first = (uint32_t)before;
             runs[nruns].count = (uint32_t)(npieces - before);
             runs[nruns].tiles = s->tiles.id;
+            runs[nruns].solid = solid;
             nruns++;
         }
     }
@@ -1425,7 +1445,7 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         rr_cmd *d;
         if (!runs[k].count)
             continue;
-        d = draw(P_SPRITES, &u);
+        d = draw(runs[k].solid ? P_SPRITES_SOLID : P_SPRITES, &u);
         rect_of(u, box[0], box[1], box[2], box[3]);
         u->f[3][0] = flag_of(v, s, 4);
         u->f[3][1] = v == V_SUB ? 1.0f : 0.0f;
@@ -1908,7 +1928,7 @@ static double m7_row_step(const eng_state *s, int r, double x)
 
 /* the most texels a window pixel can span at row r, columns x0-x1, for
    state s: across, by its matrix; down, by the step from the row above and
-   to the row below (the shader's footprint lies between those), at both
+   to the row below (the shader's footprint, the shorter of those, is no more than the larger), at both
    ends of the run, where the most is (each step's length is convex along a
    row); sx, sy window pixels a picture pixel. More than 1: drawn smaller
    than its texels somewhere there */

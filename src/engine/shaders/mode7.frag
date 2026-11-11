@@ -5,15 +5,24 @@ layout(location = 0) in vec2 v_t;
 layout(location = 1) in vec2 v_p;
 layout(location = 0) out vec4 o;
 
-/* the texel step from one screen row to the next at p: the mean of the steps
-   from the row above and to the row below, each by its row's own matrix */
+/* the texel step from one screen row to the next at p: the shorter, by length, of the steps from the
+   row above and to the row below, each by its row's own matrix. A jump of the matrix between two rows
+   is then in neither row's step: each keeps its other, ordinary neighbour's. Where both agree (a
+   perspective ramp) it is that step. A neighbour that is no Mode 7 (or the picture's edge) is marked
+   by 1e30 in f[6] or f[7], and the step is the other's; with neither, the matrix's own */
 vec2 row_step(vec2 p)
 {
     vec2 b = vec2(u.f[4].y, u.f[5].y);
     float r = floor(p.y);
-    vec2 up = r > float(u.i[7].z) ? b : u.f[6].xy + u.f[6].zw * p.x;
-    vec2 down = r < float(u.i[6].w) - 1.0 ? b : u.f[7].xy + u.f[7].zw * p.x;
-    return (up + down) * 0.5;
+    bool in_up = r > float(u.i[7].z), in_down = r < float(u.i[6].w) - 1.0;
+    bool has_up = in_up || u.f[6].x < 1e29, has_down = in_down || u.f[7].x < 1e29;
+    vec2 up = in_up ? b : u.f[6].xy + u.f[6].zw * p.x;
+    vec2 down = in_down ? b : u.f[7].xy + u.f[7].zw * p.x;
+    if (!has_up)
+        return has_down ? down : b;
+    if (!has_down)
+        return up;
+    return dot(up, up) <= dot(down, down) ? up : down;
 }
 
 /* where a pixel spans more than a texel: the plane in colour at plane point t,

@@ -7,11 +7,11 @@
 API 6.0. Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
-- **6.0's renderer, what has been run.** On Metal only, at the console's own size, 101 feature scenes (`tests/scenes`) are
-  drawn through the engine and compared byte for byte with the same scenes run in bsnes: 96 match, 3 are KNOWN (the Mode 7
-  scenes that are rotated or scaled, where the engine's anti-aliased picture is meant to differ), and 2 fail and are open
-  (Mode 7 with settings that change between lines). `m7check`'s reference proof (the console's one-point lookup against
-  bsnes) matches on every pixel of the three KNOWN scenes; its area figures put the engine a mean of 18 to 45 a colour
+- **6.0's renderer, what has been run.** On Metal only, at the console's own size, 103 feature scenes (`tests/scenes`) are
+  drawn through the engine and compared byte for byte with the same scenes run in bsnes: 99 match and 4 are KNOWN (the
+  Mode 7 scenes that are rotated or scaled, and the one whose scroll changes by two texels a line, where the engine's
+  anti-aliased picture is meant to differ); none fail. `m7check`'s reference proof (the console's one-point lookup against
+  bsnes) matches on every pixel of the three rotated or scaled scenes; its area figures put the engine a mean of 18 to 45 a colour
   channel from the area mean of the console's lookup on random texels, and no tolerance is set. `tests/scenes/cost.c`,
   Metal with the GPU kept busy at 5760 x 3240: four blank tile layers cost 0.31 ms a picture against the backdrop's 0.23,
   and four solid layers 1.25 ms against one's 1.21; each mixed layer adds about 0.8 ms.

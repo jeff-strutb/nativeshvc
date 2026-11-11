@@ -16,7 +16,8 @@
          this palette's tile 0 in ta0's layer i[7].y
    f[6], f[7]: the texel step from the row above the strip's first row (i[7].z) to it, and from
          its last row (before i[6].w) to the row below, each by those rows' own matrices: the
-         step at screen column x is f.xy + f.zw * x (within the strip the step is f[4].y, f[5].y)
+         step at screen column x is f.xy + f.zw * x (within the strip the step is f[4].y, f[5].y); f.x of
+         1e30: no such row (no Mode 7, or off the picture), and the other side's step is the row's
    ti0: the plane; ti1: its tiles */
 #include "common.glsl"
 layout(location = 0) out vec2 v_t;
