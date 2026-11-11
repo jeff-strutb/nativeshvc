@@ -89,5 +89,6 @@ anti-aliasing against the console's lookup, and `cost` times the drawing case by
 
 What has been run: headless, at the console's size, 116 scenes on Metal, on Vulkan on Linux (dzn, AMD), on Direct3D 12 on Windows
 (AMD) and on Vulkan on Windows (AMD): on each, 112 match, 0 fail and 4 (rotated or scaled Mode 7, and Mode 7 whose scroll
-changes by two texels a line) are listed as differing by design. Not run: the windowed path on Windows and Linux, Android, iOS
-and the turned display. There is no OBJ interlace setting and so no scene for it. A game's pictures at the window's resolution are not compared with an emulator's.
+changes by two texels a line) are listed as differing by design. The example game has been looked at on the iOS Simulator and
+on the Android emulator, upright and turned, and is the picture the Mac draws. Not run: a window on Windows or Linux, a real
+phone, a whole game. A game's pictures at the window's resolution are not compared with an emulator's.

@@ -2,7 +2,7 @@
 
 **Status: decisions A to G settled; approved and under way (the maintainer, 2026-11-08).** The evidence the plan rests on is in appendix A.
 
-## Where the work stands (2026-11-10)
+## Where the work stands (2026-11-11)
 
 API 6.1 (6.0 replaced the renderer; 6.1 added OBJ interlace). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
@@ -26,8 +26,12 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   quarter either way. A turn used to leave the picture stretched about one time in three (the swapchain made while the
   surface still gave its old size); with the swapchain made again until the surface agrees with the window, 12 turns in a
   row came out right.
-- **Not run:** the windowed path (a picture shown in a window) on Windows and on Linux; a real phone. **No OBJ interlace:** the API has no setting for it, so there is no
-  scene (sprites under screen interlace have one). The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
+- **Not run:** a picture shown in a window on Windows or on Linux (the two test machines had no desktop signed in to open
+  one on; the Windows host and the Linux host compile, and nothing of them has been seen on a screen); a real phone; a
+  whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
+- **Open:** the four KNOWN Mode 7 scenes have no pass mark (`m7check` measures them, nothing holds them to a number). The
+  engine's own shaders are compiled into each backend when the engine is built, so the renderer below `rr.h` is not built
+  apart from them, and its kept picture target exists for interlace alone.
 - **Not measured:** the picture's speed on any platform but Metal, and hires, interlace and the turned display on Vulkan and
   D3D12 beyond the scenes above. Results below about speed or about whole games were of the renderer 6.0 replaced and say
   nothing of this one.
