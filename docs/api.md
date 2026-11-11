@@ -195,7 +195,8 @@ typedef struct nshvc_sprite {
     int32_t x, y;                   /* any position */
     uint16_t width, height;         /* any size in tiles x 8; the SNES's sizes are 8 to 64 */
     nshvc_tiles tiles; uint16_t tile;
-    uint8_t palette, priority, hflip, vflip;
+    uint8_t palette, priority, hflip, vflip;    /* vflip of a sprite twice as high as wide (the SNES's 16 x 32 and 32 x 64)
+                                                   is the SNES's: each square half flips in place, the halves keep their places */
 } nshvc_sprite;
 void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen);   /* which screens the sprites are on; until set, main only */
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);

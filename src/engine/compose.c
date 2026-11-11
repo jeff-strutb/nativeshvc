@@ -1243,6 +1243,14 @@ static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
     Piece *p;
     if (cols <= 0 || k1 <= k0)
         return;
+    /* a sprite twice as high as wide, flipped vertically, as the console does: each square half flips in place,
+       so a piece never spans the two (the vertex stage maps by the half the piece starts in) */
+    if (s->vflip && s->height == 2 * s->width && k0 < s->width * 8 && k1 > s->width * 8) {
+        int half = s->width * 8;
+        piece_add(s, r0, k0, half, cols);
+        piece_add(s, r0 + (half - k0), half, k1, cols);
+        return;
+    }
     pieces = (Piece *)grow(pieces, &cap_pieces, npieces + 1, sizeof *pieces);
     p = &pieces[npieces++];
     p->x0 = s->x;

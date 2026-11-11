@@ -56,7 +56,13 @@ void *host_vulkan_loader(void)
     return NULL;
 }
 #else
-void *host_vulkan_loader(void) { return NULL; }
+#include <windows.h>
+/* Vulkan with no window: the system's loader */
+void *host_vulkan_loader(void)
+{
+    HMODULE h = LoadLibraryA("vulkan-1.dll");
+    return h ? (void *)GetProcAddress(h, "vkGetInstanceProcAddr") : NULL;
+}
 #endif
 
 /* no window, so no display (rr_vulkan.c's surface on Linux) */

@@ -7,21 +7,26 @@
 API 6.0. Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
-- **6.0's renderer, what has been run.** On Metal only, at the console's own size, 103 feature scenes (`tests/scenes`) are
-  drawn through the engine and compared byte for byte with the same scenes run in bsnes: 99 match and 4 are KNOWN (the
-  Mode 7 scenes that are rotated or scaled, and the one whose scroll changes by two texels a line, where the engine's
-  anti-aliased picture is meant to differ); none fail. `m7check`'s reference proof (the console's one-point lookup against
-  bsnes) matches on every pixel of the three rotated or scaled scenes; its area figures put the engine a mean of 18 to 45 a colour
-  channel from the area mean of the console's lookup on random texels, and no tolerance is set. `tests/scenes/cost.c`,
-  Metal with the GPU kept busy at 5760 x 3240: four blank tile layers cost 0.31 ms a picture against the backdrop's 0.23,
-  and four solid layers 1.25 ms against one's 1.21; each mixed layer adds about 0.8 ms.
-- **Compiled, never run:** the Vulkan (Windows, Linux, Android) and Direct3D 12 backends, and iOS. No picture of them has
-  been looked at, timed or checked. The turned display (a phone held sideways) has not run on a device.
-  The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
-- **Not checked at all:** the picture's speed on any platform but that Metal run; hires, interlace and the turned display on
-  Vulkan and D3D12. Results below about speed or about whole games were of the renderer 6.0 replaced and say nothing of this one.
+- **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 114 feature scenes
+  (`tests/scenes`) are drawn through the engine and compared byte for byte with the same scenes run in bsnes, on four
+  paths: Metal; Vulkan on Linux (dzn, AMD); Direct3D 12 on Windows (AMD); Vulkan on Windows (AMD). On each, 110 match, 0 fail
+  and 4 are KNOWN (the Mode 7 scenes that are rotated or scaled, and the one whose scroll changes by two texels a line,
+  where the engine's anti-aliased picture is meant to differ). `m7check` on Metal, worst / mean difference a colour channel
+  from the exact area mean of the console's lookup on random texels (no tolerance is set): rot 256 x 224 28 / 2.22; rot
+  768 x 672 34 / 1.14; clear 256 27 / 0.41; clear 768 29 / 0.15; tile0 256 21 / 0.39; tile0 768
+  23 / 0.14; its reference proof (the console's one-point lookup against bsnes) matches on every pixel of the three rotated
+  or scaled scenes. `tests/scenes/cost.c`, Metal with the GPU kept busy at 5760 x 3240, before the pixel clean-up, after
+  it, after solid sprites: four mixed tile layers 4.08, 3.39, 3.41 ms; four solid 1.29, 1.13, 1.13; colour maths 2.82,
+  2.61, 2.60; see-through sprites 1.49, 1.58, 1.59 (about 6% more since the clean-up, its cause proposed and not changed);
+  solid sprites 1.70, 1.77, 1.02.
+- **Not run:** the windowed path (a picture shown in a window) on Windows and on Linux; Vulkan on Android and iOS; the
+  turned display (a phone held sideways) on any device. **No OBJ interlace:** the API has no setting for it, so there is no
+  scene (sprites under screen interlace have one). The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
+- **Not measured:** the picture's speed on any platform but Metal, and hires, interlace and the turned display on Vulkan and
+  D3D12 beyond the scenes above. Results below about speed or about whole games were of the renderer 6.0 replaced and say
+  nothing of this one.
 
-- **Not run:** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. Anything on real Windows, or on a real phone, iPhone or controller. Touch input.
+- **Not run (older record):** D3D12 presenting to a window, because the test machine lacks the swap-chain library it needs under Wine. A real phone, iPhone or controller. Touch input.
 - **Not measured:** speed on the minimum-spec machines decision F names, and speed per thread on platforms other than macOS.
 - **Feature scenes:** `tests/scenes/scenes.py` makes each scene twice from one description, a test ROM run in bsnes and
   a scene file the engine plays headless at the console's size; they must match byte for byte. This is for the console's

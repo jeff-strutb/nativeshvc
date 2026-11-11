@@ -87,6 +87,7 @@ converted game's sound with the original's, and for `tests/scenes/scenes.py`, wh
 and as a scene for the engine and compares the two byte for byte at the console's size. `m7check` measures Mode 7's
 anti-aliasing against the console's lookup, and `cost` times the drawing case by case.
 
-What has been run: on Metal, 103 scenes, of which 99 match and 4 (rotated or scaled Mode 7, and Mode 7 whose scroll changes by two
-texels a line) are listed as differing by design; none fail. Vulkan and Direct3D 12 compile and have not been
-run. A game's pictures at the window's resolution are not compared with an emulator's.
+What has been run: headless, at the console's size, 114 scenes on Metal, on Vulkan on Linux (dzn, AMD), on Direct3D 12 on Windows
+(AMD) and on Vulkan on Windows (AMD): on each, 110 match, 0 fail and 4 (rotated or scaled Mode 7, and Mode 7 whose scroll
+changes by two texels a line) are listed as differing by design. Not run: the windowed path on Windows and Linux, Android, iOS
+and the turned display. There is no OBJ interlace setting and so no scene for it. A game's pictures at the window's resolution are not compared with an emulator's.

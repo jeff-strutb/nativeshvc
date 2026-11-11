@@ -13,7 +13,9 @@
  *                       (every texel not 0) or mixed (half its texels 0, in a
  *                       checker); each layer at its own scroll, so tiles do not
  *                       line up
- *   sprites             128 sprites of 16 x 16 over the screen, no tile layers
+ *   sprites             128 sprites of 16 x 16 over the screen, no tile layers,
+ *                       their tiles mixed
+ *   sprites-solid       the same sprites, their tiles solid
  *   maths               tiles-solid-2, one layer on the sub screen and add-half
  *                       colour maths on the other
  * Prints one line at the end: the case, the updates run, the wall time from
@@ -89,7 +91,7 @@ static void init(void)
     } else if (which == C_SPRITES) {
         uint8_t *d = (uint8_t *)malloc(32 * 256);
         sprite_tiles = nshvc_tiles_create(4, 256, 1);
-        tile_bytes(d, K_MIXED, 4, 256);
+        tile_bytes(d, kind, 4, 256);
         nshvc_tiles_write(sprite_tiles, 0, d, 256, NSHVC_TILES_PLANAR);
         free(d);
     }
@@ -163,7 +165,8 @@ static void finish(void)
 static int parse(const char *s)
 {
     if (!strcmp(s, "backdrop")) { which = C_BACKDROP; return 1; }
-    if (!strcmp(s, "sprites")) { which = C_SPRITES; return 1; }
+    if (!strcmp(s, "sprites")) { which = C_SPRITES; kind = K_MIXED; return 1; }
+    if (!strcmp(s, "sprites-solid")) { which = C_SPRITES; kind = K_SOLID; return 1; }
     if (!strcmp(s, "maths")) { which = C_MATHS; kind = K_SOLID; layers = 2; return 1; }
     if (!strncmp(s, "tiles-", 6)) {
         const char *k = s + 6;
@@ -186,7 +189,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--case"))
             case_name = argv[i + 1];
     if (!parse(case_name)) {
-        fprintf(stderr, "usage: cost --case backdrop|sprites|maths|tiles-{blank,solid,mixed}-{1,2,3,4} [--headless --updates N]\n");
+        fprintf(stderr, "usage: cost --case backdrop|sprites|sprites-solid|maths|tiles-{blank,solid,mixed}-{1,2,3,4} [--headless --updates N]\n");
         return 2;
     }
     g.title = "Cost";

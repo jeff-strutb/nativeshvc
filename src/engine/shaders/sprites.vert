@@ -27,8 +27,15 @@ void main()
     vec2 t = l0 + (p - p0);
     if (((n >> 21) & 1u) != 0u)
         t.x = float((size & 0xFFFFu) * 8u) - t.x;
-    if (((n >> 22) & 1u) != 0u)
-        t.y = float((size >> 16) * 8u) - t.y;
+    if (((n >> 22) & 1u) != 0u) {
+        float w = float((size & 0xFFFFu) * 8u), h = float((size >> 16) * 8u);
+        /* the console's flip of a sprite twice as high as wide: each square half flips in place and the halves
+           keep their places (a piece lies in one half: l0.y, its first row, says which) */
+        float top = h;
+        if (h == 2.0 * w)
+            top = l0.y < w ? w : 3.0 * w;
+        t.y = top - t.y;
+    }
     v_t = t * float(u.i[0].z);
     v_s = uvec2(n, size);
     v_p = p;

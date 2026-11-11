@@ -6,8 +6,10 @@ for bsnes (through tests/oracle) and a scene file for the engine's API
   scenes.py --oracle ORACLE --core CORE --player PLAYER --out DIR [--only A,B]
   scenes.py ... --prove         one scene changed on the engine's side only: must fail
 
-A scene listed in KNOWN differs by design and is reported so, never as passing. 103 scenes: on Metal, 99 match and 4 are KNOWN
-(rotated or scaled Mode 7, and Mode 7 whose scroll changes by two texels a line); none fail; no other backend has run them.
+A scene listed in KNOWN differs by design and is reported so, never as passing. 114 scenes, 4 listed KNOWN
+(rotated or scaled Mode 7, and Mode 7 whose scroll changes by two texels a line). Headless, each of Metal, Vulkan on Linux
+(dzn, AMD), Direct3D 12 on Windows (AMD) and Vulkan on Windows (AMD) gave 110 match, 0 fail, 4 KNOWN; the windowed path
+has not been run. OBJ interlace has no setting in the API, so no scene.
 
 The engine plays each scene headless with the picture at the console's own
 size, a window pixel for a picture pixel (RR_SIZE the oracle's shot's size,
@@ -66,6 +68,7 @@ BPP = [[2, 2, 2, 2], [4, 4, 2, 0], [4, 4, 0, 0], [8, 4, 0, 0], [8, 2, 0, 0], [4,
 CHAR_BASE = lambda n: (n + 1) * 0x1000
 MAP_BASE = lambda n: 0x6000 + n * 0x400
 SIZES = {0: (1, 2), 1: (1, 4), 2: (1, 8), 3: (2, 4), 4: (2, 8), 5: (4, 8)}    # OBSEL's size selects 0-5: the tiles a side
+RECT = {6: ((2, 4), (4, 8)), 7: ((2, 4), (4, 4))}      # selects 6 and 7: small and large sprites as (tiles wide, tiles high); 6 is 16 x 32 and 32 x 64, 7 is 16 x 32 and 32 x 32
 
 
 class Scene:
@@ -149,8 +152,9 @@ class Scene:
                 hi[i >> 2] |= int(big) << (2 * (i & 3) + 1)
                 sz = 2 if big else 1
                 self.f.append(f"sprite {x} {y} {sz} {sz} {tid} {tile} {pal} {prio} {h} {v}")
-            else:
-                oam += bytes([0, 0xE0, 0, 0])
+            else:                       # parked left of the screen (x = -128), where no mode or overscan shows it
+                oam += bytes([0x80, 0xE0, 0, 0])
+                hi[i >> 2] |= 1 << (2 * (i & 3))
         self.t.oam(bytes(oam) + bytes(hi))
         self.tm |= (1 if main else 0) << 4
         self.ts |= (1 if sub else 0) << 4
@@ -292,13 +296,13 @@ class Scene:
         self.f.append(f"map {mid} 32 32 {words.hex()}")
         self.f.append(f"layer {n} {tid} {mid} 1 0 8 0 0 1 1 0 -1")
 
-    def sprites_given(self, tile_bytes, count, sprites, sel=0, limit=True):
+    def sprites_given(self, tile_bytes, count, sprites, sel=0, limit=True, first=0):
         """sprites the scene gives exactly, in OAM order: (x, y, big, tile, pal, prio, h, v); tile_bytes the
         sprite tiles from VRAM word 0 (count of them, 256 or 512), sel the size select, OBSEL's bits 5-7"""
         tid = self.id()
         self.t.vram(0, tile_bytes)
         self.t.w(0x2101, sel << 5)
-        small, large = SIZES[sel]
+        small, large = RECT[sel] if sel in RECT else ((SIZES[sel][0],) * 2, (SIZES[sel][1],) * 2)
         self.f.append(f"tiles {tid} 4 {count} {tile_bytes.hex()}")
         oam, hi = bytearray(), [0] * 32
         for i in range(128):
@@ -306,15 +310,69 @@ class Scene:
                 x, y, big, tile, pal, prio, h, v = sprites[i]
                 oam += bytes([x & 255, y, tile & 255, tile >> 8 & 1 | pal << 1 | prio << 4 | h << 6 | v << 7])
                 hi[i >> 2] |= int(big) << (2 * (i & 3) + 1)
-                sz = large if big else small
-                self.f.append(f"sprite {x} {y} {sz} {sz} {tid} {tile} {pal} {prio} {h} {v}")
-            else:
-                oam += bytes([0, 0xE0, 0, 0])
+                sw, sh = large if big else small
+                self.f.append(f"sprite {x} {y} {sw} {sh} {tid} {tile} {pal} {prio} {h} {v}")
+            else:                       # parked left of the screen (x = -128), where no mode or overscan shows it
+                oam += bytes([0x80, 0xE0, 0, 0])
+                hi[i >> 2] |= 1 << (2 * (i & 3))
         self.t.oam(bytes(oam) + bytes(hi))
         self.tm |= 0x10
         self.f.append(f"spriteshow 1 0")
+        if first:
+            # OAM priority rotation: the sprite OAMADDR names (its word address / 2) is first in priority
+            self.t.w(0x2102, first * 2)
+            self.t.w(0x2103, 0x80)
+            self.f.append(f"spritefirst {first}")
         if limit:
             self.f.append("limits 32 34 1")
+
+    def sprites_rect(self, sel, count, flip_v=False):
+        """random sprites of a rectangular size select (6 or 7), horizontal flips only unless flip_v"""
+        data = self.r.randbytes(32 * 256)
+        sprites = []
+        for i in range(count):
+            sprites.append((self.r.randrange(256), self.r.randrange(224), self.r.getrandbits(1), self.r.randrange(256),
+                            self.r.randrange(8), self.r.randrange(4), self.r.getrandbits(1), self.r.getrandbits(1) if flip_v else 0))
+        self.sprites_given(data, 256, sprites, sel)
+
+    def reg_spans(self, reg, spans, fields):
+        """a register of the PPU by HDMA in spans of lines, each a single table entry (sent on its first line
+        only): spans (lines, register value, [the engine's value for each of `fields`]); the engine's `lines`
+        only where a span starts, as the register changes only there"""
+        ch = self.next_ch
+        self.next_ch += 1
+        table, line = bytearray(), 0
+        for n, v, evs in spans:
+            assert 1 <= n <= 127
+            table += bytes([n, v & 255])
+            for field, ev in zip(fields, evs):
+                self.f.append(f"lines {field} {line} 1 {ev}")
+            line += n
+        assert line == 224
+        table += b"\0"
+        self.t.hdma(ch, 0x00, reg & 255, bytes(table))
+        self.tables.append((ch, 0x00, reg & 255, bytes(table)))
+        self.hdma_mask |= 1 << ch
+
+    def fixed_by_line(self, colours):
+        """the fixed colour for each line by HDMA: its three components are three writes of one register, so
+        two channels (red and green as two writes of one entry, then blue), each every line"""
+        a = self.next_ch
+        self.next_ch += 1
+        b = self.next_ch
+        self.next_ch += 1
+        t1, t2 = bytearray(), bytearray()
+        for c in colours:
+            t1 += bytes([1, 0x20 | (c & 31), 0x40 | (c >> 5 & 31)])
+            t2 += bytes([1, 0x80 | (c >> 10 & 31)])
+        t1 += b"\0"
+        t2 += b"\0"
+        self.t.hdma(a, 0x02, 0x32, bytes(t1))
+        self.t.hdma(b, 0x00, 0x32, bytes(t2))
+        self.tables.append((a, 0x02, 0x32, bytes(t1)))
+        self.tables.append((b, 0x00, 0x32, bytes(t2)))
+        self.hdma_mask |= 1 << a | 1 << b
+        self.f.append(f"lines {LINE['NSHVC_LINE_FIXED']} 0 {len(colours)} " + " ".join(str(c) for c in colours))
 
     def sprites_random(self, sel, second=False, count=128):
         """random sprites of one size select, over a random tile sheet of 256 tiles (512 with the second table)"""
@@ -521,6 +579,28 @@ def solid_order_scene(name, big):
     return s
 
 
+def rotation_scene(name, count, first):
+    """sprites piled in one place over a solid layer, some with texel 0 in them, the priority rotated so that
+    sprite `first` of the OAM is first in priority: the first sprite to show a pixel keeps it. With more than
+    32 on a line, the rotation also decides which are dropped"""
+    s = Scene(name)
+    s.mode(1)
+    s.bg_labelled(0, solid_tile(4, 1) * 2, lambda x, y: 1 | ((x // 3 + y // 3) & 1) << 13, 2)
+    sheet = bytearray()
+    for t in range(256):
+        sheet += checker_tile(4, 2) if t % 3 == 1 else solid_tile(4, 1)
+    sprites = []
+    for i in range(count):
+        if count > 32:
+            x, y = (i * 5) % 248, 100 + i % 5          # all on the same lines: more than the 32 a line keeps
+        else:
+            cell = i % 6                               # six piles of sprites, each a little off the one before
+            x, y = 20 + (cell % 3) * 70 + (i // 6) * 3, 30 + (cell // 3) * 100 + (i // 6) * 2
+        sprites.append((x, y, 1 if count <= 32 else 0, (i * 7) % 256, i % 8, 0, 0, 0))
+    s.sprites_given(bytes(sheet), 256, sprites, first=first)
+    return s
+
+
 def more_scenes():
     # ---- colour maths ----
     for c in range(4):
@@ -617,6 +697,28 @@ def more_scenes():
     yield first_sprite_scene()
     yield solid_order_scene("sprite-solid-order", False)
     yield solid_order_scene("sprite-solid-order-big", True)
+    for sel in (6, 7):
+        s = Scene(f"sprites-size{sel}"); s.mode(1); s.sprites_rect(sel, 48); yield s
+        s = Scene(f"sprites-size{sel}-vflip"); s.mode(1); s.sprites_rect(sel, 48, flip_v=True); yield s
+    yield rotation_scene("sprite-rotation", 24, 11)
+    yield rotation_scene("sprite-rotation-limit", 48, 20)
+    # ---- the picture's state changing by line ----
+    s = Scene("line-fixed-colour"); s.mode(1); s.bg(0); s.bg(1); s.sprites(32); s.blend(fixed=True, half=True)
+    s.fixed_by_line([(i * 3) & 31 | ((i * 5) & 31) << 5 | ((i * 7) & 31) << 10 for i in range(224)]); yield s
+    s = Scene("line-mosaic"); s.mode(1); s.bg(0, mosaic=4); s.bg(1, mosaic=4)
+    # sizes change at the start of a block of the one before (the console's block count runs on, and a change
+    # inside a block would shift the rows it samples): 16 = 4 x 4, 32 = 4 x 8, 16 = 8 x 2, 64 = 4 x 16, 30 = 10 x 3, 66 = 11 x 6
+    spans = [(n, 0x03 | (z - 1) << 4, [z, z]) for z, n in ((4, 16), (8, 32), (2, 16), (16, 64), (3, 30), (6, 66))]
+    s.reg_spans(0x06, spans, [LINE["NSHVC_LINE_MOSAIC"], LINE["NSHVC_LINE_MOSAIC"] + 1]); yield s
+    s = Scene("line-tile-size"); s.mode(1); s.bg(0, big=True, scroll=(21, 9)); s.bg(1, big=True, scroll=(7, 30))
+    big1 = [(i // 20) & 1 for i in range(224)]
+    big2 = [(i // 28) & 1 for i in range(224)]
+    s.reg_by_line(0x05, [1 | a << 4 | b << 5 for a, b in zip(big1, big2)], LINE["NSHVC_LINE_TILE_SIZE"], [8 + 8 * a for a in big1])
+    s.f.append(f"lines {LINE['NSHVC_LINE_TILE_SIZE'] + 1} 0 224 " + " ".join(str(8 + 8 * b) for b in big2)); yield s
+    # ---- interlace ----
+    s = Scene("interlace-sprites"); s.mode(5); s.bg(0); s.bg(1); s.sprites(32); s.t.w(0x2133, 1); s.interlaced = True; yield s
+    s = Scene("overscan-interlace"); s.mode(5); s.bg(0, scroll=(11, 5)); s.bg(1, scroll=(70, 33)); s.sprites(32)
+    s.t.w(0x2133, 5); s.interlaced = True; s.overscan = True; yield s
     # ---- modes ----
     yield opt_scene(6, sub=True)
     s = Scene("direct-colour-mode4"); s.mode(4); s.bg(0, direct=True); s.bg(1); s.direct = 1; s.t.w(0x2130, 1); yield s

@@ -41,10 +41,11 @@
  * colour through the GPU's anisotropic filter along each pixel's footprint, from a plane with
  * smaller levels each the box mean of the level before, in the palette most rows use (others
  * kept at a quarter's side as a difference), the footprint's down-step estimated from the rows'
- * own matrices; where a pixel spans a texel or less it mixes only the two texels an edge falls
- * between by how much of the pixel each covers; the outside of the plane mixed by the footprint's
- * share; edges of the geometry by 8 or 4 samples. The reference is the exact area mean, so its
- * difference from the engine is what those approximations amount to, not an error of either. */
+ * own matrices; where a pixel's footprint is no more than a texel long it takes the exact area
+ * mean over the footprint's parallelogram, each texel by the share of the area inside it (the
+ * texel itself where the footprint lies in one); the outside of the plane mixed by that share;
+ * edges of the geometry by 8 or 4 samples. The reference takes N x N points, so its own
+ * quantisation (1/64 of a weight) is part of any difference where the engine is exact. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

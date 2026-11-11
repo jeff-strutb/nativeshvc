@@ -574,8 +574,8 @@ class Test:
         self.dma(0, 0x08, 0x22, zero, 512)        # CGRAM
         hidden = bytearray()
         for i in range(128):
-            hidden += bytes([0x00, 0xE0, 0x00, 0x00])
-        hidden += bytes(32)
+            hidden += bytes([0x80, 0xE0, 0x00, 0x00])
+        hidden += bytes([0x55] * 32)      # x's ninth bit: at x = -128, left of the screen, so overscan's rows do not show them
         self.oam(hidden)
 
     def show(self, inidisp=0x0F):
