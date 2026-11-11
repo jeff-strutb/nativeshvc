@@ -1,4 +1,4 @@
-# nativeshvc
+# nativeshvc - a true native Super Nintendo / Super Famicom
 
 nativeshvc is a native engine for decompiled SNES games. It provides what the SNES provided, natively, with zero emulation.
 A game uses it once its C is converted to native code calling nativeshvc's API. Games that are not converted can still be
