@@ -22,8 +22,11 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   the scroll-by-line scene differ by at most 2 of 255 a channel (the stored levels' rounding), where the GPUs' own
   filters differed freely. On the iOS Simulator the example game runs and its picture, looked at in both
   landscape turns, is the one the Mac draws of the same game.
-- **Not run:** the windowed path (a picture shown in a window) on Windows and on Linux; Vulkan on Android and iOS; the
-  turned display (a phone held sideways) on any device. **No OBJ interlace:** the API has no setting for it, so there is no
+- **Android emulator (Vulkan), looked at:** the example game's picture is the Mac's of the same game, upright and turned a
+  quarter either way. A turn used to leave the picture stretched about one time in three (the swapchain made while the
+  surface still gave its old size); with the swapchain made again until the surface agrees with the window, 12 turns in a
+  row came out right.
+- **Not run:** the windowed path (a picture shown in a window) on Windows and on Linux; a real phone. **No OBJ interlace:** the API has no setting for it, so there is no
   scene (sprites under screen interlace have one). The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
 - **Not measured:** the picture's speed on any platform but Metal, and hires, interlace and the turned display on Vulkan and
   D3D12 beyond the scenes above. Results below about speed or about whole games were of the renderer 6.0 replaced and say

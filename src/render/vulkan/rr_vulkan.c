@@ -104,6 +104,7 @@ static void *sc_window;                 /* the window the surface is made on */
 static int sc_w, sc_h;                  /* the window's size the swapchain was made (or tried) for */
 static int sc_mirror;                   /* the picture mirrored, before it is turned, when drawn into the window's images */
 static int sc_ew, sc_eh;                /* the picture's size: the surface's in the app's orientation */
+static int sc_turning;                  /* frames in a row the surface gave the window's size with its sides exchanged */
 static int sc_iw, sc_ih;                /* the images', in the display's own orientation */
 static int sc_turns;                    /* quarter turns clockwise the picture is given in them */
 /* render passes, [load]: cleared, or what it held kept; the window's is in the swapchain's format */
@@ -2065,6 +2066,16 @@ int rr_draw(rr_frame *f)
                 sc_ok = swapchain_make(ww, wh);
                 if (sc_lost)
                     window_drop();      /* made again from the window next frame */
+                /* a display just turned: the window already has its new size while the surface may still
+                   give its old one, the same sides exchanged. A swapchain made of that is stretched to the
+                   window by the system and nothing says so afterwards, so it is made again next frame, until
+                   the surface has caught up (or, after two seconds of frames, is taken at its word) */
+                if (sc_ok && ww != wh && sc_ew == wh && sc_eh == ww && sc_turning < 120) {
+                    sc_turning++;
+                    sc_w = sc_h = 0;
+                } else {
+                    sc_turning = 0;
+                }
             }
         }
         if (surface && ww >= 1 && wh >= 1 && sc_ok) {
