@@ -85,10 +85,11 @@
 #include <stdint.h>
 
 #define RR_SIDES 8              /* the most side targets a frame draws into */
-#define RR_PROGRAMS 20          /* programs compiled into the backend */
-#define RR_SHOW 17              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise: the engine sets neither, the backend does where it gives an interlaced picture back unturned) */
-#define RR_MIPS 18              /* a level made from the one before (binding 2), for a backend that needs it */
-#define RR_MIPS_LAYER 19        /* the same for a layer of an array (binding 2, an array of one layer) */
+#define RR_PROGRAMS 21          /* programs compiled into the backend */
+#define RR_CLIP_PROGRAM 17      /* the engine's instanced mesh program (programs.h P_LIST_MESH): its vertex stage writes clip distances, which a Vulkan device without shaderClipDistance lacks: it is then left out and its draws skipped */
+#define RR_SHOW 18              /* a texture copied a pixel for a pixel (binding 2, the target's size; i[0].y mirrored, then i[0].x quarter turns clockwise: the engine sets neither, the backend does where it gives an interlaced picture back unturned) */
+#define RR_MIPS 19              /* a level made from the one before (binding 2), for a backend that needs it */
+#define RR_MIPS_LAYER 20        /* the same for a layer of an array (binding 2, an array of one layer) */
 #define RR_TEX_SLOTS 11         /* bindings 2, 3, 4: colour textures; 5, 6, 7: integer textures; 8, 9, 10: colour arrays; 11, 12: colour textures */
 
 /* texture formats */

@@ -21,6 +21,7 @@
 #define P_SPRITES_SOLID 14 /* sprites all of whose tiles are solid: sprites.vert, a fragment stage that rejects nothing */
 #define P_SPRITES_P2 15 /* sprites from a tile set whose texels a side and tiles a row are powers of two: shifts for the divisions */
 #define P_SPRITES_SOLID_P2 16 /* both */
+#define P_LIST_MESH 17  /* a draw list's instanced mesh: projected in the vertex stage, list.frag's fragment stage */
 
 /* the stencil's bits in a screen's target */
 #define SB_SPRITE 1     /* a sprite's pixel is here: those after it are hidden */

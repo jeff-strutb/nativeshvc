@@ -18,7 +18,7 @@ have_dxc=1
 command -v "$DXC" >/dev/null || have_dxc=
 [ -n "$have_dxc" ] || echo "shaders/build.sh: warning: dxc is not installed: $here/../d3d12/rr_dxil.h is left as it was, out of date" >&2
 # in rr.h's order: the engine's programs (engine/shaders/programs.h), then the renderer's own
-programs="$engine/fill $engine/tiles $engine/blocks $engine/mode7 $engine/sprites $engine/image $engine/list $engine/lines $engine/field $engine/plane $engine/tint $engine/overlay $engine/placed $engine/tiles_solid $engine/sprites_solid $engine/sprites_p2 $engine/sprites_solid_p2 $here/show $here/mips $here/mips_layer"
+programs="$engine/fill $engine/tiles $engine/blocks $engine/mode7 $engine/sprites $engine/image $engine/list $engine/lines $engine/field $engine/plane $engine/tint $engine/overlay $engine/placed $engine/tiles_solid $engine/sprites_solid $engine/sprites_p2 $engine/sprites_solid_p2 $engine/list_mesh $here/show $here/mips $here/mips_layer"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 spv=$here/../vulkan/rr_spv.h

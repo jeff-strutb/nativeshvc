@@ -1,4 +1,4 @@
-# The native engine's API, version 6.1
+# The native engine's API, version 6.2
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -291,6 +291,46 @@ typedef struct nshvc_vertex {
   one, the vertices' colours, mixed across the triangle.
 - Jobs may fill separate lists in parallel.
 
+**Instanced meshes** (6.2) draw one model many times with its projection done on the GPU, for a game that draws the same few
+meshes (flat-shaded triangles, a colour a face, or textured) a thousand times a picture:
+
+```c
+typedef struct nshvc_mesh { uint32_t id; } nshvc_mesh;
+typedef struct nshvc_mesh_vertex { float x, y, z; float u, v; uint32_t colour; } nshvc_mesh_vertex;   /* model space; 0xAARRGGBB */
+nshvc_mesh nshvc_mesh_create(uint32_t max_vertices);                                 /* up to 262,144 */
+void nshvc_mesh_write(nshvc_mesh m, const nshvc_mesh_vertex *v, uint32_t count);    /* triangles; kept until written again */
+typedef struct nshvc_view {
+    float eye[3];                   /* the eye's place in the world */
+    float rot[9];                   /* world to view, row major: view = rot * (world - eye) */
+    float f, cx, cy;                /* screen x = cx + f * X / Z, y = cy + f * Y / Z, in the list's pixels */
+    float near;                     /* nothing nearer than this Z is drawn (above 0) */
+    float depth_a, depth_b, depth_max;   /* the list's depth z = depth_a - depth_b / Z, kept from 0 to depth_max */
+} nshvc_view;
+typedef struct nshvc_instance { float x, y, z, size; } nshvc_instance;               /* world place, uniform scale */
+void nshvc_draw_mesh(nshvc_draw_list d, nshvc_mesh m, const nshvc_view *view, const nshvc_instance *instances,
+                     uint32_t count, const nshvc_material *mat);
+```
+
+- A mesh is kept on the GPU between pictures: one not written in a picture costs nothing to upload, and a write sends that
+  mesh's written vertices only (24 bytes a vertex: a mesh of 1,000 triangles written every picture is 72 KB). Each
+  `nshvc_draw_mesh` sends only its instances (16 bytes each) and the view (80), in the frame's words, and is one instanced
+  draw: the mesh's vertices once for each instance, with no work for the CPU per vertex or per instance but that copy.
+- For each vertex of each instance, in the vertex stage: world = instance place + size * model, then view = `rot` * (world -
+  `eye`), then the screen position and depth of the view, with `w` = Z for the material's texture coordinates, as for
+  `nshvc_draw_tris`. Depth is the list's: a triangle of `nshvc_draw_tris` whose vertices carry `z = depth_a - depth_b / Z` and
+  `w = Z`, and a mesh at the same screen point and Z, have the same depth to within float rounding, so each hides the
+  other correctly, and of equal depths the later is drawn (within a call, the later instance and the later triangle).
+- It is cut on the GPU, by clip distances, so a triangle across a limit is cut and not dropped or wrapped: at Z = `near`,
+  and where the list's z would be below 0 or above `depth_max` (what would lie outside is not drawn, not drawn at the
+  limit). The list's own rectangle clips as it does the list's other drawing. A vulkan device without `shaderClipDistance`
+  does not draw meshes (the engine says so once).
+- Back faces are not culled: depth decides. The material is as `nshvc_draw_tris`'s: no image, the vertex colours; an image
+  (full colour, or indexed through the palette) at `u`, `v` with perspective; a game's shader and its inputs. The list's
+  samples, windows, colour maths and its layer's place apply as to the rest of the list. The fill rule `NSHVC_FILL_EXACT`
+  moves given vertices to whole pixels, so it does not apply to projected ones: a mesh's edges are the smooth rule's.
+- `nshvc_mesh_create` and `nshvc_mesh_write` are the game thread's (as the tile and map calls); `nshvc_draw_mesh` is a
+  draw list's, so a job may call it for its own list.
+
 ```c
 nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine's shading language, a fragment-only subset
                                                          of GLSL 4.5, compiled at build time for every backend (section 13) */
@@ -438,7 +478,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.1: it adds `nshvc_sprites_interlace`. 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.2: 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.

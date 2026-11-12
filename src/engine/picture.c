@@ -21,7 +21,8 @@
 eng_tiles eng_tiles_of[ENG_OBJECTS];
 eng_map eng_maps_of[ENG_OBJECTS];
 eng_image eng_images_of[ENG_OBJECTS];
-uint32_t eng_ntiles = 1, eng_nmaps = 1, eng_nimages = 1;   /* 0: none */
+eng_mesh eng_meshes_of[ENG_OBJECTS];
+uint32_t eng_ntiles = 1, eng_nmaps = 1, eng_nimages = 1, eng_nmeshes = 1;   /* 0: none */
 eng_list eng_lists_of[ENG_LISTS];
 uint32_t eng_nlists = 1;
 
@@ -516,7 +517,7 @@ void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height)
     }
     l->w = width;
     l->h = height;
-    l->nv = l->nc = 0;
+    l->nv = l->nc = l->nmw = 0;
     l->rule = NSHVC_FILL_SMOOTH;
 }
 
@@ -633,6 +634,99 @@ void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, c
         return;
     }
     list_add(l, v, count, 0, m);
+}
+
+/* ---- meshes ---- */
+nshvc_mesh nshvc_mesh_create(uint32_t max_vertices)
+{
+    static const char call[] = "nshvc_mesh_create";
+    nshvc_mesh r = { 0 };
+    eng_mesh *o;
+    uint32_t words, rows;
+    if (!eng_on(call, ENG_GAME))
+        return r;
+    if (!max_vertices || max_vertices > 262144 || eng_nmeshes == ENG_OBJECTS) {
+        eng_report(call, "%u vertices", max_vertices);
+        return r;
+    }
+    r.id = eng_nmeshes++;
+    o = &eng_meshes_of[r.id];
+    o->tex = eng_texture_id();
+    o->max = max_vertices;
+    o->count = 0;
+    words = max_vertices * 6;
+    rows = (words + ENG_MESH_WIDTH - 1) / ENG_MESH_WIDTH;
+    eng_texture_create(&frames[cur], o->tex, ENG_MESH_WIDTH, rows, RR_R32U, 0);
+    return r;
+}
+
+void nshvc_mesh_write(nshvc_mesh m, const nshvc_mesh_vertex *v, uint32_t count)
+{
+    static const char call[] = "nshvc_mesh_write";
+    eng_mesh *o;
+    uint32_t words, whole, k;
+    uint32_t *out;
+    if (!eng_on(call, ENG_GAME))
+        return;
+    if (!m.id || m.id >= eng_nmeshes || (count && !v) || count % 3 || count > eng_meshes_of[m.id].max) {
+        eng_report(call, "mesh %u, %u vertices", m.id, count);
+        return;
+    }
+    o = &eng_meshes_of[m.id];
+    o->count = count;
+    if (!count)
+        return;
+    /* the vertices' words, packed six each from the texture's first word: whole rows, then the part of the last */
+    words = count * 6;
+    whole = words / ENG_MESH_WIDTH;
+    if (whole) {
+        out = (uint32_t *)(void *)eng_texture_write(&frames[cur], o->tex, 0, 0, ENG_MESH_WIDTH, whole, 4);
+        memcpy(out, v, (size_t)whole * ENG_MESH_WIDTH * 4);
+    }
+    k = words - whole * ENG_MESH_WIDTH;
+    if (k) {
+        out = (uint32_t *)(void *)eng_texture_write(&frames[cur], o->tex, 0, whole, k, 1, 4);
+        memcpy(out, (const uint32_t *)(const void *)v + (size_t)whole * ENG_MESH_WIDTH, (size_t)k * 4);
+    }
+}
+
+void nshvc_draw_mesh(nshvc_draw_list d, nshvc_mesh m, const nshvc_view *view, const nshvc_instance *inst, uint32_t count,
+                     const nshvc_material *mat)
+{
+    eng_list *l = list_of("nshvc_draw_mesh", d);
+    eng_list_cmd *c;
+    float *w;
+    uint32_t k;
+    if (!l || !count)
+        return;
+    if (!m.id || m.id >= eng_nmeshes || !view || !inst || !(view->near > 0.0f) || count > 1u << 24) {
+        eng_report("nshvc_draw_mesh", "mesh %u, %u instances", m.id, count);
+        return;
+    }
+    l->mw = (float *)grow(l->mw, &l->cap_mw, l->nmw + ENG_VIEW_WORDS + (size_t)count * 4, sizeof *l->mw);
+    l->cmd = (eng_list_cmd *)grow(l->cmd, &l->cap_c, l->nc + 1, sizeof *l->cmd);
+    w = l->mw + l->nmw;
+    memset(w, 0, ENG_VIEW_WORDS * sizeof *w);
+    memcpy(w, view->eye, 3 * sizeof *w);
+    memcpy(w + 3, view->rot, 9 * sizeof *w);
+    w[12] = view->f; w[13] = view->cx; w[14] = view->cy; w[15] = view->near;
+    w[16] = view->depth_a; w[17] = view->depth_b; w[18] = view->depth_max;
+    for (k = 0; k < count; k++)
+        memcpy(w + ENG_VIEW_WORDS + (size_t)k * 4, &inst[k], 4 * sizeof *w);
+    c = &l->cmd[l->nc++];
+    memset(c, 0, sizeof *c);
+    c->mesh = m.id;
+    c->ninst = count;
+    c->moff = (uint32_t)l->nmw;
+    if (mat) {
+        if (mat->image.id && mat->image.id < eng_nimages)
+            c->image = mat->image.id;
+        else if (mat->image.id)
+            eng_report("nshvc_draw", "image %u", mat->image.id);
+        c->shader = mat->shader.id;
+        memcpy(c->inputs, mat->inputs, sizeof c->inputs);
+    }
+    l->nmw += ENG_VIEW_WORDS + (size_t)count * 4;
 }
 
 void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, const nshvc_material *m)

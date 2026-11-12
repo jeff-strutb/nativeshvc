@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 6.1. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 6.2. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ![How a game and nativeshvc fit together: the game calls the API and the engine calls the game; the engine's parts; the picture's layers and how each picture reaches the window through the renderer and the host](docs/architecture.svg)
 
@@ -33,7 +33,8 @@ The engine is at API 6.1. `docs/native-engine-plan.md` opens with what has and h
   8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
   say which part of it is shown.
 - **A drawing pipeline.** A game's own triangles, lines and images, such as its 3D, drawn straight into the frame in a
-  layer's place among the layers and sprites, with depth, and with game shaders compiled for every backend at build time.
+  layer's place among the layers and sprites, with depth, and with game shaders compiled for every backend at build time;
+  and instanced meshes: a model kept on the GPU, drawn at thousands of places a picture, projected in the vertex stage.
 - **Sound.** Voices, envelopes, noise, pitch modulation and echo by the SNES's rules at 32,040 Hz, with the game's music code
   on the audio thread.
 - **Input.** Every keyboard key, controller button, stick and trigger, the pointer and every finger on a touch screen,
@@ -84,7 +85,8 @@ memory. By default there are none.
 ## Checks
 
 Build with `-DNSHVC_TESTS=ON`. `tests/scenes/feature.c` checks draw lists, shaders, images, overlays, saves, input replay
-and jobs against values worked out by hand. `tests/oracle` runs a ROM in bsnes for `tools/nshvc-check`, which compares a
+and jobs against values worked out by hand, and `tests/scenes/mesh.c` instanced meshes against the same triangles drawn
+the other way, a wall of triangles, the near plane, kept and rewritten meshes and thousands of instances. `tests/oracle` runs a ROM in bsnes for `tools/nshvc-check`, which compares a
 converted game's sound with the original's, and for `tests/scenes/scenes.py`, which makes each picture feature as a test ROM
 and as a scene for the engine and compares the two byte for byte at the console's size. `m7check` measures Mode 7's
 anti-aliasing against the console's lookup, and `cost` times the drawing case by case.

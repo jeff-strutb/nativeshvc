@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 1
+#define NSHVC_VERSION_MINOR 2
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -341,6 +341,38 @@ void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);
    else 4) is drawn into a target of its own, a window-sized pass for it.
    Kept until changed (6.0) */
 void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);
+
+/* ---- instanced meshes (6.2): one model drawn many times, projected on the GPU ---- */
+
+/* a mesh: triangles in model space, three vertices each, kept on the GPU between pictures */
+typedef struct nshvc_mesh { uint32_t id; } nshvc_mesh;
+typedef struct nshvc_mesh_vertex {
+    float x, y, z;                  /* model space */
+    float u, v;                     /* in the material's image's texels */
+    uint32_t colour;                /* 0xAARRGGBB, without an image; alpha 0 draws nothing */
+} nshvc_mesh_vertex;
+/* room for max_vertices (up to 262,144); none made is id 0 */
+nshvc_mesh nshvc_mesh_create(uint32_t max_vertices);
+/* the mesh's triangles, count a multiple of 3 up to its room: kept until written again. Only a mesh written is
+   sent to the GPU, only the vertices written. From the game thread */
+void nshvc_mesh_write(nshvc_mesh m, const nshvc_mesh_vertex *v, uint32_t count);
+
+typedef struct nshvc_view {
+    float eye[3];                   /* the eye's place in the world */
+    float rot[9];                   /* world to view, row major: view = rot * (world - eye); Z is view[2], ahead */
+    float f, cx, cy;                /* screen x = cx + f * X / Z, y = cy + f * Y / Z, in the list's pixels */
+    float near;                     /* nothing nearer than this Z is drawn: a triangle across it is cut (above 0) */
+    float depth_a, depth_b, depth_max;   /* the list's depth, as nshvc_vertex.z: z = depth_a - depth_b / Z, for z from 0
+                                       up to depth_max; what would lie outside that is not drawn */
+} nshvc_view;
+typedef struct nshvc_instance { float x, y, z, size; } nshvc_instance;   /* world place, uniform scale */
+/* the mesh at each instance, one instanced draw: world = instance.xyz + size * model, then the view's projection,
+   done on the GPU, and the material as nshvc_draw_tris has it (no image: the vertex colour; w for texture
+   coordinates is Z). Depth is the list's, so meshes and nshvc_draw_tris hide each other by it, of equal depths the
+   later; there is no culling of back faces. The fill rule (nshvc_draw_rule) does not apply: it moves given vertices
+   to whole pixels, and a mesh's vertices are projected on the GPU, so its edges are the smooth rule's */
+void nshvc_draw_mesh(nshvc_draw_list d, nshvc_mesh m, const nshvc_view *view, const nshvc_instance *instances,
+                     uint32_t count, const nshvc_material *mat);
 
 /* what a line can change; those with a layer add it (0-3), the palette an entry */
 typedef enum {

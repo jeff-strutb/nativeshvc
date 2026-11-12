@@ -1150,6 +1150,7 @@ void rr_window(void)
 
 /* ---- opening ---- */
 static VkPhysicalDeviceFeatures want_features;
+static int have_clip_distance;      /* shaderClipDistance: the mesh program (RR_CLIP_PROGRAM) needs it */
 
 static int depth_ok(VkFormat f)
 {
@@ -1250,6 +1251,8 @@ int rr_open(void)
         vkGetPhysicalDeviceFeatures(phys, &have);
         memset(&want_features, 0, sizeof want_features);
         want_features.samplerAnisotropy = have.samplerAnisotropy;
+        want_features.shaderClipDistance = have.shaderClipDistance;
+        have_clip_distance = have.shaderClipDistance != 0;
         di.pEnabledFeatures = &want_features;
     }
     qi.queueFamilyIndex = family;
@@ -1332,6 +1335,10 @@ int rr_open(void)
         }
     }
     for (k = 0; k < RR_PROGRAMS; k++) {
+        if (k == RR_CLIP_PROGRAM && !have_clip_distance) {
+            fprintf(stderr, "rr: vulkan: no shaderClipDistance: instanced meshes are not drawn\n");
+            continue;
+        }
         vert_mod[k] = shader(programs[k].vs, programs[k].vs_size);
         frag_mod[k] = shader(programs[k].fs, programs[k].fs_size);
         if (!vert_mod[k] || !frag_mod[k])

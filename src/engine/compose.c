@@ -904,7 +904,7 @@ static void side_lists(void)
 }
 
 /* each list's vertices in this frame's words, once: seven words a vertex */
-static uint32_t list_at[ENG_LISTS];
+static uint32_t list_at[ENG_LISTS], list_mw_at[ENG_LISTS];   /* and its meshes' view and instance words */
 static uint8_t list_put[ENG_LISTS];
 
 /* a list's commands over a box, for state s's layer n on view v in a screen (flagged, its stencil and group, its
@@ -928,12 +928,19 @@ static void list_draws(uint32_t id, const float *box, int v, const eng_state *s,
             wordf(at + 5, p->v);
             F->data[at + 6] = p->colour;
         }
+        if (l->nmw) {
+            list_mw_at[id] = words(l->nmw);
+            memcpy(&F->data[list_mw_at[id]], l->mw, l->nmw * sizeof *l->mw);
+        }
         list_put[id] = 1;
     }
     for (k = 0; k < l->nc; k++) {
         const eng_list_cmd *cm = &l->cmd[k];
         rr_uniform *u;
-        rr_cmd *d = draw(cm->lines ? P_LINES : P_LIST, &u);
+        rr_cmd *d;
+        if (cm->mesh && !eng_meshes_of[cm->mesh].count)
+            continue;                   /* a mesh with no triangles written: nothing */
+        d = draw(cm->mesh ? P_LIST_MESH : cm->lines ? P_LINES : P_LIST, &u);
         rect_of(u, box[0], box[1], box[2], box[3]);
         u->f[3][0] = side ? 1.0f : flag_of(v, s, n);
         memcpy(u->f[4], cm->inputs, 32);
@@ -960,7 +967,17 @@ static void list_draws(uint32_t id, const float *box, int v, const eng_state *s,
         if (!side)
             colour_set(u, d, v, s);
         pal_set(u, (int)box[0], (int)box[1], (int)box[2], (int)box[3]);
-        d->vertices = cm->lines ? cm->count / 2 * 6 : cm->count;
+        if (cm->mesh) {
+            /* one instanced draw: the mesh's vertices once for each instance, projected by list_mesh.vert from the view's and
+               instances' words and the mesh's texture (ti1) */
+            const eng_mesh *ms = &eng_meshes_of[cm->mesh];
+            u->i[2][0] = (int32_t)(list_mw_at[id] + cm->moff);
+            d->tex[4] = (int32_t)ms->tex;
+            d->vertices = ms->count;
+            d->instances = cm->ninst;
+        } else {
+            d->vertices = cm->lines ? cm->count / 2 * 6 : cm->count;
+        }
         d->depth = RR_DEPTH_LEQUAL;
         if (!side) {
             stencil_of(d, v, s, n);

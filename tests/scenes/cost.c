@@ -18,6 +18,11 @@
  *   sprites-solid       the same sprites, their tiles solid
  *   maths               tiles-solid-2, one layer on the sub screen and add-half
  *                       colour maths on the other
+ *   mesh-K-M            K instances of a mesh of M flat-coloured triangles
+ *                       (nshvc_draw_mesh), spread over the screen at depths of 20
+ *                       to 120, in one draw list; the instances are copied to the
+ *                       call each picture, the mesh written once. mesh-1000-1000,
+ *                       mesh-1000-100 and so on, K up to 100000, M up to 10000
  * Prints one line at the end: the case, the updates run, the wall time from
  * the first update to the last, and the pictures a second over those (the
  * updates after the first, one picture each).
@@ -36,7 +41,7 @@
 
 #include "nshvc/nshvc.h"
 
-enum { C_BACKDROP, C_TILES, C_SPRITES, C_MATHS };
+enum { C_BACKDROP, C_TILES, C_SPRITES, C_MATHS, C_MESH };
 enum { K_BLANK, K_SOLID, K_MIXED };
 
 static const char *case_name = "";
@@ -44,6 +49,10 @@ static int which, kind, layers;
 static nshvc_tiles tiles[4], sprite_tiles;
 static nshvc_map maps[4];
 static struct timespec first, last;
+static int mesh_k, mesh_m;
+static nshvc_mesh mesh;
+static nshvc_draw_list mesh_list;
+static nshvc_instance *mesh_inst;
 
 static uint32_t seed = 12345;
 static uint32_t rnd(void)
@@ -87,6 +96,33 @@ static void init(void)
                 for (x = 0; x < 32; x++)
                     words[y * 32 + x] = (uint16_t)(((x * 7 + y * 3 + n) % 16) | ((x + y + n) % 8) << 10);
             nshvc_map_write_snes(maps[n], 0, 0, 32, 32, words);
+        }
+    } else if (which == C_MESH) {
+        nshvc_mesh_vertex *v = (nshvc_mesh_vertex *)calloc((size_t)mesh_m * 3, sizeof *v);
+        int t, c;
+        mesh = nshvc_mesh_create((uint32_t)mesh_m * 3);
+        mesh_list = nshvc_draw_list_create();
+        for (t = 0; t < mesh_m; t++) {
+            /* a small triangle somewhere within a unit sphere, a colour a face */
+            float cx = (float)(rnd() % 2000) / 1000.0f - 1.0f, cy = (float)(rnd() % 2000) / 1000.0f - 1.0f, cz = (float)(rnd() % 2000) / 1000.0f - 1.0f;
+            uint32_t col = 0xFF000000u | (rnd() & 0xFFFFFFu);
+            for (c = 0; c < 3; c++) {
+                nshvc_mesh_vertex *p = &v[t * 3 + c];
+                p->x = cx + (float)(rnd() % 400) / 1000.0f - 0.2f;
+                p->y = cy + (float)(rnd() % 400) / 1000.0f - 0.2f;
+                p->z = cz + (float)(rnd() % 400) / 1000.0f - 0.2f;
+                p->colour = col;
+            }
+        }
+        nshvc_mesh_write(mesh, v, (uint32_t)mesh_m * 3);
+        free(v);
+        mesh_inst = (nshvc_instance *)calloc((size_t)mesh_k, sizeof *mesh_inst);
+        for (t = 0; t < mesh_k; t++) {
+            float z = 20.0f + (float)(rnd() % 100000) / 1000.0f;
+            mesh_inst[t].z = z;
+            mesh_inst[t].x = ((float)(rnd() % 20000) / 10000.0f - 1.0f) * z * 0.6f;
+            mesh_inst[t].y = ((float)(rnd() % 20000) / 10000.0f - 1.0f) * z * 0.45f;
+            mesh_inst[t].size = 1.0f;
         }
     } else if (which == C_SPRITES) {
         uint8_t *d = (uint8_t *)malloc(32 * 256);
@@ -135,6 +171,21 @@ static void draw(float between)
     } else {
         nshvc_mode_set(1, 0, 0);
     }
+    if (which == C_MESH) {
+        nshvc_view view;
+        nshvc_layer a;
+        memset(&view, 0, sizeof view);
+        view.rot[0] = view.rot[4] = view.rot[8] = 1.0f;
+        view.f = 200.0f; view.cx = 128.0f; view.cy = 112.0f;
+        view.near = 1.0f;
+        view.depth_a = 1.0f; view.depth_b = 1.0f; view.depth_max = 0.99f;
+        nshvc_draw_list_clear(mesh_list, 256, 224);
+        nshvc_draw_mesh(mesh_list, mesh, &view, mesh_inst, (uint32_t)mesh_k, NULL);
+        memset(&a, 0, sizeof a);
+        a.enabled_main = 1;
+        a.draw_list = mesh_list;
+        nshvc_layer_set(0, &a);
+    }
     if (which == C_SPRITES) {
         static nshvc_sprite spr[128];
         int i;
@@ -168,6 +219,15 @@ static int parse(const char *s)
     if (!strcmp(s, "sprites")) { which = C_SPRITES; kind = K_MIXED; return 1; }
     if (!strcmp(s, "sprites-solid")) { which = C_SPRITES; kind = K_SOLID; return 1; }
     if (!strcmp(s, "maths")) { which = C_MATHS; kind = K_SOLID; layers = 2; return 1; }
+    if (!strncmp(s, "mesh-", 5)) {
+        int k = 0, m = 0;
+        if (sscanf(s + 5, "%d-%d", &k, &m) != 2 || k < 1 || k > 100000 || m < 1 || m > 10000)
+            return 0;
+        which = C_MESH;
+        mesh_k = k;
+        mesh_m = m;
+        return 1;
+    }
     if (!strncmp(s, "tiles-", 6)) {
         const char *k = s + 6;
         which = C_TILES;
@@ -189,7 +249,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--case"))
             case_name = argv[i + 1];
     if (!parse(case_name)) {
-        fprintf(stderr, "usage: cost --case backdrop|sprites|sprites-solid|maths|tiles-{blank,solid,mixed}-{1,2,3,4} [--headless --updates N]\n");
+        fprintf(stderr, "usage: cost --case backdrop|sprites|sprites-solid|maths|mesh-K-M|tiles-{blank,solid,mixed}-{1,2,3,4} [--headless --updates N]\n");
         return 2;
     }
     g.title = "Cost";
