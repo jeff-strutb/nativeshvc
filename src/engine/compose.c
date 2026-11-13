@@ -936,6 +936,13 @@ static void list_draws(uint32_t id, const float *box, int v, const eng_state *s,
             wordf(at + 5, p->v);
             F->data[at + 6] = p->colour;
         }
+        /* an image is at the list's nearest end of z in the order the list has now: 0 for NEAR_0, 1 for NEAR_1 */
+        for (i = 0; i < l->nc; i++)
+            if (l->cmd[i].front) {
+                uint32_t j;
+                for (j = 0; j < l->cmd[i].count; j++)
+                    wordf(list_at[id] + (l->cmd[i].first + j) * 7 + 2, l->order == NSHVC_DEPTH_NEAR_1 ? 1.0f : 0.0f);
+            }
         if (l->nmw) {
             list_mw_at[id] = words(l->nmw);
             memcpy(&F->data[list_mw_at[id]], l->mw, l->nmw * sizeof *l->mw);

@@ -822,6 +822,8 @@ void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, co
         q[k].colour = 0xFFFFFFFFu;
     }
     list_add(l, q, 6, 0, &mm, NULL);
+    if (l->nc)
+        l->cmd[l->nc - 1].front = 1;      /* its z is the list's nearest end, set when the list is composed (compose.c) */
 }
 
 /* ---- the picture's states ---- */

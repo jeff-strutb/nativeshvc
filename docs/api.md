@@ -375,7 +375,12 @@ void nshvc_draw_depth_order(nshvc_draw_list d, nshvc_depth_order order);    /* w
   `depth_b` above 0 so that z rises with Z (a = 0.998, b = 255.488: z is 0 at Z = 256), and for NEAR_1 `depth_b` at or below 0
   so that z falls (a = 0, b = -near: z = near / Z), with `depth_max` not below z at the view's `near`. A list without a depth
   of its own has the picture's shared slice, nearer less, and NEAR_1 is mapped onto it, reversing it: the same occlusion
-  with the slice's precision.
+  with the slice's precision. The order that applies is the list's when the picture is composed (the end of `draw`), to all
+  of its drawing, so it may be set before or after the drawing. An image (`nshvc_draw_image`) is at the list's nearest end of
+  `z` in that order, 0 in NEAR_0 and 1 in NEAR_1 (so, drawn in order, it covers what was drawn before it and is covered
+  by what is drawn after it that is nearer or equal); lines and triangles have the `z` they are given, meshes their view's.
+  Nothing else in a list takes a depth of the engine's choosing: overlays are drawn over the picture, outside the list, and
+  the exact fill moves a vertex's x and y only.
 - **Precision** is a game's choice of order. Float has most of its steps near 0. With NEAR_1 and z = near / Z in float32,
   near = 256, at Z = 17,000: z = 0.01506, in [2^-7, 2^-6), step 2^-30 = 9.3e-10, which in Z is step * Z^2 / near = 0.001 units.
   With NEAR_0 and z = 0.998 - 255.488 / Z = 0.98297, in [0.5, 1), step 2^-24 = 6e-8, in Z 6e-8 * Z^2 / b = 0.07 units (a

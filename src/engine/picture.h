@@ -31,6 +31,7 @@ typedef struct {
                                    (ENG_VIEW_WORDS) and then its instances' (4 each) start in the list's mesh words; the
                                    mesh's vertices are the mesh's, `count` is its count when drawn */
     uint8_t cull, front_ccw, keep;   /* the list's draw state when this was drawn (triangles and meshes) */
+    uint8_t front;              /* an image (nshvc_draw_image): at the list's nearest depth, whichever end that is when it is composed */
     float bias, slope;
     uint32_t image;             /* full colour or indexed (through the row's palette), or 0 */
     uint32_t shader;

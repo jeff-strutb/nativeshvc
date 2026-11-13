@@ -369,7 +369,10 @@ void nshvc_draw_depth_own(nshvc_draw_list d, uint32_t on);
    both. A game that wants the precision far away gives z that falls with distance, such as near / Z, with NEAR_1: float
    has most of its steps near 0. The order applies to z everywhere in the list (vertices, a mesh's view). In a list
    without a depth of its own the order is mapped onto the picture's slice, reversing it for NEAR_1: the same occlusion
-   with the slice's precision */
+   with the slice's precision. The order a list has when it is composed (the picture's end of draw) is the one that applies
+   to all of it, so it may be set before or after the list's drawing in a picture. An image (nshvc_draw_image) is at the
+   list's nearest end of z in that order (0 in NEAR_0, 1 in NEAR_1), over what was drawn before it and under what is drawn
+   after it that is nearer or equal; lines have the z they are given */
 typedef enum { NSHVC_DEPTH_NEAR_0, NSHVC_DEPTH_NEAR_1 } nshvc_depth_order;
 void nshvc_draw_depth_order(nshvc_draw_list d, nshvc_depth_order order);
 

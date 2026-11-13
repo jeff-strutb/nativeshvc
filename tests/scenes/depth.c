@@ -1,7 +1,7 @@
 /* depth.c: a draw list's depth state (nshvc_draw_state_set, nshvc_draw_depth_own, nshvc_draw_depth_order), checked
  * without a reference emulator. Headless, the picture is 256 x 256, a pixel for a pixel; one scenario a picture:
  *
- *   depth --headless --updates 31
+ *   depth --headless --updates 34
  *
  * Prints FAIL and exits 1 on any difference. The cases marked "shows" print what they find and assert nothing about it.
  * Two orders: NEAR_0 (z = 0 nearest, z = depth_a - depth_b / Z with a = 0.998, b = 255.488 for far views and a = 1, b = 2
@@ -62,6 +62,11 @@
  *       BG2's layer, a list with a depth of its own with a GREEN quad at x 20 to 220, y 20 to 100, a window on that layer from
  *       x 100 to 160: left of 64 RED (BG1 in front), 64 to 99 and 161 to 219 GREEN, 100 to 160 BLUE (the window cuts the
  *       list), and BLUE outside the quad (BG3).
+ *  31-33 an image over a quad that wrote depth: a RED quad at Z = 16 (x and y 96 to 160), then nshvc_draw_image of a 4 x 4 GREEN
+ *       image over (100, 100) to (120, 120): an image is at the list's nearest end of z in its order, so it shows over the quad
+ *       whichever end that is: GREEN at (110, 110), RED at (140, 140) and black outside the quad at (80, 80). 31: a depth of its
+ *       own, NEAR_0 (the image's z is 0); 32: own, NEAR_1 (1); 33: no depth of its own, NEAR_1, in the picture's slice (reversed
+ *       onto it, so the image's z 1 is the slice's nearest end).
  *  A list with none of this set draws as before this was added: mesh.c and feature.c (every draw there is of a list with the
  *  default state and order) cover that. */
 #include <math.h>
@@ -72,7 +77,7 @@
 #include "nshvc/nshvc.h"
 
 #define SIZE 256
-#define SCENARIOS 31
+#define SCENARIOS 34
 static int failed;
 #define CHECK(c, ...) do { if (!(c)) { failed = 1; printf("FAIL %d: ", __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 #define AT(x, y) (p[(y) * w + (x)] & 0xFFFFFFu)
@@ -88,6 +93,7 @@ enum { C_BIAS, C_FARTHER, C_KEEP, C_EQUAL, C_NEARCUT, C_BEHIND, C_PAIR, C_PAIR_F
 static nshvc_draw_list list;
 static nshvc_mesh tri2, box, floor_a, floor_b, floor_c, floor_unit, red16, green16, flat_blue, flat_red, see, near_a, near_b, bg3_quad, ramp;
 static nshvc_tiles t4, t2;
+static nshvc_image img;
 static nshvc_map map1, map3;
 static int pics, checked;
 
@@ -139,6 +145,14 @@ static void init(void)
     pal[17] = 0x001F;                   /* BG1's red, palette 1 */
     nshvc_palette_write(0, 256, pal);
     list = nshvc_draw_list_create();
+    {
+        static uint32_t tex[16];
+        int k;
+        img = nshvc_image_create(4, 4, NSHVC_IMAGE_RGBA);
+        for (k = 0; k < 16; k++)
+            tex[k] = GREEN;
+        nshvc_image_write(img, tex);
+    }
     /* two triangles, the clockwise at the model's origin and the counter-clockwise 3 units to the right: 2 units a leg */
     tri2 = nshvc_mesh_create(6);
     m[0] = mv(0, 0, 0, RED);   m[1] = mv(2, 0, 0, RED);   m[2] = mv(0, 2, 0, RED);
@@ -308,6 +322,9 @@ static void draw(float between)
         own = 1;
     } else if (sc == 30) {
         own = 1;
+    } else if (sc >= 31) {
+        own = sc != 33;
+        order = sc != 31;
     }
     memset(&st, 0, sizeof st);
     nshvc_draw_list_clear(list, SIZE, SIZE);
@@ -414,6 +431,12 @@ static void draw(float between)
             tris_pair_quad(17000.01f, GREEN);
             tris_pair_quad(17000.0f, RED);
         }
+    } else if (sc >= 31) {
+        nshvc_instance zero = { 0, 0, 0, 1 };
+        nshvc_rect rc = { 100.0f, 100.0f, 120.0f, 120.0f };
+        view = near_view(order, order ? 4.0f : 2.5f);
+        nshvc_draw_mesh(list, red16, &view, &zero, 1, NULL);
+        nshvc_draw_image(list, img, &rc, NULL);
     } else {
         nshvc_instance zero = { 0, 0, 1, 1 };
         /* f = 1 at Z = 1 with the centre at the corner: a view unit is a list pixel, so the quad's coordinates are pixels */
@@ -554,6 +577,10 @@ static void check(int sc, const uint32_t *p, int w, int h)
                 n += AT(x, y) == 0xFF0000u;
             }
         printf("shows: shared depth: the nearer at %d of %d points\n", n, total);
+    } else if (sc >= 31) {
+        CHECK(AT(110, 110) == 0x00FF00u, "scenario %d: the image over the quad that wrote depth: %06x", sc, AT(110, 110));
+        CHECK(AT(140, 140) == 0xFF0000u, "scenario %d: the quad beside the image: %06x", sc, AT(140, 140));
+        CHECK(AT(80, 80) == 0u, "scenario %d: outside the quad: %06x", sc, AT(80, 80));
     } else {
         CHECK(AT(30, 60) == 0xFF0000u, "composed: BG1 over the list: %06x", AT(30, 60));
         CHECK(AT(80, 60) == 0x00FF00u, "composed: the list over BG3: %06x", AT(80, 60));
