@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 6.3. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 6.4. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ![How a game and nativeshvc fit together: the game calls the API and the engine calls the game; the engine's parts; the picture's layers and how each picture reaches the window through the renderer and the host](docs/architecture.svg)
 

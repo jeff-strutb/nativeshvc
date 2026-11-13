@@ -13,7 +13,11 @@ and its colour goes through the colour maths of the picture's settings
 (src/engine/shaders/maths.glsl) as that program's does:
 the engine provides nshvc_image(ivec2), the material's image's texel (an
 indexed image's through the palette, 0 see-through; the vertices' colour
-without an image), and nshvc_input(int), its eight inputs."""
+without an image), nshvc_input(int), its eight inputs, and nshvc_pixel(), the
+place of the pixel being shaded in the draw list's own pixels, the frame its
+vertices' x and y are given in (x right, y down, the centre of the first pixel at
+(0.5, 0.5)); it is the pixel's centre, not a sample's, whatever the picture's or
+the list's samples, size or shape, the display's turn, or the list's depth."""
 import os, shutil, subprocess, sys, tempfile
 
 PRE = '''#version 450
@@ -53,6 +57,10 @@ vec4 nshvc_image(ivec2 p) {
     return texelFetch(nshvc_tex, p, 0);
 }
 float nshvc_input(int i) { return nshvc_u.f[4 + i / 4][i % 4]; }
+/* nshvc_p is the pixel's place in the picture's pixels (the vertex stage's list place times nshvc_u.f[6].xy, the picture's pixels a
+   list pixel, interpolated without perspective: affine in the screen, so exact at the pixel's centre, which is where it is
+   evaluated, extrapolated where the primitive does not cover the centre); divided by that, the list's pixels */
+vec2 nshvc_pixel() { return nshvc_p / nshvc_u.f[6].xy; }
 #line 1
 '''
 POST = '''

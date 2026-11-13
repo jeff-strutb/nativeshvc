@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 3
+#define NSHVC_VERSION_MINOR 4
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -322,7 +322,9 @@ typedef struct nshvc_material {
     nshvc_shader shader;            /* none: the image's or colour's value as it is */
     float inputs[8];                /* what the shader reads with nshvc_input */
 } nshvc_material;
-/* a shader the game's build compiled (tools/nshvc-shaders), by its name */
+/* a shader the game's build compiled (tools/nshvc-shaders), by its name. Its shade() can read nshvc_image(ivec2),
+   nshvc_input(int) and (6.4) nshvc_pixel(): the place of the pixel being shaded in the list's own pixels (x right, y down,
+   the centre of the first pixel at (0.5, 0.5)) */
 nshvc_shader nshvc_shader_load(const char *name);
 typedef struct nshvc_rect { float x0, y0, x1, y1; } nshvc_rect;
 typedef enum { NSHVC_FILL_SMOOTH, NSHVC_FILL_EXACT } nshvc_fill_rule;

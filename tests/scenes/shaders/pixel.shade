@@ -1,0 +1,4 @@
+vec4 shade(vec2 uv) {
+    vec2 p = nshvc_pixel();
+    return vec4(floor(p.x) / 255.0, floor(p.y) / 255.0, 1.0, 1.0);
+}

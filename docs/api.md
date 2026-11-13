@@ -1,4 +1,4 @@
-# The native engine's API, version 6.3
+# The native engine's API, version 6.4
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -398,9 +398,19 @@ nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine'
 A material names an image, an optional shader, and its inputs. A game's shader takes the place of the fragment stage of
 the engine's own draw-list program: `vec4 shade(vec2 uv)` returns the pixel's colour, its alpha how much of the pixel it
 covers, and reads `nshvc_image(ivec2)` (the material's image's texel, an indexed one's through the palette, or the
-vertices' colour without an image) and
-`nshvc_input(int)`. The core picture needs no shader from the game, and nothing in the core needs compute
+vertices' colour without an image), `nshvc_input(int)` and (6.4) `vec2 nshvc_pixel()`. The core picture needs no shader from the game, and nothing in the core needs compute
 (principle 11).
+
+`nshvc_pixel()` is the place of the pixel being shaded in the draw list's own pixels, the frame the vertices' `x` and `y` are
+given in: x to the right, y down, the centre of the list's first pixel at (0.5, 0.5). It is the pixel's centre, not a sample's:
+the engine carries the place to the fragment stage as the position in the picture's pixels, interpolated without perspective
+(affine in the screen, so exact at the pixel's centre, which is where a shader that runs once a pixel reads it, and
+extrapolated, not moved, where the primitive does not cover the centre), and `nshvc_pixel()` divides it by the picture's pixels
+a list pixel. So it does not depend on the window's size or shape (a letterbox or a fill), the display's turn or mirror,
+the picture's or the list's samples (a list with fewer samples is drawn into a target of its own, the same value), a depth of the
+list's own, or the picture read back. It is available to a shader that is the material of `nshvc_draw_tris`, `nshvc_draw_lines`,
+`nshvc_draw_image` and `nshvc_draw_mesh` (for a mesh the position is the projection's screen position, interpolated without
+perspective, cut correctly at the near plane: the clipper weighs each end by its `w`). A shader that does not call it pays nothing.
 
 ## 5. Display and the window
 
@@ -537,7 +547,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.3: 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.4: 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -588,6 +598,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh` | Instanced meshes: a model kept on the GPU, drawn at many places under one view | 6.2 |
 | `nshvc_draw_state_set` | A draw's face culling, depth bias and kept depth | 6.3 |
 | `nshvc_draw_depth_own`, `nshvc_draw_depth_order` | A list's own 32-bit float depth, and which end of it is nearest | 6.3 |
+| `nshvc_pixel()` in a game's shader | The place of the pixel being shaded in the list's own pixels | 6.4 |
 
 ### Retired, and why
 
