@@ -23,8 +23,14 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   conversion has nothing to decide; before that the GPUs' own rounding of a tie differed by 1 of 255 in about 52,000
   bytes of the scroll-by-line scene between Metal and AMD, where their own filters had differed freely. With it, that scene on
   Vulkan on Linux (dzn, an RX 7900) differs from Metal's in 24 bytes, each by 1. On Windows (an RX 6950, Direct3D 12 and
-  Vulkan alike) it still differs from Metal's in 5,015 bytes, 1,713 pixels in pairs along a row, by up to 14 of 255: not
-  explained yet, and not the levels' rounding. On the iOS Simulator the example game runs and its picture, looked at in both
+  Vulkan alike) it still differs from Metal's in 5,015 bytes, 1,713 pixels in pairs along a row, by up to 14 of 255, and
+  that is the picture's samples a pixel, not a fault: that GPU has 8, Metal's and dzn's have 4. Where Mode 7 smaller than
+  its texels covers a cell with a see-through texel, the pixel's share of the plane is given as so many of the pixel's
+  samples, the rest showing what is behind: a cell 239/255 covered is 4 of 4 samples there and 7 of 8 here, one 223/255
+  covered 3 of 4 and 7 of 8, and every differing pixel is such a cell (a pixel worked by hand is 7/8 of Metal's colour and
+  1/8 of the backdrop, to the unit). So that share is exact to within half a sample: an eighth of the difference between
+  the plane's colour and what is behind it with 4 samples, a sixteenth with 8. Blending those pixels after what is behind
+  them is drawn would make it exact on every GPU; the maintainer chose to leave it as it is (2026-11-13). On the iOS Simulator the example game runs and its picture, looked at in both
   landscape turns, is the one the Mac draws of the same game.
 - **Android emulator (Vulkan), looked at:** the example game's picture is the Mac's of the same game, upright and turned a
   quarter either way. A turn used to leave the picture stretched about one time in three (the swapchain made while the

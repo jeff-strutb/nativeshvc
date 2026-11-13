@@ -87,7 +87,7 @@ natively on the GPU, at the window's own resolution, with nothing emulated and n
 
 Texels are drawn sharp: a pixel a texel covers takes its colour whole, and only the pixel an edge between texels falls in
 mixes the two. Where Mode 7's plane is drawn smaller than its texels, it is read from the plane in colour and its
-smaller levels by arithmetic, the same on every GPU, so it does not shimmer. Edges of geometry are smoothed by the picture's samples a pixel (8 where the GPU has them, else 4). The cost follows
+smaller levels by arithmetic, the same on every GPU, so it does not shimmer. Edges of geometry are smoothed by the picture's samples a pixel (8 where the GPU has them, else 4). Where Mode 7 smaller than its texels covers see-through texels, a pixel's share of the plane is so many of those samples, so it is exact to within half a sample and two GPUs with different counts differ a little there. The cost follows
 what the game draws: a draw list's or the sprites' rows of one setting are drawn once, however the setting changes down
 the screen.
 
