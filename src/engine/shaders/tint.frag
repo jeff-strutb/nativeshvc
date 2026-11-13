@@ -17,13 +17,16 @@ void main()
 {
     ivec2 p = ivec2(gl_FragCoord.xy);
     int kind = u.i[6].x, tpp = u.i[0].y, b = u.i[0].z;
-    vec4 acc = vec4(0.0);
-    /* the mean of the b x b texels this one is made of */
+    ivec4 sum = ivec4(0);
+    int n = b * b;
+    /* the mean of the b x b texels this one is made of, in whole numbers of 255ths: each colour is an 8-bit one (a
+       palette's entry or a direct colour, k / 255), taken as k, the sum divided by n rounded half up and written as k / 255.0,
+       which the 8-bit target stores as that k on any GPU (mips.frag), so that no rounding is left to the GPU */
     for (int j = 0; j < b; j++)
         for (int i = 0; i < b; i++) {
             ivec2 q = p * b + ivec2(i, j);
             uint t = u.i[0].x == 0 ? texelFetch(ti0, q, 0).r : texelFetch(ti1, (q & 7) * tpp + tpp / 2, 0).r;
-            acc += tint_of(t, kind);
+            sum += ivec4(floor(tint_of(t, kind) * 255.0 + 0.5));
         }
-    o = acc / float(b * b);
+    o = vec4((sum + n / 2) / n) / 255.0;
 }

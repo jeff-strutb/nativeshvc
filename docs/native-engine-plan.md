@@ -18,9 +18,13 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   or scaled scenes. `tests/scenes/cost.c`, Metal with the GPU kept busy at 5760 x 3240, before the pixel clean-up, after
   it, after solid sprites: four mixed tile layers 4.08, 3.39, 3.41 ms; four solid 1.29, 1.13, 1.13; colour maths 2.82,
   2.61, 2.60; see-through sprites 1.49, 1.58, 1.59, and 1.00 once each sheet kind has its own program; solid sprites 1.70, 1.77, 1.02,
-  then 0.68. Mode 7 smaller than its texels is plain arithmetic on the plane's levels: the Metal and AMD pictures of
-  the scroll-by-line scene differ by at most 2 of 255 a channel (the stored levels' rounding), where the GPUs' own
-  filters differed freely. On the iOS Simulator the example game runs and its picture, looked at in both
+  then 0.68. Mode 7 smaller than its texels is plain arithmetic on the plane's levels: the plane's smaller levels are made
+  with the rounding done in the shader (the mean of four rounded half up, written as k / 255), so that the 8-bit
+  conversion has nothing to decide; before that the GPUs' own rounding of a tie differed by 1 of 255 in about 52,000
+  bytes of the scroll-by-line scene between Metal and AMD, where their own filters had differed freely. With it, that scene on
+  Vulkan on Linux (dzn, an RX 7900) differs from Metal's in 24 bytes, each by 1. On Windows (an RX 6950, Direct3D 12 and
+  Vulkan alike) it still differs from Metal's in 5,015 bytes, 1,713 pixels in pairs along a row, by up to 14 of 255: not
+  explained yet, and not the levels' rounding. On the iOS Simulator the example game runs and its picture, looked at in both
   landscape turns, is the one the Mac draws of the same game.
 - **Android emulator (Vulkan), looked at:** the example game's picture is the Mac's of the same game, upright and turned a
   quarter either way. A turn used to leave the picture stretched about one time in three (the swapchain made while the
