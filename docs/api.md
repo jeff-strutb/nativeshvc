@@ -286,7 +286,7 @@ typedef struct nshvc_vertex {
   count and placed where its layer is, which costs one extra window-sized pass for that list, only on pictures where a
   game asks for it (a picture draws at most eight such lists this way; the rest are drawn with the picture's samples
   and the engine reports it). The setting is the list's, kept until changed. The picture `nshvc_picture_read` returns is
-  made the same way. A pixel's alpha says how much of it a triangle covers. A line is a list pixel wide at any window size.
+  made the same way. A pixel's alpha says how much of it a triangle covers. That share is kept as a whole number of the pixel's samples, so it is exact for an edge and, for a see-through surface, a step a sample: with 4 samples alphas of 0.25, 0.5, 0.75 and 1 are exact, with 8 every eighth, and anything between goes to the nearest. There is no blended drawing: a smooth fade is not available, and a game wanting the same picture on every GPU keeps its alphas to quarters. A line is a list pixel wide at any window size.
 - A material's image is full colour, or indexed through the palette with 0 see-through, its texels drawn sharp; without
   one, the vertices' colours, mixed across the triangle.
 - Jobs may fill separate lists in parallel.

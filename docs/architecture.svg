@@ -26,7 +26,7 @@
 
   <!-- The API -->
   <rect x="30" y="242" width="940" height="40" rx="10" fill="#fdf0d5" stroke="#b7791f"/>
-  <text x="500" y="267" font-weight="bold" font-size="14" text-anchor="middle" fill="#1b2a41">The API  ·  nshvc/nshvc.h  ·  version 6.3  ·  docs/api.md  ·  the SNES's units, without its limits</text>
+  <text x="500" y="267" font-weight="bold" font-size="14" text-anchor="middle" fill="#1b2a41">The API  ·  nshvc/nshvc.h  ·  version 6.4  ·  docs/api.md  ·  the SNES's units, without its limits</text>
 
   <!-- The engine -->
   <rect x="30" y="298" width="940" height="152" rx="10" fill="#edf7ed" stroke="#2f855a"/>

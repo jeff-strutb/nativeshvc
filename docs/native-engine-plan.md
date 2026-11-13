@@ -65,7 +65,12 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
 - **Open:** the four KNOWN Mode 7 scenes have no pass mark (`m7check` measures them, nothing holds them to a number). The
   engine's own shaders are compiled into each backend when the engine is built, so the renderer below `rr.h` is not built
-  apart from them, and its kept picture target exists for interlace alone.
+  apart from them, and its kept picture target exists for interlace alone. Nothing in the picture is drawn blended: a
+  see-through pixel of a draw list, of a list placed from its own pass, or of Mode 7 is so many of the pixel's samples,
+  a step a sample, so a fade is stepped and two GPUs with different sample counts differ a little there. Real blended
+  drawing (a blend setting for a list's draws, and a last blended phase of the same pass for see-through pixels, Mode 7's
+  included) was designed, written and compiled, and shelved by the maintainer before it was run (2026-11-13); it is not in
+  this tree.
 - **Not measured:** the picture's speed on any platform but Metal, and hires, interlace and the turned display on Vulkan and
   D3D12 beyond the scenes above. Results below about speed or about whole games were of the renderer 6.0 replaced and say
   nothing of this one.

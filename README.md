@@ -38,7 +38,11 @@ The engine is at API 6.4. `docs/native-engine-plan.md` opens with what has and h
   - instanced meshes: a model kept on the GPU and drawn at thousands of places a picture, projected in the vertex stage;
   - a draw's state: face culling, depth bias, and a see-through draw that is tested against the depth without writing it;
   - a list's own depth, the whole range in 32-bit float, with either end nearest (nearest at 1 keeps precision far away);
-  - a list's own samples a pixel.
+  - a list's own samples a pixel;
+  - in a game's shader, the material's texel, its eight inputs and the place of the pixel being shaded.
+
+  A draw's alpha is how much of a pixel it covers, kept as a whole number of the pixel's samples: exact for an edge, and
+  for a see-through surface a step a sample (a quarter with 4 samples, an eighth with 8). There is no blended drawing.
 - **Sound.** Voices, envelopes, noise, pitch modulation and echo by the SNES's rules at 32,040 Hz, with the game's music code
   on the audio thread.
 - **Input.** Every keyboard key, controller button, stick and trigger, the pointer and every finger on a touch screen,
