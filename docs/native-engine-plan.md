@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-11)
 
-API 6.2 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.3 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes
@@ -35,6 +35,16 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   5760 x 3240, unpaced, the whole picture: 1,000 instances of 100 triangles 1.3 ms; 1,000 of 1,000 4.5 ms; 3,000 of 1,000
   10.3 ms. Not run: a mesh with an image or a game shader as its material; its speed on Vulkan or D3D12; a GPU without
   clip distances, where the mesh program is left out and the engine says so.
+- **6.3's depth state, what has been run.** `tests/scenes/depth.c`, headless, on Metal, Vulkan on Linux (dzn, AMD),
+  Direct3D 12 and Vulkan on Windows (AMD), passes on each: the faces a cull mode leaves, for both windings, through
+  `nshvc_draw_tris` and `nshvc_draw_mesh`; and, in both depth orders, a coplanar face shown everywhere with a bias of 1
+  and a slope of 1 while a farther one stays hidden, a see-through face that keeps the depth letting what is drawn after
+  it behind it show, the later of equal depths, the near-plane cut, a floor passing behind the eye, and a mesh against a
+  wall of triangles. With a depth of its own and 1 nearest, two faces 0.01 apart at Z = 17,000 (z = 256 / Z) are told
+  apart at every point, through triangles and through meshes, in either drawing order; with 0 nearest the same pair is
+  not (the later wins), as the arithmetic says. A list between two tile layers with a window is composed in its place.
+  `mesh.c`, `feature.c` and the 116 feature scenes are unchanged by it. Not run: the fallback where a Vulkan device has
+  no 32-bit float depth; what a list's own depth costs (a window-sized pass a picture).
 - **Not run:** a picture shown in a window on Windows or on Linux (the two test machines had no desktop signed in to open
   one on; the Windows host and the Linux host compile, and nothing of them has been seen on a screen); a real phone; a
   whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
@@ -112,7 +122,7 @@ for every platform it supports.
 | **Threads** | System, game, render and audio threads, and a job pool for the game's own work, joined in a fixed order | One thread |
 | **Picture** | Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic, Mode 7, hires, interlace, direct colour, offset-per-tile; any screen size; more layer and sprite space; high-resolution art; the SNES's limits as settings | PPU registers, VRAM ports, the line record, the extensions |
 | **Per-line changes** | A table of values by line, with an optional split at a column | HDMA, raster interrupts, mid-line writes |
-| **Drawing pipeline** | The way a game's own drawing, such as its chip work or 3D, reaches the screen: polygons, lines and images with depth, and instanced meshes (a model kept on the GPU, drawn at many places, projected in the vertex stage), drawn natively straight into the frame at the window's resolution, in a layer's place among the layers and sprites | The chip connector, the lent GPU device, GPU canvases and handles |
+| **Drawing pipeline** | The way a game's own drawing, such as its chip work or 3D, reaches the screen: polygons, lines and images with depth, instanced meshes (a model kept on the GPU, drawn at many places, projected in the vertex stage) and per-list depth state (culling, bias, a kept depth, a depth of its own with either end nearest), drawn natively straight into the frame at the window's resolution, in a layer's place among the layers and sprites | The chip connector, the lent GPU device, GPU canvases and handles |
 | **Shaders** | Games' own shaders in one engine shading language (decision B), compiled by the engine for every backend. Effects the SNES did not have, such as water, are the game's, written in that language | Games' own per-platform shaders |
 | **Display** | Any window size and shape, sharp scaling, Mode 7 anti-aliasing, on the render thread | Presenting on the game's thread |
 | **Sound** | Sample loading; voices with pitch, volume, envelope, noise, echo and FIR; the SNES's sound rules, mixed at 32 kHz by default; an audio thread that calls the game's music code at the rate it chooses; output to the system's audio; a one-way queue from the game's logic to its music code; the 8-voice and 64 KB limits as settings. Music code on the audio thread must never wait, lock, allocate or block, or the sound breaks up, and the engine reports any call that would |  The SPC700, ports, timers, boot protocol, sound RAM, register-level DSP |

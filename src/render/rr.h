@@ -114,8 +114,13 @@ enum {
     RR_BLEND_OVER,              /* rgba = s + rgba * (1 - s.a): premultiplied */
     RR_BLENDS
 };
-/* depth: off, or tested less or equal and written */
-enum { RR_DEPTH_OFF, RR_DEPTH_LEQUAL, RR_DEPTHS };
+/* depth: off; tested "nearer or equal" and written; or tested the same and not written (RR_DEPTH_KEEP). Nearer is less,
+   unless the pass says `depth_greater` (below): then nearer is greater. Of equal depths the later draw wins either way */
+enum { RR_DEPTH_OFF, RR_DEPTH_LEQUAL, RR_DEPTH_KEEP, RR_DEPTHS };
+/* which triangles a draw leaves out, by their winding as the draw's view has them (x right, y down, in the draw's own
+   units), whatever the backend's clip space and the display's turns and mirror do to it: RR_CULL_BACK those whose
+   winding is not the front's, RR_CULL_FRONT those whose is */
+enum { RR_CULL_NONE, RR_CULL_BACK, RR_CULL_FRONT };
 /* stencil, with the draw's masks and reference:
    EQUAL     drawn where (stencil & read_mask) == ref
    EQUAL_INC the same, and where drawn or hidden by depth, stencil + 1 under write_mask
@@ -142,6 +147,13 @@ typedef struct rr_cmd {
     uint8_t program, blend, depth, stencil;
     uint8_t read_mask, write_mask, ref;
     uint8_t space, scissor;     /* scissor: kept to the rectangle in f[2] (x0, y0, x1, y1, the space's units) */
+    uint8_t cull, front_ccw;    /* RR_CULL_*, and whether the front is counter-clockwise (1) or clockwise (0) in the draw's view */
+    float bias, slope;          /* depth bias, nearer when positive, whatever the depth holds: `bias` whole steps of the depth's
+                                   smallest (rounded to a whole number), and `slope` times the triangle's depth slope a pixel,
+                                   as a GPU's polygon offset; the backend gives it the sign that is nearer for the pass's
+                                   compare. Steps are those of the format the pass's depth has: dependable only in a pass
+                                   with `depth_own` (float, the same everywhere); the frame's own differ by backend (24 bits
+                                   on Vulkan and Direct3D 12, float on Metal) */
     uint16_t shader;            /* a game's shader in place of the fragment stage; 0 none */
     uint32_t uniform;           /* its block in the frame's */
     int32_t tex[RR_TEX_SLOTS];  /* the frame's textures, or RR_TEX_EXTRA*; 0 none */
@@ -151,6 +163,11 @@ typedef struct rr_cmd {
 typedef struct rr_pass {
     uint8_t target;
     uint8_t load, mips;         /* keep what the target held; then make a texture's smaller levels */
+    uint8_t depth_own;          /* RR_TARGET_SIDE's: its depth is 32-bit float, the clip z the draws give kept as it is (the
+                                   whole range 0 to 1), without stencil: a pass of draws that use no stencil. Only where
+                                   rr_depth_own() */
+    uint8_t depth_greater;      /* with depth_own: nearer is greater or equal (else less or equal) */
+    float depth_clear;          /* with depth_own: the depth it is cleared to (the farthest: 1 for less, 0 for greater) */
     uint32_t texture, layer;    /* RR_TARGET_TEXTURE's, and its layer if an array; RR_TARGET_SIDE's, which of RR_SIDES */
     uint32_t samples;           /* RR_TARGET_SIDE's samples a pixel (1, 2, 4, 8, 16: at most rr_samples_at_most's) */
     float clear[4];             /* the colour it is cleared to */
@@ -201,6 +218,10 @@ int  rr_samples(void);
 /* the largest count of samples a pixel the device supports (for those formats)
    that is not above n; 1 always is */
 int  rr_samples_at_most(int n);
+/* whether a side target can have a depth of its own (rr_pass.depth_own): a 32-bit float depth, no stencil. Metal and
+   Direct3D 12 always (their frame depth is, or must be able to be, that format); a Vulkan device may lack it. Fixed when the
+   renderer opens */
+int  rr_depth_own(void);
 /* the file extension of this backend's compiled shaders */
 const char *rr_shader_ext(void);
 int  rr_open(void);             /* 0 when it cannot run here */

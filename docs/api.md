@@ -1,4 +1,4 @@
-# The native engine's API, version 6.2
+# The native engine's API, version 6.3
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -263,7 +263,7 @@ void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);  /* 1, 2, 4, 8 (th
 
 typedef struct nshvc_vertex {
     float x, y;         /* in the list's pixels, with sub-pixel precision */
-    float z;            /* depth in the list, 0 nearest to 1 farthest */
+    float z;            /* depth in the list, 0 to 1, nearest at the end the list's depth order says (0 by default) */
     float w;            /* what x, y and z were divided by in projecting them; 0 or 1 none */
     float u, v;         /* in the material's image's texels */
     uint32_t colour;    /* 0xAARRGGBB, without an image; alpha 0 draws nothing */
@@ -324,12 +324,66 @@ void nshvc_draw_mesh(nshvc_draw_list d, nshvc_mesh m, const nshvc_view *view, co
   and where the list's z would be below 0 or above `depth_max` (what would lie outside is not drawn, not drawn at the
   limit). The list's own rectangle clips as it does the list's other drawing. A vulkan device without `shaderClipDistance`
   does not draw meshes (the engine says so once).
-- Back faces are not culled: depth decides. The material is as `nshvc_draw_tris`'s: no image, the vertex colours; an image
+- Back faces are drawn by default, depth deciding; `nshvc_draw_state_set` culls them (below). The material is as `nshvc_draw_tris`'s: no image, the vertex colours; an image
   (full colour, or indexed through the palette) at `u`, `v` with perspective; a game's shader and its inputs. The list's
   samples, windows, colour maths and its layer's place apply as to the rest of the list. The fill rule `NSHVC_FILL_EXACT`
   moves given vertices to whole pixels, so it does not apply to projected ones: a mesh's edges are the smooth rule's.
 - `nshvc_mesh_create` and `nshvc_mesh_write` are the game thread's (as the tile and map calls); `nshvc_draw_mesh` is a
   draw list's, so a job may call it for its own list.
+
+**A list's depth state** (6.3) makes a game's own 3D depth tested properly:
+
+```c
+typedef enum { NSHVC_CULL_NONE, NSHVC_CULL_BACK, NSHVC_CULL_FRONT } nshvc_cull;
+typedef struct nshvc_draw_state {
+    uint8_t cull;            /* by winding on the screen as the list draws it (x right, y down) */
+    uint8_t front_ccw;       /* 0: a front face is clockwise on the screen; 1: counter-clockwise */
+    uint8_t depth_keep;      /* 1: tested against the depth and not written to it */
+    float depth_bias;        /* nearer by this many (rounded to whole) of the depth's smallest steps at that depth */
+    float depth_slope;       /* and by this times the triangle's depth slope a pixel */
+} nshvc_draw_state;
+void nshvc_draw_state_set(nshvc_draw_list d, const nshvc_draw_state *s);   /* for the triangles and meshes drawn after it */
+void nshvc_draw_depth_own(nshvc_draw_list d, uint32_t on);                  /* the list keeps a depth of its own */
+typedef enum { NSHVC_DEPTH_NEAR_0, NSHVC_DEPTH_NEAR_1 } nshvc_depth_order;
+void nshvc_draw_depth_order(nshvc_draw_list d, nshvc_depth_order order);    /* which end of z is nearer; kept until changed */
+```
+
+- **State** is the list's own and applies to the triangles (`nshvc_draw_tris`) and meshes drawn after it, until set again;
+  lines and images are not affected. All zero is how a list draws without it. `nshvc_draw_list_clear` sets it back to all
+  zero, as it does `nshvc_draw_rule` (a list is rebuilt each picture, and a state left from the last would carry into it
+  unseen), while `nshvc_draw_samples` and `nshvc_draw_depth_own`, properties of the list, are kept.
+- **Cull** is by the triangle's winding as the game sees its list, x right and y down: a triangle that goes from its
+  first vertex to its second to its third clockwise on the screen has the clockwise winding. For a mesh the winding is that
+  of the projected triangle. It is the same on every backend and however the display is turned or mirrored.
+- **Bias**, positive nearer whatever is stored, is a constant of `depth_bias` of the depth's smallest steps plus
+  `depth_slope` times the triangle's greatest depth change a pixel, as a GPU's polygon offset. The step is the format's:
+  dependable only in a list with a depth of its own (32-bit float, the same on every backend); in the picture's depth it
+  is 2^-24 of the range on Vulkan and Direct3D 12 and float's on Metal, so there the same bias is a different amount.
+- **`depth_keep`** is for a see-through surface (water): it is tested against the depth and does not write it, so what is
+  drawn after it behind it shows through.
+- **A depth of its own** is for a list whose 3D needs the precision: it keeps the `z` it is given, unchanged, in 32-bit
+  float over the whole range 0 to 1, cleared each picture. The list is drawn into a window-sized target of its own at its
+  samples, then placed in its layer's place among the layers (its windows and colour maths as any list's), the way a list with
+  fewer samples than the picture's is. A picture has room for 8 such targets together (the rest of the lists draw in the
+  picture's passes, with the picture's depth, and the engine says so once), and each costs a target of the window's size at
+  the list's samples, with its depth. A device that has no 32-bit float depth attachment (a Vulkan device may lack it; Metal
+  and Direct3D 12 have it) draws the list in the picture's passes the same way, and says so once in the log.
+- **The depth order** says which end of `z` is nearer, kept until changed. `NSHVC_DEPTH_NEAR_0` (the default): 0 nearest,
+  cleared to 1, drawn where less or equal. `NSHVC_DEPTH_NEAR_1`: 1 nearest, cleared to 0, drawn where greater or equal. Of
+  equal depths the later in both; a positive bias is nearer in both. `z` of `nshvc_vertex` and the view of `nshvc_draw_mesh`
+  (`z = depth_a - depth_b / Z`, kept to 0 up to `depth_max` by cutting) are in the list's order. A view must have, for NEAR_0,
+  `depth_b` above 0 so that z rises with Z (a = 0.998, b = 255.488: z is 0 at Z = 256), and for NEAR_1 `depth_b` at or below 0
+  so that z falls (a = 0, b = -near: z = near / Z), with `depth_max` not below z at the view's `near`. A list without a depth
+  of its own has the picture's shared slice, nearer less, and NEAR_1 is mapped onto it, reversing it: the same occlusion
+  with the slice's precision.
+- **Precision** is a game's choice of order. Float has most of its steps near 0. With NEAR_1 and z = near / Z in float32,
+  near = 256, at Z = 17,000: z = 0.01506, in [2^-7, 2^-6), step 2^-30 = 9.3e-10, which in Z is step * Z^2 / near = 0.001 units.
+  With NEAR_0 and z = 0.998 - 255.488 / Z = 0.98297, in [0.5, 1), step 2^-24 = 6e-8, in Z 6e-8 * Z^2 / b = 0.07 units (a
+  mesh computes a * Z - b in float, a bit worse, about 0.14). The picture's shared slice, one sixteenth of 24 bits, is 1.2
+  units. A game that draws far away uses NEAR_1 with a depth that falls with distance, and a depth of its own.
+- A pipeline is made for each different cull and front a game draws with (Vulkan, Direct3D 12) and, on Direct3D 12 alone, for each
+  different `depth_bias` and `depth_slope` it uses, since that backend holds them in the pipeline: a game should use a few fixed
+  values, not a value that varies.
 
 ```c
 nshvc_shader nshvc_shader_load(const char *name);     /* a shader in the engine's shading language, a fragment-only subset
@@ -478,7 +532,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.2: 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.3: 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.

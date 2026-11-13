@@ -39,7 +39,7 @@ void *host_vulkan_loader(void);
     X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCreateCommandPool) X(vkDestroyCommandPool) \
     X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkResetCommandBuffer) X(vkCmdBeginRenderPass) \
     X(vkCmdEndRenderPass) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdDraw) \
-    X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdBlitImage) X(vkCmdClearColorImage) \
+    X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetDepthBias) X(vkCmdBlitImage) X(vkCmdClearColorImage) \
     X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdPipelineBarrier) X(vkQueueSubmit) X(vkQueueWaitIdle) \
     X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) X(vkCreateSemaphore) X(vkDestroySemaphore) \
     X(vkDeviceWaitIdle) X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
@@ -79,7 +79,7 @@ typedef struct {
 /* what a pass draws into: the multisampled screens with depth and stencil, an
    8-bit or 32-bit integer texture, a colour texture or the picture, or the
    window (a screen in the swapchain's format) */
-enum { KIND_SCREEN, KIND_INDEX, KIND_INDEX32, KIND_COLOUR, KIND_WINDOW, KINDS };
+enum { KIND_SCREEN, KIND_INDEX, KIND_INDEX32, KIND_COLOUR, KIND_WINDOW, KIND_OWN, KINDS };   /* KIND_OWN: a side target with a depth of its own (rr_pass.depth_own) */
 
 static VkInstance inst;
 static VkPhysicalDevice phys;
@@ -87,6 +87,7 @@ static VkDevice dev;
 static VkQueue queue;
 static uint32_t family;
 static VkFormat depth_format;
+static int have_d32;                    /* a 32-bit float depth attachment (rr_depth_own) */
 static VkSurfaceKHR surface;
 static VkSwapchainKHR swapchain;
 static VkFormat sc_format;
@@ -109,7 +110,7 @@ static int sc_iw, sc_ih;                /* the images', in the display's own ori
 static int sc_turns;                    /* quarter turns clockwise the picture is given in them */
 /* render passes, [load]: cleared, or what it held kept; the window's is in the swapchain's format */
 static VkRenderPass rp_screen, rp_colour[2], rp_index[2], rp_index32[2], rp_window;
-static VkRenderPass rp_side[5];         /* a side target's, by log2 of its samples: made when first used; [0] one sample, no resolve */
+static VkRenderPass rp_side[5], rp_own[5];   /* by log2 of the samples; rp_own: a depth of 32-bit float, no stencil */         /* a side target's, by log2 of its samples: made when first used; [0] one sample, no resolve */
 static int pass_samples, samples_have;  /* the screens' samples a pixel; the counts the device has (a bit each) */
 static VkDescriptorSetLayout set_layout;
 static VkPipelineLayout layout;
@@ -132,7 +133,7 @@ static VkFramebuffer draw_fb;
 static void sink_free(void);
 static Image win_ms, win_ds;            /* the window's multisampled colour (the swapchain's format) and depth, with the swapchain */
 static VkFramebuffer screen_fb[SCREENS];
-static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS];
+static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS], screen_own[SCREENS];
 static uint64_t screen_used[SCREENS], picture_used, frame_no;
 static Buf ubuf, dbuf, staging, readback;
 static int last_w, last_h, ever;
@@ -455,7 +456,7 @@ static void clear_new(VkImage i)
    if `screen` is 1, with depth and stencil and no resolve if 2 (one sample,
    drawn straight into its image); what came before it is done before it, and
    it before what follows */
-static VkRenderPass render_pass(VkFormat f, int samples, int screen, VkAttachmentLoadOp load, VkImageLayout initial, VkImageLayout final)
+static VkRenderPass render_pass_d(VkFormat f, int samples, int screen, VkAttachmentLoadOp load, VkImageLayout initial, VkImageLayout final, VkFormat dfmt)
 {
     VkAttachmentDescription a[3];
     VkAttachmentReference cr = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }, dr = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL },
@@ -479,7 +480,7 @@ static VkRenderPass render_pass(VkFormat f, int samples, int screen, VkAttachmen
     sp.colorAttachmentCount = 1;
     sp.pColorAttachments = &cr;
     if (screen) {
-        a[1].format = depth_format;
+        a[1].format = dfmt;
         a[1].samples = (VkSampleCountFlagBits)samples;
         a[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         a[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -523,6 +524,13 @@ static VkRenderPass render_pass(VkFormat f, int samples, int screen, VkAttachmen
     return rp;
 }
 
+static VkRenderPass render_pass(VkFormat f, int samples, int screen, VkAttachmentLoadOp load, VkImageLayout initial, VkImageLayout final)
+{
+    return render_pass_d(f, samples, screen, load, initial, final, depth_format);
+}
+
+int rr_depth_own(void) { return have_d32; }
+
 static int integer_kind(int kind) { return kind == KIND_INDEX || kind == KIND_INDEX32; }
 
 /* blending, where the target can blend: an integer target never does */
@@ -546,9 +554,20 @@ static VkRenderPass side_pass(int samples)
     return rp_side[i];
 }
 
+/* the render pass of a side target with a depth of its own: 32-bit float, no stencil (its draws use none) */
+static VkRenderPass own_pass(int samples)
+{
+    int i = samples == 1 ? 0 : samples == 2 ? 1 : samples == 4 ? 2 : samples == 8 ? 3 : 4;
+    if (!rp_own[i])
+        rp_own[i] = render_pass_d(COLOUR, samples, samples == 1 ? 2 : 1, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_FORMAT_D32_SFLOAT);
+    return rp_own[i];
+}
+
 static VkRenderPass pass_of_kind(int kind, int samples)
 {
     switch (kind) {
+    case KIND_OWN: return own_pass(samples);
     case KIND_SCREEN: return samples == pass_samples ? rp_screen : side_pass(samples);
     case KIND_INDEX: return rp_index[0];
     case KIND_INDEX32: return rp_index32[0];
@@ -586,10 +605,13 @@ static PipeSlot *pipe_slot(uint64_t key)
     return &pipes[i];
 }
 
-static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int stencil, int kind, int samples)
+/* rast: how the draw rasterises: 0 no culling, else 1 + 2 * (front culled) + (front is counter-clockwise on the target), plus
+   8 where the depth is biased (the bias itself is dynamic state, so a pipeline is not made for each value), plus 16 where
+   a depth of its own has nearer as greater */
+static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int stencil, int kind, int samples, int rast)
 {
     uint64_t key = (uint64_t)program | (uint64_t)fshader << 8 | (uint64_t)blend << 20 | (uint64_t)depth << 24 | (uint64_t)stencil << 28 |
-                   (uint64_t)kind << 32 | (uint64_t)samples << 40;
+                   (uint64_t)kind << 32 | (uint64_t)samples << 40 | (uint64_t)rast << 48;
     PipeSlot *slot = pipe_slot(key);
     VkPipelineShaderStageCreateInfo st[2];
     VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
@@ -600,8 +622,8 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
     VkPipelineDepthStencilStateCreateInfo dsi = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
     VkPipelineColorBlendAttachmentState ba;
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-    VkDynamicState dyn[5] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK };
+    VkDynamicState dyn[6] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_DEPTH_BIAS };
     VkPipelineDynamicStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
     VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
     VkStencilOpState so;
@@ -628,9 +650,11 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     vp.viewportCount = vp.scissorCount = 1;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.cullMode = (rast & 7) == 0 ? VK_CULL_MODE_NONE : ((rast & 7) - 1) & 2 ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+    rs.frontFace = (rast & 7) != 0 && ((rast & 7) - 1) & 1 ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    rs.depthBiasEnable = (rast & 8) != 0;
     rs.lineWidth = 1;
-    ms.rasterizationSamples = kind == KIND_SCREEN ? (VkSampleCountFlagBits)samples : kind == KIND_WINDOW ? (VkSampleCountFlagBits)pass_samples : VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = kind == KIND_SCREEN || kind == KIND_OWN ? (VkSampleCountFlagBits)samples : kind == KIND_WINDOW ? (VkSampleCountFlagBits)pass_samples : VK_SAMPLE_COUNT_1_BIT;
     memset(&so, 0, sizeof so);
     so.failOp = so.passOp = so.depthFailOp = VK_STENCIL_OP_KEEP;
     so.compareOp = VK_COMPARE_OP_EQUAL;
@@ -640,16 +664,16 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
         so.compareOp = VK_COMPARE_OP_ALWAYS;
         so.passOp = so.depthFailOp = VK_STENCIL_OP_REPLACE;
     }
-    dsi.depthTestEnable = depth == RR_DEPTH_LEQUAL;
+    dsi.depthTestEnable = depth == RR_DEPTH_LEQUAL || depth == RR_DEPTH_KEEP;
     dsi.depthWriteEnable = depth == RR_DEPTH_LEQUAL;
-    dsi.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    dsi.stencilTestEnable = stencil != RR_STENCIL_OFF;
+    dsi.depthCompareOp = kind == KIND_OWN && (rast & 16) ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
+    dsi.stencilTestEnable = stencil != RR_STENCIL_OFF && kind != KIND_OWN;
     dsi.front = dsi.back = so;
     dsi.maxDepthBounds = 1;
     blend_of(&ba, blend, kind);
     cb.attachmentCount = 1;
     cb.pAttachments = &ba;
-    ds.dynamicStateCount = 5;
+    ds.dynamicStateCount = rs.depthBiasEnable ? 6 : 5;
     ds.pDynamicStates = dyn;
     ci.stageCount = 2;
     ci.pStages = st;
@@ -658,7 +682,7 @@ static VkPipeline pipe_of(int program, int fshader, int blend, int depth, int st
     ci.pViewportState = &vp;
     ci.pRasterizationState = &rs;
     ci.pMultisampleState = &ms;
-    ci.pDepthStencilState = kind == KIND_SCREEN || kind == KIND_WINDOW ? &dsi : NULL;
+    ci.pDepthStencilState = kind == KIND_SCREEN || kind == KIND_WINDOW || kind == KIND_OWN ? &dsi : NULL;
     ci.pColorBlendState = &cb;
     ci.pDynamicState = &ds;
     ci.layout = layout;
@@ -676,7 +700,7 @@ static void pipes_drop_window(void)
 {
     size_t i;
     for (i = 0; i < cap_pipes; i++)
-        if (pipes[i].used && (pipes[i].key >> 32) == KIND_WINDOW) {
+        if (pipes[i].used && ((pipes[i].key >> 32) & 0xFF) == KIND_WINDOW) {
             if (pipes[i].p)
                 vkDestroyPipeline(dev, pipes[i].p, NULL);
             pipes[i].p = VK_NULL_HANDLE;
@@ -1241,6 +1265,9 @@ int rr_open(void)
         return open_failed();
     depth_format = depth_ok(VK_FORMAT_D24_UNORM_S8_UINT) ? VK_FORMAT_D24_UNORM_S8_UINT
                  : depth_ok(VK_FORMAT_D32_SFLOAT_S8_UINT) ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_UNDEFINED;
+    have_d32 = depth_ok(VK_FORMAT_D32_SFLOAT);
+    if (!have_d32)
+        fprintf(stderr, "rr: vulkan: no 32-bit float depth attachment: a list's own depth is not made (its shared depth is used)\n");
     if (depth_format == VK_FORMAT_UNDEFINED) {
         fprintf(stderr, "rr: vulkan: no depth and stencil format\n");
         return open_failed();
@@ -1376,7 +1403,7 @@ static void screen_free(int k)
     image_free(&screen_ms[k]);
     image_free(&screen_ds[k]);
     image_free(&screen_res[k]);
-    screen_w[k] = screen_h[k] = screen_samp[k] = 0;
+    screen_w[k] = screen_h[k] = screen_samp[k] = screen_own[k] = 0;
 }
 
 void rr_close(void)
@@ -1442,9 +1469,12 @@ void rr_close(void)
     if (cmd_pool)
         vkDestroyCommandPool(dev, cmd_pool, NULL);
     vkDestroyRenderPass(dev, rp_screen, NULL);
-    for (k = 0; k < 5; k++)
+    for (k = 0; k < 5; k++) {
         if (rp_side[k])
             vkDestroyRenderPass(dev, rp_side[k], NULL);
+        if (rp_own[k])
+            vkDestroyRenderPass(dev, rp_own[k], NULL);
+    }
     for (k = 0; k < 2; k++) {
         vkDestroyRenderPass(dev, rp_colour[k], NULL);
         vkDestroyRenderPass(dev, rp_index[k], NULL);
@@ -1473,6 +1503,7 @@ instance:
     queue = VK_NULL_HANDLE;
     family = 0;
     depth_format = VK_FORMAT_UNDEFINED;
+    have_d32 = 0;
     sc_format = VK_FORMAT_UNDEFINED;
     sc_window = NULL;
     sc_ok = sc_failed = sc_lost = sc_mirror = sc_turns = 0;
@@ -1480,6 +1511,7 @@ instance:
     windowed = 0;
     rp_screen = rp_window = VK_NULL_HANDLE;
     memset(rp_side, 0, sizeof rp_side);
+    memset(rp_own, 0, sizeof rp_own);
     pass_samples = samples_have = draw_all = 0;
     memset(rp_colour, 0, sizeof rp_colour);
     memset(rp_index, 0, sizeof rp_index);
@@ -1526,32 +1558,37 @@ static VkFormat format_of(int f) { return f == RR_R8U ? VK_FORMAT_R8_UINT : f ==
 
 /* a screen target (0 the frame, 1 and 2 the extra ones, 3 and on the side targets) of w x h and `samples`: its
    multisampled colour and depth and stencil are never kept past the pass; at one sample, drawn straight into its image */
-static void screen_fit(int k, int w, int h, int samples)
+static void screen_fit(int k, int w, int h, int samples, int own)
 {
     VkImageView v[3];
-    if (screen_w[k] == w && screen_h[k] == h && screen_samp[k] == samples)
+    if (screen_w[k] == w && screen_h[k] == h && screen_samp[k] == samples && screen_own[k] == own)
         return;
     screen_free(k);
     if (samples > 1)
         image_make(&screen_ms[k], COLOUR, w, h, samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
-    image_make(&screen_ds[k], depth_format, w, h, samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-               VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    if (own)
+        image_make(&screen_ds[k], VK_FORMAT_D32_SFLOAT, w, h, samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT);
+    else
+        image_make(&screen_ds[k], depth_format, w, h, samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     image_make(&screen_res[k], COLOUR, w, h, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     screen_res[k].format = RR_BGRA8;
     if (samples > 1) {
         v[0] = screen_ms[k].v;
         v[1] = screen_ds[k].v;
         v[2] = screen_res[k].v;
-        screen_fb[k] = framebuffer(k < 3 ? rp_screen : side_pass(samples), v, 3, w, h);
+        screen_fb[k] = framebuffer(k < 3 ? rp_screen : own ? own_pass(samples) : side_pass(samples), v, 3, w, h);
     } else {
         v[0] = screen_res[k].v;
         v[1] = screen_ds[k].v;
-        screen_fb[k] = framebuffer(side_pass(1), v, 2, w, h);
+        screen_fb[k] = framebuffer(own ? own_pass(1) : side_pass(1), v, 2, w, h);
     }
     screen_w[k] = w;
     screen_h[k] = h;
     screen_samp[k] = samples;
+    screen_own[k] = own;
 }
 
 /* the screen (screen_ms's index) a pass target is: the frame, the extra targets, a side target; -1 none (the window's
@@ -1574,7 +1611,7 @@ static int pass_n(const rr_pass *ps)
    and reads of it read nothing */
 static void targets_fit(const rr_frame *f, int w, int h, int others)
 {
-    int k, pic = 0, used[SCREENS] = { 0 }, count[SCREENS] = { 0 };
+    int k, pic = 0, used[SCREENS] = { 0 }, count[SCREENS] = { 0 }, own[SCREENS] = { 0 };
     size_t p;
     for (p = 0; others && p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
@@ -1582,13 +1619,14 @@ static void targets_fit(const rr_frame *f, int w, int h, int others)
         if (sc >= 0) {
             used[sc] = 1;
             count[sc] = pass_n(ps);
+            own[sc] = ps->target == RR_TARGET_SIDE && ps->depth_own;
         } else if (ps->target == RR_TARGET_PICTURE) {
             pic = 1;
         }
     }
     for (k = 0; k < SCREENS; k++) {
         if (used[k]) {
-            screen_fit(k, w, h, count[k]);
+            screen_fit(k, w, h, count[k], own[k]);
             screen_used[k] = frame_no;
         } else if (screen_w[k] && (frame_no - screen_used[k] > UNUSED_FRAMES || screen_w[k] != w || screen_h[k] != h)) {
             /* not drawn into this frame: let go when long unused, or when no longer the window's size */
@@ -1871,6 +1909,8 @@ static void record_passes(const rr_frame *f, int ow, int oh, int turns, int mirr
                 fprintf(stderr, "rr: vulkan: a pass into no target (%u, texture %u, layer %u) left out\n", ps->target, ps->texture, ps->layer);
             continue;
         }
+        if (kind == KIND_SCREEN && ps->target == RR_TARGET_SIDE && ps->depth_own)
+            kind = KIND_OWN;
         /* the view: the frame's units shown at their aspect, centred in this target (a window-sized
            one in the picture's orientation, turned to the display's below); a window-sized target
            with no window and no RR_SIZE is the units themselves, filled */
@@ -1880,10 +1920,10 @@ static void record_passes(const rr_frame *f, int ow, int oh, int turns, int mirr
             rr_view(f->aspect, tw, th, &vx, &vy, &vw, &vh);
         memset(clr, 0, sizeof clr);
         memcpy(clr[0].color.float32, ps->clear, sizeof ps->clear);
-        if (kind == KIND_SCREEN || kind == KIND_WINDOW) {
-            bi.renderPass = ps->target == RR_TARGET_WINDOW ? wrp : ps->target == RR_TARGET_SIDE ? side_pass(pass_n(ps)) : rp_screen;
+        if (kind == KIND_SCREEN || kind == KIND_WINDOW || kind == KIND_OWN) {
+            bi.renderPass = ps->target == RR_TARGET_WINDOW ? wrp : kind == KIND_OWN ? own_pass(pass_n(ps)) : ps->target == RR_TARGET_SIDE ? side_pass(pass_n(ps)) : rp_screen;
             bi.framebuffer = ps->target == RR_TARGET_WINDOW ? wfb : screen_fb[screen_at(ps)];
-            clr[1].depthStencil.depth = 1;
+            clr[1].depthStencil.depth = kind == KIND_OWN ? ps->depth_clear : 1;
             clr[1].depthStencil.stencil = 0;
             bi.clearValueCount = 2;
         } else {
@@ -1906,9 +1946,16 @@ static void record_passes(const rr_frame *f, int ow, int oh, int turns, int mirr
         vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
         for (i = ps->first; i < ps->first + ps->count; i++) {
             const rr_cmd *c = &f->cmds[i];
-            int screen = kind == KIND_SCREEN || kind == KIND_WINDOW;
+            int screen = kind == KIND_SCREEN || kind == KIND_WINDOW || kind == KIND_OWN;
+            /* the front's winding in the draw's view, as the target has it: the shader mirrors a window-sized target
+               left to right where the display is mirrored (rr.h), which exchanges clockwise and counter-clockwise; a
+               turn does not. Vulkan judges the front by the framebuffer's winding as an image with y down, which is the
+               view's (the programs draw upright: clip y down here) */
+            int ccw = (c->front_ccw != 0) ^ (wsized && mirror != 0);
+            int rast = (c->cull ? 1 + (c->cull == RR_CULL_FRONT ? 2 : 0) + (ccw ? 1 : 0) : 0) | (c->bias != 0.0f || c->slope != 0.0f ? 8 : 0) |
+                       (kind == KIND_OWN && ps->depth_greater ? 16 : 0);
             VkPipeline pl = pipe_of(c->program, c->shader < MAX_SHADERS ? c->shader : 0, c->blend, screen ? c->depth : 0, screen ? c->stencil : 0, kind,
-                                    screen ? pass_n(ps) : 1);
+                                    screen ? pass_n(ps) : 1, screen ? rast : 0);
             VkViewport vp;
             VkRect2D sc;
             VkDescriptorSet set;
@@ -1953,6 +2000,9 @@ static void record_passes(const rr_frame *f, int ow, int oh, int turns, int mirr
             vkCmdSetStencilReference(cmd, VK_STENCIL_FRONT_AND_BACK, c->ref);
             vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FRONT_AND_BACK, c->read_mask);
             vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FRONT_AND_BACK, c->write_mask);
+            if (screen && rast & 8)
+                /* positive is nearer: added where nearer is greater, taken where less */
+                vkCmdSetDepthBias(cmd, rast & 16 ? c->bias : -c->bias, 0.0f, rast & 16 ? c->slope : -c->slope);
             vkCmdDraw(cmd, c->vertices, c->instances, 0, 0);
         }
         vkCmdEndRenderPass(cmd);
@@ -1960,7 +2010,7 @@ static void record_passes(const rr_frame *f, int ow, int oh, int turns, int mirr
             /* its smaller levels (that layer's), each texel the mean of the 2 x 2 of
                the level before, by the renderer's own program: the same box on
                every backend */
-            VkPipeline pl = pipe_of(to->array ? RR_MIPS_LAYER : RR_MIPS, 0, RR_BLEND_REPLACE, 0, 0, KIND_COLOUR, 1);
+            VkPipeline pl = pipe_of(to->array ? RR_MIPS_LAYER : RR_MIPS, 0, RR_BLEND_REPLACE, 0, 0, KIND_COLOUR, 1, 0);
             uint32_t off = (uint32_t)f->nuniforms * 256;
             int lv;
             for (lv = 1; pl && lv < to->levels; lv++) {

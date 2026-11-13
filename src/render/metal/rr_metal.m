@@ -196,6 +196,7 @@ void rr_close(void)
 }
 
 const char *rr_name(void) { return "metal"; }
+int rr_depth_own(void) { return 1; }      /* Depth32Float is the frame's depth already */
 int rr_samples(void) { return pass_samples ? pass_samples : 4; }
 int rr_samples_at_most(int n)
 {
@@ -340,9 +341,11 @@ static id<MTLRenderPipelineState> pipe_of(const rr_cmd *c, int kind, int samples
     return p;
 }
 
-static id<MTLDepthStencilState> ds_of(const rr_cmd *c, int kind)
+/* greater: the pass keeps nearer as greater (rr_pass.depth_greater) */
+static id<MTLDepthStencilState> ds_of(const rr_cmd *c, int kind, int greater)
 {
-    uint32_t k = kind == KIND_SCREEN ? (uint32_t)c->depth | (uint32_t)c->stencil << 4 | (uint32_t)c->read_mask << 8 | (uint32_t)c->write_mask << 16 : 0;
+    uint32_t k = kind == KIND_SCREEN ? (uint32_t)c->depth | (uint32_t)c->stencil << 4 | (uint32_t)c->read_mask << 8 | (uint32_t)c->write_mask << 16 |
+                                           (uint32_t)(greater != 0) << 24 : 0;
     NSNumber *key = @(k);
     id found = dss[key];
     id<MTLDepthStencilState> s;
@@ -353,9 +356,9 @@ static id<MTLDepthStencilState> ds_of(const rr_cmd *c, int kind)
     d.depthCompareFunction = MTLCompareFunctionAlways;
     d.depthWriteEnabled = NO;
     if (kind == KIND_SCREEN) {
-        if (c->depth == RR_DEPTH_LEQUAL) {
-            d.depthCompareFunction = MTLCompareFunctionLessEqual;
-            d.depthWriteEnabled = YES;
+        if (c->depth == RR_DEPTH_LEQUAL || c->depth == RR_DEPTH_KEEP) {
+            d.depthCompareFunction = greater ? MTLCompareFunctionGreaterEqual : MTLCompareFunctionLessEqual;
+            d.depthWriteEnabled = c->depth == RR_DEPTH_LEQUAL;
         }
         if (c->stencil != RR_STENCIL_OFF) {
             MTLStencilDescriptor *st = [MTLStencilDescriptor new];
@@ -576,7 +579,7 @@ static void encode(id<MTLCommandBuffer> cb, const rr_frame *f, int ow, int oh, f
             }
             rp.depthAttachment.texture = screen_ds[sc];
             rp.depthAttachment.loadAction = MTLLoadActionClear;
-            rp.depthAttachment.clearDepth = 1.0;
+            rp.depthAttachment.clearDepth = ps->depth_own ? (double)ps->depth_clear : 1.0;
             rp.depthAttachment.storeAction = MTLStoreActionDontCare;
             rp.stencilAttachment.texture = screen_ds[sc];
             rp.stencilAttachment.loadAction = MTLLoadActionClear;
@@ -610,8 +613,17 @@ static void encode(id<MTLCommandBuffer> cb, const rr_frame *f, int ow, int oh, f
             if (!pl || !c->vertices || !c->instances)
                 continue;
             [e setRenderPipelineState:pl];
-            [e setDepthStencilState:ds_of(c, kind)];
+            [e setDepthStencilState:ds_of(c, kind, kind == KIND_SCREEN && ps->depth_own && ps->depth_greater)];
             [e setStencilReferenceValue:c->ref];
+            /* the front's winding as the draw's view has it: Metal judges it in clip space, y up, which the engine's programs draw
+               upright (rr.h: clip y up, no turn or mirror here), so counter-clockwise there is counter-clockwise in the view */
+            [e setCullMode:c->cull == RR_CULL_BACK ? MTLCullModeBack : c->cull == RR_CULL_FRONT ? MTLCullModeFront : MTLCullModeNone];
+            [e setFrontFacingWinding:c->front_ccw ? MTLWindingCounterClockwise : MTLWindingClockwise];
+            /* positive bias is nearer: added to the depth where nearer is greater, taken from it where less */
+            {
+                int up = ps->depth_own && ps->depth_greater;
+                [e setDepthBias:(c->bias != 0.0f ? (up ? c->bias : -c->bias) : 0.0f) slopeScale:(c->slope != 0.0f ? (up ? c->slope : -c->slope) : 0.0f) clamp:0.0f];
+            }
             vp = view ? (MTLViewport){ vx, vy, vw, vh, 0, 1 } : (MTLViewport){ 0, 0, tw, th, 0, 1 };
             [e setViewport:vp];
             if (c->scissor) {

@@ -30,6 +30,8 @@ typedef struct {
     uint32_t mesh, ninst, moff; /* an instanced mesh (nshvc_draw_mesh): its id, its instances, and where its view's words
                                    (ENG_VIEW_WORDS) and then its instances' (4 each) start in the list's mesh words; the
                                    mesh's vertices are the mesh's, `count` is its count when drawn */
+    uint8_t cull, front_ccw, keep;   /* the list's draw state when this was drawn (triangles and meshes) */
+    float bias, slope;
     uint32_t image;             /* full colour or indexed (through the row's palette), or 0 */
     uint32_t shader;
     float inputs[8];
@@ -42,6 +44,9 @@ typedef struct {
     size_t nc, cap_c;
     float *mw;                  /* the mesh commands' view and instance words, as floats */
     size_t nmw, cap_mw;
+    nshvc_draw_state state;     /* what triangles and meshes drawn now take; zero after a clear */
+    uint32_t own;               /* a depth of its own */
+    uint32_t order;             /* nshvc_depth_order */
 } eng_list;
 #define ENG_VIEW_WORDS 20
 /* a mesh: its vertices, six words each (x, y, z, u, v, colour), in an R32U texture 1024 words wide, kept between pictures */

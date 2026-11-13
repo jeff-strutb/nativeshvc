@@ -519,6 +519,7 @@ void nshvc_draw_list_clear(nshvc_draw_list d, uint32_t width, uint32_t height)
     l->h = height;
     l->nv = l->nc = l->nmw = 0;
     l->rule = NSHVC_FILL_SMOOTH;
+    memset(&l->state, 0, sizeof l->state);
 }
 
 void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples)
@@ -531,6 +532,41 @@ void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples)
         return;
     }
     l->samples = samples;
+}
+
+void nshvc_draw_state_set(nshvc_draw_list d, const nshvc_draw_state *s)
+{
+    eng_list *l = list_of("nshvc_draw_state_set", d);
+    if (!l)
+        return;
+    if (!s) {
+        memset(&l->state, 0, sizeof l->state);
+        return;
+    }
+    if (s->cull > NSHVC_CULL_FRONT) {
+        eng_report("nshvc_draw_state_set", "cull %u", s->cull);
+        return;
+    }
+    l->state = *s;
+}
+
+void nshvc_draw_depth_own(nshvc_draw_list d, uint32_t on)
+{
+    eng_list *l = list_of("nshvc_draw_depth_own", d);
+    if (l)
+        l->own = on != 0;
+}
+
+void nshvc_draw_depth_order(nshvc_draw_list d, nshvc_depth_order order)
+{
+    eng_list *l = list_of("nshvc_draw_depth_order", d);
+    if (!l)
+        return;
+    if (order != NSHVC_DEPTH_NEAR_0 && order != NSHVC_DEPTH_NEAR_1) {
+        eng_report("nshvc_draw_depth_order", "order %d", (int)order);
+        return;
+    }
+    l->order = (uint32_t)order;
 }
 
 void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r)
@@ -589,7 +625,18 @@ nshvc_shader nshvc_shader_load(const char *name)
     return r;
 }
 
-static void list_add(eng_list *l, const nshvc_vertex *v, uint32_t count, uint32_t lines, const nshvc_material *m)
+static void cmd_state(eng_list_cmd *c, const nshvc_draw_state *st)
+{
+    if (!st)
+        return;
+    c->cull = st->cull <= NSHVC_CULL_FRONT ? st->cull : 0;
+    c->front_ccw = st->front_ccw != 0;
+    c->keep = st->depth_keep != 0;
+    c->bias = st->depth_bias == st->depth_bias ? roundf(st->depth_bias) : 0.0f;
+    c->slope = st->depth_slope == st->depth_slope ? st->depth_slope : 0.0f;
+}
+
+static void list_add(eng_list *l, const nshvc_vertex *v, uint32_t count, uint32_t lines, const nshvc_material *m, const nshvc_draw_state *st)
 {
     eng_list_cmd *c;
     size_t k;
@@ -613,6 +660,7 @@ static void list_add(eng_list *l, const nshvc_vertex *v, uint32_t count, uint32_
     c->first = (uint32_t)l->nv;
     c->count = count;
     c->lines = lines;
+    cmd_state(c, st);
     if (m) {
         if (m->image.id && m->image.id < eng_nimages)
             c->image = m->image.id;
@@ -633,7 +681,7 @@ void nshvc_draw_tris(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, c
         eng_report("nshvc_draw_tris", "%u vertices", count);
         return;
     }
-    list_add(l, v, count, 0, m);
+    list_add(l, v, count, 0, m, &l->state);
 }
 
 /* ---- meshes ---- */
@@ -715,6 +763,7 @@ void nshvc_draw_mesh(nshvc_draw_list d, nshvc_mesh m, const nshvc_view *view, co
         memcpy(w + ENG_VIEW_WORDS + (size_t)k * 4, &inst[k], 4 * sizeof *w);
     c = &l->cmd[l->nc++];
     memset(c, 0, sizeof *c);
+    cmd_state(c, &l->state);
     c->mesh = m.id;
     c->ninst = count;
     c->moff = (uint32_t)l->nmw;
@@ -738,7 +787,7 @@ void nshvc_draw_lines(nshvc_draw_list d, const nshvc_vertex *v, uint32_t count, 
         eng_report("nshvc_draw_lines", "%u vertices", count);
         return;
     }
-    list_add(l, v, count, 1, m);
+    list_add(l, v, count, 1, m, NULL);
 }
 
 void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, const nshvc_material *m)
@@ -772,7 +821,7 @@ void nshvc_draw_image(nshvc_draw_list d, nshvc_image i, const nshvc_rect *to, co
         q[k].w = 1.0f;
         q[k].colour = 0xFFFFFFFFu;
     }
-    list_add(l, q, 6, 0, &mm);
+    list_add(l, q, 6, 0, &mm, NULL);
 }
 
 /* ---- the picture's states ---- */

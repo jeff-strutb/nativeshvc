@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 2
+#define NSHVC_VERSION_MINOR 3
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -308,8 +308,8 @@ void nshvc_blend_set(const nshvc_blend *b);
 
 typedef struct nshvc_vertex {
     float x, y;                     /* in the list's pixels, with sub-pixel precision */
-    float z;                        /* depth in the list, 0 nearest to 1 farthest; the nearer is drawn, and of equal
-                                       depths the later (6.0) */
+    float z;                        /* depth in the list, 0 to 1, nearest at the end nshvc_draw_depth_order says (0 by default);
+                                       the nearer is drawn, and of equal depths the later (6.0) */
     float w;                        /* what x, y and z were divided by in projecting them, for texture coordinates that
                                        follow perspective; 0 or 1 none (6.0) */
     float u, v;                     /* in the material's image's texels */
@@ -342,6 +342,37 @@ void nshvc_draw_rule(nshvc_draw_list d, nshvc_fill_rule r);
    Kept until changed (6.0) */
 void nshvc_draw_samples(nshvc_draw_list d, uint32_t samples);
 
+/* ---- a list's depth state (6.3): which faces are drawn, and how depth is tested and kept ---- */
+
+typedef enum { NSHVC_CULL_NONE, NSHVC_CULL_BACK, NSHVC_CULL_FRONT } nshvc_cull;
+typedef struct nshvc_draw_state {
+    uint8_t cull;               /* nshvc_cull: the triangles left out, by their winding as the list draws them (x right, y down) */
+    uint8_t front_ccw;          /* 0: a front face is clockwise on the screen, as the list is drawn; 1: counter-clockwise */
+    uint8_t depth_keep;         /* 1: tested against the depth (nearer or equal is drawn) and not written to it */
+    float depth_bias;           /* nearer by this many (rounded to a whole number) of the depth's smallest steps at that depth */
+    float depth_slope;          /* and by this times the triangle's depth slope a pixel (as a GPU's polygon offset) */
+} nshvc_draw_state;
+/* the state of the triangles (nshvc_draw_tris) and meshes (nshvc_draw_mesh) drawn after it in this list, until set again.
+   All zero is how a list draws without it. Lines and images are not affected. nshvc_draw_list_clear sets it back to all
+   zero (as it does nshvc_draw_rule), so a list sets what it needs each picture, as it draws. The bias is dependable only
+   in a list with a depth of its own (below): the picture's depth differs in format between backends */
+void nshvc_draw_state_set(nshvc_draw_list d, const nshvc_draw_state *s);
+/* the list keeps a depth of its own: the z it is given (nshvc_vertex.z, nshvc_view's depth), unchanged, in 32-bit float
+   over the whole range 0 to 1, cleared each picture, and drawn into a target of its own, a window-sized pass at the list's
+   samples, then placed in its layer's place among the layers, with the layer's windows and colour maths, like a list with
+   fewer samples than the picture's. Kept until changed (6.3). A picture has room for 8 such targets (and lists with fewer
+   samples): the rest draw in the picture's passes with the picture's depth, as does a list where the device has no 32-bit
+   float depth (the engine says so once) */
+void nshvc_draw_depth_own(nshvc_draw_list d, uint32_t on);
+/* which end of the list's z is nearer, kept until changed (6.3): NEAR_0 (the default) z = 0 nearest, cleared to 1 and drawn
+   where less or equal; NEAR_1 z = 1 nearest, cleared to 0 and drawn where greater or equal. Of equal depths the later in
+   both. A game that wants the precision far away gives z that falls with distance, such as near / Z, with NEAR_1: float
+   has most of its steps near 0. The order applies to z everywhere in the list (vertices, a mesh's view). In a list
+   without a depth of its own the order is mapped onto the picture's slice, reversing it for NEAR_1: the same occlusion
+   with the slice's precision */
+typedef enum { NSHVC_DEPTH_NEAR_0, NSHVC_DEPTH_NEAR_1 } nshvc_depth_order;
+void nshvc_draw_depth_order(nshvc_draw_list d, nshvc_depth_order order);
+
 /* ---- instanced meshes (6.2): one model drawn many times, projected on the GPU ---- */
 
 /* a mesh: triangles in model space, three vertices each, kept on the GPU between pictures */
@@ -362,14 +393,17 @@ typedef struct nshvc_view {
     float rot[9];                   /* world to view, row major: view = rot * (world - eye); Z is view[2], ahead */
     float f, cx, cy;                /* screen x = cx + f * X / Z, y = cy + f * Y / Z, in the list's pixels */
     float near;                     /* nothing nearer than this Z is drawn: a triangle across it is cut (above 0) */
-    float depth_a, depth_b, depth_max;   /* the list's depth, as nshvc_vertex.z: z = depth_a - depth_b / Z, for z from 0
-                                       up to depth_max; what would lie outside that is not drawn */
+    float depth_a, depth_b, depth_max;   /* the list's depth, as nshvc_vertex.z, in the list's order: z = depth_a - depth_b / Z,
+                                       for z from 0 up to depth_max; what would lie outside that is not drawn. NEAR_0: depth_b
+                                       above 0, z rising with Z (depth_a 0.998, depth_b 255.488); NEAR_1: depth_b at or below 0, z
+                                       falling with Z (depth_a 0, depth_b = -near: z = near / Z) and depth_max at least the z at
+                                       the view's near, depth_a - depth_b / near */
 } nshvc_view;
 typedef struct nshvc_instance { float x, y, z, size; } nshvc_instance;   /* world place, uniform scale */
 /* the mesh at each instance, one instanced draw: world = instance.xyz + size * model, then the view's projection,
    done on the GPU, and the material as nshvc_draw_tris has it (no image: the vertex colour; w for texture
    coordinates is Z). Depth is the list's, so meshes and nshvc_draw_tris hide each other by it, of equal depths the
-   later; there is no culling of back faces. The fill rule (nshvc_draw_rule) does not apply: it moves given vertices
+   later; back faces are culled only as nshvc_draw_state says (by default not). The fill rule (nshvc_draw_rule) does not apply: it moves given vertices
    to whole pixels, and a mesh's vertices are projected on the GPU, so its edges are the smooth rule's */
 void nshvc_draw_mesh(nshvc_draw_list d, nshvc_mesh m, const nshvc_view *view, const nshvc_instance *instances,
                      uint32_t count, const nshvc_material *mat);

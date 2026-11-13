@@ -856,7 +856,7 @@ static void emit_image(int v, const eng_state *s, int n, int x0, int y0, int x1,
 
 /* ---- lists with fewer samples than the screens: a side target each ---- */
 static uint8_t list_side[ENG_LISTS];    /* by list: 1 + its side target, or 0 (drawn in the screens' passes) */
-static uint8_t side_samples[RR_SIDES];
+static uint8_t side_samples[RR_SIDES], side_own[RR_SIDES];     /* side_own: 0 none, 1 a depth of its own with NEAR_0, 2 with NEAR_1 */
 static uint32_t side_list[RR_SIDES];
 static int nsides;
 
@@ -869,8 +869,8 @@ static int list_samples(const eng_list *l)
 
 static int lists_in(const eng_state *s, int n) { return kind_of(s, n) == K_LIST && !s->blank && (s->l[n].enabled_main || s->l[n].enabled_sub); }
 
-/* the lists this picture draws with fewer samples than the screens' own, each given a side target (more than
-   RR_SIDES: the rest said so, and drawn in the screens' passes) */
+/* the lists this picture draws with fewer samples than the screens' own, or with a depth of their own, each given a side
+   target (more than RR_SIDES: the rest said so, and drawn in the screens' passes, with the picture's depth) */
 static void side_lists(void)
 {
     int r, said = 0;
@@ -888,7 +888,14 @@ static void side_lists(void)
                     continue;
                 id = s->l[n].draw_list.id;
                 c = list_samples(&eng_lists_of[id]);
-                if (list_side[id] || c >= rr_samples())
+                int own = eng_lists_of[id].own != 0;
+                if (own && !rr_depth_own()) {
+                    static int said_depth;
+                    if (!said_depth++)
+                        eng_report("nativeshvc", "no 32-bit float depth here: a list's own depth is not made, its shared depth is used");
+                    own = 0;
+                }
+                if (list_side[id] || (c >= rr_samples() && !own))
                     continue;
                 if (nsides == RR_SIDES) {
                     if (!said++)
@@ -897,6 +904,7 @@ static void side_lists(void)
                 }
                 list_side[id] = (uint8_t)(1 + nsides);
                 side_samples[nsides] = (uint8_t)c;
+                side_own[nsides] = (uint8_t)(own ? 1 + (eng_lists_of[id].order == NSHVC_DEPTH_NEAR_1) : 0);
                 side_list[nsides++] = id;
             }
         }
@@ -947,8 +955,18 @@ static void list_draws(uint32_t id, const float *box, int v, const eng_state *s,
         u->f[6][0] = (float)P->w / (float)l->w;
         u->f[6][1] = (float)P->h / (float)l->h;
         /* the list's depths within its priority's: in front of what is behind it, behind what is in front */
-        u->f[6][2] = z - 0.999f / 16.0f;
-        u->f[6][3] = z;
+        if (side && side_own[list_side[id] - 1]) {
+            /* a depth of its own: the list's z as it is, over the whole range */
+            u->f[6][2] = 0.0f;
+            u->f[6][3] = 1.0f;
+        } else if (l->order == NSHVC_DEPTH_NEAR_1) {
+            /* the picture's slice is nearer-is-less: the list's order reversed into it, z = 1 nearest at its near end */
+            u->f[6][2] = z;
+            u->f[6][3] = z - 0.999f / 16.0f;
+        } else {
+            u->f[6][2] = z - 0.999f / 16.0f;
+            u->f[6][3] = z;
+        }
         u->i[0][0] = (int32_t)(list_at[id] + cm->first * 7);
         if (cm->image) {
             const eng_image *im = &eng_images_of[cm->image];
@@ -978,7 +996,11 @@ static void list_draws(uint32_t id, const float *box, int v, const eng_state *s,
         } else {
             d->vertices = cm->lines ? cm->count / 2 * 6 : cm->count;
         }
-        d->depth = RR_DEPTH_LEQUAL;
+        d->depth = cm->keep ? RR_DEPTH_KEEP : RR_DEPTH_LEQUAL;
+        d->cull = cm->cull;
+        d->front_ccw = cm->front_ccw;
+        d->bias = cm->bias;
+        d->slope = cm->slope;
         if (!side) {
             stencil_of(d, v, s, n);
             in_group(d);
@@ -1019,6 +1041,9 @@ static void side_passes(void)
         pass_begin(RR_TARGET_SIDE, 0);
         F->passes[F->npasses - 1].layer = (uint32_t)k;
         F->passes[F->npasses - 1].samples = side_samples[k];
+        F->passes[F->npasses - 1].depth_own = side_own[k] != 0;
+        F->passes[F->npasses - 1].depth_greater = side_own[k] == 2;
+        F->passes[F->npasses - 1].depth_clear = side_own[k] == 2 ? 0.0f : 1.0f;     /* the farthest */
         list_draws(side_list[k], box, V_MAIN, NULL, 0, 1);
         pass_end();
     }

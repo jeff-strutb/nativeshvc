@@ -16,7 +16,8 @@
    and the last is z0 * Z + (z1 - z0) * (depth_a * Z - depth_b), linear in the view's coordinates. The rasteriser divides by
    w and interpolates z in screen space, which for z = depth_a - depth_b / Z is exact (1 / Z is affine in the screen),
    as nshvc_draw_tris' vertices carrying that z have it. Cut by three clip distances, all linear in the same
-   coordinates: Z - near, the list's z (depth_a - depth_b / Z) not below 0, and not above depth_max */
+   coordinates: Z - near, the list's z (depth_a - depth_b / Z) not below 0, and not above depth_max: whichever way the
+   list's order runs (z rising with Z for depth_b above 0, falling for depth_b below 0) */
 #include "common.glsl"
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_colour;
@@ -44,7 +45,12 @@ void main()
     vec2 pz = (centre * Z + f * view.xy) * u.f[6].xy;
     vec2 p = abs(Z) > 1e-6 ? pz / Z : vec2(0.0);
     float dz = da * Z - db;                          /* the list's z times Z */
-    float zc = u.f[6].z * Z + (u.f[6].w - u.f[6].z) * dz;
+    /* clip z = (z0 + (z1 - z0) * (depth_a - depth_b / Z)) * Z, written as K * Z - (z1 - z0) * depth_b with K = z0 +
+       (z1 - z0) * depth_a. With a depth of its own z0 = 0 and z1 = 1 (the z given, as it is), and K = depth_a exactly: clip
+       z = depth_a * Z - depth_b, nothing more; with depth_a = 0 and depth_b = -near (z = near / Z, the order NEAR_1) it is
+       near itself, and the stored depth near / Z has float's steps at their finest where Z is large. Without one, the
+       picture's slice (z0 to z1, swapped for NEAR_1) */
+    float z01 = u.f[6].w - u.f[6].z, zc = (u.f[6].z + z01 * da) * Z - z01 * db;
     vec4 g = oriented(pz * (2.0 / u.f[1].xy) - vec2(Z), zc);
     g.w = Z;
     gl_Position = g;

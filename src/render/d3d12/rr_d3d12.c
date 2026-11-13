@@ -40,6 +40,7 @@ static const Program programs[RR_PROGRAMS] = { RR_PROGRAM_TABLE };
 #define UNUSED_FRAMES 120               /* an extra target unused this many frames is let go */
 #define COLOUR DXGI_FORMAT_B8G8R8A8_UNORM
 #define DEPTH DXGI_FORMAT_D24_UNORM_S8_UINT
+#define DEPTH_OWN DXGI_FORMAT_D32_FLOAT   /* a side target with a depth of its own (rr_pass.depth_own): float, reversed, no stencil */
 #define SHADER_READ (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
 
 /* what a pass draws into: the multisampled screens (the window's too) with depth
@@ -82,7 +83,7 @@ static Tex none_colour, none_index, none_array;
 /* the screens: each resolved into screen_res (the window's into the back buffer, which has none); a side target at one
    sample is drawn into its screen_res and has no screen_ms */
 static Tex screen_ms[SCREENS], screen_ds[SCREENS], screen_res[SCREENS], picture;
-static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS];
+static int screen_w[SCREENS], screen_h[SCREENS], screen_samp[SCREENS], screen_own[SCREENS];
 static int draw_all;                    /* RR_DRAW, read at rr_open: with no window, the window's pass is run too, into draw_tex (never read or shown) */
 static Tex draw_tex;
 static int pass_samples, samples_have;  /* the screens' samples a pixel; the counts the device has (a bit each) */
@@ -499,6 +500,7 @@ int rr_open(void)
 }
 
 const char *rr_name(void) { return "d3d12"; }
+int rr_depth_own(void) { return 1; }      /* D32_FLOAT is a required depth-stencil format of every feature level this opens */
 int rr_samples(void) { return pass_samples ? pass_samples : 4; }
 int rr_samples_at_most(int n)
 {
@@ -525,11 +527,11 @@ static void blend_of(D3D12_RENDER_TARGET_BLEND_DESC *a, int blend, int kind)
     a->DestBlend = a->DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
 }
 
-typedef struct { UINT64 key; ID3D12PipelineState *p; int used; } PipeSlot;
+typedef struct { UINT64 key, key2; ID3D12PipelineState *p; int used; } PipeSlot;   /* key2: the rasteriser state and the depth bias */
 static PipeSlot *pipes;
 static size_t npipes, cap_pipes;
 
-static PipeSlot *pipe_slot(UINT64 key)
+static PipeSlot *pipe_slot(UINT64 key, UINT64 key2)
 {
     size_t i;
     if ((npipes + 1) * 2 > cap_pipes) {
@@ -540,7 +542,7 @@ static PipeSlot *pipe_slot(UINT64 key)
             exit(70);
         for (k = 0; k < cap_pipes; k++)
             if (pipes[k].used) {
-                for (i = mix64(pipes[k].key) & (c - 1); n[i].used; i = (i + 1) & (c - 1))
+                for (i = mix64(pipes[k].key ^ mix64(pipes[k].key2)) & (c - 1); n[i].used; i = (i + 1) & (c - 1))
                     ;
                 n[i] = pipes[k];
             }
@@ -548,19 +550,36 @@ static PipeSlot *pipe_slot(UINT64 key)
         pipes = n;
         cap_pipes = c;
     }
-    for (i = mix64(key) & (cap_pipes - 1); pipes[i].used && pipes[i].key != key; i = (i + 1) & (cap_pipes - 1))
+    for (i = mix64(key ^ mix64(key2)) & (cap_pipes - 1); pipes[i].used && (pipes[i].key != key || pipes[i].key2 != key2); i = (i + 1) & (cap_pipes - 1))
         ;
     return &pipes[i];
 }
 
 static DXGI_FORMAT kind_format(int kind) { return kind == KIND_INDEX ? DXGI_FORMAT_R8_UINT : kind == KIND_INDEX32 ? DXGI_FORMAT_R32_UINT : COLOUR; }
 
-static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind, int samples)
+/* own: 0 the frame's depth; 1 a depth of its own (rr_pass.depth_own), nearer less; 2 the same, nearer greater. The rasteriser's
+   state is part of the pipeline: the cull (three bits), own, the bias as a whole number and the slope's bits: a pipeline for
+   each different set a game uses */
+static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind, int samples, int own)
 {
-    int depth = kind == KIND_SCREEN ? c->depth : 0, stencil = kind == KIND_SCREEN ? c->stencil : 0;
+    int depth = kind == KIND_SCREEN ? c->depth : 0, stencil = kind == KIND_SCREEN && !own ? c->stencil : 0;
+    int cull = kind == KIND_SCREEN ? c->cull : 0, bias_i = 0;
+    float slope = 0.0f;
+    UINT64 key2;
+    if (kind == KIND_SCREEN && (c->bias != 0.0f || c->slope != 0.0f)) {
+        /* positive is nearer: added where nearer is greater (reversed), taken where less */
+        float b = own == 2 ? c->bias : -c->bias;
+        bias_i = (int)(b < -32767.0f ? -32767.0f : b > 32767.0f ? 32767.0f : b);
+        slope = own == 2 ? c->slope : -c->slope;
+    }
+    {
+        UINT32 sb;
+        memcpy(&sb, &slope, sizeof sb);
+        key2 = (UINT64)cull | (UINT64)(kind == KIND_SCREEN && c->front_ccw != 0) << 2 | (UINT64)own << 3 | (UINT64)(UINT16)(INT16)bias_i << 5 | (UINT64)sb << 21;
+    }
     UINT64 key = (UINT64)c->program | (UINT64)c->shader << 8 | (UINT64)c->blend << 24 | (UINT64)depth << 28 | (UINT64)stencil << 30 |
                  (UINT64)kind << 33 | (UINT64)(stencil ? c->read_mask : 0) << 40 | (UINT64)(stencil ? c->write_mask : 0) << 48 | (UINT64)samples << 56;
-    PipeSlot *slot = pipe_slot(key);
+    PipeSlot *slot = pipe_slot(key, key2);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
     D3D12_DEPTH_STENCILOP_DESC so;
     ID3D12PipelineState *p = NULL;
@@ -568,6 +587,7 @@ static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind, int samples)
         return slot->p;
     slot->used = 1;
     slot->key = key;
+    slot->key2 = key2;
     slot->p = NULL;
     npipes++;
     if (c->shader && (c->shader >= MAX_SHADERS || !game_ps[c->shader].code)) {
@@ -583,17 +603,22 @@ static ID3D12PipelineState *pipe_of(const rr_cmd *c, int kind, int samples)
     blend_of(&d.BlendState.RenderTarget[0], c->blend, kind);
     d.SampleMask = 0xFFFFFFFFu;
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    /* Direct3D judges the front by the render target's winding as an image, which the engine's programs draw upright
+       (clip y up, no turn or mirror here): the view's */
+    d.RasterizerState.CullMode = cull == RR_CULL_BACK ? D3D12_CULL_MODE_BACK : cull == RR_CULL_FRONT ? D3D12_CULL_MODE_FRONT : D3D12_CULL_MODE_NONE;
+    d.RasterizerState.FrontCounterClockwise = kind == KIND_SCREEN && c->front_ccw != 0;
+    d.RasterizerState.DepthBias = bias_i;
+    d.RasterizerState.SlopeScaledDepthBias = slope;
     d.RasterizerState.DepthClipEnable = TRUE;
     d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     d.NumRenderTargets = 1;
     d.RTVFormats[0] = kind_format(kind);
     d.SampleDesc.Count = kind == KIND_SCREEN ? (UINT)samples : 1;
     if (kind == KIND_SCREEN) {
-        d.DSVFormat = DEPTH;
-        d.DepthStencilState.DepthEnable = depth == RR_DEPTH_LEQUAL;
+        d.DSVFormat = own ? DEPTH_OWN : DEPTH;
+        d.DepthStencilState.DepthEnable = depth == RR_DEPTH_LEQUAL || depth == RR_DEPTH_KEEP;
         d.DepthStencilState.DepthWriteMask = depth == RR_DEPTH_LEQUAL ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-        d.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        d.DepthStencilState.DepthFunc = own == 2 ? D3D12_COMPARISON_FUNC_GREATER_EQUAL : D3D12_COMPARISON_FUNC_LESS_EQUAL;
         d.DepthStencilState.StencilEnable = stencil != RR_STENCIL_OFF;
         d.DepthStencilState.StencilReadMask = c->read_mask;
         d.DepthStencilState.StencilWriteMask = c->write_mask;
@@ -877,24 +902,24 @@ static void screen_free(int k)
     tex_free(&screen_ms[k]);
     tex_free(&screen_ds[k]);
     tex_free(&screen_res[k]);
-    screen_w[k] = screen_h[k] = screen_samp[k] = 0;
+    screen_w[k] = screen_h[k] = screen_samp[k] = screen_own[k] = 0;
 }
 
 /* a screen target (0 the frame, 1 and 2 the extra ones, 3 the window's, 4 and on side targets) of w x h and `samples` */
-static void screen_fit(int k, int w, int h, int samples)
+static void screen_fit(int k, int w, int h, int samples, int own)
 {
     D3D12_DEPTH_STENCIL_VIEW_DESC dv;
-    if (screen_w[k] == w && screen_h[k] == h && screen_samp[k] == samples)
+    if (screen_w[k] == w && screen_h[k] == h && screen_samp[k] == samples && screen_own[k] == own)
         return;
     screen_free(k);
     memset(&dv, 0, sizeof dv);
-    dv.Format = DEPTH;
+    dv.Format = own ? DEPTH_OWN : DEPTH;
     dv.ViewDimension = samples > 1 ? D3D12_DSV_DIMENSION_TEXTURE2DMS : D3D12_DSV_DIMENSION_TEXTURE2D;
     if (samples > 1) {
         tex_make(&screen_ms[k], COLOUR, w, h, samples, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET);
         ID3D12Device_CreateRenderTargetView(dev, screen_ms[k].r, NULL, rtv(rtv_slot(k)));
     }
-    tex_make(&screen_ds[k], DEPTH, w, h, samples, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    tex_make(&screen_ds[k], own ? DEPTH_OWN : DEPTH, w, h, samples, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     ID3D12Device_CreateDepthStencilView(dev, screen_ds[k].r, &dv, dsv(k));
     if (k != 3) {
         /* at one sample the readable texture is what is drawn into */
@@ -906,6 +931,7 @@ static void screen_fit(int k, int w, int h, int samples)
     screen_w[k] = w;
     screen_h[k] = h;
     screen_samp[k] = samples;
+    screen_own[k] = own;
 }
 
 /* the window-sized targets the passes draw into, made at this size, and only
@@ -915,7 +941,7 @@ static void screen_fit(int k, int w, int h, int samples)
    nothing */
 static void targets_fit(const rr_frame *f, int w, int h, int window, int others)
 {
-    int k, pic = 0, used[SCREENS] = { 0 }, count[SCREENS] = { 0 };
+    int k, pic = 0, used[SCREENS] = { 0 }, count[SCREENS] = { 0 }, own[SCREENS] = { 0 };
     size_t p;
     for (p = 0; p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
@@ -925,13 +951,14 @@ static void targets_fit(const rr_frame *f, int w, int h, int window, int others)
         if (sc >= 0) {
             used[sc] = 1;
             count[sc] = pass_n(ps);
+            own[sc] = t == RR_TARGET_SIDE && ps->depth_own;
         } else if (t == RR_TARGET_PICTURE) {
             pic = 1;
         }
     }
     for (k = 0; k < SCREENS; k++) {
         if (used[k]) {
-            screen_fit(k, w, h, count[k]);
+            screen_fit(k, w, h, count[k], own[k]);
             screen_used[k] = frame_no;
         } else if (screen_w[k] && (frame_no - screen_used[k] > UNUSED_FRAMES || screen_w[k] != w || screen_h[k] != h)) {
             /* not drawn into this frame: let go when long unused, or when no longer the window's size */
@@ -1145,7 +1172,7 @@ static void record_passes(const rr_frame *f, int ow, int oh, float aspect, int w
     for (p = 0; p < f->npasses; p++) {
         const rr_pass *ps = &f->passes[p];
         D3D12_CPU_DESCRIPTOR_HANDLE rt;
-        int kind, tw, th, layer = 0, vx, vy, vw, vh, sc = screen_at(ps);
+        int kind, tw, th, layer = 0, vx, vy, vw, vh, sc = screen_at(ps), own = ps->target == RR_TARGET_SIDE && ps->depth_own ? (ps->depth_greater ? 2 : 1) : 0;
         Tex *to;
         if (ps->target == RR_TARGET_TEXTURE ? again : ps->target == RR_TARGET_WINDOW ? !window : !others)
             continue;
@@ -1164,7 +1191,10 @@ static void record_passes(const rr_frame *f, int ow, int oh, float aspect, int w
             rt = rtv(rtv_slot(sc));
             ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1, &rt, FALSE, &ds);
             ID3D12GraphicsCommandList_ClearRenderTargetView(list, rt, ps->clear, 0, NULL);
-            ID3D12GraphicsCommandList_ClearDepthStencilView(list, ds, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, NULL);
+            if (own)
+                ID3D12GraphicsCommandList_ClearDepthStencilView(list, ds, D3D12_CLEAR_FLAG_DEPTH, ps->depth_clear, 0, 0, NULL);
+            else
+                ID3D12GraphicsCommandList_ClearDepthStencilView(list, ds, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, NULL);
         } else {
             layer = to->array ? (int)ps->layer : 0;
             transition(to->r, &to->state, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -1182,7 +1212,7 @@ static void record_passes(const rr_frame *f, int ow, int oh, float aspect, int w
         }
         for (i = ps->first; i < ps->first + ps->count; i++) {
             const rr_cmd *c = &f->cmds[i];
-            ID3D12PipelineState *pl = pipe_of(c, kind, kind == KIND_SCREEN ? pass_n(ps) : 1);
+            ID3D12PipelineState *pl = pipe_of(c, kind, kind == KIND_SCREEN ? pass_n(ps) : 1, own);
             D3D12_VIEWPORT vp;
             D3D12_RECT sr;
             D3D12_GPU_DESCRIPTOR_HANDLE table;
@@ -1243,7 +1273,7 @@ static void record_passes(const rr_frame *f, int ow, int oh, float aspect, int w
             int lv, w = to->w, h = to->h;
             memset(&mc, 0, sizeof mc);
             mc.program = to->array ? RR_MIPS_LAYER : RR_MIPS;
-            pl = pipe_of(&mc, KIND_COLOUR, 1);
+            pl = pipe_of(&mc, KIND_COLOUR, 1, 0);
             for (lv = 1; pl && lv < to->levels && mip_at < mip_blocks; lv++) {
                 D3D12_CPU_DESCRIPTOR_HANDLE lr = tex_rtv(to, layer * to->levels + lv);
                 UINT sub = (UINT)(lv + layer * to->levels);
