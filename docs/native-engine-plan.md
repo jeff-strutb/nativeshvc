@@ -2,7 +2,7 @@
 
 **Status: decisions A to G settled; approved and under way (the maintainer, 2026-11-08).** The evidence the plan rests on is in appendix A.
 
-## Where the work stands (2026-11-11)
+## Where the work stands (2026-11-13)
 
 API 6.3 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.

@@ -21,9 +21,9 @@ The engine is at API 6.3. `docs/native-engine-plan.md` opens with what has and h
   it is between two updates.
 - **Threads.** System, game, render and audio threads, and a job pool. Game state depends only on the updates run and their
   input.
-- **The picture, drawn natively on the GPU.** Layers, tiles, maps, palettes, sprites, windows, colour maths, mosaic,
-  Mode 7, hires, direct colour and offset-per-tile, as the SNES had them, at any screen size, with per-line changes from a
-  table of values. Each becomes native geometry and GPU state at the window's own resolution: tile layers and sprites are
+- **The picture, drawn natively on the GPU.** Layers, tiles, maps, palettes, sprites (every size, with the SNES's line
+  limits, priority rotation and OBJ interlace), windows, colour maths, mosaic, Mode 7, hires, interlace, overscan, direct
+  colour and offset-per-tile, as the SNES had them, at any screen size, with per-line changes from a table of values. Each becomes native geometry and GPU state at the window's own resolution: tile layers and sprites are
   instanced quads, Mode 7 a textured plane (read through its smaller levels, by arithmetic, where it shrinks), priorities depth,
   windows stencil, per-line changes strips of rows; the colour maths are done where each layer's colour is written,
   exactly as the SNES defines them, so a picture is one pass into the window. Texels stay sharp, with only the pixel an
@@ -32,10 +32,13 @@ The engine is at API 6.3. `docs/native-engine-plan.md` opens with what has and h
 - **The picture's shape in the window.** 4:3 by default, centred with black margins. A game can name another shape, such as
   8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
   say which part of it is shown.
-- **A drawing pipeline.** A game's own triangles, lines and images, such as its 3D, drawn straight into the frame in a
-  layer's place among the layers and sprites, with depth, and with game shaders compiled for every backend at build time;
-  and instanced meshes: a model kept on the GPU, drawn at thousands of places a picture, projected in the vertex stage; and per list
-face culling, depth bias, a see-through draw that keeps the depth, and a depth of its own in 32-bit float with either end nearest.
+- **A drawing pipeline.** A game's own drawing, such as its 3D, straight into the frame in a layer's place among the
+  layers and sprites, with game shaders compiled for every backend at build time:
+  - triangles, lines and images, with depth and perspective-correct textures;
+  - instanced meshes: a model kept on the GPU and drawn at thousands of places a picture, projected in the vertex stage;
+  - a draw's state: face culling, depth bias, and a see-through draw that is tested against the depth without writing it;
+  - a list's own depth, the whole range in 32-bit float, with either end nearest (nearest at 1 keeps precision far away);
+  - a list's own samples a pixel.
 - **Sound.** Voices, envelopes, noise, pitch modulation and echo by the SNES's rules at 32,040 Hz, with the game's music code
   on the audio thread.
 - **Input.** Every keyboard key, controller button, stick and trigger, the pointer and every finger on a touch screen,
@@ -85,15 +88,23 @@ memory. By default there are none.
 
 ## Checks
 
-Build with `-DNSHVC_TESTS=ON`. `tests/scenes/feature.c` checks draw lists, shaders, images, overlays, saves, input replay
-and jobs against values worked out by hand, and `tests/scenes/depth.c` culling, bias, a kept depth and a list's own depth, `tests/scenes/mesh.c` instanced meshes against the same triangles drawn
-the other way, a wall of triangles, the near plane, kept and rewritten meshes and thousands of instances. `tests/oracle` runs a ROM in bsnes for `tools/nshvc-check`, which compares a
-converted game's sound with the original's, and for `tests/scenes/scenes.py`, which makes each picture feature as a test ROM
-and as a scene for the engine and compares the two byte for byte at the console's size. `m7check` measures Mode 7's
-anti-aliasing against the console's lookup, and `cost` times the drawing case by case.
+Build with `-DNSHVC_TESTS=ON`. Each check is made for one part of the engine; none is a game.
+
+- `tests/scenes/scenes.py` makes each of the SNES's picture features as a test ROM, run in bsnes through `tests/oracle`,
+  and as a scene the engine plays, and compares the two byte for byte at the console's size.
+- `tests/scenes/feature.c` checks draw lists, shaders, images, overlays, saves, input replay and jobs against values
+  worked out by hand.
+- `tests/scenes/mesh.c` checks instanced meshes against the same triangles drawn the other way, against a wall of
+  triangles, at the near plane, kept and rewritten, and thousands in a call.
+- `tests/scenes/depth.c` checks culling, depth bias, a kept depth, the later of equal depths and a list's own depth in
+  both orders, with the precision far away, and an image over a list's other drawing.
+- `m7check` measures Mode 7's anti-aliasing against the exact area mean of the console's lookup, and `cost` times the
+  drawing case by case.
+- `tools/nshvc-check` compares a converted game's sound with the original's.
 
 What has been run: headless, at the console's size, 116 scenes on Metal, on Vulkan on Linux (dzn, AMD), on Direct3D 12 on Windows
 (AMD) and on Vulkan on Windows (AMD): on each, 112 match, 0 fail and 4 (rotated or scaled Mode 7, and Mode 7 whose scroll
-changes by two texels a line) are listed as differing by design. The example game has been looked at on the iOS Simulator and
+changes by two texels a line) are listed as differing by design; and `mesh.c`, `depth.c` and `feature.c` pass on each. The
+build with no renderer links. The example game has been looked at on the iOS Simulator and
 on the Android emulator, upright and turned, and is the picture the Mac draws. Not run: a window on Windows or Linux, a real
 phone, a whole game. A game's pictures at the window's resolution are not compared with an emulator's.

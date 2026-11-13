@@ -579,6 +579,16 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_fatal` | The engine's error report |
 | The DSP: BRR, Gaussian, ADSR and gain, noise, pitch modulation, echo and FIR, key on and off, mute, ENVX, OUTX and ENDX | Section 6 |
 
+### Added, with no earlier counterpart
+
+| Call | What it is | Since |
+|---|---|---|
+| `nshvc_draw_samples` | A draw list's own samples a pixel | 4.7, kept in 6.0 |
+| `nshvc_sprites_interlace` | OBJ interlace as a setting of its own, where it was a register bit | 6.1 |
+| `nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh` | Instanced meshes: a model kept on the GPU, drawn at many places under one view | 6.2 |
+| `nshvc_draw_state_set` | A draw's face culling, depth bias and kept depth | 6.3 |
+| `nshvc_draw_depth_own`, `nshvc_draw_depth_order` | A list's own 32-bit float depth, and which end of it is nearest | 6.3 |
+
 ### Retired, and why
 
 | Today | Why |

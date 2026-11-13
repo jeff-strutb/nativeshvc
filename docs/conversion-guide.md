@@ -25,12 +25,15 @@ full game's conversion.
 | The television's shape | `nshvc_screen.aspect`: 0 is 4:3 for 256 x 224 |
 | DMA to VRAM | `nshvc_tiles_write` (`NSHVC_TILES_PLANAR` takes the data as it is), `nshvc_map_write_snes` |
 | DMA to CGRAM | `nshvc_palette_write` |
-| OAM buffer | `nshvc_sprites_set` |
+| OAM buffer | `nshvc_sprites_set` (its third argument is the first sprite, for priority rotation) |
+| SETINI's OBJ interlace | `nshvc_sprites_interlace` |
 | HDMA tables | `nshvc_lines` |
 | Joypad registers | Your own controls, read from the devices in the `nshvc_input` passed to `update` |
 | APU ports | `nshvc_music_send`, read by your music code with `nshvc_music_receive` |
 | Sound driver | Music code in `nshvc_music.tick`, calling `nshvc_voice_*` |
 | Super FX or other chip | C that fills an `nshvc_draw_list` |
+| A chip's 3D: many copies of a model | `nshvc_mesh_write` once, `nshvc_draw_mesh` with a view and the places; the GPU projects them |
+| A chip's 3D: hidden surfaces | A list's own depth (`nshvc_draw_depth_own`, `nshvc_draw_depth_order`), and a draw's culling, bias and kept depth (`nshvc_draw_state_set`) |
 | Battery RAM | `nshvc_save_write`, `nshvc_save_read` |
 | ROM data | `nshvc_asset_open`, or data compiled in |
 
