@@ -2,9 +2,9 @@
 
 **Status: decisions A to G settled; approved and under way (the maintainer, 2026-11-08).** The evidence the plan rests on is in appendix A.
 
-## Where the work stands (2026-11-13)
+## Where the work stands (2026-11-17)
 
-API 6.4 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.5 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes
@@ -60,6 +60,10 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   each: a game's shader that writes the pixel's place gives each pixel its own place in the list's pixels, for
   triangles, lines, an image, a mesh, a mesh cut at the near plane, and lists with a depth or samples of their own or a
   size not the picture's. `feature.c`, `depth.c`, `mesh.c` and the 116 feature scenes are unchanged by it.
+- **6.5's full screen, what has been run.** Nothing yet. It compiles on every host and renderer: headless, macOS and
+  iOS on Metal, Windows on Vulkan and Direct3D 12, Android on Vulkan, Linux on Vulkan. Linux's full screen follows
+  gamescope's source, which sizes a game's window to the display when it asks for `_NET_WM_STATE_FULLSCREEN`; it has
+  not been seen on a desktop or a Steam Deck.
 - **Not run:** a picture shown in a window on Windows or on Linux (the two test machines had no desktop signed in to open
   one on; the Windows host and the Linux host compile, and nothing of them has been seen on a screen); a real phone; a
   whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.

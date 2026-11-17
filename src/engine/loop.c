@@ -49,6 +49,7 @@ static uint64_t hs_updates;  /* the game's updates so far */
 static rr_frame *hs_packet;
 
 static atomic_int quit_asked;
+static atomic_int full_screen_asked = -1;
 
 static void ask_quit(void)
 {
@@ -107,7 +108,20 @@ nshvc_display nshvc_display_info(void)
         d.safe_bottom = b * (float)d.height / ph;
     }
     d.keyboard = host_keyboard_attached() != 0;
+    d.full_screen_switch = host_full_screen_switch() != 0;
+    {
+        int asked = atomic_load(&full_screen_asked);
+        d.full_screen = (uint8_t)(asked >= 0 ? asked : host_window_full_screen() != 0);
+    }
     return d;
+}
+
+/* the game asks; the system thread, which owns the window, switches it
+   (full_screen_asked: -1 nothing asked, else on, kept until switched) */
+void nshvc_full_screen(int on)
+{
+    if (eng_on("nshvc_full_screen", ENG_GAME) && host_full_screen_switch())
+        atomic_store(&full_screen_asked, on != 0);
 }
 
 void nshvc_text_input(int on)
@@ -562,6 +576,15 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
             host_mutex_unlock(hs_lock);
             if (closed)
                 break;
+            {
+                /* cleared only after the switch, so a read meanwhile sees what was asked; asked again
+                   in between, it stays for the next pass */
+                int asked = atomic_load(&full_screen_asked);
+                if (asked >= 0) {
+                    host_window_set_full_screen(asked);
+                    atomic_compare_exchange_strong(&full_screen_asked, &asked, -1);
+                }
+            }
             if (host_poll_event(&e, 4)) {
                 if (e.type == HOST_EV_CLOSE)
                     ask_quit();

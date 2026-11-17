@@ -9,7 +9,8 @@
  *
  *   keys      a key message's virtual key; Alt+Enter and F11 switch the
  *             window between full screen and a window (the game never
- *             sees them)
+ *             sees them), as the game's own switch does
+ *             (host_window_set_full_screen)
  *   sound     WASAPI, shared mode, 32-bit float, on its own thread
  *   pads      XInput's controllers
  *
@@ -175,8 +176,9 @@ static int window_dpi(HWND h)
 }
 
 /* full screen: the window, borderless, covering its monitor; the window's
-   place before it, to go back to */
+   place before it, to go back to. s_full: which it is, for any thread */
 static WINDOWPLACEMENT s_place;
+static volatile LONG s_full;
 
 static void toggle_full_screen(void)
 {
@@ -188,15 +190,27 @@ static void toggle_full_screen(void)
         if (!GetWindowPlacement(s_win, &s_place) ||
             !GetMonitorInfoA(MonitorFromWindow(s_win, MONITOR_DEFAULTTOPRIMARY), &mi))
             return;
+        InterlockedExchange(&s_full, 1);
         SetWindowLongA(s_win, GWL_STYLE, (LONG)(style & ~WS_OVERLAPPEDWINDOW));
         SetWindowPos(s_win, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     } else {
+        InterlockedExchange(&s_full, 0);
         SetWindowLongA(s_win, GWL_STYLE, (LONG)(style | WS_OVERLAPPEDWINDOW));
         SetWindowPlacement(s_win, &s_place);
         SetWindowPos(s_win, NULL, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
+}
+
+/* while there is a window (none headless) */
+int host_full_screen_switch(void) { return s_win != NULL; }
+int host_window_full_screen(void) { return (int)InterlockedCompareExchange(&s_full, 0, 0); }
+/* on the window's thread: its style says which it is now */
+void host_window_set_full_screen(int on)
+{
+    if (s_win && !((DWORD)GetWindowLongA(s_win, GWL_STYLE) & WS_OVERLAPPEDWINDOW) != !!on)
+        toggle_full_screen();
 }
 
 /* the mouse: where the pointer is (points, from the client area's top

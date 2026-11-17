@@ -7,6 +7,7 @@
  *   host/null     a headless window, input and audio (tests, comparisons)
  *   host/macos    a Cocoa window, keyboard and game controllers, Core Audio
  *   host/windows  a Win32 window, keyboard, XInput controllers, WASAPI
+ *   host/linux    an X11 window, keyboard, joysticks, ALSA
  *   host/ios      the iOS app: a full-screen view, touch controls, keyboard
  *                 and game controllers, RemoteIO (the game's main runs on a
  *                 thread of its own as port_main)
@@ -113,6 +114,17 @@ void host_window_pixels(int *w, int *h);
 void host_window_points(float *w, float *h);
 /* both at once, from the same resize: for anything that relates the two */
 void host_window_sizes(int *pw, int *ph, float *tw, float *th);
+/* full screen: the window filling the display it is on, or a window.
+   host_full_screen_switch: 1 when the window can be switched (the desktop
+   hosts; iOS and Android, where the system decides, and host/null 0), from
+   any thread. host_window_full_screen: 1 full screen, 0 a window, as it is
+   or as it is going (a switch asked, by the game or the player, reads at
+   once, though the OS may take a while to finish it), from any thread.
+   host_window_set_full_screen: switch it, on the thread that opened the
+   window (the system thread); nothing where it cannot be switched. */
+int  host_full_screen_switch(void);
+int  host_window_full_screen(void);
+void host_window_set_full_screen(int on);
 /* the next event, waiting up to wait_ms for one; 1 if *ev was filled */
 int  host_poll_event(host_event *ev, uint32_t wait_ms);
 void host_message_box(const char *text, const char *caption);

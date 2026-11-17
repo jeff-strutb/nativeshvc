@@ -497,6 +497,10 @@ void host_text_input(int on)
         ANativeActivity_hideSoftInput(app->activity, 0);
 }
 int host_keyboard_attached(void) { return (AConfiguration_getKeyboard(app->config) == ACONFIGURATION_KEYBOARD_QWERTY); }
+/* the app's window is the system's to size: full screen, not switched */
+int host_full_screen_switch(void) { return 0; }
+int host_window_full_screen(void) { return 1; }
+void host_window_set_full_screen(int on) { (void)on; }
 
 /* ---- sound ---- */
 static AAudioStream *stream;

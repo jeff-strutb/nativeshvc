@@ -141,3 +141,7 @@ void host_safe_area(float *l, float *t, float *r, float *b) { *l = *t = *r = *b 
 void host_text_input(int on) { (void)on; }
 
 int host_keyboard_attached(void) { return 0; }
+/* no window to switch */
+int host_full_screen_switch(void) { return 0; }
+int host_window_full_screen(void) { return 0; }
+void host_window_set_full_screen(int on) { (void)on; }

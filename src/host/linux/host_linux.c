@@ -4,6 +4,12 @@
  * so a game builds without their development packages and a machine without
  * them reports it. Key codes are mapped to Windows virtual key codes, as on
  * every host.
+ *
+ * Full screen is the window manager's (_NET_WM_STATE_FULLSCREEN, the
+ * standard every desktop's and SteamOS's gamescope follow): the window asks,
+ * the manager sizes it to the display. F11 and Alt+Enter switch it, as on
+ * Windows (the game never sees them), and so does the game
+ * (host_window_set_full_screen).
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -33,6 +39,7 @@ typedef union {
     struct { int type; unsigned long serial; int send_event; Display *d; XWindow w; XWindow root, sub; unsigned long time; int x, y, x_root, y_root; unsigned state; char hint; int same; } motion;
     struct { int type; unsigned long serial; int send_event; Display *d; XWindow event, w; int x, y, width, height, border; XWindow above; int override_redirect; } configure;
     struct { int type; unsigned long serial; int send_event; Display *d; XWindow w; Atom message_type; int format; union { long l[5]; } data; } client;
+    struct { int type; unsigned long serial; int send_event; Display *d; XWindow w; Atom atom; unsigned long time; int state; } property;
     long pad[24];
 } XEvent;
 
@@ -43,9 +50,11 @@ typedef union {
 #define X_MotionNotify 6
 #define X_FocusIn 9
 #define X_FocusOut 10
+#define X_MapNotify 19
 #define X_ConfigureNotify 22
+#define X_PropertyNotify 28
 #define X_ClientMessage 33
-#define X_MASK (1L | 2L | 4L | 8L | (1L << 6) | (1L << 17) | (1L << 21))
+#define X_MASK (1L | 2L | 4L | 8L | (1L << 6) | (1L << 17) | (1L << 21) | (1L << 22))
 
 static Display *(*pXOpenDisplay)(const char *);
 static int (*pXInitThreads)(void);
@@ -65,10 +74,14 @@ static int (*pXFlush)(Display *);
 static int (*pXDestroyWindow)(Display *, XWindow);
 static int (*pXkbSetDetectableAutoRepeat)(Display *, int, int *);
 static int (*pXChangeProperty)(Display *, XWindow, Atom, Atom, int, int, const unsigned char *, int);
+static int (*pXSendEvent)(Display *, XWindow, int, long, XEvent *);
+static int (*pXGetWindowProperty)(Display *, XWindow, Atom, long, long, int, Atom, Atom *, int *, unsigned long *, unsigned long *,
+                                  unsigned char **);
+static int (*pXFree)(void *);
 
 static Display *dpy;
-static XWindow win;
-static Atom wm_delete;
+static XWindow win, root;
+static Atom wm_delete, wm_state, wm_full;
 static int win_w, win_h;               /* the event thread's own */
 static _Atomic uint64_t win_px;         /* the size published for every thread: w << 32 | h, never half new */
 static char app_dir[128] = "game", app_title[256] = "nativeshvc", save_dir[1024], res_dir[1024];
@@ -81,6 +94,7 @@ static int load_x11(void)
 #define L(n) if (!(p##n = dlsym(h, #n))) return 0;
     L(XInitThreads) L(XOpenDisplay) L(XDefaultScreen) L(XRootWindow) L(XCreateSimpleWindow) L(XSelectInput) L(XMapWindow) L(XStoreName)
     L(XInternAtom) L(XSetWMProtocols) L(XPending) L(XNextEvent) L(XLookupKeysym) L(XConnectionNumber) L(XFlush) L(XDestroyWindow)
+    L(XSendEvent) L(XGetWindowProperty) L(XFree)
 #undef L
     /* a held key's repeats as presses alone, not a release and a press */
     pXkbSetDetectableAutoRepeat = (int (*)(Display *, int, int *))dlsym(h, "XkbSetDetectableAutoRepeat");
@@ -177,11 +191,14 @@ int host_window_open(int width, int height, const char *title)
     if (pXkbSetDetectableAutoRepeat)
         pXkbSetDetectableAutoRepeat(dpy, 1, NULL);
     s = pXDefaultScreen(dpy);
+    root = pXRootWindow(dpy, s);
+    wm_state = pXInternAtom(dpy, "_NET_WM_STATE", 0);
+    wm_full = pXInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", 0);
     win_w = width * 3;
     win_h = height * 3;
     atomic_store(&win_px, (uint64_t)(uint32_t)win_w << 32 | (uint32_t)win_h);
-    win = pXCreateSimpleWindow(dpy, pXRootWindow(dpy, s), 0, 0, (unsigned)win_w, (unsigned)win_h, 0, 0, 0);
-    pXSelectInput(dpy, win, X_MASK | (1L << 21) | (1L << 17));
+    win = pXCreateSimpleWindow(dpy, root, 0, 0, (unsigned)win_w, (unsigned)win_h, 0, 0, 0);
+    pXSelectInput(dpy, win, X_MASK);
     pXStoreName(dpy, win, title ? title : app_title);
     wm_delete = pXInternAtom(dpy, "WM_DELETE_WINDOW", 0);
     pXSetWMProtocols(dpy, win, &wm_delete, 1);
@@ -238,6 +255,62 @@ void host_window_points(float *w, float *h)
     *w = (float)a;
     *h = (float)b;
 }
+/* full screen. full_now: which it is or is going to, for any thread. On
+   the event thread: mapped once the window manager has shown the window
+   (it takes requests for a window it manages); full_asked what was last
+   asked of it (-1 nothing outstanding), until its _NET_WM_STATE shows it,
+   so that the state it sets meanwhile for other reasons does not read as
+   the switch undone */
+static _Atomic int full_now;
+static int mapped, full_asked = -1;
+
+static void full_screen_ask(int on)
+{
+    XEvent e;
+    memset(&e, 0, sizeof e);
+    e.client.type = X_ClientMessage;
+    e.client.d = dpy;
+    e.client.w = win;
+    e.client.message_type = wm_state;
+    e.client.format = 32;
+    e.client.data.l[0] = on;                     /* _NET_WM_STATE_REMOVE 0, _ADD 1 */
+    e.client.data.l[1] = (long)wm_full;
+    e.client.data.l[3] = 1;                      /* asked by an application */
+    /* to the root, for the manager: SubstructureNotify | SubstructureRedirect */
+    pXSendEvent(dpy, root, 0, (1L << 19) | (1L << 20), &e);
+    pXFlush(dpy);
+}
+
+/* 1 when the window's _NET_WM_STATE holds _NET_WM_STATE_FULLSCREEN */
+static int full_screen_state(void)
+{
+    Atom type = 0;
+    int format = 0, full = 0;
+    unsigned long n = 0, after = 0, i;
+    unsigned char *data = NULL;
+    if (pXGetWindowProperty(dpy, win, wm_state, 0, 64, 0, 4 /* XA_ATOM */, &type, &format, &n, &after, &data) == 0 && data) {
+        if (format == 32)
+            for (i = 0; i < n; i++)
+                if (((unsigned long *)data)[i] == wm_full)
+                    full = 1;
+        pXFree(data);
+    }
+    return full;
+}
+
+int host_full_screen_switch(void) { return win != 0; }
+int host_window_full_screen(void) { return atomic_load(&full_now); }
+void host_window_set_full_screen(int on)
+{
+    on = on != 0;
+    if (!win)
+        return;
+    atomic_store(&full_now, on);
+    full_asked = on;
+    if (mapped)
+        full_screen_ask(on);
+}
+
 void host_message_box(const char *text, const char *caption) { fprintf(stderr, "%s: %s\n", caption ? caption : "message", text ? text : ""); }
 void host_safe_area(float *l, float *t, float *r, float *b) { *l = *t = *r = *b = 0; }
 void host_text_input(int on) { (void)on; }
@@ -313,6 +386,7 @@ static int vk_of(KeySym k)
 
 static int last_x, last_y, buttons;
 static uint8_t key_held[256];        /* by X key code: a repeat is not a new press */
+static uint8_t key_switch[256];      /* by X key code: down as the full-screen switch, its release the game's no more */
 
 int host_poll_event(host_event *ev, uint32_t wait_ms)
 {
@@ -336,11 +410,23 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
         case X_KeyRelease: {
             unsigned c = e.key.keycode & 0xFF;
             int down = e.type == X_KeyPress;
+            KeySym k;
             if (key_held[c] == down)
                 return 0;
             key_held[c] = (uint8_t)down;
+            k = pXLookupKeysym(&e, 0);
+            /* F11, and Return or the keypad's Enter with Alt (Mod1) held: full screen or a window */
+            if (down && (k == 0xFFC8 || ((k == 0xFF0D || k == 0xFF8D) && (e.key.state & 8)))) {
+                key_switch[c] = 1;
+                host_window_set_full_screen(!atomic_load(&full_now));
+                return 0;
+            }
+            if (!down && key_switch[c]) {
+                key_switch[c] = 0;
+                return 0;
+            }
             ev->type = HOST_EV_KEY;
-            ev->vk = vk_of(pXLookupKeysym(&e, 0));
+            ev->vk = vk_of(k);
             ev->down = down;
             return ev->vk != 0;
         }
@@ -379,8 +465,10 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
             return 1;
         case X_FocusIn:
         case X_FocusOut:
-            if (e.type == X_FocusOut)
+            if (e.type == X_FocusOut) {
                 memset(key_held, 0, sizeof key_held);
+                memset(key_switch, 0, sizeof key_switch);
+            }
             ev->type = HOST_EV_FOCUS;
             ev->down = e.type == X_FocusIn;
             return 1;
@@ -390,6 +478,24 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
             atomic_store(&win_px, (uint64_t)(uint32_t)win_w << 32 | (uint32_t)win_h);
             if (watch)
                 watch();
+            return 0;
+        case X_MapNotify:
+            /* managed now: a switch asked before goes to the manager */
+            if (e.configure.w == win && !mapped) {
+                mapped = 1;
+                if (full_asked >= 0)
+                    full_screen_ask(full_asked);
+            }
+            return 0;
+        case X_PropertyNotify:
+            /* the manager's record of the window: full screen or not, by the player or the game */
+            if (e.property.w == win && e.property.atom == wm_state) {
+                int full = full_screen_state();
+                if (full_asked < 0)
+                    atomic_store(&full_now, full);
+                else if (full == full_asked)
+                    full_asked = -1;
+            }
             return 0;
         case X_ClientMessage:
             if ((Atom)e.client.data.l[0] == wm_delete) {

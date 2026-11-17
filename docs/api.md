@@ -1,4 +1,4 @@
-# The native engine's API, version 6.4
+# The native engine's API, version 6.5
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -415,7 +415,8 @@ perspective, cut correctly at the near plane: the clipper weighs each end by its
 ## 5. Display and the window
 
 ```c
-nshvc_display nshvc_display_info(void);   /* window pixels, safe area, refresh rate, keyboard present */
+nshvc_display nshvc_display_info(void);   /* window pixels, safe area, refresh rate, keyboard present, full screen */
+void nshvc_full_screen(int on);            /* (6.5) the window full screen, or a window */
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha);   /* the game's UI over the picture */
 void nshvc_text_input(int on);             /* the system's on-screen keyboard where there is no keyboard */
 uint32_t nshvc_text_read(char *buffer, uint32_t max);   /* what has been typed since the last read */
@@ -424,6 +425,17 @@ void nshvc_pause(int on);                  /* the engine stops calling update; d
 
 Drawing at any window size and shape, fullscreen and the window itself are the engine's: the picture is drawn at the
 window's own pixels, never at the console's size and scaled. A game never sees which platform it is on.
+
+Full screen (6.5) fills the display the window is on; the player switches it as each system has it (macOS's View menu
+and Control-Command-F, F11 and Alt+Enter on Windows and Linux, which the game never sees as keys), and so may the game,
+for an options menu, with `nshvc_full_screen(1)` or `(0)`. `nshvc_display_info`'s `full_screen` says which the window is
+in, or is going to: a switch, the game's or the player's, reads at once, though the system may take a moment to finish
+it (macOS animates it). `full_screen_switch` is 1 where the window can be switched: macOS, Windows and Linux with a
+window open. On iOS and Android the system sizes the app's window, `full_screen` reads 1 and `nshvc_full_screen` does
+nothing; headless, both read 0. On Linux full screen is asked of the window manager (`_NET_WM_STATE_FULLSCREEN`), as
+every desktop and SteamOS's Gaming Mode (gamescope) take it; there the manager sizes the window to the display. A switch
+the manager refuses still reads as asked. In Gaming Mode, leaving full screen keeps
+the window at the display's size: gamescope shrinks only a window of a fixed size, so the two look alike there.
 
 ## 6. Sound
 
@@ -547,7 +559,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.4: 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.5: 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -599,6 +611,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_draw_state_set` | A draw's face culling, depth bias and kept depth | 6.3 |
 | `nshvc_draw_depth_own`, `nshvc_draw_depth_order` | A list's own 32-bit float depth, and which end of it is nearest | 6.3 |
 | `nshvc_pixel()` in a game's shader | The place of the pixel being shaded in the list's own pixels | 6.4 |
+| `nshvc_full_screen`, `nshvc_display`'s `full_screen` and `full_screen_switch` | The game switches the window between full screen and a window, and reads which it is in | 6.5 |
 
 ### Retired, and why
 

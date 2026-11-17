@@ -322,7 +322,58 @@ static void mouse_event(NSView *v, NSEvent *ev)
 }
 @end
 
+/* full screen, the window's own (toggleFullScreen:, as the View menu's):
+   s_full which it is or is going to, for any thread, s_open while there is
+   a window; on the main thread, s_moving while AppKit moves between the two,
+   and s_want what was asked meanwhile (-1 nothing), switched to after it */
+static _Atomic int s_full, s_open;
+static int s_moving, s_want = -1;
+
+int host_full_screen_switch(void) { return atomic_load(&s_open); }
+int host_window_full_screen(void) { return atomic_load(&s_full); }
+
+void host_window_set_full_screen(int on)
+{
+    on = on != 0;
+    if (!s_win)
+        return;
+    atomic_store(&s_full, on);
+    if (s_moving) {
+        s_want = on;
+        return;
+    }
+    if ((([s_win styleMask] & NSWindowStyleMaskFullScreen) != 0) != on)
+        [s_win toggleFullScreen:nil];
+}
+
+static void full_screen_moved(int failed, int now)
+{
+    int w = s_want;
+    s_moving = 0;
+    s_want = -1;
+    if (failed)
+        atomic_store(&s_full, now);
+    else if (w >= 0)
+        host_window_set_full_screen(w);
+}
+
 @implementation PortWindowDelegate
+- (void)windowWillEnterFullScreen:(NSNotification *)n
+{
+    (void)n;
+    s_moving = 1;
+    atomic_store(&s_full, 1);
+}
+- (void)windowWillExitFullScreen:(NSNotification *)n
+{
+    (void)n;
+    s_moving = 1;
+    atomic_store(&s_full, 0);
+}
+- (void)windowDidEnterFullScreen:(NSNotification *)n { (void)n; full_screen_moved(0, 1); }
+- (void)windowDidExitFullScreen:(NSNotification *)n { (void)n; full_screen_moved(0, 0); }
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)w { (void)w; full_screen_moved(1, 0); }
+- (void)windowDidFailToExitFullScreen:(NSWindow *)w { (void)w; full_screen_moved(1, 1); }
 - (BOOL)windowShouldClose:(NSWindow *)w
 {
     host_event e;
@@ -394,6 +445,7 @@ int host_window_open(int width, int height, const char *title)
             [NSApp activateIgnoringOtherApps:YES];
         s_rgb = CGColorSpaceCreateDeviceRGB();
         layer_publish();
+        atomic_store(&s_open, 1);
     }
     return 1;
 }
@@ -403,6 +455,7 @@ void host_window_close(void)
     if (s_win) {
         /* nothing more to draw into: the layer itself is kept, the renderer may still hold it */
         sizes_publish(0, 0, 0.0f, 0.0f);
+        atomic_store(&s_open, 0);
         [s_win orderOut:nil];
         s_win = nil;
         s_view = nil;

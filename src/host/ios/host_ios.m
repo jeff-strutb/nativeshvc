@@ -260,6 +260,10 @@ void host_text_input(int on)
 }
 
 int host_keyboard_attached(void) { return atomic_load(&s_hwkb); }
+/* the app's window is the system's to size: full screen, not switched */
+int host_full_screen_switch(void) { return 0; }
+int host_window_full_screen(void) { return 1; }
+void host_window_set_full_screen(int on) { (void)on; }
 
 /* ---- touch: every touch to the game (HOST_EV_TOUCH), in points ------------------- */
 /* What a touch means is the game's (nshvc_input's touches): the host only

@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 4
+#define NSHVC_VERSION_MINOR 5
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -442,8 +442,15 @@ typedef struct nshvc_display {
     float   safe_left, safe_top, safe_right, safe_bottom;   /* in pixels */
     float   refresh_hz;             /* 0: not known */
     uint8_t keyboard;               /* the player has a hardware keyboard */
+    uint8_t full_screen;            /* (6.5) the window fills its display, or is going to */
+    uint8_t full_screen_switch;     /* (6.5) nshvc_full_screen can switch it (the desktop hosts) */
 } nshvc_display;
 nshvc_display nshvc_display_info(void);
+/* (6.5) the window full screen (on) or a window (off), as the player's own
+   switch does it (macOS's View menu, F11 and Alt+Enter on Windows and Linux).
+   It reads in nshvc_display_info at once; the system may take a moment to
+   finish it. Nothing where full_screen_switch is 0. */
+void nshvc_full_screen(int on);
 /* the game's UI over the picture: its image's corners top left, top right and
    bottom left, in window pixels; alpha 0-1; no image: off. RGBA images only. */
 #define NSHVC_OVERLAYS 32
