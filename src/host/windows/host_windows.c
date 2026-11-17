@@ -190,6 +190,9 @@ static void toggle_full_screen(void)
         if (!GetWindowPlacement(s_win, &s_place) ||
             !GetMonitorInfoA(MonitorFromWindow(s_win, MONITOR_DEFAULTTOPRIMARY), &mi))
             return;
+        /* back as it was, maximised or not; never hidden, as a window not yet shown reads */
+        if (s_place.showCmd != SW_SHOWMAXIMIZED)
+            s_place.showCmd = SW_SHOWNORMAL;
         InterlockedExchange(&s_full, 1);
         SetWindowLongA(s_win, GWL_STYLE, (LONG)(style & ~WS_OVERLAPPEDWINDOW));
         SetWindowPos(s_win, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
@@ -206,7 +209,8 @@ static void toggle_full_screen(void)
 /* while there is a window (none headless) */
 int host_full_screen_switch(void) { return s_win != NULL; }
 int host_window_full_screen(void) { return (int)InterlockedCompareExchange(&s_full, 0, 0); }
-/* on the window's thread: its style says which it is now */
+/* on the window's thread: its style says which it is now. Before the
+   window is shown, the switch neither shows it nor is seen: it opens as set */
 void host_window_set_full_screen(int on)
 {
     if (s_win && !((DWORD)GetWindowLongA(s_win, GWL_STYLE) & WS_OVERLAPPEDWINDOW) != !!on)
@@ -334,9 +338,15 @@ int host_window_open(int width, int height, const char *title)
                           r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
     if (!s_win)
         return 0;
+    return 1;
+}
+
+void host_window_show(void)
+{
+    if (!s_win)
+        return;
     ShowWindow(s_win, SW_SHOW);
     SetForegroundWindow(s_win);
-    return 1;
 }
 
 void host_window_close(void)

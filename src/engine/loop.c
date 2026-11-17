@@ -45,6 +45,8 @@ static int hs_want, hs_ready, hs_quit;
 static int hs_busy;          /* the render thread is using the renderer: drawing a picture, or letting go of a window */
 static int hs_reading;       /* the game thread is reading the last picture from the renderer */
 static int hs_window;        /* the window went, came or changed since the render thread last looked */
+static int hs_inited;        /* the game's init has returned */
+static int hs_shown;         /* the system thread has shown the window, after init */
 static uint64_t hs_updates;  /* the game's updates so far */
 static rr_frame *hs_packet;
 
@@ -493,6 +495,14 @@ static void game_thread(void *arg)
     started_ns = host_ticks_ns();
     if (game.init)
         game.init();
+    /* the window is shown once init has said how (full screen, say): nothing is drawn before */
+    if (!headless) {
+        host_mutex_lock(hs_lock);
+        hs_inited = 1;
+        while (!hs_shown && !hs_quit)
+            host_cond_wait(game_wake, hs_lock, HOST_WAIT_FOREVER);
+        host_mutex_unlock(hs_lock);
+    }
     eng_sound_start(&game.music, headless, sound_path);
     if (headless)
         run_headless();
@@ -570,9 +580,10 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
     if (!headless) {
         for (;;) {
             host_event e;
-            int closed = 0;
+            int closed = 0, show = 0;
             host_mutex_lock(hs_lock);
             closed = hs_quit;
+            show = hs_inited && !hs_shown;
             host_mutex_unlock(hs_lock);
             if (closed)
                 break;
@@ -584,6 +595,14 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
                     host_window_set_full_screen(asked);
                     atomic_compare_exchange_strong(&full_screen_asked, &asked, -1);
                 }
+            }
+            if (show) {
+                /* after the switch above: a game that asked in init opens full screen */
+                host_window_show();
+                host_mutex_lock(hs_lock);
+                hs_shown = 1;
+                host_cond_broadcast(game_wake);
+                host_mutex_unlock(hs_lock);
             }
             if (host_poll_event(&e, 4)) {
                 if (e.type == HOST_EV_CLOSE)

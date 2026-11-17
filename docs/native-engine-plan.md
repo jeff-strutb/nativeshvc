@@ -63,7 +63,9 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
 - **6.5's full screen, what has been run.** Nothing yet. It compiles on every host and renderer: headless, macOS and
   iOS on Metal, Windows on Vulkan and Direct3D 12, Android on Vulkan, Linux on Vulkan. Linux's full screen follows
   gamescope's source, which sizes a game's window to the display when it asks for `_NET_WM_STATE_FULLSCREEN`; it has
-  not been seen on a desktop or a Steam Deck.
+  not been seen on a desktop or a Steam Deck. The window is shown once the game's `init` returns, so a game that asks
+  for full screen there opens in it; on macOS the window is shown first, then moves (AppKit does not reliably give a
+  window not yet on screen its own full-screen space).
 - **Not run:** a picture shown in a window on Windows or on Linux (the two test machines had no desktop signed in to open
   one on; the Windows host and the Linux host compile, and nothing of them has been seen on a screen); a real phone; a
   whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.

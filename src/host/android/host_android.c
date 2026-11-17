@@ -501,6 +501,7 @@ int host_keyboard_attached(void) { return (AConfiguration_getKeyboard(app->confi
 int host_full_screen_switch(void) { return 0; }
 int host_window_full_screen(void) { return 1; }
 void host_window_set_full_screen(int on) { (void)on; }
+void host_window_show(void) {}
 
 /* ---- sound ---- */
 static AAudioStream *stream;

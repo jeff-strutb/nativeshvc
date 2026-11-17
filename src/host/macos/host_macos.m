@@ -327,7 +327,7 @@ static void mouse_event(NSView *v, NSEvent *ev)
    a window; on the main thread, s_moving while AppKit moves between the two,
    and s_want what was asked meanwhile (-1 nothing), switched to after it */
 static _Atomic int s_full, s_open;
-static int s_moving, s_want = -1;
+static int s_moving, s_want = -1, s_shown;
 
 int host_full_screen_switch(void) { return atomic_load(&s_open); }
 int host_window_full_screen(void) { return atomic_load(&s_full); }
@@ -338,11 +338,28 @@ void host_window_set_full_screen(int on)
     if (!s_win)
         return;
     atomic_store(&s_full, on);
+    if (!s_shown)                       /* switched when shown (host_window_show) */
+        return;
     if (s_moving) {
         s_want = on;
         return;
     }
     if ((([s_win styleMask] & NSWindowStyleMaskFullScreen) != 0) != on)
+        [s_win toggleFullScreen:nil];
+}
+
+/* shown, then full screen when asked before: AppKit's full screen is a
+   window's move to a space of its own, which a window not yet on screen
+   is not reliably given */
+void host_window_show(void)
+{
+    if (!s_win || s_shown)
+        return;
+    s_shown = 1;
+    [s_win makeKeyAndOrderFront:nil];
+    if (!getenv("PORT_NOACTIVATE"))       /* a test run launched in the background stays there */
+        [NSApp activateIgnoringOtherApps:YES];
+    if (atomic_load(&s_full) && !([s_win styleMask] & NSWindowStyleMaskFullScreen))
         [s_win toggleFullScreen:nil];
 }
 
@@ -438,11 +455,8 @@ int host_window_open(int width, int height, const char *title)
         s_delegate = [PortWindowDelegate new];
         [s_win setDelegate:s_delegate];
         [s_win center];
-        [s_win makeKeyAndOrderFront:nil];
         [s_win makeFirstResponder:s_view];
         [s_win setAcceptsMouseMovedEvents:YES];
-        if (!getenv("PORT_NOACTIVATE"))       /* a test run launched in the background stays there */
-            [NSApp activateIgnoringOtherApps:YES];
         s_rgb = CGColorSpaceCreateDeviceRGB();
         layer_publish();
         atomic_store(&s_open, 1);

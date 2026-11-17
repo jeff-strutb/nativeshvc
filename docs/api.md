@@ -437,6 +437,11 @@ every desktop and SteamOS's Gaming Mode (gamescope) take it; there the manager s
 the manager refuses still reads as asked. In Gaming Mode, leaving full screen keeps
 the window at the display's size: gamescope shrinks only a window of a fixed size, so the two look alike there.
 
+The window is shown once the game's `init` returns, as `init` left it, and nothing is drawn before. A game that keeps
+the player's choice in its save reads it in `init` and calls `nshvc_full_screen` there (with 1 on a first launch, to
+open full screen by default): on Windows and Linux the window then opens full screen, with no window seen first; on
+macOS it is shown and then moves to full screen, as macOS's own full screen does for every app.
+
 ## 6. Sound
 
 ### 6.1 Samples and settings (game thread)

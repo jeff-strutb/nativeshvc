@@ -82,8 +82,14 @@ typedef struct host_event {
 } host_event;
 
 /* the window, sized for a picture of width x height (shown larger, the
-   picture's shape kept) */
+   picture's shape kept), made but not yet shown on the desktop hosts */
 int  host_window_open(int width, int height, const char *title);
+/* the window shown, as it has been set meanwhile: full screen when
+   host_window_set_full_screen(1) came first, opened so with no window seen
+   before it where the OS allows (Windows, Linux; macOS shows the window and
+   then moves it to full screen, its own way). Once, on the system thread;
+   nothing on the hosts whose window is the system's */
+void host_window_show(void);
 void host_window_close(void);
 /* 1 while any of the window can be seen (not minimised, hidden or covered) */
 int  host_window_visible(void);
@@ -121,7 +127,8 @@ void host_window_sizes(int *pw, int *ph, float *tw, float *th);
    or as it is going (a switch asked, by the game or the player, reads at
    once, though the OS may take a while to finish it), from any thread.
    host_window_set_full_screen: switch it, on the thread that opened the
-   window (the system thread); nothing where it cannot be switched. */
+   window (the system thread), before host_window_show too; nothing where it
+   cannot be switched. */
 int  host_full_screen_switch(void);
 int  host_window_full_screen(void);
 void host_window_set_full_screen(int on);

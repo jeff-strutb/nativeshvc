@@ -449,7 +449,9 @@ nshvc_display nshvc_display_info(void);
 /* (6.5) the window full screen (on) or a window (off), as the player's own
    switch does it (macOS's View menu, F11 and Alt+Enter on Windows and Linux).
    It reads in nshvc_display_info at once; the system may take a moment to
-   finish it. Nothing where full_screen_switch is 0. */
+   finish it. Nothing where full_screen_switch is 0. The window is shown once
+   init returns: called in init, the game opens full screen (macOS shows the
+   window, then moves it to full screen, its own way). */
 void nshvc_full_screen(int on);
 /* the game's UI over the picture: its image's corners top left, top right and
    bottom left, in window pixels; alpha 0-1; no image: off. RGBA images only. */

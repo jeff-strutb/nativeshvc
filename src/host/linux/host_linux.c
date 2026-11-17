@@ -203,7 +203,6 @@ int host_window_open(int width, int height, const char *title)
     wm_delete = pXInternAtom(dpy, "WM_DELETE_WINDOW", 0);
     pXSetWMProtocols(dpy, win, &wm_delete, 1);
     window_icon();
-    pXMapWindow(dpy, win);
     pXFlush(dpy);
     return 1;
 }
@@ -256,13 +255,13 @@ void host_window_points(float *w, float *h)
     *h = (float)b;
 }
 /* full screen. full_now: which it is or is going to, for any thread. On
-   the event thread: mapped once the window manager has shown the window
-   (it takes requests for a window it manages); full_asked what was last
-   asked of it (-1 nothing outstanding), until its _NET_WM_STATE shows it,
-   so that the state it sets meanwhile for other reasons does not read as
-   the switch undone */
+   the event thread: shown once host_window_show has mapped it, mapped once
+   the window manager has shown it (it takes requests for a window it
+   manages); full_asked what was last asked of it (-1 nothing outstanding),
+   until its _NET_WM_STATE shows it, so that the state it sets meanwhile for
+   other reasons does not read as the switch undone */
 static _Atomic int full_now;
-static int mapped, full_asked = -1;
+static int shown, mapped, full_asked = -1;
 
 static void full_screen_ask(int on)
 {
@@ -298,6 +297,21 @@ static int full_screen_state(void)
     return full;
 }
 
+/* mapped as set: full screen asked before by the window's own
+   _NET_WM_STATE, which a manager reads as it maps a window (EWMH's way to
+   open one full screen; gamescope sizes a game's window to the display) */
+void host_window_show(void)
+{
+    if (!win || shown)
+        return;
+    shown = 1;
+    if (atomic_load(&full_now) && pXChangeProperty)
+        pXChangeProperty(dpy, win, wm_state, 4 /* XA_ATOM */, 32, 0 /* PropModeReplace */, (const unsigned char *)&wm_full, 1);
+    full_asked = -1;
+    pXMapWindow(dpy, win);
+    pXFlush(dpy);
+}
+
 int host_full_screen_switch(void) { return win != 0; }
 int host_window_full_screen(void) { return atomic_load(&full_now); }
 void host_window_set_full_screen(int on)
@@ -306,6 +320,8 @@ void host_window_set_full_screen(int on)
     if (!win)
         return;
     atomic_store(&full_now, on);
+    if (!shown)                         /* opened so (host_window_show) */
+        return;
     full_asked = on;
     if (mapped)
         full_screen_ask(on);
