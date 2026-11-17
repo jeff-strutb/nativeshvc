@@ -32,6 +32,9 @@ The engine is at API 6.5. `docs/native-engine-plan.md` opens with what has and h
 - **The picture's shape in the window.** 4:3 by default, centred with black margins. A game can name another shape, such as
   8:7, or fill the window, and open its window at that shape. A wider screen keeps the original's pixel shape, and a game can
   say which part of it is shown.
+- **Full screen.** On macOS, Windows and Linux the player switches the window between full screen and a window (macOS's
+  View menu; F11 or Alt+Enter), and so can the game, for an options menu, reading which it is in. The window opens as the
+  game's `init` leaves it, so a game can open in full screen. On iOS and Android the system sizes the window.
 - **A drawing pipeline.** A game's own drawing, such as its 3D, straight into the frame in a layer's place among the
   layers and sprites, with game shaders compiled for every backend at build time:
   - triangles, lines and images, with depth and perspective-correct textures;
