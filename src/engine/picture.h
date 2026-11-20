@@ -67,6 +67,8 @@ typedef struct {
     nshvc_windows w;
     nshvc_blend b;
     int anchor[4];              /* the line each layer's mosaic started at */
+    int no_sprites;             /* no sprites on this row: nshvc_limits.blank_hides_sprites and the line above
+                                   blanked (picture.c build) */
     int pal;                    /* the palette's version */
 } eng_state;
 

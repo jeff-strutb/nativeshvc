@@ -676,11 +676,13 @@ static int kind_of(const eng_state *s, int n)
 
 static int bg_on(int v, const eng_state *s, int n) { return view_on(v, s) && s->m != 7 && enabled(&s->l[n], v) && kind_of(s, n) != K_NONE; }
 
-/* offset-per-tile: on for BG1 and BG2 with its map and BG3's */
+/* offset-per-tile: on for BG1 and BG2 with its map and BG3's, on lines in a mode that has it (2, 4 and 6, as the
+   console's; a line changed to another mode draws the layer as that mode does, without the offsets) */
 static int opt_on(const eng_state *s, int n)
 {
     const nshvc_layer *a = &s->l[n];
-    return n < 2 && a->offset_per_tile.id && a->offset_per_tile.id < eng_nmaps && s->l[2].map.id && s->l[2].map.id < eng_nmaps;
+    return n < 2 && (s->m == 2 || s->m == 4 || s->m == 6) && a->offset_per_tile.id && a->offset_per_tile.id < eng_nmaps &&
+           s->l[2].map.id && s->l[2].map.id < eng_nmaps;
 }
 
 static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
@@ -1466,7 +1468,7 @@ static void sprite_pieces(void)
     }
 }
 
-static int spr_on(int v, const eng_state *s) { return view_on(v, s) && npieces && (sub_screen(v) ? s->sprites_sub : s->sprites_main); }
+static int spr_on(int v, const eng_state *s) { return view_on(v, s) && npieces && !s->no_sprites && (sub_screen(v) ? s->sprites_sub : s->sprites_main); }
 
 static int eq_spr(const Ctx *c, const eng_state *a, const eng_state *b)
 {

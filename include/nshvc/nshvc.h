@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 6
+#define NSHVC_VERSION_MINOR 7
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -225,6 +225,8 @@ typedef struct nshvc_limits {
     uint16_t sprite_tiles_per_line;  /* 34 the SNES's; 0 none */
     uint8_t  sprite_wrap;
     uint8_t  layer_clip[5];
+    uint8_t  blank_hides_sprites;   /* (6.7) a line below a blanked one shows no sprites, as the SNES's: it finds a
+                                       line's sprites during the line above, and none while the screen is blanked */
 } nshvc_limits;
 void nshvc_limits_set(const nshvc_limits *l);
 

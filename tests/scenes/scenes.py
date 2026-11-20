@@ -6,9 +6,10 @@ for bsnes (through tests/oracle) and a scene file for the engine's API
   scenes.py --oracle ORACLE --core CORE --player PLAYER --out DIR [--only A,B]
   scenes.py ... --prove         one scene changed on the engine's side only: must fail
 
-A scene listed in KNOWN differs by design and is reported so, never as passing. 116 scenes, 4 listed KNOWN
+A scene listed in KNOWN differs by design and is reported so, never as passing. 118 scenes, 4 listed KNOWN
 (rotated or scaled Mode 7, and Mode 7 whose scroll changes by two texels a line). Headless, each of Metal, Vulkan on Linux
-(dzn, AMD), Direct3D 12 on Windows (AMD) and Vulkan on Windows (AMD) gave 112 match, 0 fail, 4 KNOWN; the windowed path
+(dzn, AMD), Direct3D 12 on Windows (AMD) and Vulkan on Windows (AMD) gave 112 match, 0 fail, 4 KNOWN of the first 116; the
+two added in 6.7 (line-blank-sprites, offset-per-tile-line-mode) have been run on Linux Vulkan (dzn) only; the windowed path
 has not been run. 
 
 The engine plays each scene headless with the picture at the console's own
@@ -452,9 +453,9 @@ class Scene:
         return self.t.build(outdir), path
 
 
-def opt_scene(mode, sub=False):
+def opt_scene(mode, sub=False, name=None):
     """sub: BG1 on the sub screen too (in a hires mode, so that the even half-columns hold it)"""
-    s = Scene(f"offset-per-tile{mode}")
+    s = Scene(name or f"offset-per-tile{mode}")
     s.mode(mode)
     tid0, mid0 = s.bg(0, scroll=(13, 7), sub=sub)
     words = bytearray()
@@ -682,6 +683,16 @@ def more_scenes():
     vals = [0x8F if (i // 20) & 1 else 0x0F for i in range(224)]
     s.reg_by_line(0x00, vals, LINE["NSHVC_LINE_BRIGHTNESS"], [v & 15 for v in vals])
     s.f.append(f"lines {LINE['NSHVC_LINE_BLANK']} 0 224 " + " ".join(str(v >> 7 & 1) for v in vals)); yield s
+    # with nshvc_limits.blank_hides_sprites, the line below a blanked one shows no sprites, as the console's: they
+    # are found during the line above, and none while blanked
+    s = Scene("line-blank-sprites"); s.mode(1); s.bg(0); s.bg(1); s.sprites(32); s.f.append("limits 32 34 1 1")
+    vals = [0x8F if (i // 20) & 1 else 0x0F for i in range(224)]
+    s.reg_by_line(0x00, vals, LINE["NSHVC_LINE_BRIGHTNESS"], [v & 15 for v in vals])
+    s.f.append(f"lines {LINE['NSHVC_LINE_BLANK']} 0 224 " + " ".join(str(v >> 7 & 1) for v in vals)); yield s
+    # offset-per-tile only on the lines in mode 2: those in mode 1 draw BG1 without the offsets
+    s = opt_scene(2, name="offset-per-tile-line-mode")
+    vals = [2 if (i // 28) & 1 else 1 for i in range(224)]
+    s.reg_by_line(0x05, vals, LINE["NSHVC_LINE_MODE"]); yield s
     # ---- sprites ----
     for sel in range(6):
         s = Scene(f"sprites-size{sel}"); s.mode(1); s.sprites_random(sel); yield s

@@ -205,6 +205,7 @@ static void draw(float between)
             lim.sprite_tiles_per_line = (uint16_t)v[1];
             lim.sprite_wrap = (uint8_t)v[2];
             memset(lim.layer_clip, 0, 5);
+            lim.blank_hides_sprites = (uint8_t)v[3];
             nshvc_limits_set(&lim);
         } else if (!strcmp(cmd, "lines")) {
             nshvc_lines((uint32_t)v[1], (uint32_t)v[2], (nshvc_line_field)v[0], v + 3);

@@ -1,4 +1,4 @@
-# The native engine's API, version 6.6
+# The native engine's API, version 6.7
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -113,6 +113,7 @@ typedef struct nshvc_limits {
     uint16_t sprite_tiles_per_line;  /* 34 the SNES's; 0 none */
     uint8_t  sprite_wrap;       /* sprites wrap at 256 rows, as the SNES's */
     uint8_t  layer_clip[5];     /* a layer (BG1-4, sprites) kept to the original's 256 x 224 */
+    uint8_t  blank_hides_sprites;   /* (6.7) a line below a blanked one shows no sprites, as the SNES's */
 } nshvc_limits;
 void nshvc_limits_set(const nshvc_limits *l);   /* the default is no limits */
 ```
@@ -146,7 +147,7 @@ typedef struct nshvc_layer {
     int32_t     scroll_x, scroll_y;
     uint8_t     mosaic;             /* 1-16 */
     uint8_t     wrap;               /* the map repeats */
-    nshvc_map   offset_per_tile;    /* modes 2, 4, 6: the SNES's scheme, or none */
+    nshvc_map   offset_per_tile;    /* modes 2, 4, 6: the SNES's scheme, or none; a line in another mode draws without it */
     uint8_t     direct_colour;
     nshvc_image image;              /* in place of tiles and map: a whole picture, such as a high-resolution or
                                        full-colour background (section 4) */
@@ -571,7 +572,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.6: 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.7: 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -625,6 +626,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_pixel()` in a game's shader | The place of the pixel being shaded in the list's own pixels | 6.4 |
 | `nshvc_full_screen`, `nshvc_display`'s `full_screen` and `full_screen_switch` | The game switches the window between full screen and a window, and reads which it is in | 6.5 |
 | `nshvc_voice_sample` | A voice's sample changed without a key-on, taken at its next end, as SRCN | 6.6 |
+| `nshvc_limits`' `blank_hides_sprites` | A line below a blanked one shows no sprites, as the SNES's: it finds a line's sprites during the line above, and none while blanked | 6.7 |
 
 ### Retired, and why
 

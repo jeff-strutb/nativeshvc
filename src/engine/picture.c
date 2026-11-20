@@ -930,8 +930,8 @@ static uint32_t palette_tex, palette_rows;
 static void build(rr_frame *f)
 {
     int w = screen.width > 0 ? screen.width : 256, h = screen.height > 0 ? screen.height : 224;
-    int oy = screen.origin_y, r;
-    size_t c = 0, nparts = 0, nstates = 0, npal = 0;
+    int oy = screen.origin_y, r, above_blank;
+    size_t c = 0, nparts = 0, nstates = 0, npal = 0, cur = 0;
     eng_state n;
     uint32_t cur_pal[256];
     eng_picture p;
@@ -954,11 +954,14 @@ static void build(rr_frame *f)
 
     rows = (eng_row *)grow(rows, &cap_rows, (size_t)h, sizeof *rows);
     parts = (eng_part *)grow(parts, &cap_parts_a, (size_t)h * 2 + nchanges * 2 + 1, sizeof *parts);
-    states = (eng_state *)grow(states, &cap_states, nchanges + 1, sizeof *states);
+    /* a state for each change, and a copy for each part of a row that finds no sprites */
+    states = (eng_state *)grow(states, &cap_states, nchanges + 1 + (size_t)h * 2 + nchanges * 2 + 1, sizeof *states);
     pals = (uint32_t *)grow(pals, &cap_pals, (nchanges + 1) * 256, 4);
     memcpy(pals, cur_pal, sizeof cur_pal);
     npal = 1;
     states[nstates++] = n;
+    /* the line above the picture's first: as the picture starts */
+    above_blank = n.blank;
 
     for (r = 0; r < h; r++) {
         uint32_t line = (uint32_t)(r - oy);
@@ -969,6 +972,7 @@ static void build(rr_frame *f)
             uint32_t ln = changes[c].line;
             int32_t col = ln == line ? changes[c].column : 0;
             int pal_changed = 0;
+            size_t before = cur;
             /* those at this column together */
             while (c < nchanges && changes[c].line == ln && (ln == line ? changes[c].column : 0) == col) {
                 apply(&n, cur_pal, changes[c].field, changes[c].value, ln, &pal_changed);
@@ -979,26 +983,43 @@ static void build(rr_frame *f)
                 n.pal = (int)npal++;
             }
             states[nstates++] = n;
+            cur = nstates - 1;
             if (ln == line && col > 0) {
                 /* a split inside the row */
                 if (!have_part) {
                     parts[nparts].x0 = 0;
-                    parts[nparts].state = (uint32_t)(nstates - 2);
+                    parts[nparts].state = (uint32_t)before;
                     nparts++;
                     cnt++;
                     have_part = 1;
                 }
                 parts[nparts].x0 = col + screen.origin_x;
-                parts[nparts].state = (uint32_t)(nstates - 1);
+                parts[nparts].state = (uint32_t)cur;
                 nparts++;
                 cnt++;
             }
         }
         if (!have_part) {
             parts[nparts].x0 = 0;
-            parts[nparts].state = (uint32_t)(nstates - 1);
+            parts[nparts].state = (uint32_t)cur;
             nparts++;
             cnt++;
+        }
+        if (r >= oy && limits.blank_hides_sprites) {
+            /* the limit nshvc_limits.blank_hides_sprites: the console finds a line's sprites during the line above
+               it, and finds none while the screen is blanked, so a row below a line blanked anywhere shows none (a
+               line blanked from partway finds those it looked at before; that is not kept apart here) */
+            uint32_t k;
+            int blank = 0;
+            for (k = first; k < first + cnt; k++)
+                blank |= states[parts[k].state].blank;
+            if (above_blank)
+                for (k = first; k < first + cnt; k++) {
+                    states[nstates] = states[parts[k].state];
+                    states[nstates].no_sprites = 1;
+                    parts[k].state = (uint32_t)nstates++;
+                }
+            above_blank = blank;
         }
         rows[r].first = first;
         rows[r].count = cnt;

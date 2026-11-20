@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-17)
 
-API 6.6 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.7 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`; 6.7 `blank_hides_sprites` in `nshvc_limits`, and offset-per-tile kept to the lines in modes 2, 4 and 6). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes
@@ -73,6 +73,19 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   Aladdin, whose driver sets a voice's source about 8 ms before its key-on. Not run: the other examples' sound before
   and after (a game that only keys on sees a change only if its old sample ends in the one or two samples between the
   key-on call and the key-on, where the voice now goes into the new sample's loop, as the DSP does).
+- **6.7, what has been run.** Found by the Aladdin conversion's replay of its recordings (its
+  `docs/aladdin/native/CHECK.md`), headless on Linux (Vulkan, dzn). Offset-per-tile was applied on lines a line change
+  had put in a mode without it (`compose.c` `opt_on` did not look at the line's mode): Aladdin's act 7 shows its HUD in
+  mode 1 and switches to mode 2 at line 44, and BG1 took BG3's HUD words as offsets in 25 of 145 pictures; it now
+  applies only in modes 2, 4 and 6. `blank_hides_sprites` in `nshvc_limits`: the console finds a line's sprites during
+  the line above and none while blanked; the title's first line after forced blank showed a sprite's row in 2 of 198
+  pictures. Two scenes added, `line-blank-sprites` and `offset-per-tile-line-mode`: on 6.6 they differ by 19 and 23,980
+  pixels, on 6.7 they match. All 118 scenes on 6.7: 114 match, the 4 KNOWN differ as before, no other picture changed
+  (compared through the core's gamma, as that run's core, the Aladdin project's bsnes, draws its colours through a
+  gamma of 1.5; through the gamma 6.6 gave 112 match and the same 4). Aladdin's replays on 6.7: act 7 145 of 145,
+  the title 196 of 198 (the 2 are Mode 7 drawn smaller than its texels, filtered by design). Not run: the scenes on
+  Metal, Direct3D 12 and Vulkan on Windows; Stunt Race FX (it does not set the new limit, so 6.7 changes nothing it
+  draws unless a line change puts a layer with an offset map in a mode without offsets).
 - **Not run:** a picture shown in a window on Windows or on Linux (the two test machines had no desktop signed in to open
   one on; the Windows host and the Linux host compile, and nothing of them has been seen on a screen); a real phone; a
   whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.
