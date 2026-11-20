@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-17)
 
-API 6.5 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.6 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes
@@ -66,6 +66,13 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   not been seen on a desktop or a Steam Deck. The window is shown once the game's `init` returns, so a game that asks
   for full screen there opens in it; on macOS the window is shown first, then moves (AppKit does not reliably give a
   window not yet on screen its own full-screen space).
+- **6.6's `nshvc_voice_sample`, what has been run.** `tests/scenes/voice_sample.c`, headless on Linux: a voice given a
+  second sample while it plays its first is the same, level, output and end flag in each of 64,079 samples, as one
+  sample made of the first's blocks and the second's looped ones; a control voice left on the first differs in 58,016,
+  and the run's left and right (the two voices) are the same in all 64,080 samples. The first game needing it is
+  Aladdin, whose driver sets a voice's source about 8 ms before its key-on. Not run: the other examples' sound before
+  and after (a game that only keys on sees a change only if its old sample ends in the one or two samples between the
+  key-on call and the key-on, where the voice now goes into the new sample's loop, as the DSP does).
 - **Not run:** a picture shown in a window on Windows or on Linux (the two test machines had no desktop signed in to open
   one on; the Windows host and the Linux host compile, and nothing of them has been seen on a screen); a real phone; a
   whole game on 6.0 or later. The D3D12 shaders (`rr_dxil.h`) are regenerated only where `dxc` exists.

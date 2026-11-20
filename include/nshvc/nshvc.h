@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 5
+#define NSHVC_VERSION_MINOR 6
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -136,6 +136,9 @@ void nshvc_music_send(const void *message, uint32_t size);
 /* audio thread: music code must never wait, lock, allocate, do file work or block */
 void nshvc_voice_key_on(uint32_t v, nshvc_sample s);
 void nshvc_voice_key_off(uint32_t v);
+/* (6.6) the voice's sample from now on: key-on starts it, and a voice playing goes on
+   into its loop when it next ends the sample it plays, as the SNES's SRCN */
+void nshvc_voice_sample(uint32_t v, nshvc_sample s);
 void nshvc_voice_pitch(uint32_t v, uint16_t pitch);
 void nshvc_voice_volume(uint32_t v, int8_t left, int8_t right);
 void nshvc_voice_adsr(uint32_t v, uint8_t attack, uint8_t decay, uint8_t sustain_level, uint8_t sustain_rate);

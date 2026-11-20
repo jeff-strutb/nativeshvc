@@ -28,7 +28,7 @@ typedef struct {
 enum { RELEASE, ATTACK, DECAY, SUSTAIN };
 
 typedef struct {
-    const Sample *sample, *queued;
+    const Sample *sample, *source;     /* the one playing; the one key-on starts and a loop goes into */
     int adsr_on, attack, decay, sustain_level, sustain_rate;
     uint8_t gain;
     int pitch;
@@ -244,7 +244,9 @@ static void voice_sample(int v, int nvoices)
     Voice *vc = &voice[v];
     const Sample *s = vc->sample;
     int d;
-    vc->next_block = vc->kon_delay ? 0 : (s ? s->loop : 0);
+    /* the next block after one with the end flag: the source's loop, as the
+       DSP reads its source's directory entry each sample */
+    vc->next_block = vc->kon_delay ? 0 : (vc->source ? vc->source->loop : 0);
     vc->header = brr_byte(s, vc->block);
     vc->data = brr_byte(s, vc->block + (uint32_t)vc->byte);
     vc->second = brr_byte(s, vc->block + (uint32_t)vc->byte + 1);
@@ -254,8 +256,8 @@ static void voice_sample(int v, int nvoices)
     if (vc->kon_delay) {
         if (vc->kon_delay == 5) {
             /* this sample's bytes were the old sample's; the new one starts here */
-            if (vc->queued)
-                vc->sample = s = vc->queued;
+            if (vc->source)
+                vc->sample = s = vc->source;
             vc->block = vc->next_block;
             vc->byte = 1;
             vc->hist_next = 0;
@@ -291,8 +293,10 @@ static void voice_sample(int v, int nvoices)
         if (s && s->pcm) {
             vc->block += 8;
             if (vc->block + 8 > s->size) {
-                if (s->loop < s->size) {
-                    vc->block = s->loop;
+                const Sample *n = vc->source ? vc->source : s;
+                if (n->loop < n->size) {
+                    vc->sample = n;
+                    vc->block = n->loop;
                     vc->looped = 1;
                 } else {
                     vc->stage = RELEASE;
@@ -304,6 +308,8 @@ static void voice_sample(int v, int nvoices)
             if (vc->byte >= 9) {
                 vc->block += 9;
                 if (vc->header & 1) {
+                    if (vc->source)
+                        vc->sample = vc->source;
                     vc->block = vc->next_block;
                     vc->looped = 1;
                 }
@@ -604,9 +610,22 @@ void nshvc_voice_key_on(uint32_t v, nshvc_sample s)
         eng_report("nshvc_voice_key_on", "sample %u", s.id);
         return;
     }
-    voice[v].queued = atomic_load(&samples[s.id]);
+    voice[v].source = atomic_load(&samples[s.id]);
     voice[v].key_on = 1;
     voice[v].key_off = 0;
+}
+
+/* the voice's sample from now on: key-on starts it, and a voice playing goes
+   on into its loop at the end of the block it is in when that block ends
+   the sample being played (6.6) */
+void nshvc_voice_sample(uint32_t v, nshvc_sample s)
+{
+    V("nshvc_voice_sample")
+    if (!s.id || s.id >= MAX_SAMPLES || !atomic_load(&samples[s.id])) {
+        eng_report("nshvc_voice_sample", "sample %u", s.id);
+        return;
+    }
+    voice[v].source = atomic_load(&samples[s.id]);
 }
 
 void nshvc_voice_key_off(uint32_t v) { V("nshvc_voice_key_off") voice[v].key_off = 1; }

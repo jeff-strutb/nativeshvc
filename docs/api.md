@@ -1,4 +1,4 @@
-# The native engine's API, version 6.5
+# The native engine's API, version 6.6
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -469,6 +469,7 @@ void nshvc_music_send(const void *message, uint32_t size);   /* game thread to m
 ```c
 void nshvc_voice_key_on(uint32_t v, nshvc_sample s);
 void nshvc_voice_key_off(uint32_t v);
+void nshvc_voice_sample(uint32_t v, nshvc_sample s);         /* (6.6) the voice's sample from now on: a playing voice goes into it at its next end */
 void nshvc_voice_pitch(uint32_t v, uint16_t pitch);          /* 0x1000 the sample's own rate, as the SNES's */
 void nshvc_voice_volume(uint32_t v, int8_t left, int8_t right);
 void nshvc_voice_adsr(uint32_t v, uint8_t attack, uint8_t decay, uint8_t sustain_level, uint8_t sustain_rate);
@@ -476,6 +477,12 @@ void nshvc_voice_gain(uint32_t v, nshvc_gain_mode mode, uint8_t value);   /* dir
 void nshvc_voice_options(uint32_t v, uint8_t noise, uint8_t echo, uint8_t pitch_mod);
 nshvc_voice_state nshvc_voice_read(uint32_t v);               /* envelope level, last output, ended: what drivers read */
 ```
+
+`nshvc_voice_sample` (6.6) is the SNES's source number: the sample a voice takes from now on. Key-on starts it (as
+`nshvc_voice_key_on` with that sample), and a voice already playing goes on into it when it next ends the sample it
+plays: at the end of the block with the end flag it continues at the new sample's loop point, its filter history kept,
+as the console's DSP does when a driver changes a voice's source before its next key-on. Nothing else about the voice
+changes. `nshvc_voice_key_on` sets the voice's sample too.
 
 ### 6.4 The whole mix (audio thread)
 
@@ -564,7 +571,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.5: 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.6: 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -617,6 +624,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_draw_depth_own`, `nshvc_draw_depth_order` | A list's own 32-bit float depth, and which end of it is nearest | 6.3 |
 | `nshvc_pixel()` in a game's shader | The place of the pixel being shaded in the list's own pixels | 6.4 |
 | `nshvc_full_screen`, `nshvc_display`'s `full_screen` and `full_screen_switch` | The game switches the window between full screen and a window, and reads which it is in | 6.5 |
+| `nshvc_voice_sample` | A voice's sample changed without a key-on, taken at its next end, as SRCN | 6.6 |
 
 ### Retired, and why
 
