@@ -53,6 +53,23 @@ The engine is at API 6.7. `docs/native-engine-plan.md` opens with what has and h
 - **Saves and game data.** Native files, written off the game's thread, and packaged assets.
 - **Profiling and inspection.** Time per thread and per zone, and each picture's state on request.
 
+## Sharp at any window size
+
+An emulator draws a 256x224 picture and then stretches it to the window, so it has to choose a filter. Nearest-neighbour
+keeps the pixels hard but gives uneven pixel widths at non-integer scales. Bilinear gives even widths but blurs every
+texel edge, more the larger the window. Sharp-bilinear shaders patch over this with an integer pre-scale and a smoothing
+pass, and still resample a finished picture.
+
+nativeshvc has no finished low-resolution picture to stretch. Tiles, sprites and Mode 7 are drawn as geometry at the
+window's own resolution, and each window pixel looks up its texel as it is shaded. The shader does the edge mixing itself
+(`sharp()` in `src/engine/shaders/common.glsl`): it reads exact texels with no hardware filtering, and works out from how
+many texels one window pixel spans how wide the blend at an edge should be.
+
+- A pixel inside a texel takes that texel's colour whole, exactly.
+- Only a pixel an edge between texels falls in mixes the neighbouring texels, so every edge is about one window pixel wide.
+- That holds at any window size, shape and non-integer scale, with no integer pre-scale, no black bars forced by it, and no
+  post-filter.
+
 ## Using it
 
 Read [docs/api.md](docs/api.md) for the contract and [docs/conversion-guide.md](docs/conversion-guide.md) to bring a game to
