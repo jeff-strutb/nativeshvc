@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 8
+#define NSHVC_VERSION_MINOR 9
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -452,6 +452,10 @@ typedef struct nshvc_display {
     int32_t width, height;          /* the window's pixels */
     float   safe_left, safe_top, safe_right, safe_bottom;   /* in pixels */
     float   refresh_hz;             /* 0: not known */
+    float   scale;                  /* (6.9) the window's pixels per system point on the display it is on now: 2 on a Retina Mac;
+                                       1 where the system has no such idea. Changes when the window moves to a display of
+                                       another scale or the player changes the setting; the window's pixels, the picture and
+                                       the safe area keep their meaning */
     uint8_t keyboard;               /* the player has a hardware keyboard */
     uint8_t full_screen;            /* (6.5) the window fills its display, or is going to */
     uint8_t full_screen_switch;     /* (6.5) nshvc_full_screen can switch it (the desktop hosts) */

@@ -1,4 +1,4 @@
-# The native engine's API, version 6.8
+# The native engine's API, version 6.9
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -435,7 +435,7 @@ perspective, cut correctly at the near plane: the clipper weighs each end by its
 ## 5. Display and the window
 
 ```c
-nshvc_display nshvc_display_info(void);   /* window pixels, safe area, refresh rate, keyboard present, full screen */
+nshvc_display nshvc_display_info(void);   /* window pixels, scale, safe area, refresh rate, keyboard present, full screen */
 void nshvc_full_screen(int on);            /* (6.5) the window full screen, or a window */
 void nshvc_overlay_set(uint32_t id, nshvc_image i, const float corners[6], float alpha);   /* the game's UI over the picture */
 void nshvc_text_input(int on);             /* the system's on-screen keyboard where there is no keyboard */
@@ -456,6 +456,17 @@ nothing; headless, both read 0. On Linux full screen is asked of the window mana
 every desktop and SteamOS's Gaming Mode (gamescope) take it; there the manager sizes the window to the display. A switch
 the manager refuses still reads as asked. In Gaming Mode, leaving full screen keeps
 the window at the display's size: gamescope shrinks only a window of a fixed size, so the two look alike there.
+
+**Scale** (6.9). `nshvc_display.scale` is the window's pixels per system point (logical unit) on the display the window is on
+now: 2 on a Retina Mac, 1.5 on Windows at 150%, 1 where the system has no such idea. `nshvc_display_info` reads it as it is
+at the call, so it changes when the window moves to a display of another scale or the player changes the setting. Nothing
+else changes meaning: `width` and `height` stay the window's pixels, the picture is still drawn at them, and the safe area
+stays in them. A game uses it to size what the player reads or touches (text, buttons, a cursor) as the system sizes its
+own. Where it comes from, each from the system's own value: macOS the window's `backingScaleFactor`; iOS the view's
+`contentScaleFactor`; Windows the window's DPI over 96 (`GetDpiForWindow`; the process is per-monitor DPI aware, version 2);
+Linux (X11) `Xft.dpi` over 96 from the root window's `RESOURCE_MANAGER`, 1 where the session sets none (the screen's
+physical size is not used: servers report it falsely and it gives fractions the desktops do not use); Android
+`DisplayMetrics.density` (the configuration's density over 160); headless 1.
 
 The window is shown once the game's `init` returns, as `init` left it, and nothing is drawn before. A game that keeps
 the player's choice in its save reads it in `init` and calls `nshvc_full_screen` there (with 1 on a first launch, to
@@ -591,7 +602,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.8: 6.8 widened `nshvc_sprite.palette` to 32 bits and let the palette grow past entry 255 (`nshvc_palette_write`, `nshvc_palette_write_rgb`, `NSHVC_LINE_PALETTE` + entry), for sprite palettes 8 and up. 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.9: 6.9 added `scale` to `nshvc_display`. 6.8 widened `nshvc_sprite.palette` to 32 bits and let the palette grow past entry 255 (`nshvc_palette_write`, `nshvc_palette_write_rgb`, `NSHVC_LINE_PALETTE` + entry), for sprite palettes 8 and up. 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -647,6 +658,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_voice_sample` | A voice's sample changed without a key-on, taken at its next end, as SRCN | 6.6 |
 | `nshvc_limits`' `blank_hides_sprites` | A line below a blanked one shows no sprites, as the SNES's: it finds a line's sprites during the line above, and none while blanked | 6.7 |
 | `nshvc_sprite`'s 32-bit `palette`, palette writes and line changes past entry 255 | Any number of sprite palettes: palette p is entries 128 + 16 p; the palette grows by pages as written, with no fixed size | 6.8 |
+| `nshvc_display`'s `scale` | The window's pixels per system point on its display, from the system's own value | 6.9 |
 
 ### Retired, and why
 

@@ -109,6 +109,9 @@ nshvc_display nshvc_display_info(void)
         d.safe_top = t * (float)d.height / ph;
         d.safe_bottom = b * (float)d.height / ph;
     }
+    d.scale = host_display_scale();
+    if (!(d.scale > 0))
+        d.scale = 1;
     d.keyboard = host_keyboard_attached() != 0;
     d.full_screen_switch = host_full_screen_switch() != 0;
     {

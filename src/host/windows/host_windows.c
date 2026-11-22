@@ -399,6 +399,12 @@ void host_window_sizes(int *pw, int *ph, float *tw, float *th)
     *th = (float)*ph * 96.0f / (float)dpi;
 }
 
+/* (6.9) the dots per inch of the monitor the window is on, over 96 */
+float host_display_scale(void)
+{
+    return s_win ? (float)window_dpi(s_win) / 96.0f : 1.0f;
+}
+
 /* points: pixels at the display's dots per inch over 96 */
 void host_window_points(float *w, float *h)
 {

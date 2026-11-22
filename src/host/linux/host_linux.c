@@ -84,6 +84,9 @@ static XWindow win, root;
 static Atom wm_delete, wm_state, wm_full;
 static int win_w, win_h;               /* the event thread's own */
 static _Atomic uint64_t win_px;         /* the size published for every thread: w << 32 | h, never half new */
+static _Atomic float scale_now = 1;     /* (6.9) Xft.dpi over 96, from the root window's RESOURCE_MANAGER; 1 where it has none */
+static Atom wm_resources;
+static void scale_read(void);
 static char app_dir[128] = "game", app_title[256] = "nativeshvc", save_dir[1024], res_dir[1024];
 
 static int load_x11(void)
@@ -203,9 +206,33 @@ int host_window_open(int width, int height, const char *title)
     wm_delete = pXInternAtom(dpy, "WM_DELETE_WINDOW", 0);
     pXSetWMProtocols(dpy, win, &wm_delete, 1);
     window_icon();
+    wm_resources = pXInternAtom(dpy, "RESOURCE_MANAGER", 0);
+    pXSelectInput(dpy, root, 1L << 22);     /* PropertyChange: the player changing the setting */
+    scale_read();
     pXFlush(dpy);
     return 1;
 }
+
+/* on the event thread: Xft.dpi in the X resources the session set on the root window */
+static void scale_read(void)
+{
+    Atom type;
+    int format;
+    unsigned long n, after;
+    unsigned char *data = NULL;
+    float s = 1;
+    if (pXGetWindowProperty(dpy, root, wm_resources, 0, 65536, 0, 31 /* XA_STRING */, &type, &format, &n, &after, &data) == 0 && data) {
+        const char *p = strstr((const char *)data, "Xft.dpi:");
+        if (p) {
+            float dpi = (float)atof(p + 8);
+            if (dpi >= 48 && dpi <= 960)
+                s = dpi / 96.0f;
+        }
+        pXFree(data);
+    }
+    atomic_store(&scale_now, s);
+}
+float host_display_scale(void) { return atomic_load(&scale_now); }
 
 void host_window_close(void)
 {
@@ -504,6 +531,8 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
             }
             return 0;
         case X_PropertyNotify:
+            if (e.property.w == root && e.property.atom == wm_resources)
+                scale_read();
             /* the manager's record of the window: full screen or not, by the player or the game */
             if (e.property.w == win && e.property.atom == wm_state) {
                 int full = full_screen_state();

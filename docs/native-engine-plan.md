@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-17)
 
-API 6.8 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`; 6.7 `blank_hides_sprites` in `nshvc_limits`, and offset-per-tile kept to the lines in modes 2, 4 and 6; 6.8 any number of sprite palettes: the palette grows past entry 255 and `nshvc_sprite.palette` is 32 bits). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.9 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`; 6.7 `blank_hides_sprites` in `nshvc_limits`, and offset-per-tile kept to the lines in modes 2, 4 and 6; 6.8 any number of sprite palettes: the palette grows past entry 255 and `nshvc_sprite.palette` is 32 bits; 6.9 `scale` in `nshvc_display`, the window's pixels per system point). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes

@@ -23,6 +23,15 @@
 int nshvc_game_main(int argc, char **argv);
 
 static struct android_app *app;
+/* (6.9) DisplayMetrics.density, which is the configuration's density in dots per inch over 160 (kept by the
+   activity's thread: at the start and when the configuration changes) */
+static _Atomic float s_scale = 1;
+static void scale_read(void)
+{
+    int32_t d = AConfiguration_getDensity(app->config);
+    atomic_store(&s_scale, d > 0 && d < ACONFIGURATION_DENSITY_ANY ? (float)d / 160.0f : 1.0f);
+}
+float host_display_scale(void) { return atomic_load(&s_scale); }
 /* the window, set and taken under w_lock: w_taken while the renderer draws a
    frame with it, w_kept the window the renderer keeps a surface on; w_gone a
    window that went while the renderer still kept a surface on it (it did not
@@ -294,6 +303,9 @@ static void focus(int down)
 static void on_cmd(struct android_app *a, int32_t cmd)
 {
     switch (cmd) {
+    case APP_CMD_CONFIG_CHANGED:
+        scale_read();
+        break;
     case APP_CMD_INIT_WINDOW:
         pthread_mutex_lock(&w_lock);
         window = a->window;
@@ -363,6 +375,7 @@ void android_main(struct android_app *a)
     pthread_t t;
     int started = 0;
     app = a;
+    scale_read();
     a->onAppCmd = on_cmd;
     a->onInputEvent = on_input;
     for (;;) {
