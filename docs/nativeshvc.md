@@ -17,7 +17,7 @@ each finished picture, the audio thread mixes voices and runs the game's music c
 **A new platform** implements `host.h`, and `rr.h` if it needs a new GPU API. Nothing else changes.
 
 **What crosses to the GPU.** Tile sets, maps, images and the palette are textures on the GPU, and a picture sends only the
-texels that changed since the last. `draw` sets the whole picture and nothing carries over but those objects, the palette
+texels that changed since the last (the palette, past entry 255, a page of 256 entries at a time, API 6.8). `draw` sets the whole picture and nothing carries over but those objects, the palette
 and the overlays. `compose.c` turns what `draw` set into a frame for the renderer: its passes and their draws, the words
 the draws read, and their uniforms. A picture is one pass into the window: the main screen is drawn
 into a multisampled target with depth and stencil at the window's size and resolved straight into the window's drawable,

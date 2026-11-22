@@ -24,7 +24,7 @@ full game's conversion.
 | INIDISP | `nshvc_screen_set`: `brightness`, `blank` |
 | The television's shape | `nshvc_screen.aspect`: 0 is 4:3 for 256 x 224 |
 | DMA to VRAM | `nshvc_tiles_write` (`NSHVC_TILES_PLANAR` takes the data as it is), `nshvc_map_write_snes` |
-| DMA to CGRAM | `nshvc_palette_write` |
+| DMA to CGRAM | `nshvc_palette_write` (entries 0-255; a game that wants more sprite palettes than the SNES's 8 writes past 255 and gives `nshvc_sprite.palette` any number, 6.8) |
 | OAM buffer | `nshvc_sprites_set` (its third argument is the first sprite, for priority rotation) |
 | SETINI's OBJ interlace | `nshvc_sprites_interlace` |
 | HDMA tables | `nshvc_lines` |

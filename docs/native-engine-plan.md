@@ -4,7 +4,7 @@
 
 ## Where the work stands (2026-11-17)
 
-API 6.7 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`; 6.7 `blank_hides_sprites` in `nshvc_limits`, and offset-per-tile kept to the lines in modes 2, 4 and 6). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
+API 6.8 (6.0 replaced the renderer; 6.1 added OBJ interlace; 6.2 instanced meshes; 6.3 a list's depth state; 6.4 `nshvc_pixel()` in a game's shader; 6.5 a game's own switch between full screen and a window, and full screen on Linux; 6.6 a voice's sample changed without a key-on, `nshvc_voice_sample`; 6.7 `blank_hides_sprites` in `nshvc_limits`, and offset-per-tile kept to the lines in modes 2, 4 and 6; 6.8 any number of sprite palettes: the palette grows past entry 255 and `nshvc_sprite.palette` is 32 bits). Every stage is built. 6.0 replaced the renderer (stage 3, below): the picture is native geometry and GPU state
 at the window's resolution, and nothing of the earlier per-pixel renderer remains.
 
 - **6.0's renderer, what has been run.** Headless (no window shown), at the console's own size, 116 feature scenes
@@ -73,6 +73,12 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   Aladdin, whose driver sets a voice's source about 8 ms before its key-on. Not run: the other examples' sound before
   and after (a game that only keys on sees a change only if its old sample ends in the one or two samples between the
   key-on call and the key-on, where the voice now goes into the new sample's loop, as the DSP does).
+- **6.8, what has been run.** `tests/scenes/palettes.c` (sprite palettes 8, 100, 70000, the palette's last entry, unwritten
+  palettes, colour maths, line changes past entry 255, incremental page writes) passes on macOS Metal and on Vulkan
+  through MoltenVK, with identical pictures. Against 6.7, the shots of comet, depth and mesh are byte-identical, as are the
+  palette 0-7 regions of the new check (with colour maths and a base-palette line change). Not run: Direct3D 12 (no Windows
+  machine here; only the sprite programs' DXIL was rebuilt, with a newer dxc than the rest's, and is untested at runtime),
+  the scene suite against bsnes, and Aladdin.
 - **6.7, what has been run.** Found by the Aladdin conversion's replay of its recordings (its
   `docs/aladdin/native/CHECK.md`), headless on Linux (Vulkan, dzn). Offset-per-tile was applied on lines a line change
   had put in a mode without it (`compose.c` `opt_on` did not look at the line's mode): Aladdin's act 7 shows its HUD in
