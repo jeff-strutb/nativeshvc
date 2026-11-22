@@ -17,6 +17,9 @@
 
 #define MAX_SPRITES 65536
 #define MAX_SIDE 8192           /* a map's or image's width or height */
+#define PAL_ROWS_MAX 16384u     /* the palette texture's rows: what the renderers' textures hold */
+#define EXT_PAGES_MAX 12288u    /* entries 256 on, 256 to a page (a row of the palette texture): what a game can write; the rest
+                                   of PAL_ROWS_MAX is the palette's versions and the pages a line change copies */
 
 eng_tiles eng_tiles_of[ENG_OBJECTS];
 eng_map eng_maps_of[ENG_OBJECTS];
@@ -48,6 +51,13 @@ static nshvc_sprite *sprites;
 static uint32_t nsprites, sprite_first;
 static size_t cap_sprites;
 static uint32_t palette[256];       /* kept between pictures: 15-bit BGR, or ENG_RGB | 0xRRGGBB */
+/* entries 256 on (6.8), as kept, 256 to a page: grown by a write past entry 255, never shrunk; an entry never written is 0
+   like the first 256 (black). A page's row of the palette texture is written when the page changed. */
+static uint32_t *ext;
+static uint32_t ext_pages;
+static size_t cap_ext;
+static uint8_t *ext_dirty;          /* a page written since it was last sent */
+static size_t cap_ext_dirty;
 static int show_main = 1, show_sub, sprite_interlace;
 static eng_overlay overlays[NSHVC_OVERLAYS];   /* kept between pictures */
 static int last_screen_w = 256, last_screen_h = 224;
@@ -291,17 +301,51 @@ void nshvc_map_write_snes(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint3
     }
 }
 
+/* makes room for entries up to first + count (a write past 255 grows the palette by whole pages) and marks the pages
+   it covers as changed; 0 where the palette cannot hold them */
+static int palette_reach(const char *call, uint32_t first, uint32_t count)
+{
+    uint64_t end = (uint64_t)first + count;
+    uint32_t pages, lo, hi, k;
+    if (!count || end <= 256)
+        return end <= 256;
+    pages = (uint32_t)((end - 256 + 255) / 256);
+    if (pages > EXT_PAGES_MAX) {
+        eng_report(call, "first %u, count %u: the palette holds %u entries", first, count, 256 + 256 * EXT_PAGES_MAX);
+        return 0;
+    }
+    if (pages > ext_pages) {
+        ext = (uint32_t *)grow(ext, &cap_ext, (size_t)pages * 256, 4);
+        memset(ext + (size_t)ext_pages * 256, 0, ((size_t)pages - ext_pages) * 256 * 4);
+        ext_dirty = (uint8_t *)grow(ext_dirty, &cap_ext_dirty, pages, 1);
+        for (k = ext_pages; k < pages; k++)
+            ext_dirty[k] = 1;
+        ext_pages = pages;
+    }
+    lo = first < 256 ? 0 : (first - 256) >> 8;
+    hi = (uint32_t)((end - 1 - 256) >> 8);
+    for (k = lo; k <= hi; k++)
+        ext_dirty[k] = 1;
+    return 1;
+}
+
 void nshvc_palette_write(uint32_t first, uint32_t count, const uint16_t *c)
 {
     uint32_t i;
     if (!eng_on("nshvc_palette_write", ENG_GAME))
         return;
-    if ((uint64_t)first + count > 256 || !c) {
-        eng_report("nshvc_palette_write", "first %u, count %u", first, count);
+    if (!c || !palette_reach("nshvc_palette_write", first, count)) {
+        if (!c)
+            eng_report("nshvc_palette_write", "first %u, count %u", first, count);
         return;
     }
-    for (i = 0; i < count; i++)
-        palette[first + i] = c[i] & 0x7FFFu;
+    for (i = 0; i < count; i++) {
+        uint64_t e = (uint64_t)first + i;
+        if (e < 256)
+            palette[e] = c[i] & 0x7FFFu;
+        else
+            ext[e - 256] = c[i] & 0x7FFFu;
+    }
 }
 
 void nshvc_palette_write_rgb(uint32_t first, uint32_t count, const uint32_t *c)
@@ -309,12 +353,18 @@ void nshvc_palette_write_rgb(uint32_t first, uint32_t count, const uint32_t *c)
     uint32_t i;
     if (!eng_on("nshvc_palette_write_rgb", ENG_GAME))
         return;
-    if ((uint64_t)first + count > 256 || !c) {
-        eng_report("nshvc_palette_write_rgb", "first %u, count %u", first, count);
+    if (!c || !palette_reach("nshvc_palette_write_rgb", first, count)) {
+        if (!c)
+            eng_report("nshvc_palette_write_rgb", "first %u, count %u", first, count);
         return;
     }
-    for (i = 0; i < count; i++)
-        palette[first + i] = ENG_RGB | (c[i] & 0xFFFFFFu);
+    for (i = 0; i < count; i++) {
+        uint64_t e = (uint64_t)first + i;
+        if (e < 256)
+            palette[e] = ENG_RGB | (c[i] & 0xFFFFFFu);
+        else
+            ext[e - 256] = ENG_RGB | (c[i] & 0xFFFFFFu);
+    }
 }
 
 nshvc_image nshvc_image_create(uint32_t w, uint32_t h, nshvc_image_format f)
@@ -426,6 +476,8 @@ static int add_change(uint32_t line, int32_t column, int field, int32_t value)
 {
     if (field == NSHVC_LINE_M7_OUTSIDE && (value < 0 || value > 2))
         return 0;
+    if (field >= NSHVC_LINE_PALETTE && (int64_t)field - NSHVC_LINE_PALETTE >= 256 + 256 * (int64_t)EXT_PAGES_MAX)
+        return 0;                       /* an entry past what the palette can hold */
     changes = (Change *)grow(changes, &cap_changes, nchanges + 1, sizeof *changes);
     changes[nchanges].line = line;
     changes[nchanges].column = column;
@@ -837,6 +889,38 @@ static int change_cmp(const void *a, const void *b)
     return x->order < y->order ? -1 : 1;
 }
 
+/* Entries 256 on under line changes (6.8). A version of the palette is the 256 entries copied (pals) and, for the
+   pages past them, a table of the row each page is in: a page a change touches is copied to a row of its own (the
+   first change to it at a column), the rest keep their rows, so a version costs the pages it changed. Rows here are
+   relative to the first row of the extension (ext_row0, known once the texture's size is). */
+static uint32_t build_pages;            /* the pages this picture reads: those the game wrote, and those a line change names */
+static uint32_t *cow;                   /* the copied pages' entries, as kept */
+static size_t cap_cow;
+static uint32_t ncow;
+static uint32_t *cur_row;               /* each page's row now: its own below build_pages, else a copy's */
+static size_t cap_cur_row;
+static uint32_t *page_group;            /* the group of changes that last copied each page */
+static size_t cap_page_group;
+static uint32_t group;                  /* the group of changes being applied: those at one column together */
+
+static void ext_line(uint32_t e, uint32_t v)
+{
+    uint32_t page = e >> 8, *dst;
+    if (page_group[page] != group) {
+        cow = (uint32_t *)grow(cow, &cap_cow, ((size_t)ncow + 1) * 256, 4);
+        dst = cow + (size_t)ncow * 256;
+        if (cur_row[page] >= build_pages)
+            memcpy(dst, cow + (size_t)(cur_row[page] - build_pages) * 256, 256 * 4);
+        else if (page < ext_pages)
+            memcpy(dst, ext + (size_t)page * 256, 256 * 4);
+        else
+            memset(dst, 0, 256 * 4);
+        cur_row[page] = build_pages + ncow++;
+        page_group[page] = group;
+    }
+    cow[(size_t)(cur_row[page] - build_pages) * 256 + (e & 255)] = v;
+}
+
 static void apply(eng_state *n, uint32_t *pal, int field, int32_t v, uint32_t line, int *pal_changed)
 {
     int i = field & 3;
@@ -844,6 +928,9 @@ static void apply(eng_state *n, uint32_t *pal, int field, int32_t v, uint32_t li
         int e = field - NSHVC_LINE_PALETTE;
         if (e < 256) {
             pal[e] = (uint32_t)v & 0x7FFFu;     /* a 15-bit colour, as nshvc_palette_write takes */
+            *pal_changed = 1;
+        } else {
+            ext_line((uint32_t)e - 256, (uint32_t)v & 0x7FFFu);
             *pal_changed = 1;
         }
     } else if (field < NSHVC_LINE_SCROLL_Y) {
@@ -922,6 +1009,9 @@ static size_t cap_parts_a;
 static eng_state *states;
 static size_t cap_states;
 static uint32_t *pals;          /* each version's 256 entries, as kept */
+static uint32_t *ext_tab;       /* each version's row for each page past them (as cur_row), then absolute rows of the texture */
+static size_t cap_ext_tab;
+static uint32_t ext_ecap;       /* rows the palette texture holds past its versions' */
 static size_t cap_pals;
 static uint32_t *bgra;           /* the same, as the palette texture's rows */
 static size_t cap_bgra;
@@ -959,6 +1049,28 @@ static void build(rr_frame *f)
     pals = (uint32_t *)grow(pals, &cap_pals, (nchanges + 1) * 256, 4);
     memcpy(pals, cur_pal, sizeof cur_pal);
     npal = 1;
+    /* the pages past entry 255 this picture reads: the game's, and any a line change names (it reads black until changed) */
+    build_pages = ext_pages;
+    for (c = 0; c < nchanges; c++)
+        if (changes[c].field >= NSHVC_LINE_PALETTE + 256) {
+            uint32_t pg = ((uint32_t)(changes[c].field - NSHVC_LINE_PALETTE - 256) >> 8) + 1;
+            if (pg > build_pages)
+                build_pages = pg;
+        }
+    ncow = 0;
+    group = 0;
+    if (build_pages) {
+        uint32_t k;
+        cur_row = (uint32_t *)grow(cur_row, &cap_cur_row, build_pages, 4);
+        page_group = (uint32_t *)grow(page_group, &cap_page_group, build_pages, 4);
+        ext_tab = (uint32_t *)grow(ext_tab, &cap_ext_tab, (nchanges + 1) * (size_t)build_pages, 4);
+        for (k = 0; k < build_pages; k++) {
+            cur_row[k] = k;
+            page_group[k] = 0;
+        }
+        memcpy(ext_tab, cur_row, (size_t)build_pages * 4);
+    }
+    c = 0;
     states[nstates++] = n;
     /* the line above the picture's first: as the picture starts */
     above_blank = n.blank;
@@ -973,6 +1085,7 @@ static void build(rr_frame *f)
             int32_t col = ln == line ? changes[c].column : 0;
             int pal_changed = 0;
             size_t before = cur;
+            group++;
             /* those at this column together */
             while (c < nchanges && changes[c].line == ln && (ln == line ? changes[c].column : 0) == col) {
                 apply(&n, cur_pal, changes[c].field, changes[c].value, ln, &pal_changed);
@@ -980,6 +1093,8 @@ static void build(rr_frame *f)
             }
             if (pal_changed) {
                 memcpy(pals + npal * 256, cur_pal, sizeof cur_pal);
+                if (build_pages)
+                    memcpy(ext_tab + npal * build_pages, cur_row, (size_t)build_pages * 4);
                 n.pal = (int)npal++;
             }
             states[nstates++] = n;
@@ -1025,21 +1140,73 @@ static void build(rr_frame *f)
         rows[r].count = cnt;
     }
 
-    /* the palette's versions: a row of the palette texture each */
+    /* the palette's versions: a row of the palette texture each; past them (6.8) the pages of entries 256 on, once a game
+       has any: the game's pages, then the copies line changes made. Only a page the game wrote since it was sent is
+       written again; the copies, and the versions, are of this picture. */
     if (!palette_tex)
         palette_tex = eng_texture_id();
-    if ((uint32_t)npal > palette_rows) {
-        palette_rows = palette_rows ? palette_rows : 16;
-        while (palette_rows < (uint32_t)npal)
-            palette_rows *= 2;
-        eng_texture_create(f, palette_tex, 256, palette_rows, RR_BGRA8, 0);
-    }
     {
-        size_t i;
-        bgra = (uint32_t *)grow(bgra, &cap_bgra, npal * 256, 4);
-        for (i = 0; i < npal * 256; i++)
-            bgra[i] = bgra_of(pals[i]);
-        memcpy(eng_texture_write(f, palette_tex, 0, 0, 256, (uint32_t)npal, 4), bgra, npal * 256 * 4);
+        uint32_t need = build_pages ? build_pages + ncow : 0, ecap = ext_ecap, rows = palette_rows ? palette_rows : 16, k;
+        while (rows < (uint32_t)npal)
+            rows *= 2;
+        while (ecap < need)
+            ecap = ecap ? ecap * 2 : 64;
+        if (rows + ecap > PAL_ROWS_MAX && need) {
+            ecap = ecap > PAL_ROWS_MAX - rows ? PAL_ROWS_MAX - rows : ecap;
+            if (need > ecap) {
+                eng_report("nativeshvc", "the picture's palette needs %u rows past its %u versions' (a texture holds %u): sprite palettes past 7 read as unwritten",
+                           (unsigned)need, (unsigned)npal, PAL_ROWS_MAX);
+                build_pages = 0;
+                need = 0;
+                ecap = ext_ecap;
+            }
+        }
+        if (rows > palette_rows || ecap > ext_ecap) {
+            palette_rows = rows;
+            ext_ecap = ecap;
+            eng_texture_create(f, palette_tex, 256, palette_rows + ext_ecap, RR_BGRA8, 0);
+            for (k = 0; k < ext_pages; k++)         /* a new texture holds none of the game's pages */
+                ext_dirty[k] = 1;
+        }
+        {
+            size_t i;
+            bgra = (uint32_t *)grow(bgra, &cap_bgra, npal * 256, 4);
+            for (i = 0; i < npal * 256; i++)
+                bgra[i] = bgra_of(pals[i]);
+            memcpy(eng_texture_write(f, palette_tex, 0, 0, 256, (uint32_t)npal, 4), bgra, npal * 256 * 4);
+        }
+        if (build_pages) {
+            uint32_t row0 = palette_rows, run;
+            for (k = 0; k < ext_pages; k += run) {
+                uint32_t j, e;
+                uint32_t *out;
+                run = 1;
+                if (!ext_dirty[k])
+                    continue;
+                while (k + run < ext_pages && ext_dirty[k + run])
+                    run++;
+                out = (uint32_t *)eng_texture_write(f, palette_tex, 0, row0 + k, 256, run, 4);
+                for (j = 0; j < run; j++) {
+                    for (e = 0; e < 256; e++)
+                        out[j * 256 + e] = bgra_of(ext[(size_t)(k + j) * 256 + e]);
+                    ext_dirty[k + j] = 0;
+                }
+            }
+            if (build_pages > ext_pages) {              /* pages only a line change names: black under it */
+                uint32_t n_ = build_pages - ext_pages, e;
+                uint32_t *out = (uint32_t *)eng_texture_write(f, palette_tex, 0, row0 + ext_pages, 256, n_, 4);
+                for (e = 0; e < n_ * 256; e++)
+                    out[e] = bgra_of(0);
+            }
+            if (ncow) {
+                uint32_t *out = (uint32_t *)eng_texture_write(f, palette_tex, 0, row0 + build_pages, 256, ncow, 4);
+                size_t e;
+                for (e = 0; e < (size_t)ncow * 256; e++)
+                    out[e] = bgra_of(cow[e]);
+            }
+            for (k = 0; k < (uint32_t)npal * build_pages; k++)
+                ext_tab[k] += row0;
+        }
     }
 
     memset(&p, 0, sizeof p);
@@ -1060,6 +1227,8 @@ static void build(rr_frame *f)
     p.palettes = bgra;
     p.npalettes = (int)npal;
     p.palette_tex = palette_tex;
+    p.ext_rows = build_pages ? ext_tab : NULL;
+    p.ext_pages = (int)build_pages;
     p.sprites = sprites;
     p.nsprites = nsprites;
     p.sprite_first = sprite_first;
@@ -1132,6 +1301,11 @@ static void inspect(FILE *f)
     fprintf(f, "  palette");
     for (k = 0; k < 256; k++)
         fprintf(f, "%s%06x", k % 16 ? " " : "\n    ", palette[k]);
+    if (ext_pages) {
+        fprintf(f, "\n  palette past 255");
+        for (k = 0; k < ext_pages * 256; k++)
+            fprintf(f, "%s%06x", k % 16 ? " " : "\n    ", ext[k]);
+    }
     fprintf(f, "\n  sprites %u first %u\n", nsprites, sprite_first);
     for (k = 0; k < nsprites; k++)
         fprintf(f, "    %u at %d,%d size %ux%u tile %u palette %u priority %u flips %u%u\n", k, sprites[k].x, sprites[k].y, sprites[k].width,

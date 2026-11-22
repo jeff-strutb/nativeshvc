@@ -1270,7 +1270,9 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
 static int field;
 
 /* ---- sprites ---- */
-typedef struct { int32_t x0, y0, x1, y1, lx, ly; uint32_t size, n; } Piece;
+/* a piece of a sprite: eight words, the sprite's palette (6.8, any number) in the fifth */
+typedef struct { int32_t x0, y0, x1, y1; uint32_t pal; int32_t ly; uint32_t size, n; } Piece;
+static uint32_t ext_at;             /* the frame's words holding, for each palette version, the rows of the palette texture of its pages past entry 255 */
 typedef struct { uint32_t first, count, tiles, solid; } Run;
 static Piece *pieces;
 static size_t npieces, cap_pieces;
@@ -1312,10 +1314,10 @@ static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
     p->y0 = r0;
     p->x1 = s->x + cols * 8;
     p->y1 = r0 + (k1 - k0);
-    p->lx = 0;
+    p->pal = s->palette;
     p->ly = P->obj_interlace ? (P->interlace ? 2 * k0 : 2 * k0 + (field == 2)) : k0;   /* OBJ interlace: the texel row each screen row shows */
     p->size = (uint32_t)s->width | (uint32_t)s->height << 16;
-    p->n = (uint32_t)s->tile | (uint32_t)(s->palette & 7) << 16 | (uint32_t)(s->priority & 3) << 19 | (uint32_t)(s->hflip != 0) << 21 |
+    p->n = (uint32_t)s->tile | (uint32_t)(s->priority & 3) << 19 | (uint32_t)(s->hflip != 0) << 21 |
            (uint32_t)(s->vflip != 0) << 22;
 }
 
@@ -1465,6 +1467,11 @@ static void sprite_pieces(void)
     if (npieces) {
         pieces_at = words(npieces * 8);
         memcpy(&F->data[pieces_at], pieces, npieces * sizeof *pieces);
+        if (P->ext_pages) {
+            size_t n = (size_t)P->npalettes * (size_t)P->ext_pages;
+            ext_at = words(n);
+            memcpy(&F->data[ext_at], P->ext_rows, n * 4);
+        }
     }
 }
 
@@ -1527,6 +1534,8 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
             u->i[1][0] = ls;
             u->i[1][1] = lc;
         }
+        u->i[1][2] = P->ext_pages ? (int32_t)ext_at : 0;     /* the pages past entry 255: where each version's rows are, and how many */
+        u->i[1][3] = P->ext_pages;
         d->tex[0] = (int32_t)P->palette_tex;
         d->tex[3] = (int32_t)t->tex;
         d->instances = runs[k].count;

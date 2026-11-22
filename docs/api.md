@@ -1,4 +1,4 @@
-# The native engine's API, version 6.7
+# The native engine's API, version 6.8
 
 **Status: released and in use. `docs/contract.md` holds the stability rules.** `native-engine-plan.md` records how the engine was planned and what has been run.
 
@@ -130,11 +130,19 @@ nshvc_map nshvc_map_create(uint32_t width, uint32_t height);   /* in tiles, any 
 void nshvc_map_write(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const nshvc_map_entry *entries);
 void nshvc_map_write_snes(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *words);
                                         /* the SNES's 16-bit map words, for converted data */
-void nshvc_palette_write(uint32_t first, uint32_t count, const uint16_t *bgr15);   /* 256 entries */
+void nshvc_palette_write(uint32_t first, uint32_t count, const uint16_t *bgr15);   /* entries 0-255 are the SNES's; past them (6.8) see below */
 void nshvc_palette_write_rgb(uint32_t first, uint32_t count, const uint32_t *rgb24); /* colours past 15 bits */
 ```
 
 Writes are uploads: only what changed crosses to the GPU, and a write in `draw` shows in that picture.
+
+**The palette has no fixed size** (6.8). Entries 0-255 are the SNES's, as always, and read by everything as before. A write
+past entry 255 grows the palette to hold it, by whole pages of 256 entries, and those entries are read by sprites alone
+(`nshvc_sprite.palette`, 3.5): the layers, Mode 7, direct colour and an indexed image read entries 0-255 only. An entry
+never written is 0, black, as the first 256 are. The limit is the GPU's texture size: the palette holds 3,145,984 entries
+(12,288 pages, 196,616 sprite palettes), a write past that is reported and ignored, and the rest of a texture's 16,384
+rows is the palette's per-line versions and the pages a line change copies. Only a page written since it was last sent crosses to the GPU;
+a game that never writes past entry 255 has no page, and nothing of it is sent, kept or read.
 
 ### 3.3 Layers
 
@@ -198,7 +206,8 @@ typedef struct nshvc_sprite {
     int32_t x, y;                   /* any position */
     uint16_t width, height;         /* any size in tiles x 8; the SNES's sizes are 8 to 64 */
     nshvc_tiles tiles; uint16_t tile;
-    uint8_t palette, priority, hflip, vflip;    /* vflip of a sprite twice as high as wide (the SNES's 16 x 32 and 32 x 64)
+    uint32_t palette;                           /* (6.8) any number, see below */
+    uint8_t priority, hflip, vflip;             /* vflip of a sprite twice as high as wide (the SNES's 16 x 32 and 32 x 64)
                                                    is the SNES's: each square half flips in place, the halves keep their places */
 } nshvc_sprite;
 void nshvc_sprites_show(uint8_t main_screen, uint8_t sub_screen);   /* which screens the sprites are on; until set, main only */
@@ -206,6 +215,15 @@ void nshvc_sprites_interlace(uint8_t on);   /* OBJ interlace (6.1): see below; o
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
                                     /* in order; first_priority is the SNES's priority rotation */
 ```
+
+**Sprite palettes** (6.8). A sprite's `palette` is a 32-bit number, so a game has as many sprite palettes as it writes colours for,
+where the SNES had 8. Palette p is the 16 entries from 128 + 16 p: p 0-7 are entries 128-255, exactly as before, p 8 is
+entries 256-271, p 100 entries 1,728-1,743, and so on (`nshvc_palette_write`, 3.2, with a `first` past 255). A p whose entries
+were never written, or whose entry would lie past the palette's 3,145,984 or past 32 bits (p of 268,435,464 and up), reads
+as an unwritten palette does, black; it is not an error. Colour maths takes palettes as the SNES's do, 0-3 never and 4 up
+always, so palettes 8 and up take it. A game that writes nothing past 255 and uses no p above 7 draws exactly as before
+(6.7), the same pictures to the byte. The sprite's own struct changed: `palette` is 32 bits, so a game rebuilds, and one that
+sets fields by name needs no change.
 
 **OBJ interlace** (`nshvc_sprites_interlace`, 6.1) is a sprite-wide setting, so it sits with `nshvc_sprites_show` and, like it, is
 set in `draw` and off until set. On, each sprite is half as high on screen (`height` tiles cover `height * 4` rows) and shows
@@ -245,7 +263,8 @@ void nshvc_lines(uint32_t first, uint32_t count, nshvc_line_field field, const i
 ```
 
 Any field of sections 3.1 to 3.6 can change from a line on: scroll, palette entries (15-bit colours, as
-`nshvc_palette_write` takes), the fixed colour, window edges, brightness, layer enables, mode and the Mode 7 matrix. This replaces HDMA and raster interrupts.
+`nshvc_palette_write` takes, those past entry 255 too, 6.8: a line change to one is copied by the page it lies in, so a
+picture's cost is those pages and not the whole palette; the field is `NSHVC_LINE_PALETTE` + entry, and an entry past 3,145,983 is not taken), the fixed colour, window edges, brightness, layer enables, mode and the Mode 7 matrix. This replaces HDMA and raster interrupts.
 
 ## 4. Images, the drawing pipeline and shaders
 
@@ -572,7 +591,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.7: 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.8: 6.8 widened `nshvc_sprite.palette` to 32 bits and let the palette grow past entry 255 (`nshvc_palette_write`, `nshvc_palette_write_rgb`, `NSHVC_LINE_PALETTE` + entry), for sprite palettes 8 and up. 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -627,6 +646,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_full_screen`, `nshvc_display`'s `full_screen` and `full_screen_switch` | The game switches the window between full screen and a window, and reads which it is in | 6.5 |
 | `nshvc_voice_sample` | A voice's sample changed without a key-on, taken at its next end, as SRCN | 6.6 |
 | `nshvc_limits`' `blank_hides_sprites` | A line below a blanked one shows no sprites, as the SNES's: it finds a line's sprites during the line above, and none while blanked | 6.7 |
+| `nshvc_sprite`'s 32-bit `palette`, palette writes and line changes past entry 255 | Any number of sprite palettes: palette p is entries 128 + 16 p; the palette grows by pages as written, with no fixed size | 6.8 |
 
 ### Retired, and why
 

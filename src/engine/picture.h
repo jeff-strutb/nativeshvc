@@ -87,6 +87,8 @@ typedef struct {
     const eng_state *states;
     const uint32_t *palettes;   /* 256 0xFFRRGGBB a version */
     int npalettes;
+    const uint32_t *ext_rows;   /* entries 256 on (6.8): ext_pages rows of palette_tex a version (those of the page's 256 entries), or NULL */
+    int ext_pages;
     uint32_t palette_tex;
     const nshvc_sprite *sprites;
     uint32_t nsprites, sprite_first;

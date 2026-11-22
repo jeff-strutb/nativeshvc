@@ -27,3 +27,6 @@ set_target_properties(m7check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY
 add_executable(voice_sample scenes/voice_sample.c)
 target_link_libraries(voice_sample PRIVATE nshvc)
 set_target_properties(voice_sample PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(palettes scenes/palettes.c)
+target_link_libraries(palettes PRIVATE nshvc)
+set_target_properties(palettes PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

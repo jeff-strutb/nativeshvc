@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 7
+#define NSHVC_VERSION_MINOR 8
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -236,6 +236,9 @@ typedef struct nshvc_map_entry { uint16_t tile; uint8_t palette, priority, hflip
 nshvc_map nshvc_map_create(uint32_t width, uint32_t height);
 void nshvc_map_write(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const nshvc_map_entry *entries);
 void nshvc_map_write_snes(nshvc_map m, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *words);
+/* The palette has no fixed size (6.8): entries 0-255 are the SNES's, and a write past 255 grows it by whole pages of 256
+   entries, which only sprites read (nshvc_sprite.palette 8 and up). A write past what the renderers' textures hold (3,145,984
+   entries) is reported and ignored. Unwritten entries are 0, black. */
 void nshvc_palette_write(uint32_t first, uint32_t count, const uint16_t *bgr15);
 void nshvc_palette_write_rgb(uint32_t first, uint32_t count, const uint32_t *rgb24);
 
@@ -271,8 +274,11 @@ typedef struct nshvc_sprite {
     int32_t x, y;
     uint16_t width, height;         /* in tiles */
     nshvc_tiles tiles; uint16_t tile;
-    uint8_t palette, priority, hflip, vflip;    /* vflip of a sprite twice as high as wide (the SNES's 16 x 32 and 32 x 64)
-                                                   is the SNES's: each square half flips in place, the halves keep their places */
+    uint32_t palette;               /* (6.8) any number: palette p is entries 128 + 16 p to 143 + 16 p of the palette, so 0-7 are the
+                                       SNES's and 8 is entries 256 to 271 (written past 255, as nshvc_palette_write takes); a p
+                                       whose entries were never written reads as an unwritten entry does, black */
+    uint8_t priority, hflip, vflip; /* vflip of a sprite twice as high as wide (the SNES's 16 x 32 and 32 x 64)
+                                       is the SNES's: each square half flips in place, the halves keep their places */
 } nshvc_sprite;
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
 /* whether the sprites are on the main and the sub screen; until set, main only */
@@ -434,7 +440,7 @@ typedef enum {
     NSHVC_LINE_MASK_MAIN = 80,      /* + BG1-4, sprites */
     NSHVC_LINE_MASK_SUB = 88,       /* + BG1-4, sprites */
     NSHVC_LINE_SPRITES_MAIN = 96, NSHVC_LINE_SPRITES_SUB = 97,
-    NSHVC_LINE_PALETTE = 256        /* + entry: a 15-bit BGR colour, as nshvc_palette_write's */
+    NSHVC_LINE_PALETTE = 256        /* + entry: a 15-bit BGR colour, as nshvc_palette_write's; entries past 255 too (6.8) */
 } nshvc_line_field;
 void nshvc_line(uint32_t line, nshvc_line_field field, int32_t value);
 void nshvc_line_from(uint32_t line, int32_t column, nshvc_line_field field, int32_t value);

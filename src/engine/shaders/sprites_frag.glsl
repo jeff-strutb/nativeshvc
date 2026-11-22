@@ -7,9 +7,22 @@
    Sprites' pieces and uniforms are sprites.vert's; i[1] (POW2): log2 of the texels a side and of the tiles a row */
 #include "common.glsl"
 layout(location = 0) in vec2 v_t;
-layout(location = 1) flat in uvec2 v_s;
+layout(location = 1) flat in uvec3 v_s;
 layout(location = 2) in vec2 v_p;
 layout(location = 0) out vec4 o;
+/* colour c (0-15) of sprite palette p: entry 128 + 16 p. Entries past 255 are in the pages of the palette texture's
+   extension: this version's row of the entry's page (i[1].z: the frame's words, a version's rows one after another,
+   i[1].w the pages), the entry's place in it. A palette past those the game wrote, or too high for a 32-bit entry, is
+   unwritten: black, as the first 256's are */
+vec3 sprite_colour(uint p, uint c, int prow)
+{
+    if (p < 8u)
+        return palette(128u + p * 16u + c, prow);
+    uint e = (p - 8u) * 16u + c, page = e >> 8;
+    if (p - 8u >= 0x10000000u || page >= uint(u.i[1].w))
+        return vec3(0.0);
+    return texelFetch(tc0, ivec2(int(e & 255u), int(word(u.i[1].z + prow * u.i[1].w + int(page)))), 0).rgb;
+}
 void main()
 {
     vec2 hh = nshvc_half(v_p);    /* before anything discards */
@@ -17,7 +30,7 @@ void main()
 #ifdef POW2
     int ls = u.i[1].x, lc = u.i[1].y;
 #endif
-    uint n = v_s.x, tile = n & 0xFFFFu, pal = (n >> 16) & 7u;
+    uint n = v_s.x, tile = n & 0xFFFFu, pal = v_s.z;
     ivec2 last = ivec2(int(v_s.y & 0xFFFFu), int(v_s.y >> 16)) * s - 1;
     ivec2 k;
     vec2 w;
@@ -44,12 +57,12 @@ void main()
 #endif
 #ifdef SOLID
             uint c = texelFetch(ti0, ivec2(tx * s + px, ty * s + py), 0).r;
-            acc += vec4(palette(128u + pal * 16u + (c & 15u), prow) * wt, wt);
+            acc += vec4(sprite_colour(pal, c & 15u, prow) * wt, wt);
 #else
             /* a tile past the set's reads 0, as tile_texel's, the atlas's height from the uniform */
             uint c = ty * s >= ah ? 0u : texelFetch(ti0, ivec2(tx * s + px, ty * s + py), 0).r;
             if (c != 0u)
-                acc += vec4(palette(128u + pal * 16u + (c & 15u), prow) * wt, wt);
+                acc += vec4(sprite_colour(pal, c & 15u, prow) * wt, wt);
 #endif
         }
 #ifndef SOLID
