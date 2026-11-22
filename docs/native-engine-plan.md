@@ -75,10 +75,11 @@ at the window's resolution, and nothing of the earlier per-pixel renderer remain
   key-on call and the key-on, where the voice now goes into the new sample's loop, as the DSP does).
 - **6.8, what has been run.** `tests/scenes/palettes.c` (sprite palettes 8, 100, 70000, the palette's last entry, unwritten
   palettes, colour maths, line changes past entry 255, incremental page writes) passes on macOS Metal and on Vulkan
-  through MoltenVK, with identical pictures. Against 6.7, the shots of comet, depth and mesh are byte-identical, as are the
-  palette 0-7 regions of the new check (with colour maths and a base-palette line change). Not run: Direct3D 12 (no Windows
-  machine here; only the sprite programs' DXIL was rebuilt, with a newer dxc than the rest's, and is untested at runtime),
-  the scene suite against bsnes, and Aladdin.
+  through MoltenVK, and on Direct3D 12 on Windows 11 (AMD RX 6950 XT, cross-built with mingw), all eight pictures
+  identical on the three; `depth` also passes on Direct3D 12. Against 6.7, the shots of comet, depth and mesh are
+  byte-identical on Metal, as are the palette 0-7 regions of the new check (with colour maths and a base-palette line
+  change). The sprite programs' DXIL was rebuilt with a newer dxc than the rest's, and runs. Not run: the scene suite
+  against bsnes, and Aladdin.
 - **6.7, what has been run.** Found by the Aladdin conversion's replay of its recordings (its
   `docs/aladdin/native/CHECK.md`), headless on Linux (Vulkan, dzn). Offset-per-tile was applied on lines a line change
   had put in a mode without it (`compose.c` `opt_on` did not look at the line's mode): Aladdin's act 7 shows its HUD in
