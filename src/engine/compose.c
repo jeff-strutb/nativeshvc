@@ -677,13 +677,14 @@ static int kind_of(const eng_state *s, int n)
 
 static int bg_on(int v, const eng_state *s, int n) { return view_on(v, s) && s->m != 7 && enabled(&s->l[n], v) && kind_of(s, n) != K_NONE; }
 
-/* offset-per-tile: on for BG1 and BG2 with its map and BG3's, on lines in a mode that has it (2, 4 and 6, as the
-   console's; a line changed to another mode draws the layer as that mode does, without the offsets) */
+/* offset-per-tile: on for BG1 and BG2 with its map and BG3's (or with a table of its own, 6.14), on lines in a mode
+   that has it (2, 4 and 6, as the console's; a line changed to another mode draws the layer as that mode does, without
+   the offsets) */
 static int opt_on(const eng_state *s, int n)
 {
     const nshvc_layer *a = &s->l[n];
     return n < 2 && (s->m == 2 || s->m == 4 || s->m == 6) && a->offset_per_tile.id && a->offset_per_tile.id < eng_nmaps &&
-           s->l[2].map.id && s->l[2].map.id < eng_nmaps;
+           (a->offset_per_tile_own || (s->l[2].map.id && s->l[2].map.id < eng_nmaps));
 }
 
 static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
@@ -710,9 +711,12 @@ static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
         return 0;
     if (opt_on(a, n) != opt_on(b, n))
         return 0;
-    if (opt_on(a, n))
-        return p->offset_per_tile.id == q->offset_per_tile.id && a->l[2].map.id == b->l[2].map.id && a->l[2].scroll_x == b->l[2].scroll_x &&
-               a->l[2].scroll_y == b->l[2].scroll_y;
+    if (opt_on(a, n)) {
+        if (p->offset_per_tile.id != q->offset_per_tile.id || (p->offset_per_tile_own != 0) != (q->offset_per_tile_own != 0))
+            return 0;
+        return p->offset_per_tile_own ||
+               (a->l[2].map.id == b->l[2].map.id && a->l[2].scroll_x == b->l[2].scroll_x && a->l[2].scroll_y == b->l[2].scroll_y);
+    }
     return 1;
 }
 
@@ -746,12 +750,22 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
     d->tex[3] = (int32_t)t->tex;
     d->tex[4] = (int32_t)m->tex;
     if (opt_on(s, n)) {
-        const eng_map *o = &eng_maps_of[a->offset_per_tile.id], *m3 = &eng_maps_of[s->l[2].map.id];
+        const eng_map *o = &eng_maps_of[a->offset_per_tile.id];
         u->i[3][3] = s->m == 4 ? 2 : 1;
-        u->i[4][0] = (int32_t)(m3->w < o->w ? m3->w : o->w);
-        u->i[4][1] = (int32_t)(m3->h < o->h ? m3->h : o->h);
-        u->i[4][2] = s->l[2].scroll_x;
-        u->i[4][3] = s->l[2].scroll_y;
+        if (a->offset_per_tile_own) {
+            /* (6.14) a table of its own: read as BG3's map would be at scroll (0, 0), in the table's own size (the
+               shaders then read row 0, row 1 and column c - 1) */
+            u->i[4][0] = (int32_t)o->w;
+            u->i[4][1] = (int32_t)o->h;
+            u->i[4][2] = 0;
+            u->i[4][3] = 0;
+        } else {
+            const eng_map *m3 = &eng_maps_of[s->l[2].map.id];
+            u->i[4][0] = (int32_t)(m3->w < o->w ? m3->w : o->w);
+            u->i[4][1] = (int32_t)(m3->h < o->h ? m3->h : o->h);
+            u->i[4][2] = s->l[2].scroll_x;
+            u->i[4][3] = s->l[2].scroll_y;
+        }
         u->i[5][0] = 19 + n;
         u->i[5][1] = a->scroll_x;
         u->i[5][2] = a->scroll_y;

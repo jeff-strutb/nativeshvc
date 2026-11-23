@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 13
+#define NSHVC_VERSION_MINOR 14
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -271,6 +271,10 @@ typedef struct nshvc_layer {
                                                    0 is the whole scroll alone. Offset-per-tile, mosaic and the lines'
                                                    whole scrolls keep to the whole scroll; under mosaic the fraction is not
                                                    drawn */
+    uint8_t     offset_per_tile_own;            /* (6.14) 1: offset_per_tile is a table of its own, not read through BG3: its
+                                                   row 0 the horizontal entries, row 1 the vertical (mode 4: row 0 only), its
+                                                   column c - 1 for the screen's offset column c (wrapping at its width);
+                                                   entries as the SNES's, in the layer's own pixels. 0: the SNES's scheme */
 } nshvc_layer;
 void nshvc_mode_set(uint8_t mode, uint8_t bg3_priority, uint8_t hires);
 void nshvc_layer_set(uint8_t layer, const nshvc_layer *l);
