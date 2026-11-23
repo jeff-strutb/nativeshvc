@@ -30,6 +30,7 @@ static int sample_w, sample_h, sampled;
 /* the game thread's */
 static host_pad pads[CONTROLLERS];
 static int pad_on[CONTROLLERS];
+static uint32_t pad_seq[CONTROLLERS];     /* counts connections and changes of device, per index */
 
 /* --input: the devices held from each listed update on */
 static FILE *replay;
@@ -204,9 +205,14 @@ void eng_input_sample(nshvc_input *in, uint64_t n, int headless)
         return;
     for (p = 0; p < CONTROLLERS; p++) {
         host_pad now;
+        int was = pad_on[p];
         pad_on[p] = host_pad_read((int)p, &now);
         if (pad_on[p]) {
+            if (!was || now.id != pads[p].id)
+                pad_seq[p]++;
             pads[p] = now;
+            in->controller[p].seq = pad_seq[p];
+            in->controller[p].id = now.id;
             in->controller[p].on = 1;
             in->controller[p].style = (uint8_t)(now.style == HOST_PAD_XBOX ? NSHVC_STYLE_XBOX
                                                 : now.style == HOST_PAD_PLAYSTATION ? NSHVC_STYLE_PLAYSTATION

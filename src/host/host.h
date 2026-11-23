@@ -164,6 +164,7 @@ enum { HOST_PAD_GENERIC, HOST_PAD_XBOX, HOST_PAD_PLAYSTATION, HOST_PAD_NINTENDO 
 typedef struct host_pad {
     float    x, y, rx, ry, lt, rt;
     unsigned buttons;
+    uint64_t id;      /* the device's identity, the same whenever it is connected; 0 when the host cannot tell */
     int      style;
     char     name[64];
     char     label[16][24];

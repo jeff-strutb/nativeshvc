@@ -568,7 +568,9 @@ void host_audio_close(void)
     s_rc = NULL;
 }
 
-/* ---- game controllers: XInput -------------------------------------------------- */
+/* ---- game controllers: XInput, and the others through pad_wgi.c ------------------- */
+int pad_wgi_read(int index, host_pad *o);
+
 static float pad_axis(int v)
 {
     float f = v / 32767.0f;
@@ -576,7 +578,7 @@ static float pad_axis(int v)
 }
 
 /* engine controller `index` is XInput slot `index` (0-3), so a pad keeps its
-   index while others come and go. A slot is polled once per call; one with no
+   index while others come and go; 4-7 are the other controllers (pad_wgi.c). A slot is polled once per call; one with no
    pad is looked at again about once a second, as XInputGetState on an empty
    slot is slow */
 int host_pad_read(int index, host_pad *o)
@@ -587,7 +589,9 @@ int host_pad_read(int index, host_pad *o)
     const XINPUT_GAMEPAD *g;
     unsigned b = 0;
     memset(o, 0, sizeof *o);
-    if (index < 0 || index >= XUSER_MAX_COUNT)
+    if (index >= XUSER_MAX_COUNT)       /* the controllers that are not XInput's follow its slots */
+        return pad_wgi_read(index - XUSER_MAX_COUNT, o);
+    if (index < 0)
         return 0;
     if (!slot_on[index]) {
         ULONGLONG now = GetTickCount64();

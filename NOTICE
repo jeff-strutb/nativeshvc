@@ -12,3 +12,9 @@ See the GNU Affero General Public License for more details.
 Any distribution of this program or a work based on it, and any modified version made
 available to users over a network, must keep this notice and the copyright line above, and
 must offer the complete corresponding source code under the same licence.
+
+The controller layouts in src/host/common/pad_db_windows.h and pad_db_linux.h come from
+SDL_GameControllerDB (https://github.com/mdqinc/SDL_GameControllerDB), under the zlib licence:
+Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>. This software is provided as-is, without any
+express or implied warranty; it may be altered and redistributed provided its origin is not
+misrepresented and this notice is kept.

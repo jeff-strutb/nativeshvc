@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 10
+#define NSHVC_VERSION_MINOR 11
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -50,8 +50,13 @@ typedef struct nshvc_input {
     struct { int32_t id; float x, y; } touch[10];
     uint8_t touches;
     /* each controller: on when connected; style NSHVC_STYLE_*; buttons
-       NSHVC_CTL_*; sticks -1..1, y positive downward; triggers 0..1 */
-    struct { uint8_t on, style; uint16_t buttons; float lx, ly, rx, ry, lt, rt; } controller[8];
+       NSHVC_CTL_*; sticks -1..1, y positive downward; triggers 0..1;
+       (6.11) id: the device's identity, the same whenever that device is
+       connected (0 when the host cannot tell devices apart); seq: counts up
+       each time a different device or a connection takes this index, so a
+       game that keeps a player's controller by id (or by seq between two
+       updates) knows when the index is no longer theirs */
+    struct { uint8_t on, style; uint16_t buttons; float lx, ly, rx, ry, lt, rt; uint32_t seq; uint64_t id; } controller[8];
 } nshvc_input;
 
 #define NSHVC_KEY_HELD(in, k)     (((in)->keys[(k) >> 5] >> ((k) & 31)) & 1u)

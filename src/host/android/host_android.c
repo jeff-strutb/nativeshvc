@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "host.h"
+#include "pad_map.h"
 
 int nshvc_game_main(int argc, char **argv);
 
@@ -87,7 +88,7 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
 /* one slot per input device (its Android device id); a slot keeps its index
    while the device is connected and is freed when Android no longer lists it */
 #define PADS 8
-static struct { int on, dev; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; long long checked; } pads[PADS];
+static struct { int on, dev; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; uint64_t id; long long checked; } pads[PADS];
 static pthread_mutex_t pad_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static long long now_ms(void)
@@ -97,9 +98,10 @@ static long long now_ms(void)
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* whether InputDevice.getDevice(dev) still finds the device, and its name;
-   1 (kept) when the question cannot be asked */
-static int device_present(int dev, char *name, size_t n)
+/* whether InputDevice.getDevice(dev) still finds the device, and its name and
+   its descriptor (the system's identity for the device, the same on every run)
+   hashed; 1 (kept) when the question cannot be asked */
+static int device_present(int dev, char *name, size_t n, uint64_t *id)
 {
     JavaVM *vm = app->activity->vm;
     JNIEnv *env;
@@ -137,6 +139,19 @@ static int device_present(int dev, char *name, size_t n)
             }
             (*env)->ExceptionClear(env);
         }
+        if (id) {
+            jmethodID gd = (*env)->GetMethodID(env, cls, "getDescriptor", "()Ljava/lang/String;");
+            jstring js = gd ? (jstring)(*env)->CallObjectMethod(env, d, gd) : NULL;
+            if (js) {
+                const char *c = (*env)->GetStringUTFChars(env, js, NULL);
+                if (c) {
+                    *id = pad_hash(c);
+                    (*env)->ReleaseStringUTFChars(env, js, c);
+                }
+                (*env)->DeleteLocalRef(env, js);
+            }
+            (*env)->ExceptionClear(env);
+        }
         (*env)->DeleteLocalRef(env, d);
     }
     return present;
@@ -158,7 +173,7 @@ static int pad_slot(int dev)
         pads[free_k].dev = dev;
         pads[free_k].checked = now_ms();
         snprintf(pads[free_k].name, sizeof pads[free_k].name, "Controller");
-        device_present(dev, pads[free_k].name, sizeof pads[free_k].name);
+        device_present(dev, pads[free_k].name, sizeof pads[free_k].name, &pads[free_k].id);
     }
     return free_k;
 }
@@ -194,7 +209,7 @@ int host_pad_read(int i, host_pad *p)
     pthread_mutex_lock(&pad_lock);
     if (pads[i].on && now_ms() - pads[i].checked >= 1000) {
         pads[i].checked = now_ms();
-        if (!device_present(pads[i].dev, NULL, 0))
+        if (!device_present(pads[i].dev, NULL, 0, NULL))
             memset(&pads[i], 0, sizeof pads[i]);
     }
     if (!pads[i].on) {
@@ -213,6 +228,7 @@ int host_pad_read(int i, host_pad *p)
     if (pads[i].hy > 0.5f) p->buttons |= 1u << 14;
     if (pads[i].hx < -0.5f) p->buttons |= 1u << 15;
     snprintf(p->name, sizeof p->name, "%s", pads[i].name);
+    p->id = pads[i].id;
     pthread_mutex_unlock(&pad_lock);
     p->style = HOST_PAD_GENERIC;
     return 1;
