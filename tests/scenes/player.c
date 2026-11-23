@@ -154,6 +154,7 @@ static void draw(float between)
             a.direct_colour = (uint8_t)v[10];
             if (v[11] >= 0)
                 a.offset_per_tile = maps[v[11]];
+            a.offset_per_tile_own = (uint8_t)v[12];     /* (6.14) absent: 0 */
             nshvc_layer_set((uint8_t)v[0], &a);
         } else if (!strcmp(cmd, "win")) {
             int k;
