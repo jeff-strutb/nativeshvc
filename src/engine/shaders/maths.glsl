@@ -19,6 +19,8 @@
  *   4      any layer takes part in the maths
  *   5-6    the clip region     7-8  the prevent region   (0 never, 1 outside the colour window, 2 inside, 3 always)
  *   9-12   15 less the brightness
+ *   16-23  (6.13) the brightness's 256ths towards the level above: the colour
+ *          dimmed at the level and at the one above, mixed (0 below 15 only)
  *   13     an even half-column of a hires row (the sub screen's layers: the draw's
  *          partner is the main screen), else the main screen's
  *   14     a region is the colour window's: its bit table is read
@@ -40,6 +42,13 @@
  * bit a picture pixel, rows of (width + 31) / 32 words, set where inside the
  * colour window, starts at the word MATHS_DATA.w[MATHS_U.i[7].w - 1] (the word
  * before the rows table), read only when bit 14 is set. */
+
+/* a colour in eighths of a 5-bit step dimmed to brightness b (0-14) as the console dims it: 15-bit colours'
+   channels in whole steps, the finer ones keep their eighths */
+uvec3 nshvc_dim(uvec3 z, uint b, bvec3 fine)
+{
+    return mix(((((z >> 3u) * b + 7u) * 4370u) >> 16u) << 3u, ((z * b + 7u) * 4370u) >> 16u, fine);
+}
 
 uvec3 nshvc_channels(vec3 c) { return uvec3(clamp(c, 0.0, 1.0) * 255.0 + 0.5); }
 
@@ -136,8 +145,16 @@ vec4 nshvc_maths(vec3 col, float flag, vec2 p, vec2 hh)
                 z = mix((z >> 4u) << 3u, z >> 1u, fine);
             z = min(z, uvec3(248u));
         }
-        if (bright != 15)
-            z = mix(((((z >> 3u) * uint(bright) + 7u) * 4370u) >> 16u) << 3u, ((z * uint(bright) + 7u) * 4370u) >> 16u, fine);
+        if (bright != 15) {
+            uint sub = uint(st >> 16) & 255u;
+            uvec3 lo = nshvc_dim(z, uint(bright), fine);
+            if (sub != 0u) {
+                /* between two levels: the two dimmed colours mixed, in 256ths, rounded */
+                uvec3 hi = bright == 14 ? z : nshvc_dim(z, uint(bright) + 1u, fine);
+                lo = lo + (((hi - lo) * sub + 128u) >> 8u);
+            }
+            z = lo;
+        }
         r = z + (z >> 5u);
     }
     return vec4(vec3(r) / 255.0, 1.0);

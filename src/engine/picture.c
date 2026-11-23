@@ -948,6 +948,7 @@ static void apply(eng_state *n, uint32_t *pal, int field, int32_t v, uint32_t li
     case NSHVC_LINE_WIN2_RIGHT: n->w.w[1].right = v; break;
     case NSHVC_LINE_FIXED: n->b.fixed_bgr15 = (uint16_t)v; break;
     case NSHVC_LINE_BRIGHTNESS: n->bright = v & 15; break;
+    case NSHVC_LINE_BRIGHTNESS_SUB: n->bright_sub = v & 255; break;
     case NSHVC_LINE_MODE: n->m = v & 7; break;
     case NSHVC_LINE_SPRITES_MAIN: n->sprites_main = v != 0; break;
     case NSHVC_LINE_SPRITES_SUB: n->sprites_sub = v != 0; break;
@@ -1037,6 +1038,7 @@ static void build(rr_frame *f)
     n.b3 = bg3;
     n.hires = mode_hires;
     n.bright = screen_set ? screen.brightness : 15;
+    n.bright_sub = screen_set ? screen.brightness_sub : 0;
     n.blank = screen.blank;
     memcpy(n.l, layers, sizeof n.l);
     n.m7 = m7;

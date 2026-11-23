@@ -61,7 +61,7 @@ extern uint32_t eng_nlists;
 
 /* the picture's settings as they stand on a row, as line changes make them */
 typedef struct {
-    int m, b3, hires, bright, blank, sprites_main, sprites_sub;
+    int m, b3, hires, bright, bright_sub, blank, sprites_main, sprites_sub;
     nshvc_layer l[4];
     nshvc_mode7 m7;
     nshvc_windows w;

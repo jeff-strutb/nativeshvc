@@ -278,7 +278,8 @@ static int32_t colour_word(int v, const eng_state *s)
     if (!in_frame(v) || s->blank)
         return 0;
     return 1 | (maths && b->subtract) << 1 | (maths && b->half) << 2 | (maths && b->use_fixed) << 3 | maths << 4 | (b->clip & 3) << 5 |
-           (maths ? (b->prevent & 3) : 0) << 7 | (15 - (s->bright & 15)) << 9 | (v == V_SUBM) << 13 | uses_cwin(s) << 14 | (hires_of(s) != 0) << 15;
+           (maths ? (b->prevent & 3) : 0) << 7 | (15 - (s->bright & 15)) << 9 | (v == V_SUBM) << 13 | uses_cwin(s) << 14 | (hires_of(s) != 0) << 15 |
+           ((s->bright & 15) < 15 ? s->bright_sub & 255 : 0) << 16;
 }
 
 /* the fixed colour a draw's maths reads, 15-bit BGR */

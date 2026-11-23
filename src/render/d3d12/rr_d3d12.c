@@ -72,6 +72,61 @@ static HANDLE fence_event;
 static UINT64 fence_at;
 static IDXGIFactory4 *factory;
 static IDXGISwapChain3 *swapchain;
+static HANDLE sc_waitable;              /* the swap chain's frame latency object: set when it can take a picture */
+#define SC_FLAGS DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+#define SC_LATENCY 1                    /* pictures queued to be shown at most (DXGI's own is 3): a refresh or two sooner */
+
+/* NSHVC_DEV_PRESENT_LOG=FILE, the developer's: a line a picture shown, as the display showed it (from DXGI's frame
+   statistics, which name the newest present on screen and its refresh's time): the game update it was drawn after,
+   its between, the time it was handed to DXGI and the time it was on screen, in nanoseconds of the performance
+   counter. Pictures the statistics skip over are not written */
+#define PRESENT_RING 64
+static FILE *present_log;
+static struct { UINT id; unsigned long long update; float between; uint64_t handed; } present_ring[PRESENT_RING];
+static UINT present_logged;
+
+static uint64_t qpc_ns(LARGE_INTEGER t)
+{
+    static LARGE_INTEGER f;
+
+    if (!f.QuadPart)
+        QueryPerformanceFrequency(&f);
+    return (uint64_t)((double)t.QuadPart * 1e9 / (double)f.QuadPart);
+}
+
+static void present_watch(const rr_frame *f)
+{
+    static int known;
+    LARGE_INTEGER now;
+    DXGI_FRAME_STATISTICS st;
+    UINT id = 0;
+
+    if (!known) {
+        const char *v = getenv("NSHVC_DEV_PRESENT_LOG");
+
+        known = 1;
+        if (v && *v)
+            present_log = fopen(v, "w");
+    }
+    if (!present_log)
+        return;
+    QueryPerformanceCounter(&now);
+    IDXGISwapChain3_GetLastPresentCount(swapchain, &id);
+    present_ring[id % PRESENT_RING].id = id;
+    present_ring[id % PRESENT_RING].update = (unsigned long long)f->update;
+    present_ring[id % PRESENT_RING].between = f->between;
+    present_ring[id % PRESENT_RING].handed = qpc_ns(now);
+    if (SUCCEEDED(IDXGISwapChain3_GetFrameStatistics(swapchain, &st)) && st.PresentCount != present_logged) {
+        UINT k = st.PresentCount % PRESENT_RING;
+
+        present_logged = st.PresentCount;
+        if (present_ring[k].id == st.PresentCount) {
+            fprintf(present_log, "%llu %.4f %llu %llu\n", present_ring[k].update, (double)present_ring[k].between,
+                    (unsigned long long)present_ring[k].handed, (unsigned long long)qpc_ns(st.SyncQPCTime));
+            fflush(present_log);
+        }
+    }
+}
 static ID3D12Resource *sc_img[FRAMES];
 static D3D12_RESOURCE_STATES sc_state[FRAMES];
 static int sc_w, sc_h;
@@ -488,10 +543,19 @@ int rr_open(void)
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.BufferCount = FRAMES;
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        sd.Flags = SC_FLAGS;
         if (FAILED(IDXGIFactory4_CreateSwapChainForHwnd(factory, (IUnknown *)queue, hwnd, &sd, NULL, NULL, &s1)))
             return open_failed();
         IDXGISwapChain1_QueryInterface(s1, &IID_IDXGISwapChain3, (void **)&swapchain);
         IDXGISwapChain1_Release(s1);
+        /* a picture is drawn once the swap chain can take it, and at most SC_LATENCY wait to be shown */
+        {   /* NSHVC_DEV_FRAME_LATENCY=N, the developer's: N queued in place of SC_LATENCY (3 is DXGI's own), to compare */
+            const char *v = getenv("NSHVC_DEV_FRAME_LATENCY");
+            int n = v && *v ? atoi(v) : SC_LATENCY;
+
+            IDXGISwapChain3_SetMaximumFrameLatency(swapchain, (UINT)(n >= 1 && n <= 16 ? n : SC_LATENCY));
+        }
+        sc_waitable = IDXGISwapChain3_GetFrameLatencyWaitableObject(swapchain);
         sc_w = (int)sd.Width;
         sc_h = (int)sd.Height;
         swapchain_buffers();
@@ -1350,7 +1414,7 @@ int rr_draw(rr_frame *f)
                 for (j = 0; j < FRAMES; j++)
                     if (sc_img[j])
                         ID3D12Resource_Release(sc_img[j]);
-                hr = IDXGISwapChain3_ResizeBuffers(swapchain, FRAMES, (UINT)ww, (UINT)wh, DXGI_FORMAT_UNKNOWN, 0);
+                hr = IDXGISwapChain3_ResizeBuffers(swapchain, FRAMES, (UINT)ww, (UINT)wh, DXGI_FORMAT_UNKNOWN, SC_FLAGS);
                 if (removed(hr))
                     lost("IDXGISwapChain3_ResizeBuffers", hr);
                 /* the buffers again, made at the new size or kept at the old */
@@ -1365,6 +1429,8 @@ int rr_draw(rr_frame *f)
             }
             ow = ww;
             oh = wh;
+            if (sc_waitable)
+                WaitForSingleObjectEx(sc_waitable, 1000, TRUE);     /* until the swap chain can take the picture */
             back = (int)IDXGISwapChain3_GetCurrentBackBufferIndex(swapchain);
             if (!sc_img[back])
                 show = 0;
@@ -1443,8 +1509,10 @@ int rr_draw(rr_frame *f)
             lost("IDXGISwapChain3_Present", hr);
         if (FAILED(hr))
             fprintf(stderr, "rr: d3d12: the picture could not be shown (0x%08lx)\n", (unsigned long)hr);
-        else
-            paced = 1;
+        else {
+            paced = hr != DXGI_STATUS_OCCLUDED;     /* a covered window paces nothing: the loop asks once an update */
+            present_watch(f);
+        }
     }
     check("ID3D12CommandQueue_Signal", ID3D12CommandQueue_Signal(queue, fence, ++fence_at));
     ever = 1;
@@ -1551,6 +1619,9 @@ void rr_close(void)
             ID3D12Resource_Release(sc_img[k]);
             sc_img[k] = NULL;
         }
+    if (sc_waitable)
+        CloseHandle(sc_waitable);
+    sc_waitable = NULL;
     if (swapchain)
         IDXGISwapChain3_Release(swapchain);
     swapchain = NULL;
