@@ -386,6 +386,7 @@ static void watch_tell(void)
 static _Atomic uint32_t s_seq;
 static _Atomic int s_pw, s_ph;
 static _Atomic float s_ptw, s_pth;
+static _Atomic float s_scale = 1;     /* the view's contentScaleFactor, published with the sizes */
 
 static void sizes_publish(int pw, int ph, float tw, float th)
 {
@@ -426,6 +427,7 @@ static void sizes_read(int *pw, int *ph, float *tw, float *th)
     CGSize b = self.bounds.size, want = CGSizeMake(floor(b.width * sc + 0.5), floor(b.height * sc + 0.5));
     [super layoutSubviews];
     self.contentScaleFactor = sc;
+    atomic_store_explicit(&s_scale, (float)self.contentScaleFactor, memory_order_relaxed);
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize(s_layer.drawableSize, want))
         s_layer.drawableSize = want;
     sizes_publish((int)want.width, (int)want.height, (float)b.width, (float)b.height);
@@ -692,6 +694,7 @@ void host_window_give(void *kept)
 }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_sizes(int *pw, int *ph, float *tw, float *th) { sizes_read(pw, ph, tw, th); }
+float host_display_scale(void) { return atomic_load_explicit(&s_scale, memory_order_relaxed); }
 
 void host_window_points(float *w, float *h)
 {

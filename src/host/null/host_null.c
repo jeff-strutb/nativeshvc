@@ -101,6 +101,7 @@ void *host_window_take(int *w, int *h)
 void host_window_give(void *kept) { (void)kept; }
 void host_window_watch(void (*changed)(void)) { (void)changed; }
 void host_window_points(float *w, float *h) { *w = *h = 0; }
+float host_display_scale(void) { return 1; }
 void host_window_sizes(int *pw, int *ph, float *tw, float *th) { *pw = *ph = 0; *tw = *th = 0; }
 #ifdef _WIN32
 void *host_win32_instance(void) { return NULL; }

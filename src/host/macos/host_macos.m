@@ -178,6 +178,7 @@ static void watch_tell(void)
 static _Atomic uint32_t s_seq;
 static _Atomic int s_pw, s_ph;
 static _Atomic float s_ptw, s_pth;
+static _Atomic float s_scale = 1;     /* the window's backingScaleFactor, published with the sizes */
 
 static void sizes_publish(int pw, int ph, float tw, float th)
 {
@@ -225,6 +226,7 @@ static void layer_publish(void)
         [s_layer setContentsScale:sc];
     if (want.width >= 1 && want.height >= 1 && !CGSizeEqualToSize([s_layer drawableSize], want))
         [s_layer setDrawableSize:want];
+    atomic_store_explicit(&s_scale, sc > 0 ? (float)sc : 1.0f, memory_order_relaxed);
     sizes_publish((int)want.width, (int)want.height, (float)b.width, (float)b.height);
     watch_tell();
 }
@@ -510,6 +512,7 @@ void host_window_give(void *kept) { (void)kept; }
 void host_window_watch(void (*changed)(void)) { atomic_store(&s_watch, changed); }
 void host_window_pixels(int *w, int *h) { host_metal_layer_fit(w, h); }
 void host_window_sizes(int *pw, int *ph, float *tw, float *th) { sizes_read(pw, ph, tw, th); }
+float host_display_scale(void) { return atomic_load_explicit(&s_scale, memory_order_relaxed); }
 
 void host_window_points(float *w, float *h)
 {

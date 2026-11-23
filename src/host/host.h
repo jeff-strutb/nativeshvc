@@ -120,6 +120,9 @@ void host_window_pixels(int *w, int *h);
 void host_window_points(float *w, float *h);
 /* both at once, from the same resize: for anything that relates the two */
 void host_window_sizes(int *pw, int *ph, float *tw, float *th);
+/* (6.9) the window's pixels per system point on the display it is on now, as
+   the system gives it (1 where it has no such idea; any thread) */
+float host_display_scale(void);
 /* full screen: the window filling the display it is on, or a window.
    host_full_screen_switch: 1 when the window can be switched (the desktop
    hosts; iOS and Android, where the system decides, and host/null 0), from
