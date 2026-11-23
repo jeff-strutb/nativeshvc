@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 12
+#define NSHVC_VERSION_MINOR 13
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -223,6 +223,8 @@ typedef struct nshvc_screen {
     int32_t show_left, show_right, show_top, show_bottom;
                                 /* the part of the screen shown, in its columns and rows, the rest black;
                                    right 0 means the whole width, bottom 0 the whole height */
+    uint8_t brightness_sub;     /* (6.13) 256ths of the way from `brightness` to the level above, the console's own
+                                   dimmed colours mixed: 0 is the console's picture; nothing at brightness 15 */
 } nshvc_screen;
 #define NSHVC_ASPECT_FILL (-1.0f)
 void nshvc_screen_set(const nshvc_screen *s);
@@ -459,6 +461,7 @@ typedef enum {
     NSHVC_LINE_SPRITES_MAIN = 96, NSHVC_LINE_SPRITES_SUB = 97,
     NSHVC_LINE_SCROLL_X_SUB = 100,  /* (6.10) + layer: nshvc_layer.scroll_x_sub from the line */
     NSHVC_LINE_SCROLL_Y_SUB = 104,  /* (6.10) + layer: nshvc_layer.scroll_y_sub from the line */
+    NSHVC_LINE_BRIGHTNESS_SUB = 108,    /* (6.13) nshvc_screen.brightness_sub from the line */
     NSHVC_LINE_PALETTE = 256        /* + entry: a 15-bit BGR colour, as nshvc_palette_write's; entries past 255 too (6.8) */
 } nshvc_line_field;
 void nshvc_line(uint32_t line, nshvc_line_field field, int32_t value);
