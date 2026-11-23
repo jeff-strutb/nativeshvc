@@ -984,6 +984,10 @@ static void apply(eng_state *n, uint32_t *pal, int field, int32_t v, uint32_t li
             n->w.mask_main[field - NSHVC_LINE_MASK_MAIN] = (uint8_t)v;
         } else if (field >= NSHVC_LINE_MASK_SUB && field < NSHVC_LINE_MASK_SUB + 5) {
             n->w.mask_sub[field - NSHVC_LINE_MASK_SUB] = (uint8_t)v;
+        } else if (field >= NSHVC_LINE_SCROLL_X_SUB && field < NSHVC_LINE_SCROLL_X_SUB + 4) {
+            n->l[field - NSHVC_LINE_SCROLL_X_SUB].scroll_x_sub = (int16_t)v;
+        } else if (field >= NSHVC_LINE_SCROLL_Y_SUB && field < NSHVC_LINE_SCROLL_Y_SUB + 4) {
+            n->l[field - NSHVC_LINE_SCROLL_Y_SUB].scroll_y_sub = (int16_t)v;
         } else {
             eng_report("nshvc_line", "field %d on line %u", field, line);
         }

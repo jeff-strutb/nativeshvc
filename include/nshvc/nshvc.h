@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 9
+#define NSHVC_VERSION_MINOR 10
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -257,6 +257,11 @@ typedef struct nshvc_layer {
     uint8_t     direct_colour;
     nshvc_image image;
     nshvc_draw_list draw_list;
+    int16_t     scroll_x_sub, scroll_y_sub;     /* (6.10) 256ths of a pixel added to the scroll where the layer is drawn, so
+                                                   a scroll can stand between pixels (a game drawing between its updates);
+                                                   0 is the whole scroll alone. Offset-per-tile, mosaic and the lines'
+                                                   whole scrolls keep to the whole scroll; under mosaic the fraction is not
+                                                   drawn */
 } nshvc_layer;
 void nshvc_mode_set(uint8_t mode, uint8_t bg3_priority, uint8_t hires);
 void nshvc_layer_set(uint8_t layer, const nshvc_layer *l);
@@ -267,6 +272,8 @@ typedef struct nshvc_mode7 {
     uint8_t outside;                /* 0 repeat, 1 transparent, 2 tile 0 */
     uint8_t flip_x, flip_y, extbg;
     nshvc_tiles tiles; nshvc_map map;
+    int16_t scroll_x_sub, scroll_y_sub;     /* (6.10) 256ths of a pixel added to the scroll, through the matrix, after the
+                                               console's rounding of the whole scroll's products; 0 the whole scroll alone */
 } nshvc_mode7;
 void nshvc_mode7_set(const nshvc_mode7 *m);
 
@@ -279,6 +286,9 @@ typedef struct nshvc_sprite {
                                        whose entries were never written reads as an unwritten entry does, black */
     uint8_t priority, hflip, vflip; /* vflip of a sprite twice as high as wide (the SNES's 16 x 32 and 32 x 64)
                                        is the SNES's: each square half flips in place, the halves keep their places */
+    int16_t x_sub, y_sub;           /* (6.10) 256ths of a pixel added to x and y where the sprite is drawn (a game drawing
+                                       between its updates); the line rules (sprites and tiles a line, the wrap) and the
+                                       rows a line strip holds go by the whole x and y. 0: the whole place alone */
 } nshvc_sprite;
 void nshvc_sprites_set(const nshvc_sprite *list, uint32_t count, uint32_t first_priority);
 /* whether the sprites are on the main and the sub screen; until set, main only */
@@ -440,6 +450,8 @@ typedef enum {
     NSHVC_LINE_MASK_MAIN = 80,      /* + BG1-4, sprites */
     NSHVC_LINE_MASK_SUB = 88,       /* + BG1-4, sprites */
     NSHVC_LINE_SPRITES_MAIN = 96, NSHVC_LINE_SPRITES_SUB = 97,
+    NSHVC_LINE_SCROLL_X_SUB = 100,  /* (6.10) + layer: nshvc_layer.scroll_x_sub from the line */
+    NSHVC_LINE_SCROLL_Y_SUB = 104,  /* (6.10) + layer: nshvc_layer.scroll_y_sub from the line */
     NSHVC_LINE_PALETTE = 256        /* + entry: a 15-bit BGR colour, as nshvc_palette_write's; entries past 255 too (6.8) */
 } nshvc_line_field;
 void nshvc_line(uint32_t line, nshvc_line_field field, int32_t value);
