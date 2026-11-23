@@ -1,9 +1,11 @@
 /* host_posix.c: time and files for POSIX systems (macOS, Linux, iOS). */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -34,6 +36,85 @@ void host_thread_interactive(void)
 }
 
 int host_mkdir(const char *path) { return mkdir(path, 0755) == 0 || errno == EEXIST; }
+
+/* ---- the save folder: the game's own, or the system's (host.h) ---------------------- */
+static int skip_carry(const char *name)
+{
+    size_t n = strlen(name);
+    return name[0] == '.' || !strcmp(name, "log.txt") || (n >= 4 && !strcmp(name + n - 4, ".new"));
+}
+
+static int copy_file(const char *from, const char *to)
+{
+    char tmp[1500];
+    char buf[8192];
+    size_t k;
+    FILE *in, *out;
+    int ok = 1;
+    snprintf(tmp, sizeof tmp, "%s.new", to);
+    if (!(in = fopen(from, "rb")))
+        return 0;
+    if (!(out = fopen(tmp, "wb"))) {
+        fclose(in);
+        return 0;
+    }
+    while ((k = fread(buf, 1, sizeof buf, in)) > 0)
+        if (fwrite(buf, 1, k, out) != k)
+            ok = 0;
+    ok = ok && !ferror(in);
+    fclose(in);
+    ok = (fclose(out) == 0) && ok;
+    if (ok)
+        ok = rename(tmp, to) == 0;
+    if (!ok)
+        remove(tmp);
+    return ok;
+}
+
+int host_save_place(const char *want, const char *old, char *out, size_t n, char *note, size_t note_n)
+{
+    char probe[1500], mark[1500], from[1500], to[1500];
+    FILE *f;
+    DIR *d;
+    struct dirent *e;
+    struct stat st;
+    int copied = 0, failed = 0;
+    note[0] = 0;
+    snprintf(probe, sizeof probe, "%s/.write-test", want);
+    snprintf(mark, sizeof mark, "%s/.carried-over", want);
+    if (!host_mkdir(want) || !(f = fopen(probe, "wb"))) {
+        snprintf(note, note_n, "nativeshvc: cannot write in %s, so saves stay in %s", want, old);
+        snprintf(out, n, "%s", old);
+        host_mkdir(old);
+        return 0;
+    }
+    fclose(f);
+    remove(probe);
+    snprintf(out, n, "%s", want);
+    if (stat(mark, &st) == 0)
+        return 1;
+    if ((d = opendir(old))) {
+        while ((e = readdir(d))) {
+            if (skip_carry(e->d_name))
+                continue;
+            snprintf(from, sizeof from, "%s/%s", old, e->d_name);
+            snprintf(to, sizeof to, "%s/%s", want, e->d_name);
+            if (stat(from, &st) != 0 || !S_ISREG(st.st_mode) || stat(to, &st) == 0)
+                continue;
+            if (copy_file(from, to))
+                copied++;
+            else
+                failed++;
+        }
+        closedir(d);
+    }
+    if (!failed && (f = fopen(mark, "wb")))
+        fclose(f);
+    if (copied || failed)
+        snprintf(note, note_n, "nativeshvc: carried %d save file(s) from %s into %s%s", copied, old, want,
+                 failed ? " (some could not be copied; tried again next start)" : "");
+    return 1;
+}
 
 /* ---- threads ---- */
 struct host_thread {

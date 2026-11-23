@@ -11,7 +11,7 @@ engine supports.
 **Contact:** [retro@strutb.com](mailto:retro@strutb.com)\
 **Licence:** AGPL-3.0
 
-The engine is at API 6.9. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
+The engine is at API 6.12. `docs/native-engine-plan.md` opens with what has and has not been run on each platform.
 
 ![How a game and nativeshvc fit together: the game calls the API and the engine calls the game; the engine's parts; the picture's layers and how each picture reaches the window through the renderer and the host](docs/architecture.svg)
 
@@ -50,7 +50,7 @@ The engine is at API 6.9. `docs/native-engine-plan.md` opens with what has and h
   on the audio thread.
 - **Input.** Every keyboard key, controller button, stick and trigger, the pointer and every finger on a touch screen,
   each as the device has it. The game decides what each one does.
-- **Saves and game data.** Native files, written off the game's thread, and packaged assets.
+- **Saves and game data.** Native files, written off the game's thread, in the system's save folder or, when the game asks, in its own folder so a copied game carries its records; and packaged assets.
 - **Profiling and inspection.** Time per thread and per zone, and each picture's state on request.
 
 ## Sharp at any window size

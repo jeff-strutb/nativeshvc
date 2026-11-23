@@ -1,5 +1,5 @@
-/* files.c: saves and game data. Saves are the game's own files in the system's
- * save folder, written off the game's thread; a read waits for earlier writes
+/* files.c: saves and game data. Saves are the game's own files in its save folder (the
+ * system's, or the game's own where it asked and the host can), written off the game's thread; a read waits for earlier writes
  * of the same run. Game data is read from the game's package. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,6 +158,11 @@ int nshvc_save_read(const char *name, void *data, uint32_t size)
     n = fread(data, 1, size, f);
     fclose(f);
     return (int)n;
+}
+
+int nshvc_save_in_game_folder(void)
+{
+    return eng_on("nshvc_save_in_game_folder", ENG_GAME) ? host_save_in_game_folder() : 0;
 }
 
 /* ---- game data ---- */

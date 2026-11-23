@@ -35,6 +35,10 @@
 
 static char s_save[2 * MAX_PATH];
 static const char *s_app_dir = "Game", *s_app_title = "Game";
+static int s_want_in_game, s_in_game;
+
+void host_set_save_in_game_folder(int on) { s_want_in_game = on; }
+int host_save_in_game_folder(void) { return s_in_game; }
 
 void host_set_app_name(const char *dir, const char *title)
 {
@@ -71,7 +75,7 @@ static void log_open(void)
 void host_init(int argc, char **argv)
 {
     const char *e;
-    char here[MAX_PATH];
+    char here[MAX_PATH], note[2 * MAX_PATH + 256] = "";
     (void)argc;
     (void)argv;
     exe_dir(here, sizeof here);
@@ -79,14 +83,22 @@ void host_init(int argc, char **argv)
     if (e) {
         snprintf(s_save, sizeof s_save, "%s", e);
     } else {
-        char app[MAX_PATH];
+        char app[MAX_PATH], old[2 * MAX_PATH], want[2 * MAX_PATH];
         if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, app) == S_OK)
-            snprintf(s_save, sizeof s_save, "%s\\%s", app, s_app_dir);
+            snprintf(old, sizeof old, "%s\\%s", app, s_app_dir);
         else
-            snprintf(s_save, sizeof s_save, "%s\\save", here);
+            snprintf(old, sizeof old, "%s\\save", here);
+        /* (6.12) the program's own folder when the game asked and it can be written, else the system's */
+        snprintf(want, sizeof want, "%s\\save", here);
+        if (s_want_in_game && strcmp(want, old))
+            s_in_game = host_save_place(want, old, s_save, sizeof s_save, note, sizeof note);
+        else
+            snprintf(s_save, sizeof s_save, "%s", old);
     }
     host_mkdir(s_save);
     log_open();
+    if (note[0])
+        fprintf(stderr, "%s\n", note);
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
 }
 
@@ -568,33 +580,49 @@ void host_audio_close(void)
     s_rc = NULL;
 }
 
-/* ---- game controllers: XInput -------------------------------------------------- */
+/* ---- game controllers: XInput, and the others through pad_wgi.c ------------------- */
+int pad_wgi_read(int index, host_pad *o);
+
+static float pad_axis(int v)
+{
+    float f = v / 32767.0f;
+    return f < -1 ? -1 : f > 1 ? 1 : f;
+}
+
+/* engine controller `index` is XInput slot `index` (0-3), so a pad keeps its
+   index while others come and go; 4-7 are the other controllers (pad_wgi.c). A slot is polled once per call; one with no
+   pad is looked at again about once a second, as XInputGetState on an empty
+   slot is slow */
 int host_pad_read(int index, host_pad *o)
 {
+    static int slot_on[XUSER_MAX_COUNT];
+    static ULONGLONG slot_probe[XUSER_MAX_COUNT];
     XINPUT_STATE st;
     const XINPUT_GAMEPAD *g;
     unsigned b = 0;
-    DWORD i;
-    int n = 0;
     memset(o, 0, sizeof *o);
-    for (i = 0; i < XUSER_MAX_COUNT; i++)
-        if (XInputGetState(i, &st) == ERROR_SUCCESS && n++ == index)
-            break;
-    if (i == XUSER_MAX_COUNT)
+    if (index >= XUSER_MAX_COUNT)       /* the controllers that are not XInput's follow its slots */
+        return pad_wgi_read(index - XUSER_MAX_COUNT, o);
+    if (index < 0)
+        return 0;
+    if (!slot_on[index]) {
+        ULONGLONG now = GetTickCount64();
+        if (slot_probe[index] && now - slot_probe[index] < 1000)
+            return 0;
+        slot_probe[index] = now;
+    }
+    slot_on[index] = XInputGetState((DWORD)index, &st) == ERROR_SUCCESS;
+    if (!slot_on[index])
         return 0;
     g = &st.Gamepad;
     /* XInput's controllers are Xbox controllers (their names: the front
        end's, by the style) */
     o->style = HOST_PAD_XBOX;
     snprintf(o->name, sizeof o->name, "Xbox Controller");
-    o->x = g->sThumbLX / 32767.0f;
-    o->y = -g->sThumbLY / 32767.0f;
-    if (o->x < -1) o->x = -1;
-    if (o->y < -1) o->y = -1;
-    o->rx = g->sThumbRX / 32767.0f;
-    o->ry = -g->sThumbRY / 32767.0f;
-    if (o->rx < -1) o->rx = -1;
-    if (o->ry > 1) o->ry = 1;
+    o->x = pad_axis(g->sThumbLX);
+    o->y = -pad_axis(g->sThumbLY);
+    o->rx = pad_axis(g->sThumbRX);
+    o->ry = -pad_axis(g->sThumbRY);
     o->lt = g->bLeftTrigger / 255.0f;
     o->rt = g->bRightTrigger / 255.0f;
     if (g->wButtons & XINPUT_GAMEPAD_A) b |= 1u << 0;

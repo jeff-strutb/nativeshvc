@@ -558,6 +558,7 @@ int nshvc_run(const nshvc_game *g, int argc, char **argv)
     }
 
     host_set_app_name(game.id, game.title ? game.title : game.id);
+    host_set_save_in_game_folder(game.save_in_game_folder);
     host_init(argc, argv);
     hs_lock = host_mutex_new();
     game_wake = host_cond_new();

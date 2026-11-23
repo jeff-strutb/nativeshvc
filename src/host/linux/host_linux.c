@@ -1,6 +1,6 @@
 /*
- * host_linux.c: a window on X11, keyboard and mouse, joysticks through
- * /dev/input/js*, and sound through ALSA. X11 and ALSA are loaded at run time,
+ * host_linux.c: a window on X11, keyboard and mouse, controllers through
+ * /dev/input/event* (pad_evdev.c), and sound through ALSA. X11 and ALSA are loaded at run time,
  * so a game builds without their development packages and a machine without
  * them reports it. Key codes are mapped to Windows virtual key codes, as on
  * every host.
@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -88,6 +89,7 @@ static _Atomic float scale_now = 1;     /* (6.9) Xft.dpi over 96, from the root 
 static Atom wm_resources;
 static void scale_read(void);
 static char app_dir[128] = "game", app_title[256] = "nativeshvc", save_dir[1024], res_dir[1024];
+static int want_in_game, in_game;     /* (6.12) the save folder in the program's own folder: asked, and got */
 
 static int load_x11(void)
 {
@@ -113,25 +115,61 @@ void host_set_app_name(const char *dir, const char *title)
         snprintf(app_title, sizeof app_title, "%s", title);
 }
 
+void host_set_save_in_game_folder(int on) { want_in_game = on; }
+int host_save_in_game_folder(void) { return in_game; }
+
 void host_init(int argc, char **argv)
 {
     const char *e = getenv("PORT_SAVEDIR"), *home = getenv("HOME"), *xdg = getenv("XDG_DATA_HOME");
+    char exe[1024], note[2048] = "";
     ssize_t n;
     (void)argc;
     (void)argv;
+    /* the folder the program is in, whatever PORT_RESDIR says of the data's */
+    if ((n = readlink("/proc/self/exe", exe, sizeof exe - 1)) > 0) {
+        char *s;
+        exe[n] = 0;
+        if ((s = strrchr(exe, '/')))
+            *s = 0;
+    } else {
+        snprintf(exe, sizeof exe, ".");
+    }
     if (e) {
         snprintf(save_dir, sizeof save_dir, "%s", e);
-    } else if (xdg) {
-        snprintf(save_dir, sizeof save_dir, "%s/%s", xdg, app_dir);
     } else {
-        char base[900];
-        snprintf(base, sizeof base, "%s/.local", home ? home : ".");
-        host_mkdir(base);
-        snprintf(base, sizeof base, "%s/.local/share", home ? home : ".");
-        host_mkdir(base);
-        snprintf(save_dir, sizeof save_dir, "%s/%s", base, app_dir);
+        char old[1024];
+        if (xdg) {
+            snprintf(old, sizeof old, "%s/%s", xdg, app_dir);
+        } else {
+            char base[900];
+            snprintf(base, sizeof base, "%s/.local", home ? home : ".");
+            if (!want_in_game)
+                host_mkdir(base);
+            snprintf(base, sizeof base, "%s/.local/share", home ? home : ".");
+            if (!want_in_game)
+                host_mkdir(base);
+            snprintf(old, sizeof old, "%s/%s", base, app_dir);
+        }
+        if (want_in_game) {
+            char want[1100];
+            snprintf(want, sizeof want, "%s/save", exe);
+            in_game = host_save_place(want, old, save_dir, sizeof save_dir, note, sizeof note);
+            if (!in_game) {
+                /* the system's folder, which may not exist yet: its parents */
+                char *s;
+                for (s = strchr(save_dir + 1, '/'); s; s = strchr(s + 1, '/')) {
+                    *s = 0;
+                    host_mkdir(save_dir);
+                    *s = '/';
+                }
+            }
+        } else {
+            snprintf(save_dir, sizeof save_dir, "%s", old);
+        }
     }
     host_mkdir(save_dir);
+    if (note[0])
+        fprintf(stderr, "%s\n", note);
     e = getenv("PORT_RESDIR");
     if (e) {
         snprintf(res_dir, sizeof res_dir, "%s", e);
@@ -553,67 +591,7 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
     return 0;
 }
 
-/* ---- joysticks, by hand from <linux/joystick.h> ---- */
-struct js_event { uint32_t time; int16_t value; uint8_t type, number; };
-#define JS_BUTTON 1
-#define JS_AXIS 2
-#define JSIOCGNAME(len) (((2U) << 30) | ((len) << 16) | ('j' << 8) | 0x13)
-
-static struct { int fd, tried; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; } joy[8];
-
-int host_pad_read(int i, host_pad *p)
-{
-    struct js_event e;
-    memset(p, 0, sizeof *p);
-    if (i < 0 || i >= 8)
-        return 0;
-    if (!joy[i].tried) {
-        char path[32];
-        joy[i].tried = 1;
-        snprintf(path, sizeof path, "/dev/input/js%d", i);
-        joy[i].fd = open(path, O_RDONLY | O_NONBLOCK) + 1;
-        if (joy[i].fd)
-            ioctl(joy[i].fd - 1, JSIOCGNAME(sizeof joy[i].name), joy[i].name);
-    }
-    if (!joy[i].fd)
-        return 0;
-    while (read(joy[i].fd - 1, &e, sizeof e) == (ssize_t)sizeof e) {
-        int t = e.type & 0x7F;
-        if (t == JS_BUTTON && e.number < 12) {
-            /* the kernel's order for the common layout, to the XInput layout */
-            static const int8_t map[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 7 };
-            if (e.value)
-                joy[i].buttons |= 1u << map[e.number];
-            else
-                joy[i].buttons &= ~(1u << map[e.number]);
-        } else if (t == JS_AXIS) {
-            float v = (float)e.value / 32767.0f;
-            if (e.number == 0) joy[i].x = v;
-            if (e.number == 1) joy[i].y = v;
-            /* the common layout's right stick and triggers (a trigger at rest reads -1) */
-            if (e.number == 2) joy[i].lt = (v + 1.0f) * 0.5f;
-            if (e.number == 3) joy[i].rx = v;
-            if (e.number == 4) joy[i].ry = v;
-            if (e.number == 5) joy[i].rt = (v + 1.0f) * 0.5f;
-            if (e.number == 6) joy[i].hx = v;
-            if (e.number == 7) joy[i].hy = v;
-        }
-    }
-    p->x = joy[i].x;
-    p->y = joy[i].y;
-    p->rx = joy[i].rx;
-    p->ry = joy[i].ry;
-    p->lt = joy[i].lt < 0 ? 0 : joy[i].lt > 1 ? 1 : joy[i].lt;
-    p->rt = joy[i].rt < 0 ? 0 : joy[i].rt > 1 ? 1 : joy[i].rt;
-    p->buttons = joy[i].buttons;
-    if (joy[i].hy < -0.5f) p->buttons |= 1u << 12;
-    if (joy[i].hx > 0.5f) p->buttons |= 1u << 13;
-    if (joy[i].hy > 0.5f) p->buttons |= 1u << 14;
-    if (joy[i].hx < -0.5f) p->buttons |= 1u << 15;
-    p->style = HOST_PAD_GENERIC;
-    snprintf(p->name, sizeof p->name, "%s", joy[i].name);
-    return 1;
-}
+/* ---- controllers: pad_evdev.c ---- */
 
 /* ---- ALSA, loaded at run time ---- */
 static int (*p_open)(void **, const char *, int, int);

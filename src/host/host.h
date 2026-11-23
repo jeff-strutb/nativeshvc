@@ -57,6 +57,24 @@ void         host_cond_wait(host_cond *c, host_mutex *m, uint64_t timeout_ns);
 int         host_mkdir(const char *path);
 /* where the player's saves and settings go (made by host_init) */
 const char *host_save_dir(void);
+/* (6.12) before host_init: the game asks for its saves in its own folder
+ * (nshvc_game.save_in_game_folder). The desktop hosts then use the folder the
+ * program is in (Windows, Linux: its `save` folder; macOS: `<id>-save` beside
+ * the .app, or `save` beside a bare executable) when it can be written, and
+ * the system's save folder when it cannot. iOS, Android and host/null keep
+ * their own folder and ignore this. PORT_SAVEDIR still overrides both. */
+void        host_set_save_in_game_folder(int on);
+/* 1 when host_save_dir is in the game's folder, 0 when it is the system's
+ * (not asked for, not possible on this host, or not writable) */
+int         host_save_in_game_folder(void);
+/* the choosing, shared by the desktop hosts (host/posix, host/win32): `want`
+ * is the folder in the game's folder, `old` the system's save folder. Makes
+ * `want` and tries to write in it; when that works, carries the files of
+ * `old` into it once (never overwriting, never deleting, never the log or a
+ * half-written .new file) and puts `want` in out, returning 1; when it does
+ * not, puts `old` in out (made) and returns 0. note gets one line saying what
+ * happened that a log should keep ("" when nothing). */
+int         host_save_place(const char *want, const char *old, char *out, size_t n, char *note, size_t note_n);
 /* where the program's own files are: a macOS app's Resources, else the
  * executable's folder (PORT_RESDIR overrides) */
 const char *host_resource_dir(void);
@@ -148,7 +166,9 @@ int  host_audio_open(int rate, host_audio_fn fn, void *user);
 void host_audio_close(void);
 
 /* ---- game controllers ------------------------------------------------------------- */
-/* game controller `index` (0 the first), in an XInput pad's layout:
+/* game controller `index` (0 the first), in an XInput pad's layout. A controller
+ * keeps its index while it stays connected (others coming and going do not
+ * renumber it) and the index is free for the next one when it disconnects:
  *   x, y     left stick, -1..1, y positive downward
  *   rx, ry   right stick, the same
  *   lt, rt   the triggers, 0..1
@@ -162,6 +182,7 @@ enum { HOST_PAD_GENERIC, HOST_PAD_XBOX, HOST_PAD_PLAYSTATION, HOST_PAD_NINTENDO 
 typedef struct host_pad {
     float    x, y, rx, ry, lt, rt;
     unsigned buttons;
+    uint64_t id;      /* the device's identity, the same whenever it is connected; 0 when the host cannot tell */
     int      style;
     char     name[64];
     char     label[16][24];

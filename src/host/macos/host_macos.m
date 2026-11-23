@@ -23,6 +23,10 @@
 
 static char s_save[1024];
 static const char *s_app_dir = "Game", *s_app_title = "Game";
+static int s_want_in_game, s_in_game;
+
+void host_set_save_in_game_folder(int on) { s_want_in_game = on; }
+int host_save_in_game_folder(void) { return s_in_game; }
 
 void host_set_app_name(const char *dir, const char *title)
 {
@@ -65,7 +69,25 @@ void host_init(int argc, char **argv)
         } else {
             NSString *base = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,
                                                                  NSUserDomainMask, YES) firstObject];
-            snprintf(s_save, sizeof s_save, "%s/%s", base ? [base fileSystemRepresentation] : ".", s_app_dir);
+            char old[1024], want[1100], note[2048] = "";
+            snprintf(old, sizeof old, "%s/%s", base ? [base fileSystemRepresentation] : ".", s_app_dir);
+            if (s_want_in_game) {
+                /* (6.12) beside the .app (not inside it: writing there breaks its code signature), as `<id>-save`;
+                   a bare executable has its own folder's `save`. Where that cannot be written (a disk image, a
+                   quarantined app Gatekeeper runs from a read-only copy, an admin-only folder) the system's folder
+                   stays, so a record is never lost. */
+                NSString *bundle = [[NSBundle mainBundle] bundlePath];
+                NSString *exe = [[NSBundle mainBundle] executablePath];
+                if ([bundle hasSuffix:@".app"])
+                    snprintf(want, sizeof want, "%s/%s-save", [[bundle stringByDeletingLastPathComponent] fileSystemRepresentation], s_app_dir);
+                else
+                    snprintf(want, sizeof want, "%s/save", exe ? [[exe stringByDeletingLastPathComponent] fileSystemRepresentation] : ".");
+                s_in_game = host_save_place(want, old, s_save, sizeof s_save, note, sizeof note);
+                if (note[0])
+                    fprintf(stderr, "%s\n", note);
+            } else {
+                snprintf(s_save, sizeof s_save, "%s", old);
+            }
         }
         host_mkdir(s_save);
     }
@@ -639,9 +661,39 @@ static void host_pad_identify(GCController *c, GCExtendedGamepad *g, host_pad *o
             snprintf(o->label[i], sizeof o->label[i], "%s", [el[i].localizedName UTF8String]);
 }
 
+#define PAD_SLOTS 8
+/* a controller keeps its index from when it is first seen until it disconnects:
+   GCController.controllers has no stable order, so indices are not taken from
+   it. A newly seen controller takes the first free index. */
+static GCController *host_pad_slot(int index)
+{
+    static GCController *slots[PAD_SLOTS];
+    int k;
+    @synchronized([GCController class]) {
+        NSArray<GCController *> *all = GCController.controllers;
+        for (k = 0; k < PAD_SLOTS; k++)
+            if (slots[k] && ![all containsObject:slots[k]])
+                slots[k] = nil;
+        for (GCController *c in all) {
+            int have = 0, free_k = -1;
+            if (!c.extendedGamepad)
+                continue;
+            for (k = 0; k < PAD_SLOTS; k++) {
+                if (slots[k] == c)
+                    have = 1;
+                else if (!slots[k] && free_k < 0)
+                    free_k = k;
+            }
+            if (!have && free_k >= 0)
+                slots[free_k] = c;
+        }
+        return slots[index];
+    }
+}
+
 /* any controller macOS knows (Xbox, PlayStation, MFi, Switch Pro) through
- * GameController.framework, in the order macOS lists those with a full
- * gamepad profile. One plugged in while the game runs is picked up at the
+ * GameController.framework, with a full gamepad profile, each at the
+ * index it first appeared at. One plugged in while the game runs is picked up at the
  * next read. */
 int host_pad_read(int index, host_pad *o)
 {
@@ -649,13 +701,10 @@ int host_pad_read(int index, host_pad *o)
         GCController *c = nil;
         GCExtendedGamepad *g;
         unsigned b = 0;
-        int n = 0;
         memset(o, 0, sizeof *o);
-        for (GCController *k in GCController.controllers)
-            if (k.extendedGamepad && n++ == index) {
-                c = k;
-                break;
-            }
+        if (index < 0 || index >= PAD_SLOTS)
+            return 0;
+        c = host_pad_slot(index);
         if (!c || !(g = c.extendedGamepad))
             return 0;
         host_pad_identify(c, g, o);

@@ -5,6 +5,7 @@
 #include <timeapi.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "host.h"
 
@@ -36,6 +37,56 @@ void host_thread_interactive(void) { SetThreadPriority(GetCurrentThread(), THREA
 int host_mkdir(const char *path)
 {
     return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+/* ---- the save folder: the game's own, or the system's (host.h) ---------------------- */
+int host_save_place(const char *want, const char *old, char *out, size_t n, char *note, size_t note_n)
+{
+    char probe[2 * MAX_PATH + 32], mark[2 * MAX_PATH + 32], pat[2 * MAX_PATH + 8], from[2 * MAX_PATH + 8], to[2 * MAX_PATH + 8], tmp[2 * MAX_PATH + 16];
+    HANDLE h;
+    WIN32_FIND_DATAA fd;
+    int copied = 0, failed = 0;
+    note[0] = 0;
+    snprintf(probe, sizeof probe, "%s\\.write-test", want);
+    snprintf(mark, sizeof mark, "%s\\.carried-over", want);
+    if (!host_mkdir(want) ||
+        (h = CreateFileA(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL)) == INVALID_HANDLE_VALUE) {
+        snprintf(note, note_n, "nativeshvc: cannot write in %s, so saves stay in %s", want, old);
+        snprintf(out, n, "%s", old);
+        host_mkdir(old);
+        return 0;
+    }
+    CloseHandle(h);
+    snprintf(out, n, "%s", want);
+    if (GetFileAttributesA(mark) != INVALID_FILE_ATTRIBUTES)
+        return 1;
+    snprintf(pat, sizeof pat, "%s\\*", old);
+    if ((h = FindFirstFileA(pat, &fd)) != INVALID_HANDLE_VALUE) {
+        do {
+            size_t k = strlen(fd.cFileName);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY || fd.cFileName[0] == '.' || !_stricmp(fd.cFileName, "log.txt") ||
+                (k >= 4 && !_stricmp(fd.cFileName + k - 4, ".new")))
+                continue;
+            snprintf(from, sizeof from, "%s\\%s", old, fd.cFileName);
+            snprintf(to, sizeof to, "%s\\%s", want, fd.cFileName);
+            if (GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES)
+                continue;
+            snprintf(tmp, sizeof tmp, "%s.new", to);
+            if (CopyFileA(from, tmp, FALSE) && MoveFileA(tmp, to))
+                copied++;
+            else {
+                DeleteFileA(tmp);
+                failed++;
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    if (!failed && (h = CreateFileA(mark, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)) != INVALID_HANDLE_VALUE)
+        CloseHandle(h);
+    if (copied || failed)
+        snprintf(note, note_n, "nativeshvc: carried %d save file(s) from %s into %s%s", copied, old, want,
+                 failed ? " (some could not be copied; tried again next start)" : "");
+    return 1;
 }
 
 /* ---- threads ---- */
