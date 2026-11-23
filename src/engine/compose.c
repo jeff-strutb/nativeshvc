@@ -703,7 +703,8 @@ static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
     if (k == K_IMAGE)
         return p->image.id == q->image.id;
     if (p->tiles.id != q->tiles.id || p->map.id != q->map.id || (p->tile_size == 16) != (q->tile_size == 16) || p->scroll_x != q->scroll_x ||
-        p->scroll_y != q->scroll_y || p->wrap != q->wrap || p->direct_colour != q->direct_colour ||
+        p->scroll_y != q->scroll_y || p->scroll_x_sub != q->scroll_x_sub || p->scroll_y_sub != q->scroll_y_sub || p->wrap != q->wrap ||
+        p->direct_colour != q->direct_colour ||
         (p->mosaic > 1 ? p->mosaic : 1) != (q->mosaic > 1 ? q->mosaic : 1) || (p->mosaic > 1 && a->anchor[n] != b->anchor[n]))
         return 0;
     if (opt_on(a, n) != opt_on(b, n))
@@ -726,6 +727,10 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
     u->f[4][1] = (float)sys;
     u->f[4][2] = (float)(sxs * (a->scroll_x - P->ox));
     u->f[4][3] = (float)(sys * (1 - P->oy) + a->scroll_y);
+    if (!(a->mosaic > 1)) {             /* (6.10) the scroll's fraction, where the layer is drawn: not under mosaic */
+        u->f[4][2] += (float)sxs * (float)a->scroll_x_sub / 256.0f;
+        u->f[4][3] += (float)a->scroll_y_sub / 256.0f;
+    }
     u->i[1][0] = (int32_t)m->w;
     u->i[1][1] = (int32_t)m->h;
     u->i[1][2] = lhires || big ? 16 : 8;
@@ -800,16 +805,20 @@ static void emit_tiles(int v, const eng_state *s, int n, int x0, int y0, int x1,
     } else {
         int pass;
         for (pass = 0; pass < 2; pass++) {
-            int sxs, sys, offx, offy, c0, c1, rows;
+            int sxs, sys, c0, c1, rows;
+            double offx, offy;
             d = draw(pass ? P_TILES : P_TILES_SOLID, &u);
             tile_fields(u, d, s, n);
             sxs = (int)u->f[4][0];
             sys = (int)u->f[4][1];
-            offx = (int)u->f[4][2];
-            offy = (int)u->f[4][3];
-            c0 = floordiv(sxs * x0 + offx, 8);
-            c1 = floordiv(sxs * x1 + offx - 1, 8);
-            rows = opt_on(s, n) ? (sys * (y1 - y0) + 7) / 8 + 1 : floordiv(sys * y1 + offy - 1, 8) - floordiv(sys * y0 + offy, 8) + 1;
+            offx = (double)u->f[4][2];
+            offy = (double)u->f[4][3];
+            /* the chars the rectangle's layer pixels fall in: from the first pixel's to the last's; a scroll with a
+               fraction (6.10) may reach one more (whole, these are floordiv(sxs x0 + offx, 8), floordiv(sxs x1 + offx - 1, 8)) */
+            c0 = (int)floor((sxs * x0 + offx) / 8.0);
+            c1 = (int)ceil((sxs * x1 + offx) / 8.0) - 1;
+            rows = opt_on(s, n) ? (sys * (y1 - y0) + 7) / 8 + 1
+                                : (int)ceil((sys * y1 + offy) / 8.0) - 1 - (int)floor((sys * y0 + offy) / 8.0) + 1;
             u->i[0][0] = c0;
             u->i[0][2] = c1 - c0 + 1;
             u->i[0][3] = rows;
@@ -1092,7 +1101,8 @@ static int eq_m7(const Ctx *c, const eng_state *a, const eng_state *b)
     if (!on)
         return 1;
     return p->a == q->a && p->b == q->b && p->c == q->c && p->d == q->d && p->centre_x == q->centre_x && p->centre_y == q->centre_y &&
-           p->scroll_x == q->scroll_x && p->scroll_y == q->scroll_y && p->outside == q->outside && p->flip_x == q->flip_x &&
+           p->scroll_x == q->scroll_x && p->scroll_y == q->scroll_y && p->scroll_x_sub == q->scroll_x_sub &&
+           p->scroll_y_sub == q->scroll_y_sub && p->outside == q->outside && p->flip_x == q->flip_x &&
            p->flip_y == q->flip_y && p->extbg == q->extbg && p->tiles.id == q->tiles.id && p->map.id == q->map.id &&
            m7_bg1(v, a) == m7_bg1(v, b) && m7_bg2(v, a) == m7_bg2(v, b) &&
            (a->l[0].mosaic > 1 ? a->l[0].mosaic : 1) == (b->l[0].mosaic > 1 ? b->l[0].mosaic : 1) &&
@@ -1116,6 +1126,9 @@ static void m7_coeffs(const eng_state *s, int y0, double *t)
     /* the first row's origin is the console's sum, each product kept to 1/4 texel */
     ox = (double)(((a * x0) & ~63) + ((b * lineno) & ~63) + ((b * yy0) & ~63) + cx * 256);
     oy = (double)(((c * x0) & ~63) + ((d * lineno) & ~63) + ((d * yy0) & ~63) + cy * 256);
+    /* (6.10) the scroll's fraction through the matrix, past the console's rounding of the whole scroll's products */
+    ox += (a * (double)m->scroll_x_sub + b * (double)m->scroll_y_sub) / 256.0;
+    oy += (c * (double)m->scroll_x_sub + d * (double)m->scroll_y_sub) / 256.0;
     /* a screen point's place: its column from the original's left edge, down
        from the first row's top, so that a pixel covers the texels the console
        shows there; flipped, the same pixels run the other way */
@@ -1270,8 +1283,10 @@ static void emit_m7(const Ctx *c, const eng_state *s, int x0, int y0, int x1, in
 static int field;
 
 /* ---- sprites ---- */
-/* a piece of a sprite: eight words, the sprite's palette (6.8, any number) in the fifth */
-typedef struct { int32_t x0, y0, x1, y1; uint32_t pal; int32_t ly; uint32_t size, n; } Piece;
+/* a piece of a sprite: ten words, the sprite's palette (6.8, any number) in the fifth, its place's fraction in 256ths
+   (6.10) in the last two */
+typedef struct { int32_t x0, y0, x1, y1; uint32_t pal; int32_t ly; uint32_t size, n; int32_t xs, ys; } Piece;
+#define PIECE_WORDS 10
 static uint32_t ext_at;             /* the frame's words holding, for each palette version, the rows of the palette texture of its pages past entry 255 */
 typedef struct { uint32_t first, count, tiles, solid; } Run;
 static Piece *pieces;
@@ -1311,6 +1326,8 @@ static void piece_add(const nshvc_sprite *s, int r0, int k0, int k1, int cols)
     pieces = (Piece *)grow(pieces, &cap_pieces, npieces + 1, sizeof *pieces);
     p = &pieces[npieces++];
     p->x0 = s->x;
+    p->xs = s->x_sub;
+    p->ys = s->y_sub;
     p->y0 = r0;
     p->x1 = s->x + cols * 8;
     p->y1 = r0 + (k1 - k0);
@@ -1465,7 +1482,7 @@ static void sprite_pieces(void)
         }
     }
     if (npieces) {
-        pieces_at = words(npieces * 8);
+        pieces_at = words(npieces * PIECE_WORDS);
         memcpy(&F->data[pieces_at], pieces, npieces * sizeof *pieces);
         if (P->ext_pages) {
             size_t n = (size_t)P->npalettes * (size_t)P->ext_pages;
@@ -1525,7 +1542,7 @@ static void spr_group(const Ctx *c, const eng_state *s, const float *box)
         u->f[3][2] = P->obj_interlace && P->interlace ? 2.0f : 1.0f;    /* texel rows to a screen row */
         for (p = 0; p < 4; p++)
             u->f[4][p] = depth_of(zobj(s->m, p));
-        u->i[0][0] = (int32_t)(pieces_at + runs[k].first * 8);
+        u->i[0][0] = (int32_t)(pieces_at + runs[k].first * PIECE_WORDS);
         u->i[0][1] = (int32_t)t->cols;
         u->i[0][2] = (int32_t)t->tpp;
         if (t->cols) {

@@ -30,3 +30,6 @@ set_target_properties(voice_sample PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_B
 add_executable(palettes scenes/palettes.c)
 target_link_libraries(palettes PRIVATE nshvc)
 set_target_properties(palettes PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(subpixel scenes/subpixel.c)
+target_link_libraries(subpixel PRIVATE nshvc)
+set_target_properties(subpixel PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
