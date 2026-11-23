@@ -100,6 +100,9 @@ void host_shutdown(void)
 }
 
 const char *host_save_dir(void) { return s_save; }
+/* (6.12) the app's container is the only place an iOS app may write: nothing to choose */
+void host_set_save_in_game_folder(int on) { (void)on; }
+int host_save_in_game_folder(void) { return 0; }
 
 /* ---- the event queue UIKit fills and host_poll_event drains ----------------------- */
 #define QMAX 256

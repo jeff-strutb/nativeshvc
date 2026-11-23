@@ -75,6 +75,9 @@ const char *host_resource_dir(void)
 }
 
 const char *host_save_dir(void) { return s_save; }
+/* (6.12) tests keep build/<id>/save whatever a game asks */
+void host_set_save_in_game_folder(int on) { (void)on; }
+int host_save_in_game_folder(void) { return 0; }
 
 int host_window_open(int width, int height, const char *title)
 {

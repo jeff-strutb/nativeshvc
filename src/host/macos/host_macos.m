@@ -23,6 +23,10 @@
 
 static char s_save[1024];
 static const char *s_app_dir = "Game", *s_app_title = "Game";
+static int s_want_in_game, s_in_game;
+
+void host_set_save_in_game_folder(int on) { s_want_in_game = on; }
+int host_save_in_game_folder(void) { return s_in_game; }
 
 void host_set_app_name(const char *dir, const char *title)
 {
@@ -65,7 +69,25 @@ void host_init(int argc, char **argv)
         } else {
             NSString *base = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,
                                                                  NSUserDomainMask, YES) firstObject];
-            snprintf(s_save, sizeof s_save, "%s/%s", base ? [base fileSystemRepresentation] : ".", s_app_dir);
+            char old[1024], want[1100], note[2048] = "";
+            snprintf(old, sizeof old, "%s/%s", base ? [base fileSystemRepresentation] : ".", s_app_dir);
+            if (s_want_in_game) {
+                /* (6.12) beside the .app (not inside it: writing there breaks its code signature), as `<id>-save`;
+                   a bare executable has its own folder's `save`. Where that cannot be written (a disk image, a
+                   quarantined app Gatekeeper runs from a read-only copy, an admin-only folder) the system's folder
+                   stays, so a record is never lost. */
+                NSString *bundle = [[NSBundle mainBundle] bundlePath];
+                NSString *exe = [[NSBundle mainBundle] executablePath];
+                if ([bundle hasSuffix:@".app"])
+                    snprintf(want, sizeof want, "%s/%s-save", [[bundle stringByDeletingLastPathComponent] fileSystemRepresentation], s_app_dir);
+                else
+                    snprintf(want, sizeof want, "%s/save", exe ? [[exe stringByDeletingLastPathComponent] fileSystemRepresentation] : ".");
+                s_in_game = host_save_place(want, old, s_save, sizeof s_save, note, sizeof note);
+                if (note[0])
+                    fprintf(stderr, "%s\n", note);
+            } else {
+                snprintf(s_save, sizeof s_save, "%s", old);
+            }
         }
         host_mkdir(s_save);
     }

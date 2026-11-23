@@ -16,7 +16,7 @@ extern "C" {
 #endif
 
 #define NSHVC_VERSION_MAJOR 6
-#define NSHVC_VERSION_MINOR 11
+#define NSHVC_VERSION_MINOR 12
 #define NSHVC_VERSION_PATCH 0
 
 /* ---- input ------------------------------------------------------------------- */
@@ -81,6 +81,7 @@ uint32_t nshvc_text_read(char *buffer, uint32_t max);
 int  nshvc_save_write(const char *name, const void *data, uint32_t size);
 int  nshvc_save_read(const char *name, void *data, uint32_t size);      /* bytes read, or -1 */
 void nshvc_save_delete(const char *name);
+int  nshvc_save_in_game_folder(void);   /* (6.12) 1 when saves are in the game's folder now, 0 when in the system's */
 
 typedef struct nshvc_asset { uint32_t id; } nshvc_asset;
 nshvc_asset nshvc_asset_open(const char *path);                         /* id 0: not found */
@@ -107,6 +108,7 @@ typedef struct nshvc_game {
     void (*shutdown)(void);                     /* once, at exit */
     nshvc_music music;          /* the game's music code; zeroed if none */
     float window_aspect;        /* the window's shape when it opens, width over height; 0: 4:3 */
+    int   save_in_game_folder;  /* (6.12) 1: keep saves in the game's own folder where the host can (docs/api.md section 8); 0: the system's */
 } nshvc_game;
 
 /* Runs the game; returns at exit with the process's status.

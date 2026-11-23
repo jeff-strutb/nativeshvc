@@ -527,6 +527,9 @@ void host_init(int argc, char **argv)
 
 void host_shutdown(void) {}
 const char *host_save_dir(void) { return save_dir; }
+/* (6.12) the app's internal storage is the only place an Android app may write: nothing to choose */
+void host_set_save_in_game_folder(int on) { (void)on; }
+int host_save_in_game_folder(void) { return 0; }
 const char *host_resource_dir(void) { return ""; }
 int host_window_open(int width, int height, const char *title) { (void)width; (void)height; (void)title; return 1; }
 void host_window_close(void) {}

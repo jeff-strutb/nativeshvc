@@ -89,6 +89,7 @@ static _Atomic float scale_now = 1;     /* (6.9) Xft.dpi over 96, from the root 
 static Atom wm_resources;
 static void scale_read(void);
 static char app_dir[128] = "game", app_title[256] = "nativeshvc", save_dir[1024], res_dir[1024];
+static int want_in_game, in_game;     /* (6.12) the save folder in the program's own folder: asked, and got */
 
 static int load_x11(void)
 {
@@ -114,25 +115,61 @@ void host_set_app_name(const char *dir, const char *title)
         snprintf(app_title, sizeof app_title, "%s", title);
 }
 
+void host_set_save_in_game_folder(int on) { want_in_game = on; }
+int host_save_in_game_folder(void) { return in_game; }
+
 void host_init(int argc, char **argv)
 {
     const char *e = getenv("PORT_SAVEDIR"), *home = getenv("HOME"), *xdg = getenv("XDG_DATA_HOME");
+    char exe[1024], note[2048] = "";
     ssize_t n;
     (void)argc;
     (void)argv;
+    /* the folder the program is in, whatever PORT_RESDIR says of the data's */
+    if ((n = readlink("/proc/self/exe", exe, sizeof exe - 1)) > 0) {
+        char *s;
+        exe[n] = 0;
+        if ((s = strrchr(exe, '/')))
+            *s = 0;
+    } else {
+        snprintf(exe, sizeof exe, ".");
+    }
     if (e) {
         snprintf(save_dir, sizeof save_dir, "%s", e);
-    } else if (xdg) {
-        snprintf(save_dir, sizeof save_dir, "%s/%s", xdg, app_dir);
     } else {
-        char base[900];
-        snprintf(base, sizeof base, "%s/.local", home ? home : ".");
-        host_mkdir(base);
-        snprintf(base, sizeof base, "%s/.local/share", home ? home : ".");
-        host_mkdir(base);
-        snprintf(save_dir, sizeof save_dir, "%s/%s", base, app_dir);
+        char old[1024];
+        if (xdg) {
+            snprintf(old, sizeof old, "%s/%s", xdg, app_dir);
+        } else {
+            char base[900];
+            snprintf(base, sizeof base, "%s/.local", home ? home : ".");
+            if (!want_in_game)
+                host_mkdir(base);
+            snprintf(base, sizeof base, "%s/.local/share", home ? home : ".");
+            if (!want_in_game)
+                host_mkdir(base);
+            snprintf(old, sizeof old, "%s/%s", base, app_dir);
+        }
+        if (want_in_game) {
+            char want[1100];
+            snprintf(want, sizeof want, "%s/save", exe);
+            in_game = host_save_place(want, old, save_dir, sizeof save_dir, note, sizeof note);
+            if (!in_game) {
+                /* the system's folder, which may not exist yet: its parents */
+                char *s;
+                for (s = strchr(save_dir + 1, '/'); s; s = strchr(s + 1, '/')) {
+                    *s = 0;
+                    host_mkdir(save_dir);
+                    *s = '/';
+                }
+            }
+        } else {
+            snprintf(save_dir, sizeof save_dir, "%s", old);
+        }
     }
     host_mkdir(save_dir);
+    if (note[0])
+        fprintf(stderr, "%s\n", note);
     e = getenv("PORT_RESDIR");
     if (e) {
         snprintf(res_dir, sizeof res_dir, "%s", e);

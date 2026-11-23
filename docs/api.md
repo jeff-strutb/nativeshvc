@@ -27,6 +27,7 @@ typedef struct nshvc_game {
     void (*shutdown)(void);                     /* once, at exit */
     nshvc_music music;          /* the game's music code (section 6); zeroed if none */
     float window_aspect;        /* the window's shape when it opens, width over height; 0: 4:3 */
+    int   save_in_game_folder;  /* (6.12) 1: saves in the game's own folder where the host can (section 8); 0: the system's */
 } nshvc_game;
 
 int nshvc_run(const nshvc_game *game, int argc, char **argv);   /* returns at exit */
@@ -601,6 +602,7 @@ int nshvc_window_to_picture(float x, float y, int32_t *picture_x, int32_t *pictu
 int  nshvc_save_write(const char *name, const void *data, uint32_t size);   /* written off the game thread */
 int  nshvc_save_read(const char *name, void *data, uint32_t size);          /* returns bytes read, or -1 */
 void nshvc_save_delete(const char *name);
+int  nshvc_save_in_game_folder(void);   /* (6.12) 1 when saves are in the game's folder now, 0 when in the system's */
 
 nshvc_asset nshvc_asset_open(const char *path);   /* from the game's package, on every platform */
 uint32_t    nshvc_asset_read(nshvc_asset a, void *data, uint32_t size);
@@ -608,6 +610,41 @@ void        nshvc_asset_close(nshvc_asset a);
 ```
 
 What a game saves and packages, and where its data comes from, is the game's.
+
+**Where saves live** (6.12). By default in the system's save folder for the game's `id` (Application Support on macOS
+and iOS, AppData on Windows, `$XDG_DATA_HOME` or `~/.local/share` on Linux, the app's internal storage on Android). A
+game that sets `save_in_game_folder` to 1 in `nshvc_game` asks for its saves in its own folder, so that a built game
+copied to another machine or drive carries its records and settings. `nshvc_save_in_game_folder()` says which
+folder is in use, for a game that wants to tell the player. Zero, the default, is the behaviour before 6.12; the name of a save,
+its file and `nshvc_save_read`, `_write` and `_delete` are the same either way.
+
+| Host | With `save_in_game_folder` | Without |
+|---|---|---|
+| Windows | `save` beside the program | `%APPDATA%\<id>` |
+| Linux | `save` beside the program (the folder `/proc/self/exe` is in) | `$XDG_DATA_HOME/<id>` or `~/.local/share/<id>` |
+| macOS | `<id>-save` beside the `.app` (a bare executable: `save` beside it) | `~/Library/Application Support/<id>` |
+| iOS, Android | no choice: the app's container is the only place the system lets an app write, and it goes with the app's own data, so the flag is ignored and `nshvc_save_in_game_folder()` is 0 | the container |
+| headless (host/null) | ignored: `build/<id>/save`, so tests do not change | the same |
+
+- **macOS: beside the `.app`, not inside it.** Writing into the bundle changes a sealed, signed bundle: the signature
+  then fails to verify, and updates and notarised copies are replaced or flagged. Beside it, the signature is untouched
+  and the folder travels with the app when the two are copied together. Where that place cannot be written, which
+  includes a disk image, a quarantined app that Gatekeeper runs from a read-only translocated copy (until the player
+  moves it), a sandboxed app and `/Applications` for a player who is not an administrator, the fallback below applies.
+- **The fallback.** The host makes the folder and writes and removes a test file in it. If that fails (a read-only disk,
+  Program Files, a package-owned folder, an AppImage), the saves go to the system's folder, as without the flag, and the
+  host writes one line to the log saying so (stderr; `log.txt` in the save folder on Windows). Saves are never dropped
+  and the game keeps working; `nshvc_save_in_game_folder()` reads 0. A game moved between a place that can be written
+  and one that cannot shows the records of whichever folder it can use, each kept as it was left.
+- **Carrying over.** The first time the game's folder is used, the files in the system's folder are copied into it (flat
+  files only; never over a file already there; never a name beginning with a dot, `log.txt` or a half-written `.new`),
+  and the file `.carried-over` is left to say it is done, so it happens once. The originals are never deleted or
+  changed. If a copy fails the marker is not written and the next start tries again.
+- **`PORT_SAVEDIR`**, where a host has it, names the save folder outright and wins over all of this: nothing is chosen,
+  carried or reported.
+- **A packager** keeps the game's folder when it replaces a build: Windows and Linux `save` beside the program, macOS
+  `<id>-save` beside the `.app`. A rebuild or update that clears the output folder deletes the player's records. It
+  ships a game without that folder (it is made on the first start) and never ships one holding a developer's saves.
 
 ## 9. Profiling
 
@@ -628,7 +665,7 @@ readback, so a game calls it when it needs one). `--shots` writes the same. A he
 
 ## 11. Stability rules
 
-- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.11: 6.11 added `seq` and `id` to each controller in `nshvc_input`, with indices that stay with a controller while it is connected and, on Windows and Linux, the controllers beyond XInput and the xpad driver. 6.10 added places between pixels (`x_sub`, `y_sub` in `nshvc_sprite`, `scroll_x_sub`, `scroll_y_sub` in `nshvc_layer` and `nshvc_mode7`, `NSHVC_LINE_SCROLL_X_SUB`, `NSHVC_LINE_SCROLL_Y_SUB`), each 0 the place as before. 6.9 added `scale` to `nshvc_display`. 6.8 widened `nshvc_sprite.palette` to 32 bits and let the palette grow past entry 255 (`nshvc_palette_write`, `nshvc_palette_write_rgb`, `NSHVC_LINE_PALETTE` + entry), for sprite palettes 8 and up. 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
+- `NSHVC_VERSION_MAJOR`, `_MINOR` and `_PATCH` say which version a build is. This version is 6.12: 6.12 added `save_in_game_folder` in `nshvc_game` and `nshvc_save_in_game_folder` (saves in the game's own folder; section 8), 0 the system's folder as before. 6.11 added `seq` and `id` to each controller in `nshvc_input`, with indices that stay with a controller while it is connected and, on Windows and Linux, the controllers beyond XInput and the xpad driver. 6.10 added places between pixels (`x_sub`, `y_sub` in `nshvc_sprite`, `scroll_x_sub`, `scroll_y_sub` in `nshvc_layer` and `nshvc_mode7`, `NSHVC_LINE_SCROLL_X_SUB`, `NSHVC_LINE_SCROLL_Y_SUB`), each 0 the place as before. 6.9 added `scale` to `nshvc_display`. 6.8 widened `nshvc_sprite.palette` to 32 bits and let the palette grow past entry 255 (`nshvc_palette_write`, `nshvc_palette_write_rgb`, `NSHVC_LINE_PALETTE` + entry), for sprite palettes 8 and up. 6.7 added `blank_hides_sprites` in `nshvc_limits`, and fixed offset-per-tile, which was applied on lines a line change had put in a mode without it (0, 1, 3, 5, 7). 6.6 added `nshvc_voice_sample`. 6.5 added `nshvc_full_screen` and `full_screen`, `full_screen_switch` in `nshvc_display`. 6.4 added `nshvc_pixel()` to a game's shader. 6.1 added `nshvc_sprites_interlace`, 6.2 instanced meshes (`nshvc_mesh_create`, `nshvc_mesh_write`, `nshvc_draw_mesh`), 6.3 a draw list's depth state (`nshvc_draw_state_set`, `nshvc_draw_depth_own`). 6.0 draws the picture
 natively (section 3): the renderer is new, and these calls change. `nshvc_vertex` has `z` and `w`, and its `colour` is
 0xAARRGGBB, no longer a palette index; `nshvc_draw_samples` is kept, as 4.7 had it, with the cost above for a list with fewer samples than the picture's; `NSHVC_FILL_EXACT` puts vertices on the list's whole pixels; a game's shader returns alpha as
 coverage; `nshvc_picture_read` and `--shots` give the picture at the window's size. 5.0 reported each input device as itself and nothing more: `nshvc_input` lost the SNES pad, mouse and gun fields, and `nshvc_players`, the `nshvc_control_*` calls, `nshvc_source` and the engine's on-screen touch controls are gone; `pointer.dx` and `dy`, `nshvc_key_name`, `nshvc_controller_name`, `nshvc_controller_label` and `nshvc_window_to_picture` are new, and `--input` replays devices. Within 4: 4.1 added `nshvc_sprites_show` and its two line fields; 4.2 `aspect` in `nshvc_screen`; 4.3 the `show_*` fields and `window_aspect` in `nshvc_game`; 4.4 `nshvc_echo_writes`; 4.5 the devices themselves in `nshvc_input`; 4.6 controller bindings; 4.7 `nshvc_draw_samples`, and draw lists smooth at their edges by default.
@@ -687,6 +724,7 @@ coverage; `nshvc_picture_read` and `--shots` give the picture at the window's si
 | `nshvc_display`'s `scale` | The window's pixels per system point on its display, from the system's own value | 6.9 |
 | `x_sub`, `y_sub`, `scroll_x_sub`, `scroll_y_sub`, `NSHVC_LINE_SCROLL_X_SUB`, `_Y_SUB` | Places between pixels, in 256ths, for pictures drawn between updates; the console's rules by the whole place | 6.10 |
 | `nshvc_input.controller[].seq`, `.id` | Which controller is at an index: its identity and a count of changes there; indices stay with a controller while it is connected | 6.11 |
+| `save_in_game_folder`, `nshvc_save_in_game_folder` | Saves in the game's own folder, so a copied game carries its records; the system's folder is the default and the fallback | 6.12 |
 
 ### Retired, and why
 

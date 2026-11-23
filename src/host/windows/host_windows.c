@@ -35,6 +35,10 @@
 
 static char s_save[2 * MAX_PATH];
 static const char *s_app_dir = "Game", *s_app_title = "Game";
+static int s_want_in_game, s_in_game;
+
+void host_set_save_in_game_folder(int on) { s_want_in_game = on; }
+int host_save_in_game_folder(void) { return s_in_game; }
 
 void host_set_app_name(const char *dir, const char *title)
 {
@@ -71,7 +75,7 @@ static void log_open(void)
 void host_init(int argc, char **argv)
 {
     const char *e;
-    char here[MAX_PATH];
+    char here[MAX_PATH], note[2 * MAX_PATH + 256] = "";
     (void)argc;
     (void)argv;
     exe_dir(here, sizeof here);
@@ -79,14 +83,22 @@ void host_init(int argc, char **argv)
     if (e) {
         snprintf(s_save, sizeof s_save, "%s", e);
     } else {
-        char app[MAX_PATH];
+        char app[MAX_PATH], old[2 * MAX_PATH], want[2 * MAX_PATH];
         if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, app) == S_OK)
-            snprintf(s_save, sizeof s_save, "%s\\%s", app, s_app_dir);
+            snprintf(old, sizeof old, "%s\\%s", app, s_app_dir);
         else
-            snprintf(s_save, sizeof s_save, "%s\\save", here);
+            snprintf(old, sizeof old, "%s\\save", here);
+        /* (6.12) the program's own folder when the game asked and it can be written, else the system's */
+        snprintf(want, sizeof want, "%s\\save", here);
+        if (s_want_in_game && strcmp(want, old))
+            s_in_game = host_save_place(want, old, s_save, sizeof s_save, note, sizeof note);
+        else
+            snprintf(s_save, sizeof s_save, "%s", old);
     }
     host_mkdir(s_save);
     log_open();
+    if (note[0])
+        fprintf(stderr, "%s\n", note);
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
 }
 
