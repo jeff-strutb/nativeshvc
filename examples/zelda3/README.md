@@ -34,7 +34,7 @@ Move the resulting `zelda3_assets.dat` into `data/`, then from the root of this 
 tools/nshvc-build macos examples/zelda3
 ```
 
-The same command builds for `linux`, `windows`, `windows-d3d12`, `android` and `ios`. Set `ZELDA3_ASPECT=16:9` when running to use a widescreen view.
+The same command builds for `linux`, `windows` (Direct3D 12), `windows-vulkan`, `android` and `ios`. Set `ZELDA3_ASPECT=16:9` when running to use a widescreen view.
 
 ## Controls
 

@@ -71,7 +71,7 @@ and a PNG for a desktop file beside the program on Linux, and the launcher's on 
 
 Building a game with shaders needs `glslangValidator` and `spirv-cross` on the build machine, and `dxc` for D3D12; without `dxc` other builds leave the D3D12 shaders out, with a warning.
 
-Then run this, or name `ios`, `android`, `windows`, `windows-d3d12` or `linux` instead:
+Then run this, or name `ios`, `android`, `windows` (Direct3D 12), `windows-vulkan` or `linux` instead:
 
 ```bash
 tools/nshvc-build macos path/to/game

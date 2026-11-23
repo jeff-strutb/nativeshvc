@@ -1,6 +1,7 @@
 #!/bin/sh
 # nshvc-build PLATFORM GAME_DIR: builds and packages a game for a platform.
-# PLATFORM: headless | macos | ios | android | windows | windows-d3d12 | linux
+# PLATFORM: headless | macos | ios | android | windows | windows-vulkan | linux
+# windows is Direct3D 12; windows-vulkan the same host on Vulkan (windows-d3d12, the old name, is windows).
 # GAME_DIR holds the game's CMakeLists.txt, which adds the engine from
 # ${NSHVC_ROOT} (this tool sets it) and calls nshvc_game(); see docs/conversion-guide.md.
 # android needs ANDROID_HOME (the SDK, with platforms;android-35 and
@@ -17,13 +18,13 @@ case $platform in
   headless) host=null; render=none ;;
   macos) host=macos; render=metal ;;
   ios) host=ios; render=metal; extra="-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY" ;;
-  windows|windows-d3d12)
+  windows|windows-d3d12|windows-vulkan)
     host=windows
-    render=vulkan
-    [ "$platform" = windows-d3d12 ] && render=d3d12
+    render=d3d12
+    [ "$platform" = windows-vulkan ] && render=vulkan
     if [ "$(uname -s)" != "MINGW64_NT" ] && ! uname -s | grep -qi 'mingw\|msys'; then
       extra="-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres"
-      command -v brew >/dev/null && extra="$extra -DNSHVC_VULKAN_INCLUDE=$(brew --prefix)/include"
+      [ $render = vulkan ] && command -v brew >/dev/null && extra="$extra -DNSHVC_VULKAN_INCLUDE=$(brew --prefix)/include"
     fi ;;
   linux) host=linux; render=vulkan ;;
   android)

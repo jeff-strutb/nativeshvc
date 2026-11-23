@@ -88,7 +88,7 @@ the engine; [`examples/`](examples) also holds a full commercial-scale game conv
 tools/nshvc-build macos path/to/game
 ```
 
-Platforms: `headless`, `macos`, `ios`, `android`, `windows`, `windows-d3d12`, `linux`.
+Platforms: `headless`, `macos`, `ios`, `android`, `windows` (Direct3D 12), `windows-vulkan`, `linux`.
 
 Android needs `ANDROID_HOME` and `ANDROID_NDK_HOME` and produces a signed APK. Building a game with shaders needs
 `glslangValidator` and `spirv-cross` on the build machine, and `dxc` for D3D12 (other builds leave its shaders out).

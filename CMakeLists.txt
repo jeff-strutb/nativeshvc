@@ -19,7 +19,7 @@ set(NSHVC_HOST "null" CACHE STRING "the host: null, macos, ios, windows, linux, 
 if(APPLE AND NOT NSHVC_HOST STREQUAL "null")
   set(_render_default metal)
 elseif(WIN32)
-  set(_render_default vulkan)
+  set(_render_default d3d12)
 else()
   set(_render_default none)
 endif()
