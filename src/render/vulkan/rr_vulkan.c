@@ -1061,7 +1061,7 @@ static int swapchain_make(int w, int h)
     if ((uint32_t)ih < c.minImageExtent.height) ih = (int)c.minImageExtent.height;
     if ((uint32_t)ih > c.maxImageExtent.height) ih = (int)c.maxImageExtent.height;
     vkDeviceWaitIdle(dev);
-    n = c.minImageCount + 1;
+    n = c.minImageCount < 2 ? 2 : c.minImageCount;    /* the fewest the surface takes, at least two: a picture is on screen sooner */
     if (c.maxImageCount && n > c.maxImageCount)
         n = c.maxImageCount;
     sf = surface_format();

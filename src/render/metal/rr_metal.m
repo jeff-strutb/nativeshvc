@@ -14,6 +14,7 @@
  */
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -692,12 +693,61 @@ static void encode(id<MTLCommandBuffer> cb, const rr_frame *f, int ow, int oh, f
     }
 }
 
+/* What the display did with the pictures shown (from Metal's presented handler, on its own thread): the host clock's
+   time of the newest one it showed, and how many shown in a row it did not (a covered window: nothing on screen) */
+static _Atomic uint64_t presented_ns;
+static _Atomic unsigned unseen;
+#define UNSEEN_UNPACED 3
+#define DRAWABLES 2                     /* the layer's drawables (CAMetalLayer's own is 3) */                /* so many not seen in a row: the pictures are not paced by the display */
+
+/* NSHVC_DEV_PRESENT_LOG=FILE, the developer's: a line a picture shown, as the display showed it: the game update it
+   was drawn after, its between, the host clock's time it was handed to Metal and the time it was on screen (0: not
+   seen), in nanoseconds */
+static FILE *present_log;
+
+static void present_watch(id<CAMetalDrawable> dr, const rr_frame *f)
+{
+    static int known;
+    uint64_t handed = host_ticks_ns();
+    unsigned long long u = (unsigned long long)f->update;
+    double between = f->between;
+    FILE *log;
+
+    if (!known) {
+        const char *v = getenv("NSHVC_DEV_PRESENT_LOG");
+
+        known = 1;
+        if (v && *v)
+            present_log = fopen(v, "w");
+    }
+    log = present_log;
+    [dr addPresentedHandler:^(id<MTLDrawable> d) {
+        CFTimeInterval at = d.presentedTime;
+        uint64_t ns = 0;
+
+        if (at > 0) {
+            /* the handler's clock (the media time) put in the host's: their difference now */
+            ns = host_ticks_ns() - (uint64_t)((CACurrentMediaTime() - at) * 1e9);
+            atomic_store(&presented_ns, ns);
+            atomic_store(&unseen, 0);
+        } else {
+            atomic_fetch_add(&unseen, 1);
+        }
+        if (log) {
+            fprintf(log, "%llu %.4f %llu %llu\n", u, between, (unsigned long long)handed, (unsigned long long)ns);
+            fflush(log);
+        }
+    }];
+}
+
 int rr_draw(rr_frame *f)
 {
     int paced = 0;
     @autoreleasepool {
         /* the layer, held until the frame is committed (iOS lets none be drawn while the app is away) */
         CAMetalLayer *ml = windowed ? (__bridge CAMetalLayer *)host_window_take(NULL, NULL) : nil;
+        if (ml && ml.maximumDrawableCount != DRAWABLES)
+            ml.maximumDrawableCount = DRAWABLES;    /* two in flight, not three: a picture is on screen a refresh sooner */
         id<CAMetalDrawable> dr = nil;
         id<MTLCommandBuffer> cb;
         int ow = 0, oh = 0, show, window, others;
@@ -791,8 +841,10 @@ int rr_draw(rr_frame *f)
         }
         encode(cb, f, ow, oh, aspect, window, others, 0, show ? ml : nil, draw_tex, &dr);
         if (dr) {
+            present_watch(dr, f);
             [cb presentDrawable:dr];
-            paced = 1;
+            /* paced by the display, but not while it shows none of them (the loop then asks once an update) */
+            paced = atomic_load(&unseen) < UNSEEN_UNPACED;
         }
         [cb commit];
         if (windowed)

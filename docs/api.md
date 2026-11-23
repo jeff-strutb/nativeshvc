@@ -667,7 +667,14 @@ FILE`. The devices are replayed by update number (section 7), so a run repeats e
 renderer drew it, at the window's size with its overlays (headless, at the screen's size, a pixel for a pixel), read
 back from the GPU, for checks and screenshots, or for a game's own use (from `update`, `draw` or shutdown; it waits for
 a picture being drawn to finish, a picture sent and not yet drawn waits for it, the run ending or not, and it costs a
-readback, so a game calls it when it needs one). `--shots` writes the same. A headless picture is drawn only when it is read; the environment variable `RR_DRAW=1` makes a run with no window draw every picture, into a texture nothing reads, to time the drawing without a display (`RR_SIZE=WxH` sets the size).
+readback, so a game calls it when it needs one). `--shots` writes the same. A headless picture is drawn only when it is read; the environment variable `RR_DRAW=1` makes a run with no window draw every picture, into a texture nothing reads, to time the drawing without a display (`RR_SIZE=WxH` sets the size). A window's pictures wait to be shown one at a time
+behind the one on screen (Metal two drawables, Vulkan the surface's fewest images, at least two, Direct3D 12 a frame
+latency of 1 through its waitable object), so a picture is on screen about two refreshes after it is drawn; while the
+display shows none of them (a covered window: Metal's presented time 0 three times running, Direct3D 12's
+`DXGI_STATUS_OCCLUDED`) the engine draws once an update at most, as for a minimised window. `NSHVC_DEV_PRESENT_LOG=FILE`
+(Metal, Direct3D 12) writes a line a picture shown: the update it was drawn after, its between, the time it was handed
+on and the time it was on screen, in nanoseconds; `NSHVC_DEV_FRAME_LATENCY=N` (Direct3D 12) queues N in place of 1, to
+compare.
 
 ## 11. Stability rules
 
