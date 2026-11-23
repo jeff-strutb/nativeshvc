@@ -148,7 +148,9 @@ int  host_audio_open(int rate, host_audio_fn fn, void *user);
 void host_audio_close(void);
 
 /* ---- game controllers ------------------------------------------------------------- */
-/* game controller `index` (0 the first), in an XInput pad's layout:
+/* game controller `index` (0 the first), in an XInput pad's layout. A controller
+ * keeps its index while it stays connected (others coming and going do not
+ * renumber it) and the index is free for the next one when it disconnects:
  *   x, y     left stick, -1..1, y positive downward
  *   rx, ry   right stick, the same
  *   lt, rt   the triggers, 0..1

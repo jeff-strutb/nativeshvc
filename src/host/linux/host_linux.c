@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -558,26 +559,85 @@ struct js_event { uint32_t time; int16_t value; uint8_t type, number; };
 #define JS_BUTTON 1
 #define JS_AXIS 2
 #define JSIOCGNAME(len) (((2U) << 30) | ((len) << 16) | ('j' << 8) | 0x13)
+#define JSIOCGAXES (((2U) << 30) | (1U << 16) | ('j' << 8) | 0x11)
+#define JSIOCGBUTTONS (((2U) << 30) | (1U << 16) | ('j' << 8) | 0x12)
 
-static struct { int fd, tried; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; } joy[8];
+/* fd is -1 with no device open; probe is when /dev/input/js<i> is next looked at */
+static struct { int fd; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; long long probe; } joy[8];
 
+static float joy_axis(int v)
+{
+    float f = (float)v / 32767.0f;
+    return f < -1 ? -1 : f > 1 ? 1 : f;
+}
+
+static void joy_close(int i)
+{
+    if (joy[i].fd >= 0)
+        close(joy[i].fd);
+    memset(&joy[i], 0, sizeof joy[i]);
+    joy[i].fd = -1;
+}
+
+/* a pad as the joystick driver lists it: accelerometers and the like also
+   appear as js nodes, with axes and no buttons */
+static int joy_is_pad(int fd)
+{
+    unsigned char axes = 0, buttons = 0;
+    return ioctl(fd, JSIOCGAXES, &axes) >= 0 && ioctl(fd, JSIOCGBUTTONS, &buttons) >= 0 && axes >= 2 && buttons >= 4;
+}
+
+/* index i is /dev/input/js<i>, so a pad keeps its index while others come and
+   go. An index with no pad is looked at again about once a second (a pad
+   plugged in later appears); one that fails to read is closed and gone */
 int host_pad_read(int i, host_pad *p)
 {
+    static int started;
     struct js_event e;
     memset(p, 0, sizeof *p);
     if (i < 0 || i >= 8)
         return 0;
-    if (!joy[i].tried) {
-        char path[32];
-        joy[i].tried = 1;
-        snprintf(path, sizeof path, "/dev/input/js%d", i);
-        joy[i].fd = open(path, O_RDONLY | O_NONBLOCK) + 1;
-        if (joy[i].fd)
-            ioctl(joy[i].fd - 1, JSIOCGNAME(sizeof joy[i].name), joy[i].name);
+    if (!started) {
+        int k;
+        started = 1;
+        for (k = 0; k < 8; k++)
+            joy[k].fd = -1;
     }
-    if (!joy[i].fd)
-        return 0;
-    while (read(joy[i].fd - 1, &e, sizeof e) == (ssize_t)sizeof e) {
+    if (joy[i].fd < 0) {
+        struct timespec ts;
+        long long now;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        if (joy[i].probe && now - joy[i].probe < 1000)
+            return 0;
+        {
+            char path[32];
+            int fd;
+            snprintf(path, sizeof path, "/dev/input/js%d", i);
+            fd = open(path, O_RDONLY | O_NONBLOCK);
+            memset(&joy[i], 0, sizeof joy[i]);
+            joy[i].fd = -1;
+            joy[i].probe = now;
+            if (fd < 0)
+                return 0;
+            if (!joy_is_pad(fd)) {
+                close(fd);
+                return 0;
+            }
+            joy[i].fd = fd;
+            joy[i].probe = now;
+            ioctl(fd, JSIOCGNAME(sizeof joy[i].name), joy[i].name);
+        }
+    }
+    for (;;) {
+        ssize_t n = read(joy[i].fd, &e, sizeof e);
+        if (n != (ssize_t)sizeof e) {
+            if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                joy_close(i);
+                return 0;
+            }
+            break;
+        }
         int t = e.type & 0x7F;
         if (t == JS_BUTTON && e.number < 12) {
             /* the kernel's order for the common layout, to the XInput layout */
@@ -587,7 +647,7 @@ int host_pad_read(int i, host_pad *p)
             else
                 joy[i].buttons &= ~(1u << map[e.number]);
         } else if (t == JS_AXIS) {
-            float v = (float)e.value / 32767.0f;
+            float v = joy_axis(e.value);
             if (e.number == 0) joy[i].x = v;
             if (e.number == 1) joy[i].y = v;
             /* the common layout's right stick and triggers (a trigger at rest reads -1) */

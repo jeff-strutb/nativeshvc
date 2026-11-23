@@ -853,21 +853,48 @@ static void host_pad_identify(GCController *c, GCExtendedGamepad *g, host_pad *o
             snprintf(o->label[i], sizeof o->label[i], "%s", [el[i].localizedName UTF8String]);
 }
 
-/* any controller iOS knows (Xbox, PlayStation, MFi, Switch Pro), in the
- * order GameController lists those with a full gamepad profile */
+#define PAD_SLOTS 8
+/* a controller keeps its index from when it is first seen until it disconnects:
+   GCController.controllers has no stable order, so indices are not taken from
+   it. A newly seen controller takes the first free index. */
+static GCController *host_pad_slot(int index)
+{
+    static GCController *slots[PAD_SLOTS];
+    int k;
+    @synchronized([GCController class]) {
+        NSArray<GCController *> *all = GCController.controllers;
+        for (k = 0; k < PAD_SLOTS; k++)
+            if (slots[k] && ![all containsObject:slots[k]])
+                slots[k] = nil;
+        for (GCController *c in all) {
+            int have = 0, free_k = -1;
+            if (!c.extendedGamepad)
+                continue;
+            for (k = 0; k < PAD_SLOTS; k++) {
+                if (slots[k] == c)
+                    have = 1;
+                else if (!slots[k] && free_k < 0)
+                    free_k = k;
+            }
+            if (!have && free_k >= 0)
+                slots[free_k] = c;
+        }
+        return slots[index];
+    }
+}
+
+/* any controller iOS knows (Xbox, PlayStation, MFi, Switch Pro), with a full gamepad
+ * profile, each at the index it first appeared at */
 int host_pad_read(int index, host_pad *o)
 {
     @autoreleasepool {
         GCController *c = nil;
         GCExtendedGamepad *g;
         unsigned b = 0;
-        int n = 0;
         memset(o, 0, sizeof *o);
-        for (GCController *k in GCController.controllers)
-            if (k.extendedGamepad && n++ == index) {
-                c = k;
-                break;
-            }
+        if (index < 0 || index >= PAD_SLOTS)
+            return 0;
+        c = host_pad_slot(index);
         if (!c || !(g = c.extendedGamepad))
             return 0;
         host_pad_identify(c, g, o);

@@ -84,7 +84,84 @@ int host_poll_event(host_event *ev, uint32_t wait_ms)
 }
 
 /* ---- controllers ---- */
-static struct { int on; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; } pad;
+/* one slot per input device (its Android device id); a slot keeps its index
+   while the device is connected and is freed when Android no longer lists it */
+#define PADS 8
+static struct { int on, dev; unsigned buttons; float x, y, rx, ry, lt, rt, hx, hy; char name[64]; long long checked; } pads[PADS];
+static pthread_mutex_t pad_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static long long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* whether InputDevice.getDevice(dev) still finds the device, and its name;
+   1 (kept) when the question cannot be asked */
+static int device_present(int dev, char *name, size_t n)
+{
+    JavaVM *vm = app->activity->vm;
+    JNIEnv *env;
+    jclass cls;
+    jmethodID get;
+    jobject d;
+    int present = 1;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK &&
+        (*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK)
+        return 1;
+    cls = (*env)->FindClass(env, "android/view/InputDevice");
+    get = cls ? (*env)->GetStaticMethodID(env, cls, "getDevice", "(I)Landroid/view/InputDevice;") : NULL;
+    if (!get) {
+        (*env)->ExceptionClear(env);
+        return 1;
+    }
+    d = (*env)->CallStaticObjectMethod(env, cls, get, (jint)dev);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return 1;
+    }
+    if (!d)
+        present = 0;
+    else {
+        if (name) {
+            jmethodID gn = (*env)->GetMethodID(env, cls, "getName", "()Ljava/lang/String;");
+            jstring js = gn ? (jstring)(*env)->CallObjectMethod(env, d, gn) : NULL;
+            if (js) {
+                const char *c = (*env)->GetStringUTFChars(env, js, NULL);
+                if (c) {
+                    snprintf(name, n, "%s", c);
+                    (*env)->ReleaseStringUTFChars(env, js, c);
+                }
+                (*env)->DeleteLocalRef(env, js);
+            }
+            (*env)->ExceptionClear(env);
+        }
+        (*env)->DeleteLocalRef(env, d);
+    }
+    return present;
+}
+
+/* the slot of device dev, taking the first free one for a new device; -1 when all are in use. pad_lock held */
+static int pad_slot(int dev)
+{
+    int k, free_k = -1;
+    for (k = 0; k < PADS; k++) {
+        if (pads[k].on && pads[k].dev == dev)
+            return k;
+        if (!pads[k].on && free_k < 0)
+            free_k = k;
+    }
+    if (free_k >= 0) {
+        memset(&pads[free_k], 0, sizeof pads[free_k]);
+        pads[free_k].on = 1;
+        pads[free_k].dev = dev;
+        pads[free_k].checked = now_ms();
+        snprintf(pads[free_k].name, sizeof pads[free_k].name, "Controller");
+        device_present(dev, pads[free_k].name, sizeof pads[free_k].name);
+    }
+    return free_k;
+}
 
 static int pad_bit(int key)
 {
@@ -112,21 +189,32 @@ static int pad_bit(int key)
 int host_pad_read(int i, host_pad *p)
 {
     memset(p, 0, sizeof *p);
-    if (i != 0 || !pad.on)
+    if (i < 0 || i >= PADS)
         return 0;
-    p->x = pad.x;
-    p->y = pad.y;
-    p->rx = pad.rx;
-    p->ry = pad.ry;
-    p->lt = pad.lt;
-    p->rt = pad.rt;
-    p->buttons = pad.buttons;
-    if (pad.hy < -0.5f) p->buttons |= 1u << 12;
-    if (pad.hx > 0.5f) p->buttons |= 1u << 13;
-    if (pad.hy > 0.5f) p->buttons |= 1u << 14;
-    if (pad.hx < -0.5f) p->buttons |= 1u << 15;
+    pthread_mutex_lock(&pad_lock);
+    if (pads[i].on && now_ms() - pads[i].checked >= 1000) {
+        pads[i].checked = now_ms();
+        if (!device_present(pads[i].dev, NULL, 0))
+            memset(&pads[i], 0, sizeof pads[i]);
+    }
+    if (!pads[i].on) {
+        pthread_mutex_unlock(&pad_lock);
+        return 0;
+    }
+    p->x = pads[i].x;
+    p->y = pads[i].y;
+    p->rx = pads[i].rx;
+    p->ry = pads[i].ry;
+    p->lt = pads[i].lt;
+    p->rt = pads[i].rt;
+    p->buttons = pads[i].buttons;
+    if (pads[i].hy < -0.5f) p->buttons |= 1u << 12;
+    if (pads[i].hx > 0.5f) p->buttons |= 1u << 13;
+    if (pads[i].hy > 0.5f) p->buttons |= 1u << 14;
+    if (pads[i].hx < -0.5f) p->buttons |= 1u << 15;
+    snprintf(p->name, sizeof p->name, "%s", pads[i].name);
+    pthread_mutex_unlock(&pad_lock);
     p->style = HOST_PAD_GENERIC;
-    snprintf(p->name, sizeof p->name, "Controller");
     return 1;
 }
 
@@ -194,11 +282,16 @@ static int32_t on_input(struct android_app *a, AInputEvent *e)
     if (type == AINPUT_EVENT_TYPE_KEY) {
         int key = AKeyEvent_getKeyCode(e), down = AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN, bit = pad_bit(key);
         if ((source & (AINPUT_SOURCE_GAMEPAD | AINPUT_SOURCE_JOYSTICK)) && bit >= 0) {
-            pad.on = 1;
-            if (down)
-                pad.buttons |= 1u << bit;
-            else
-                pad.buttons &= ~(1u << bit);
+            int k;
+            pthread_mutex_lock(&pad_lock);
+            k = pad_slot(AInputEvent_getDeviceId(e));
+            if (k >= 0) {
+                if (down)
+                    pads[k].buttons |= 1u << bit;
+                else
+                    pads[k].buttons &= ~(1u << bit);
+            }
+            pthread_mutex_unlock(&pad_lock);
             return 1;
         }
         {
@@ -216,22 +309,27 @@ static int32_t on_input(struct android_app *a, AInputEvent *e)
     }
     if (type == AINPUT_EVENT_TYPE_MOTION) {
         if (source & AINPUT_SOURCE_JOYSTICK) {
-            pad.on = 1;
-            pad.x = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0);
-            pad.y = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
-            pad.hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0);
-            pad.hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
-            pad.rx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0);
-            pad.ry = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0);
-            /* a controller reports its triggers on one pair of axes or the other */
-            {
-                float l = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0);
-                float r = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0);
-                float b = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0);
-                float g = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
-                pad.lt = l > b ? l : b;
-                pad.rt = r > g ? r : g;
+            int k;
+            pthread_mutex_lock(&pad_lock);
+            k = pad_slot(AInputEvent_getDeviceId(e));
+            if (k >= 0) {
+                pads[k].x = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0);
+                pads[k].y = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
+                pads[k].hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0);
+                pads[k].hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
+                pads[k].rx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0);
+                pads[k].ry = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0);
+                /* a controller reports its triggers on one pair of axes or the other */
+                {
+                    float l = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0);
+                    float r = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0);
+                    float b = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0);
+                    float g = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
+                    pads[k].lt = l > b ? l : b;
+                    pads[k].rt = r > g ? r : g;
+                }
             }
+            pthread_mutex_unlock(&pad_lock);
             return 1;
         }
         if (source & AINPUT_SOURCE_MOUSE & ~AINPUT_SOURCE_CLASS_POINTER) {
