@@ -7,7 +7,8 @@
    i[0]: the first char column, -, columns, rows
    i[1]: the map's width and height in tiles, a tile's width and height in layer pixels
    i[2]: texels a pixel, the atlas's tiles a row, wrap; the palette's version is the row's (row_palette)
-   i[3]: bits a texel, mode 0's palette group, direct colour, offset-per-tile (1 modes 2 and 6, 2 mode 4)
+   i[3]: bits a texel, mode 0's palette group, direct colour, offset-per-tile (1 modes 2 and 6, 2 mode 4; + 4: the
+         first offset column takes an entry too, column c reading the table's c, 6.15)
    i[4]: offset-per-tile: its map's width and height, BG3's scroll x and y
    i[5]: offset-per-tile: this layer's bit in an entry, its own scroll x and y, hires
    i[6]: the class of tile the draw is for (1 solid, 2 mixed: tiles_solid.frag, tiles.frag), the frame's
@@ -35,11 +36,12 @@ void main()
         int optw = hires != 0 ? 16 : 8, fine = hires != 0 ? ((sx << 1) & 7) : (sx & 7);
         float hx = float(c * 8 + 4) - sc.x * float(sx);
         int col = int(floor((hx + float(fine)) / float(optw)));
-        if (col > 0) {
+        int first = (u.i[3].w & 4) != 0 ? 1 : 0;
+        if (col > 0 || first != 0) {
             int w3 = u.i[4].x, h3 = u.i[4].y, x3 = u.i[4].z, y3 = u.i[4].w, bit = u.i[5].x, nsy = sy, look = -1;
-            int bx = imod(((col - 1) * 8 + (x3 & ~7)) >> 3, w3);
+            int bx = imod(((col - 1 + first) * 8 + (x3 & ~7)) >> 3, w3);
             uint hv = texelFetch(ti2, ivec2(bx, imod(y3 >> 3, h3)), 0).r;
-            if (u.i[3].w == 2) {
+            if ((u.i[3].w & 3) == 2) {
                 if (((hv >> bit) & 1u) != 0u) {
                     if (((hv >> 21) & 1u) != 0u)
                         nsy = int(hv & 0x3FFu);

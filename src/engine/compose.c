@@ -712,7 +712,7 @@ static int eq_bg(const Ctx *c, const eng_state *a, const eng_state *b)
     if (opt_on(a, n) != opt_on(b, n))
         return 0;
     if (opt_on(a, n)) {
-        if (p->offset_per_tile.id != q->offset_per_tile.id || (p->offset_per_tile_own != 0) != (q->offset_per_tile_own != 0))
+        if (p->offset_per_tile.id != q->offset_per_tile.id || p->offset_per_tile_own != q->offset_per_tile_own)
             return 0;
         return p->offset_per_tile_own ||
                (a->l[2].map.id == b->l[2].map.id && a->l[2].scroll_x == b->l[2].scroll_x && a->l[2].scroll_y == b->l[2].scroll_y);
@@ -752,6 +752,8 @@ static void tile_fields(rr_uniform *u, rr_cmd *d, const eng_state *s, int n)
     if (opt_on(s, n)) {
         const eng_map *o = &eng_maps_of[a->offset_per_tile.id];
         u->i[3][3] = s->m == 4 ? 2 : 1;
+        if (a->offset_per_tile_own == 2)
+            u->i[3][3] |= 4;            /* (6.15) the first offset column takes an entry too: column c reads the table's c */
         if (a->offset_per_tile_own) {
             /* (6.14) a table of its own: read as BG3's map would be at scroll (0, 0), in the table's own size (the
                shaders then read row 0, row 1 and column c - 1) */

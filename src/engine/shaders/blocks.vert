@@ -34,11 +34,12 @@ void main()
             int sx = u.i[5].y, sy = u.i[5].z, hires = u.i[5].w;
             int optw = hires != 0 ? 16 : 8, fine = hires != 0 ? ((sx << 1) & 7) : (sx & 7);
             int col = fdiv(lx - sxs * sx + fine, optw);
-            if (col > 0) {
+            int first = (u.i[3].w & 4) != 0 ? 1 : 0;     /* (6.15) the first offset column takes an entry too */
+            if (col > 0 || first != 0) {
                 int w3 = u.i[4].x, h3 = u.i[4].y, x3 = u.i[4].z, y3 = u.i[4].w, bit = u.i[5].x, nsy = sy, look = -1;
-                int obx = imod(((col - 1) * 8 + (x3 & ~7)) >> 3, w3);
+                int obx = imod(((col - 1 + first) * 8 + (x3 & ~7)) >> 3, w3);
                 uint hv = texelFetch(ti2, ivec2(obx, imod(y3 >> 3, h3)), 0).r;
-                if (u.i[3].w == 2) {
+                if ((u.i[3].w & 3) == 2) {
                     if (((hv >> bit) & 1u) != 0u) {
                         if (((hv >> 21) & 1u) != 0u)
                             nsy = int(hv & 0x3FFu);

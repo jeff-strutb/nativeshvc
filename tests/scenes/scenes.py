@@ -6,13 +6,16 @@ for bsnes (through tests/oracle) and a scene file for the engine's API
   scenes.py --oracle ORACLE --core CORE --player PLAYER --out DIR [--only A,B]
   scenes.py ... --prove         one scene changed on the engine's side only: must fail
 
-A scene listed in KNOWN differs by design and is reported so, never as passing. 120 scenes, 4 listed KNOWN
+A scene listed in KNOWN differs by design and is reported so, never as passing. 121 scenes, 4 listed KNOWN
 (rotated or scaled Mode 7, and Mode 7 whose scroll changes by two texels a line). Headless, each of Metal, Vulkan on Linux
 (dzn, AMD), Direct3D 12 on Windows (AMD) and Vulkan on Windows (AMD) gave 112 match, 0 fail, 4 KNOWN of the first 116; the
 two added in 6.7 (line-blank-sprites, offset-per-tile-line-mode) have been run on Linux Vulkan (dzn) only; the windowed path
 has not been run. The two added in 6.14 (offset-per-tile-own2, offset-per-tile-own4: the engine's BG1 reads a table of
 its own, BG3 given another scroll on the engine's side) have been run on Metal only: with the other offset-per-tile scenes,
 8 of 8 match (2026-11-23); with offset_per_tile_own set to 0 both fail (45,691 and 42,512 pixels).
+The one added in 6.15 (offset-per-tile-own-first2: the first offset column takes an entry too, the engine's BG1 given
+another y that only the table's entries undo) has been run on Metal only: with the other offset-per-tile scenes, 7 of 7
+match (2026-11-24); with offset_per_tile_own 1 it fails (51,203 pixels).
 
 The engine plays each scene headless with the picture at the console's own
 size, a window pixel for a picture pixel (RR_SIZE the oracle's shot's size,
@@ -498,6 +501,37 @@ def opt_own_scene(mode):
     return s
 
 
+def opt_own_first_scene(mode):
+    """(6.15) the same ROM as opt_scene(mode); the engine's BG1 reads a table of its own whose first offset column takes an
+    entry too (offset_per_tile_own 2, column c reading the table's c): the table is 33 columns, its column 0 BG1's own
+    scroll as an entry and columns 1-32 BG3's map's columns 0-31 (rows 0 and 1, as opt_own_scene), every vertical entry
+    without BG1's bit made BG1's scroll as an entry. The engine's BG1 is given another y (77 more), so the picture matches
+    only where every column, the first included, takes its y from the table (mode 2: a row each way)"""
+    assert mode == 2
+    s = opt_scene(mode, name=f"offset-per-tile-own-first{mode}")
+    mline = next(l for l in s.f if l.startswith("map ") and l.split()[2:4] == ["32", "32"] and
+                 any(f.startswith("layer 2 ") and f.split()[3] == l.split()[1] for f in s.f))
+    words = bytes.fromhex(mline.split()[4])
+    row = [[int.from_bytes(words[2 * (32 * r + c):2 * (32 * r + c) + 2], "little") for c in range(32)] for r in (0, 1)]
+    l0 = next(l for l in s.f if l.startswith("layer 0 ")).split()
+    sy, bit = int(l0[8]), 0x2000
+    own = sy & 0x3FF | bit
+    across = [0] + row[0]
+    down = [own] + [w if w & bit else own for w in row[1]]
+    tid = s.id()
+    s.f.append(f"map {tid} 33 2 {b''.join(w.to_bytes(2, 'little') for w in across + down).hex()}")
+    for i, line in enumerate(s.f):
+        if line.startswith("layer 0 "):
+            v = line.split()
+            v[8] = str(sy + 77)
+            s.f[i] = " ".join(v[:-1]) + f" {tid} 2"
+        elif line.startswith("layer 2 "):
+            v = line.split()
+            v[7], v[8] = "77", "45"
+            s.f[i] = " ".join(v)
+    return s
+
+
 def outside_sel(o):
     return {0: 0, 1: 0x80, 2: 0xC0}[o]
 
@@ -718,6 +752,8 @@ def more_scenes():
     # (6.14) offset-per-tile from a table of the layer's own, not read through BG3
     yield opt_own_scene(2)
     yield opt_own_scene(4)
+    # (6.15) the first offset column takes an entry too
+    yield opt_own_first_scene(2)
     # ---- sprites ----
     for sel in range(6):
         s = Scene(f"sprites-size{sel}"); s.mode(1); s.sprites_random(sel); yield s
