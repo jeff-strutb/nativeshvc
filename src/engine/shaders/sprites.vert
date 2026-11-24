@@ -4,7 +4,7 @@
    rectangle (x0, y0, x1, y1) in screen pixels, the sprite's palette (any number: 6.8), the sprite's own row at
    its top (y; its column is 0), the sprite's size in tiles (w | h << 16), tile |
    priority << 19 | hflip << 21 | vflip << 22, and its place's fraction x, y in 256ths of a pixel (6.10): the piece is
-   kept to the strip by its whole place and drawn moved by the fraction
+   moved by the fraction, then kept to the rectangle drawn
    f[2]: the rectangle drawn; f[3]: alpha written by palettes 4-7, by 0-3, the texel rows to a screen row (2 under
    OBJ interlace with screen interlace, else 1); f[4]: depth at priorities 0-3
    i[0]: the pieces' first word, the atlas's tiles a row, texels a pixel, the atlas's height in texels;
@@ -22,6 +22,12 @@ void main()
     vec2 p0 = vec2(float(int(word(k))), float(int(word(k + 1)))), p1 = vec2(float(int(word(k + 2))), float(int(word(k + 3))));
     vec2 l0 = vec2(0.0, float(int(word(k + 5))));
     uint size = word(k + 6), n = word(k + 7);
+    /* the piece moved by its fraction before it is kept to the rectangle drawn: a strip's rectangle cuts the moved
+       piece, so the part of it that the fraction took across the strip's edge is drawn by the strip it is in
+       (moved after, each strip's draw left the fraction's width bare along its first row or column) */
+    vec2 fr = vec2(float(int(word(k + 8))), float(int(word(k + 9)))) / 256.0;
+    p0 += fr;
+    p1 += fr;
     vec2 q0 = p0, q1 = p1;
     if (!keep_to(q0, q1, u.f[2])) {
         gl_Position = NOWHERE;
@@ -42,7 +48,6 @@ void main()
     }
     v_t = t * float(u.i[0].z);
     v_s = uvec3(n, size, word(k + 4));
-    p += vec2(float(int(word(k + 8))), float(int(word(k + 9)))) / 256.0;
     v_p = p;
     gl_Position = clip_at(p, u.f[4][int((n >> 19) & 3u)]);
 }

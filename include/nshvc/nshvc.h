@@ -17,7 +17,7 @@ extern "C" {
 
 #define NSHVC_VERSION_MAJOR 6
 #define NSHVC_VERSION_MINOR 14
-#define NSHVC_VERSION_PATCH 0
+#define NSHVC_VERSION_PATCH 1
 
 /* ---- input ------------------------------------------------------------------- */
 

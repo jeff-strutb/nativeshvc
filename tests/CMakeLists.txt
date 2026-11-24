@@ -36,3 +36,6 @@ set_target_properties(subpixel PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINAR
 add_executable(brightness_sub scenes/brightness_sub.c)
 target_link_libraries(brightness_sub PRIVATE nshvc)
 set_target_properties(brightness_sub PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_executable(sprite_y_sub scenes/sprite_y_sub.c)
+target_link_libraries(sprite_y_sub PRIVATE nshvc)
+set_target_properties(sprite_y_sub PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

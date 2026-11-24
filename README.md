@@ -122,6 +122,8 @@ Build with `-DNSHVC_TESTS=ON`. Each check is made for one part of the engine; no
   triangles, at the near plane, kept and rewritten, and thousands in a call.
 - `tests/scenes/depth.c` checks culling, depth bias, a kept depth, the later of equal depths and a list's own depth in
   both orders, with the precision far away, and an image over a list's other drawing.
+- `tests/scenes/sprite_y_sub.c` checks that pieces of one sprite stacked in y, each at a fraction of a row, draw with no line between
+  them across the strips a per-line value cuts the picture into (run at `RR_SIZE=256x224`).
 - `m7check` measures Mode 7's anti-aliasing against the exact area mean of the console's lookup, and `cost` times the
   drawing case by case.
 - `tools/nshvc-check` compares a converted game's sound with the original's.
